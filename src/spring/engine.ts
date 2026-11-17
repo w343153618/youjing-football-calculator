@@ -1,0 +1,362 @@
+/* =========================================================
+   240Hz Fixed-Substep Damped Harmonic Oscillator Spring Engine
+   ========================================================= */
+
+export interface SkinDef {
+  id: string;
+  code: string;
+  name: string;
+  en: string;
+  swatchBg: string;
+  swatchDot: string;
+}
+
+export const SKINS: SkinDef[] = [
+  { id: 'air', code: '00', name: '素白', en: 'Air', swatchBg: '#F2F4F7', swatchDot: '#0B0D12' },
+  { id: 'swiss', code: '05', name: '瑞士', en: 'Swiss', swatchBg: '#FFFFFF', swatchDot: '#E30613' },
+  { id: 'studio', code: '06', name: '工坊', en: 'Studio', swatchBg: '#E4E3DE', swatchDot: '#FF5A1F' },
+  { id: 'dot', code: '07', name: '点阵', en: 'Dot', swatchBg: '#000000', swatchDot: '#FFFFFF' },
+  { id: 'sumi', code: '08', name: '水墨', en: 'Sumi', swatchBg: '#F1ECE2', swatchDot: '#1A1A1A' },
+  { id: 'glass', code: '09', name: '琉璃', en: 'Glass', swatchBg: 'linear-gradient(135deg,#2B5D4F,#1B1F3B)', swatchDot: 'rgba(255,255,255,.9)' },
+  { id: 'dial', code: '10', name: '表盘', en: 'Dial', swatchBg: '#0E1729', swatchDot: '#CDB27A' },
+  { id: 'pitch', code: '11', name: '草坪', en: 'Pitch', swatchBg: '#EAF0EA', swatchDot: '#0E5C3A' },
+];
+
+let TIME_SCALE = 1;
+export function setGlobalTimeScale(scale: number) {
+  TIME_SCALE = Math.max(0.05, Math.min(2, scale));
+}
+export function getGlobalTimeScale(): number {
+  return TIME_SCALE;
+}
+
+const ACTIVE = new Set<Spring>();
+let rafId: number | null = null;
+let lastT = 0;
+
+export class Spring {
+  x: number;
+  v = 0;
+  to: number;
+  k: number;
+  c: number;
+  eps: number;
+  onUpdate: ((val: number) => void) | null;
+  onRest: (() => void) | null = null;
+
+  constructor(
+    value: number,
+    opts: { k?: number; c?: number; eps?: number; onUpdate?: (val: number) => void } = {}
+  ) {
+    this.x = value;
+    this.to = value;
+    this.k = opts.k ?? 420;
+    this.c = opts.c ?? 26;
+    this.eps = opts.eps ?? 0.001;
+    this.onUpdate = opts.onUpdate ?? null;
+  }
+
+  config(k: number, c: number): this {
+    this.k = k;
+    this.c = c;
+    return this;
+  }
+
+  set(to: number): this {
+    this.to = to;
+    wake(this);
+    return this;
+  }
+
+  jump(val: number): this {
+    this.x = val;
+    this.to = val;
+    this.v = 0;
+    ACTIVE.delete(this);
+    this.onUpdate?.(val);
+    return this;
+  }
+
+  kick(vel: number): this {
+    this.v += vel;
+    wake(this);
+    return this;
+  }
+
+  stop(): void {
+    ACTIVE.delete(this);
+  }
+}
+
+function wake(s: Spring) {
+  ACTIVE.add(s);
+  if (rafId === null) {
+    lastT = performance.now();
+    rafId = requestAnimationFrame(tick);
+  }
+}
+
+function tick(now: number) {
+  const dt = Math.min((now - lastT) / 1000, 0.1) * TIME_SCALE;
+  lastT = now;
+  for (const s of [...ACTIVE]) {
+    let t = dt;
+    while (t > 0) {
+      const h = Math.min(1 / 240, t);
+      const a = -s.k * (s.x - s.to) - s.c * s.v;
+      s.v += a * h;
+      s.x += s.v * h;
+      t -= h;
+    }
+    s.onUpdate?.(s.x);
+    if (Math.abs(s.x - s.to) < s.eps && Math.abs(s.v) < s.eps * 10) {
+      s.x = s.to;
+      s.v = 0;
+      s.onUpdate?.(s.x);
+      ACTIVE.delete(s);
+      const r = s.onRest;
+      s.onRest = null;
+      r?.();
+    }
+  }
+  rafId = ACTIVE.size > 0 ? requestAnimationFrame(tick) : null;
+}
+
+export let PRESS_CFG: [number, number] = [1100, 52];
+export let RELEASE_CFG: [number, number] = [480, 13];
+
+export function readSpringTokens() {
+  const cs = getComputedStyle(document.documentElement);
+  const p = cs
+    .getPropertyValue('--spring-press')
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  const r = cs
+    .getPropertyValue('--spring-release')
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  if (p.length === 2 && p.every(Number.isFinite)) PRESS_CFG = [p[0], p[1]];
+  if (r.length === 2 && r.every(Number.isFinite)) RELEASE_CFG = [r[0], r[1]];
+}
+
+export function haptic(ms = 8) {
+  try {
+    navigator.vibrate?.(ms);
+  } catch {
+    // ignore
+  }
+}
+
+interface ElementFX {
+  s: number;
+  x: number;
+  y: number;
+  scale: Spring;
+  tx: Spring;
+  ty: Spring;
+}
+
+const FX = new WeakMap<HTMLElement, ElementFX>();
+
+export function fxOf(el: HTMLElement): ElementFX {
+  let f = FX.get(el);
+  if (!f) {
+    const state = { s: 1, x: 0, y: 0 } as ElementFX;
+    const apply = () => {
+      el.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale(${state.s})`;
+    };
+    state.scale = new Spring(1, {
+      k: RELEASE_CFG[0],
+      c: RELEASE_CFG[1],
+      onUpdate: (v) => {
+        state.s = v;
+        apply();
+      },
+    });
+    state.ty = new Spring(0, {
+      k: 380,
+      c: 26,
+      eps: 0.05,
+      onUpdate: (v) => {
+        state.y = v;
+        apply();
+      },
+    });
+    state.tx = new Spring(0, {
+      k: 380,
+      c: 30,
+      eps: 0.05,
+      onUpdate: (v) => {
+        state.x = v;
+        apply();
+      },
+    });
+    FX.set(el, state);
+    f = state;
+  }
+  return f;
+}
+
+/** Staggered vertical entrance for `.enter` children */
+export function enterStagger(container: HTMLElement | null, step = 34) {
+  if (!container) return;
+  const items = [...container.querySelectorAll<HTMLElement>(':scope > .enter')];
+  items.forEach((el, i) => {
+    const f = fxOf(el);
+    const base = f.ty.onUpdate;
+    el.style.opacity = '0';
+    f.ty.jump(18);
+    f.ty.onUpdate = (v) => {
+      base?.(v);
+      el.style.opacity = String(Math.max(0, Math.min(1, 1 - v / 18)));
+    };
+    window.setTimeout(() => {
+      f.ty.config(340, 23).set(0);
+      f.ty.onRest = () => {
+        f.ty.onUpdate = base;
+        el.style.opacity = '';
+      };
+    }, (i * step) / TIME_SCALE);
+  });
+}
+
+/** Pop-scale stagger for grid cells in sheets */
+export function popStagger(container: HTMLElement | null, step = 12) {
+  if (!container) return;
+  [...container.children].forEach((node, i) => {
+    const el = node as HTMLElement;
+    const f = fxOf(el);
+    f.scale.jump(0.55);
+    el.style.opacity = '0';
+    window.setTimeout(() => {
+      el.style.opacity = '';
+      f.scale.config(520, 16).set(1);
+    }, (i * step) / TIME_SCALE);
+  });
+}
+
+const NUMS = new WeakMap<HTMLElement, Spring>();
+export function animateNumber(
+  el: HTMLElement | null,
+  from: number,
+  to: number,
+  fmt: (v: number) => string
+) {
+  if (!el) return;
+  let s = NUMS.get(el);
+  if (!s) {
+    s = new Spring(from, { k: 170, c: 26, eps: 0.02 });
+    NUMS.set(el, s);
+  }
+  s.onUpdate = (v) => {
+    el.textContent = fmt(v);
+  };
+  s.set(to);
+}
+
+/** 3D Perspective Tilt on Pointer Move */
+export function bindTilt(el: HTMLElement | null) {
+  if (!el) return;
+  const rx = new Spring(0, { k: 260, c: 16, eps: 0.01, onUpdate: apply });
+  const ry = new Spring(0, { k: 260, c: 16, eps: 0.01, onUpdate: apply });
+  function apply() {
+    if (!el) return;
+    el.style.transform = `perspective(700px) rotateX(${rx.x}deg) rotateY(${ry.x}deg)`;
+  }
+  el.addEventListener('pointermove', (e) => {
+    const r = el.getBoundingClientRect();
+    ry.set(((e.clientX - r.left) / r.width - 0.5) * 15);
+    rx.set(-((e.clientY - r.top) / r.height - 0.5) * 15);
+  });
+  el.addEventListener('pointerleave', () => {
+    rx.set(0);
+    ry.set(0);
+  });
+}
+
+/** Spring Toast Notification */
+export function showSpringToast(layer: HTMLElement | null, msg: string) {
+  if (!layer) return;
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"/></svg><span>${msg}</span>`;
+  layer.appendChild(t);
+  const st = { s: 0.6, y: -18 };
+  let leaving = false;
+  const apply = () => {
+    t.style.transform = `translate3d(-50%,${st.y}px,0) scale(${st.s})`;
+  };
+  const s = new Spring(0.6, {
+    k: 520,
+    c: 17,
+    onUpdate: (v) => {
+      st.s = v;
+      apply();
+      if (!leaving) t.style.opacity = String(Math.min(1, Math.max(0, (v - 0.6) / 0.3)));
+    },
+  });
+  const y = new Spring(-18, {
+    k: 420,
+    c: 21,
+    eps: 0.05,
+    onUpdate: (v) => {
+      st.y = v;
+      apply();
+    },
+  });
+  s.set(1);
+  y.set(0);
+  window.setTimeout(() => {
+    leaving = true;
+    t.style.transition = 'opacity 0.22s';
+    t.style.opacity = '0';
+    s.config(500, 40).set(0.85);
+    y.config(500, 40).set(-22);
+    y.onRest = () => t.remove();
+  }, 1500 / TIME_SCALE);
+}
+
+/** Bind global tactile press/release listener once */
+let globalBound = false;
+export function ensureGlobalTactileListener(
+  onSwitchPress?: (swId: string, down: boolean) => void
+) {
+  if (globalBound) return;
+  globalBound = true;
+
+  let pressed: HTMLElement | null = null;
+  let pressedSwId: string | null = null;
+
+  document.addEventListener('pointerdown', (e) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const sw = target.closest<HTMLElement>('.switch[data-sw]');
+    if (sw?.dataset.sw) {
+      pressedSwId = sw.dataset.sw;
+      onSwitchPress?.(pressedSwId, true);
+    }
+    const el = target.closest<HTMLElement>('[data-spring]');
+    if (!el) return;
+    pressed = el;
+    el.classList.add('down');
+    const ratio = parseFloat(el.dataset.spring || '0.92') || 0.92;
+    fxOf(el).scale.config(PRESS_CFG[0], PRESS_CFG[1]).set(ratio);
+  });
+
+  const release = () => {
+    if (pressedSwId) {
+      onSwitchPress?.(pressedSwId, false);
+      pressedSwId = null;
+    }
+    if (!pressed) return;
+    const el = pressed;
+    pressed = null;
+    el.classList.remove('down');
+    fxOf(el).scale.config(RELEASE_CFG[0], RELEASE_CFG[1]).set(1);
+  };
+
+  document.addEventListener('pointerup', release);
+  document.addEventListener('pointercancel', release);
+}

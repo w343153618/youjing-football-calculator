@@ -1,0 +1,62 @@
+/* 08 · 水墨 Sumi — Japanese editorial. Unbleached kinari paper, Song serif, ink-black, vermilion seal. */
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap');
+:root {
+  --font-title: "Songti SC", "STSong", "Noto Serif SC", serif;
+  --font-team: "Songti SC", "STSong", "Noto Serif SC", serif;
+  --font-num: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-big: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --page: #E6E1D6; --bg: #F2EEE6;
+  --bg-img: radial-gradient(120% 60% at 50% 0%, #F7F4EE 0%, #F2EEE6 60%, #EDE8DE 100%);
+  --text: #1B1A17; --text-2: #5A564E; --text-3: #969083; --line: rgba(27, 26, 23, 0.12);
+  --accent: #1B1A17; --mark: #B7372A; --live: #B7372A;
+  --h1-fs: 25px; --h1-fw: 600; --h1-ls: 0.02em;
+  --tn-fs: 15.5px; --tn-fw: 600; --num-fw: 400; --big-fw: 400;
+
+  --card: #F8F5EF; --card-r: 4px; --card-border: 1px solid rgba(27, 26, 23, 0.09); --card-sh: none;
+  --key: transparent; --key-text: #1B1A17; --key-r: 3px; --key-border: 1px solid rgba(27, 26, 23, 0.16); --key-sh: none;
+  --key-down: rgba(27, 26, 23, 0.05); --key-down-sh: none;
+  --key-on: #1B1A17; --key-on-text: #F5F1E8; --key-on-sh: none; --key-on-sheen: none;
+  --key-on-down: #34322D; --key-on-down-sh: none;
+  --cell-sub: #969083; --cell-sub-on: rgba(245, 241, 232, 0.55);
+
+  --track: transparent; --track-sh: inset 0 -1px 0 rgba(27, 26, 23, 0.12); --track-r: 0; --thumb-r: 0;
+  --thumb: #1B1A17; --thumb-sh: none; --seg-text: #969083; --seg-on: #1B1A17;
+  --sw-off: #E2DCD0; --sw-off-sh: inset 0 0 0 1px rgba(27, 26, 23, 0.1); --sw-on: #1B1A17; --sw-on-sh: none;
+  --knob: #FBF9F4; --knob-sh: 0 1px 2px rgba(27, 26, 23, 0.25);
+
+  --slip: #1B1A17; --slip-text: #F5F1E8; --slip-sub: rgba(245, 241, 232, 0.55); --slip-r: 4px; --slip-sh: 0 16px 30px -16px rgba(27, 26, 23, 0.55);
+  --slip-go: #F5F1E8; --slip-go-text: #1B1A17; --slip-go-sh: none; --slip-go-down: #E3DED3; --slip-go-down-sh: none;
+  --slip-trash: transparent; --slip-trash-sh: none; --slip-trash-text: rgba(245, 241, 232, 0.6);
+  --dock: rgba(242, 238, 230, 0.94); --dock-line: rgba(27, 26, 23, 0.1); --dock-blur: blur(12px);
+  --puck: transparent; --puck-sh: none; --puck-r: 0; --nav-text: #9E988C; --nav-on: #1B1A17; --home-ind: rgba(27, 26, 23, 0.3);
+  --sheet: #F6F3EC; --mask: rgba(27, 26, 23, 0.26); --grabber: rgba(27, 26, 23, 0.2);
+  --tile: transparent; --tile-sh: inset 0 0 0 1px rgba(27, 26, 23, 0.1);
+  --chip: transparent; --chip-text: #1B1A17; --chip-sub: #969083; --chip-sh: inset 0 0 0 1px rgba(27, 26, 23, 0.2); --chip-r: 3px;
+  --poster: #1B1A17; --poster-text: #F5F1E8;
+  --prob1: #1B1A17; --prob2: #8F897D; --prob3: #D9D3C6; --prob-track: #E8E3D8;
+  --crest-filter: saturate(0.85);
+  --ava: transparent; --ava-text: #1B1A17;
+  --orb: transparent; --orb-sh: inset 0 0 0 1px rgba(27, 26, 23, 0.14);
+  --round-key: transparent; --round-key-sh: inset 0 0 0 1px rgba(27, 26, 23, 0.16);
+  --toast: #1B1A17; --toast-text: #F5F1E8; --dash: rgba(27, 26, 23, 0.35);
+  --spring-press: 900 50;
+  --spring-release: 360 20;
+}
+.seg-track { padding: 0; }
+.seg-thumb { top: auto; bottom: 0; height: 1.5px; }
+.seg-btn { height: 33px; font-family: var(--font-title); font-size: 13px; }
+.seg-btn.on { font-weight: 600; }
+.title-row { align-items: baseline; }
+.sub { font-family: var(--font-num); font-size: 12px; letter-spacing: 0.08em; }
+.colhead { font-family: var(--font-title); letter-spacing: 0.3em; }
+.tag { width: auto; height: auto; font-size: 9px; line-height: 1; padding: 2px 2.5px; border-radius: 1px; background: none; color: var(--mark); box-shadow: inset 0 0 0 1px var(--mark); font-family: var(--font-title); }
+.badge { color: var(--mark); font-family: var(--font-num); font-weight: 500; }
+.key.num { font-size: 14.5px; }
+.key.cell b { font-size: 13.5px; }
+.nav-puck { top: auto; bottom: 5px; height: 1.5px; width: 18px !important; background: #1B1A17; }
+.nav-b span:last-child, .lbl, .h2, .sec, .sec-lbl { font-family: var(--font-title); }
+.prob, .prob i { border-radius: 0; }
+.sheet { border-radius: 6px 6px 0 0; }
+.poster, .toast, .round-key, .qpill, .fchip, .combo-item { border-radius: 3px; }
+.sk i { border-radius: 2px; }
+.sk i::after { border-radius: 1px; }

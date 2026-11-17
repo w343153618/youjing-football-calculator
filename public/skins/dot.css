@@ -1,0 +1,54 @@
+/* 07 · 点阵 Dot — Nothing OS. Pure black, white capsules, dot-matrix numerals, one red pixel. */
+@import url('https://fonts.googleapis.com/css2?family=Doto:wght@700;900&family=Space+Mono:wght@400;700&display=swap');
+:root {
+  --font-num: "Space Mono", "SF Mono", Menlo, monospace;
+  --font-big: "Doto", "Space Mono", monospace;
+  --page: #1A1A1A; --bg: #000000;
+  --bg-img: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.2px) 0 0 / 14px 14px;
+  --text: #FFFFFF; --text-2: #B3B3B3; --text-3: #6E6E6E; --line: #1E1E1E;
+  --accent: #FFFFFF; --on-accent: #000; --mark: #D71921; --live: #D71921; --good: #4ADE80;
+  --h1-fs: 22px; --h1-fw: 500; --h1-ls: -0.01em;
+  --tn-fs: 14px; --tn-fw: 400; --num-fw: 400; --big-fw: 900;
+
+  --card: #0B0B0B; --card-r: 24px; --card-border: 1px solid #1C1C1C; --card-sh: none;
+  --key: #141414; --key-text: #EDEDED; --key-r: 17px; --key-border: 1px solid #262626; --key-sh: none;
+  --key-down: #1E1E1E; --key-down-sh: none;
+  --key-on: #FFFFFF; --key-on-text: #000; --key-on-sh: 0 0 18px -6px rgba(255, 255, 255, 0.45); --key-on-sheen: none;
+  --key-on-down: #DADADA; --key-on-down-sh: none;
+  --cell-sub: #6E6E6E; --cell-sub-on: rgba(0, 0, 0, 0.5);
+
+  --track: #0F0F0F; --track-sh: inset 0 0 0 1px #222; --track-r: 99px; --thumb-r: 99px;
+  --thumb: #FFFFFF; --thumb-sh: none; --seg-text: #7A7A7A; --seg-on: #000;
+  --sw-off: #1E1E1E; --sw-off-sh: inset 0 0 0 1px #2A2A2A; --sw-on: #FFFFFF; --sw-on-sh: none; --knob: #000; --knob-sh: none;
+
+  --slip: #FFFFFF; --slip-text: #000; --slip-sub: rgba(0, 0, 0, 0.52); --slip-r: 99px; --slip-sh: 0 18px 40px -14px rgba(255, 255, 255, 0.18);
+  --slip-go: #000; --slip-go-text: #FFF; --slip-go-sh: none; --slip-go-down: #222; --slip-go-down-sh: none;
+  --slip-trash: #EDEDED; --slip-trash-text: #000; --slip-trash-sh: none;
+  --dock: rgba(0, 0, 0, 0.86); --dock-line: #1A1A1A;
+  --puck: #161616; --puck-sh: inset 0 0 0 1px #2A2A2A; --puck-r: 99px;
+  --nav-text: #5E5E5E; --nav-on: #FFFFFF; --home-ind: #FFFFFF;
+  --sheet: #0B0B0B; --mask: rgba(0, 0, 0, 0.65); --grabber: #333;
+  --tile: #111; --tile-sh: inset 0 0 0 1px #222;
+  --chip: #FFFFFF; --chip-text: #000; --chip-sub: rgba(0, 0, 0, 0.45); --chip-sh: none; --chip-r: 99px;
+  --poster: #000;
+  --prob1: #FFFFFF; --prob2: #7A7A7A; --prob3: #2E2E2E; --prob-track: #141414;
+  --crest-bg: rgba(255, 255, 255, 0.1); --crest-pad: 2px; --crest-filter: none;
+  --ava: #1A1A1A; --ava-text: #FFF;
+  --orb: #111; --orb-sh: inset 0 0 0 1px #262626;
+  --round-key: #141414; --round-key-sh: inset 0 0 0 1px #262626;
+  --toast: #FFFFFF; --toast-text: #000; --dash: #333;
+  --spring-press: 1100 50;
+  --spring-release: 520 16;
+}
+.meta, .colhead, .sub, .small, .sec, .sec-lbl, .slip-sub, .qpill { font-family: var(--font-num); text-transform: uppercase; letter-spacing: 0.04em; }
+.colhead { color: #555; }
+.key.num { font-size: 12.5px; letter-spacing: -0.02em; }
+.tag { border-radius: 0; width: 5px; height: 5px; }
+.badge { color: var(--mark); font-family: var(--font-num); }
+.slip-amt { font-size: 20px; letter-spacing: 0.02em; }
+.big, .bal .v, .stats b { letter-spacing: 0.02em; }
+.key.dark { background: #FFF; color: #000; }
+.poster { border: 1px solid #222; }
+.nav-b { text-transform: uppercase; font-family: var(--font-num); font-size: 9.5px; letter-spacing: 0.05em; }
+.sk i { box-shadow: 0 0 0 1px #333; }
+.sk.on i { box-shadow: 0 0 0 2px #000, 0 0 0 3.5px #fff; }

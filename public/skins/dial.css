@@ -1,0 +1,57 @@
+/* 10 · 表盘 Dial — fine watchmaking. Midnight sunburst dial, ivory type,
+   champagne applied-gold only on what you have chosen. Crisp, low-overshoot springs. */
+:root {
+  --font-num: "SF Pro Display", "Helvetica Neue", -apple-system, sans-serif;
+  --page: #070B14; --bg: #0B1322;
+  --bg-img: repeating-conic-gradient(from 0deg at 50% -8%, rgba(255, 255, 255, 0.018) 0deg 1.2deg, transparent 1.2deg 2.4deg),
+            radial-gradient(120% 70% at 50% -8%, #1A2742 0%, #0D1628 55%, #090F1C 100%);
+  --text: #ECE6D8; --text-2: #B8B3A6; --text-3: #6F778A; --line: rgba(205, 178, 122, 0.12);
+  --accent: #CDB27A; --mark: #CDB27A; --live: #E06A5A; --good: #4ADE80;
+  --h1-fw: 500; --h1-ls: 0.06em; --tn-fw: 400; --num-fw: 400; --big-fw: 300;
+
+  --card: linear-gradient(180deg, rgba(20, 31, 53, 0.92), rgba(14, 23, 41, 0.92)); --card-r: 18px; --card-border: none;
+  --card-sh: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 0 0 1px rgba(205, 178, 122, 0.08), 0 18px 34px -20px rgba(0, 0, 0, 0.8);
+
+  --key: linear-gradient(180deg, #0C1527, #111C33); --key-text: #E4DECF; --key-r: 9px;
+  --key-sh: inset 0 1px 2px rgba(0, 0, 0, 0.55), inset 0 0 0 0.5px rgba(205, 178, 122, 0.14), 0 1px 0 rgba(255, 255, 255, 0.04);
+  --key-down: linear-gradient(180deg, #09111F, #0E182C); --key-down-sh: inset 0 2px 4px rgba(0, 0, 0, 0.7), inset 0 0 0 0.5px rgba(205, 178, 122, 0.18);
+  --key-on: linear-gradient(180deg, #EADBB2 0%, #CDB27A 48%, #B39558 100%); --key-on-text: #0B1322;
+  --key-on-sh: inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -1px 0 rgba(90, 64, 20, 0.35), 0 0 0 0.5px rgba(90, 64, 20, 0.5), 0 6px 14px -6px rgba(205, 178, 122, 0.45);
+  --key-on-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0));
+  --key-on-down: linear-gradient(180deg, #B89A5E, #D2BA86); --key-on-down-sh: inset 0 2px 3px rgba(60, 40, 10, 0.45);
+  --cell-sub: #6F778A; --cell-sub-on: rgba(11, 19, 34, 0.55);
+
+  --track: #0A1220; --track-sh: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(205, 178, 122, 0.12); --track-r: 11px; --thumb-r: 8px;
+  --thumb: linear-gradient(180deg, #1E2C49, #16223A); --thumb-sh: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 0 0 0.5px rgba(205, 178, 122, 0.3), 0 3px 8px -2px rgba(0, 0, 0, 0.6);
+  --seg-text: #6F778A; --seg-on: #CDB27A;
+  --sw-off: #0A1220; --sw-off-sh: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(205, 178, 122, 0.14);
+  --sw-on: linear-gradient(180deg, #D8C38F, #B39558); --sw-on-sh: none;
+  --knob: linear-gradient(180deg, #F3EEE2, #CFC8B6); --knob-sh: 0 2px 5px rgba(0, 0, 0, 0.5);
+
+  --slip: linear-gradient(180deg, #16223A, #0E1729); --slip-r: 22px;
+  --slip-sh: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 0 0 0.5px rgba(205, 178, 122, 0.22), 0 18px 34px -14px rgba(0, 0, 0, 0.8);
+  --slip-sub: #8B92A3;
+  --slip-go: linear-gradient(180deg, #EADBB2, #CDB27A 50%, #B39558); --slip-go-text: #0B1322;
+  --slip-go-sh: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 0 0 0.5px rgba(90, 64, 20, 0.5), 0 6px 14px -6px rgba(205, 178, 122, 0.5);
+  --slip-go-down: linear-gradient(180deg, #B89A5E, #D2BA86); --slip-go-down-sh: inset 0 2px 3px rgba(60, 40, 10, 0.45);
+  --slip-trash: #0A1220; --slip-trash-text: #8B92A3; --slip-trash-sh: inset 0 1px 3px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(205, 178, 122, 0.12);
+  --dock: rgba(9, 15, 28, 0.9); --dock-line: rgba(205, 178, 122, 0.12);
+  --puck: transparent; --puck-sh: none; --nav-text: #5E6679; --nav-on: #CDB27A; --home-ind: rgba(236, 230, 216, 0.4);
+  --sheet: #0F1A2E; --mask: rgba(3, 6, 12, 0.58); --grabber: rgba(205, 178, 122, 0.3);
+  --tile: #0B1424; --tile-sh: inset 0 0 0 0.5px rgba(205, 178, 122, 0.12);
+  --chip: linear-gradient(180deg, #EADBB2, #C6A96D); --chip-text: #0B1322; --chip-sub: rgba(11, 19, 34, 0.55); --chip-sh: none;
+  --poster: radial-gradient(120% 90% at 50% 0%, #1A2742, #090F1C 70%);
+  --prob1: #CDB27A; --prob2: #6F778A; --prob3: #26324A; --prob-track: #0A1220;
+  --crest-bg: rgba(236, 230, 216, 0.92); --crest-pad: 2px; --crest-filter: none;
+  --ava: #0A1220; --ava-text: #CDB27A;
+  --orb: #0E1729; --orb-sh: inset 0 0 0 0.5px rgba(205, 178, 122, 0.2);
+  --round-key: linear-gradient(180deg, #16223A, #0F1A2E); --round-key-sh: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 0 0 0.5px rgba(205, 178, 122, 0.2);
+  --toast: #16223A; --toast-text: #ECE6D8; --dash: rgba(205, 178, 122, 0.3);
+  --spring-press: 1300 62;
+  --spring-release: 640 26;
+}
+.colhead { letter-spacing: 0.3em; color: #8C7A52; }
+.h1 { letter-spacing: 0.12em; }
+.nav-puck { top: auto; bottom: 6px; height: 2px; width: 14px !important; border-radius: 2px; background: #CDB27A; }
+.toast { box-shadow: inset 0 0 0 0.5px rgba(205, 178, 122, 0.3), 0 12px 26px -8px rgba(0, 0, 0, 0.6); }
+.poster { box-shadow: inset 0 0 0 0.5px rgba(205, 178, 122, 0.25); }
