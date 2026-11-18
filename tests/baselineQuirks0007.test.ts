@@ -6,12 +6,20 @@ import {
   FALLBACK_MATCHES,
   OFFICIAL_CRS_PAIRS,
   analyzeMatchMicroQuant,
+  archetypeToReport,
   computeProOrderInsights,
   computeTruthReport,
+  evaluateQuantWorkspace,
   fetchOfficialMatchesServer,
   parseSportteryRawJson,
 } from '../server/quantEngine.mjs';
-import type { MatchItem, OddsOption, PoolCode, SelectedPick } from '../src/prototype/quantTypes.ts';
+import type {
+  ArchetypePlan,
+  MatchItem,
+  OddsOption,
+  PoolCode,
+  SelectedPick,
+} from '../src/prototype/quantTypes.ts';
 
 function makeExactCrsOptions(probByLabel: Record<string, number>): OddsOption[] {
   return OFFICIAL_CRS_PAIRS.map(([, label]: [string, string]) => {
@@ -573,5 +581,861 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
       assert.equal(insNonComp.hedge.available, false, `Expected ${poolCode} on late match to reject hedge`);
       assert.ok(insNonComp.hedge.reason.length >= 10);
     }
+  });
+});
+
+describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype Plans', () => {
+  it('Slice A: archetypeToReport computes exact linear expectedValueRate (replacing hardcoded -vigPct/100) and preserves statutory cappedClipped with danger cap-clip warning', () => {
+    // 1. Mutually exclusive 2-line unequal plan with exact hand-calculated linear EV:
+    // Line 1: prob = 0.2025, totalPayout = 64 -> E1 = 12.96
+    // Line 2: prob = 0.099,  totalPayout = 32 -> E2 = 3.168
+    // Total expected return = 16.128, totalCost = 20 -> exact EV = (16.128 - 20) / 20 = -0.1936 (NOT -vigPct/100 = -0.125!)
+    const unequalPlan: ArchetypePlan = {
+      key: 'iron-shield',
+      shortTab: '博热保本',
+      badge: '🔥 博热保本优化',
+      title: '次选回本护盾 + 第一主攻利润最大化',
+      tagline: '总投入 ¥20 · 保底返 ¥32.0 ~ 最高 ¥64.0',
+      totalCost: 20,
+      savedCash: 0,
+      minReturn: 32,
+      maxReturn: 64,
+      winProb: 0.3015,
+      profitProb: 0.3015,
+      missOneReturn: null,
+      vigPct: 12.5,
+      reasons: ['手算真值校验'],
+      lines: [
+        {
+          id: 'l1',
+          roleLabel: '🔥主攻重锤',
+          legs: [
+            {
+              matchId: 't2-m1',
+              matchNumStr: '周二001',
+              home: '阿森纳',
+              away: '富勒姆',
+              kickoff: '20:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 2.0,
+              fairProb: 0.45,
+            },
+            {
+              matchId: 't2-m2',
+              matchNumStr: '周二002',
+              home: '拜仁',
+              away: '波鸿',
+              kickoff: '22:30',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 2.0,
+              fairProb: 0.45,
+            },
+          ],
+          modeLabel: '2串1',
+          multiple: 8,
+          cost: 16,
+          unitPayout: 8.0,
+          returnPayout: 64.0,
+          netProfit: 44.0,
+          prob: 0.2025,
+        },
+        {
+          id: 'l2',
+          roleLabel: '🛡️次选回本盾#1',
+          legs: [
+            {
+              matchId: 't2-m1',
+              matchNumStr: '周二001',
+              home: '阿森纳',
+              away: '富勒姆',
+              kickoff: '20:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'd',
+              optionLabel: '平',
+              odds: 4.0,
+              fairProb: 0.22,
+            },
+            {
+              matchId: 't2-m2',
+              matchNumStr: '周二002',
+              home: '拜仁',
+              away: '波鸿',
+              kickoff: '22:30',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 2.0,
+              fairProb: 0.45,
+            },
+          ],
+          modeLabel: '2串1',
+          multiple: 2,
+          cost: 4,
+          unitPayout: 16.0,
+          returnPayout: 32.0,
+          netProfit: 12.0,
+          prob: 0.099,
+        },
+      ],
+    };
+
+    const repUnequal = archetypeToReport(unequalPlan, null);
+    assert.equal(repUnequal.modeLabel, '博热保本·分倍精算');
+    assert.ok(
+      Math.abs(repUnequal.expectedValueRate - -0.1936) < 1e-9,
+      `Expected exact linear EV -0.1936, got ${repUnequal.expectedValueRate}`
+    );
+    assert.equal(repUnequal.combos[0].cappedClipped, 0);
+    assert.equal(repUnequal.warnings.some((w: { id: string }) => w.id === 'cap-clip'), false);
+
+    // 2. Statutory 2-leg cap (200,000) clipping: 400 * 400 * 2 = 320,000 -> clipped 120,000 per unit * 3x = 360,000!
+    // Plus overlapping 2串1 fault-tolerant linearity check:
+    // Line A: prob = 0.001, totalPayout = 600,000 -> E_A = 600
+    // Line B: prob = 0.25,  totalPayout = 36      -> E_B = 9
+    // TotalCost = 10 -> exact linear EV = (609 - 10) / 10 = 59.9
+    const cappedFaultPlan: ArchetypePlan = {
+      key: 'fault-tolerant',
+      shortTab: '🧩 容错防爆',
+      badge: '🧩 容错防爆流',
+      title: 'M串N 防黑一场回血网',
+      tagline: '封顶截断与线性期望校验',
+      totalCost: 10,
+      savedCash: 0,
+      minReturn: 36,
+      maxReturn: 600_036,
+      winProb: 0.251,
+      profitProb: 0.251,
+      missOneReturn: 36,
+      vigPct: 22.0,
+      reasons: ['测试封顶截断'],
+      lines: [
+        {
+          id: 'cap-1',
+          roleLabel: '高倍冷箭(2串1)',
+          legs: [
+            {
+              matchId: 't2-c1',
+              matchNumStr: '周二003',
+              home: '甲队',
+              away: '乙队',
+              kickoff: '20:00',
+              poolCode: 'CRS',
+              poolName: '比分',
+              optionKey: '3:2',
+              optionLabel: '3:2',
+              odds: 400,
+              fairProb: 0.02,
+            },
+            {
+              matchId: 't2-c2',
+              matchNumStr: '周二004',
+              home: '丙队',
+              away: '丁队',
+              kickoff: '22:00',
+              poolCode: 'CRS',
+              poolName: '比分',
+              optionKey: '3:2',
+              optionLabel: '3:2',
+              odds: 400,
+              fairProb: 0.05,
+            },
+          ],
+          modeLabel: '2串1',
+          multiple: 3,
+          cost: 6,
+          unitPayout: 200_000,
+          returnPayout: 600_000,
+          netProfit: 599_990,
+          prob: 0.001,
+        },
+        {
+          id: 'cap-2',
+          roleLabel: '容错回血垫(2串1)',
+          legs: [
+            {
+              matchId: 't2-c1',
+              matchNumStr: '周二003',
+              home: '甲队',
+              away: '乙队',
+              kickoff: '20:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 3.0,
+              fairProb: 0.5,
+            },
+            {
+              matchId: 't2-c3',
+              matchNumStr: '周二005',
+              home: '戊队',
+              away: '己队',
+              kickoff: '23:30',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 3.0,
+              fairProb: 0.5,
+            },
+          ],
+          modeLabel: '2串1',
+          multiple: 2,
+          cost: 4,
+          unitPayout: 18,
+          returnPayout: 36,
+          netProfit: 26,
+          prob: 0.25,
+        },
+      ],
+    };
+
+    const repCapped = archetypeToReport(cappedFaultPlan, null);
+    assert.equal(repCapped.combos[0].cappedClipped, 360_000);
+    assert.equal(repCapped.combos[1].cappedClipped, 0);
+    assert.ok(Math.abs(repCapped.expectedValueRate - 59.9) < 1e-9);
+    const capWarn = repCapped.warnings.find((w: { id: string }) => w.id === 'cap-clip');
+    assert.ok(capWarn, 'Expected cap-clip danger warning when statutory cap clips payout');
+    assert.equal(capWarn.severity, 'danger');
+    assert.ok(capWarn.title.includes('360000'));
+    assert.ok(capWarn.detail.includes('20 万元'));
+  });
+
+  it('Slice B: evaluateQuantWorkspace locks baseline unequal multiples on Three-Mode Bonus Optimization and applies subjectiveDeltaPct, simVoidFirstMatch, [0.02,0.96] clamping & statutory cap clipping', () => {
+    const baseTpl = FALLBACK_MATCHES[0] as MatchItem;
+    const sbM1: MatchItem = {
+      ...baseTpl,
+      id: 't2-sb-m1',
+      matchNumStr: '周二001',
+      home: '曼城',
+      away: '布莱顿',
+      kickoff: '20:00',
+      aiAlert: undefined,
+      pools: {
+        ...baseTpl.pools,
+        HAD: {
+          ...baseTpl.pools.HAD,
+          single: false,
+          selling: true,
+          payoutRatio: 0.88,
+          vig: 0.12,
+          options: [
+            { key: 'h', label: '主胜', odds: 2.0, trend: 0, fairProb: 0.44 },
+            { key: 'd', label: '平', odds: 3.5, trend: 0, fairProb: 0.25 },
+            { key: 'a', label: '客胜', odds: 2.84, trend: 0, fairProb: 0.31 },
+          ],
+        },
+      },
+    };
+    const sbM2: MatchItem = {
+      ...baseTpl,
+      id: 't2-sb-m2',
+      matchNumStr: '周二002',
+      home: '皇马',
+      away: '赫塔费',
+      kickoff: '23:00',
+      aiAlert: undefined,
+      pools: {
+        ...baseTpl.pools,
+        HAD: {
+          ...baseTpl.pools.HAD,
+          single: false,
+          selling: true,
+          payoutRatio: 0.88,
+          vig: 0.12,
+          options: [
+            { key: 'h', label: '主胜', odds: 1.8, trend: 0, fairProb: 0.5 },
+            { key: 'd', label: '平', odds: 3.4, trend: 0, fairProb: 0.26 },
+            { key: 'a', label: '客胜', odds: 3.65, trend: 0, fairProb: 0.24 },
+          ],
+        },
+      },
+    };
+    const matches = [sbM1, sbM2];
+    const picks: SelectedPick[] = [
+      {
+        matchId: sbM1.id,
+        matchNumStr: sbM1.matchNumStr,
+        home: sbM1.home,
+        away: sbM1.away,
+        poolCode: 'HAD',
+        poolName: '胜平负',
+        singleAllowed: false,
+        optionKey: 'h',
+        optionLabel: '主胜',
+        odds: 2.0,
+        fairProb: 0.44,
+      },
+      {
+        matchId: sbM1.id,
+        matchNumStr: sbM1.matchNumStr,
+        home: sbM1.home,
+        away: sbM1.away,
+        poolCode: 'HAD',
+        poolName: '胜平负',
+        singleAllowed: false,
+        optionKey: 'd',
+        optionLabel: '平',
+        odds: 3.5,
+        fairProb: 0.25,
+      },
+      {
+        matchId: sbM2.id,
+        matchNumStr: sbM2.matchNumStr,
+        home: sbM2.home,
+        away: sbM2.away,
+        poolCode: 'HAD',
+        poolName: '胜平负',
+        singleAllowed: false,
+        optionKey: 'h',
+        optionLabel: '主胜',
+        odds: 1.8,
+        fairProb: 0.5,
+      },
+    ];
+
+    // 1. Baseline (0% delta, void = false): multiples = [8, 2], totalCost = 20, exact EV = -20.89%
+    const wsBase = evaluateQuantWorkspace(
+      {
+        picks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'bonus', optMode: 'hot-first', scaleMultiple: 1 },
+        targetIds: [sbM1.id, sbM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      matches
+    );
+    assert.equal(wsBase.effectiveReport.modeLabel, '博热保本·分倍精算');
+    assert.deepEqual(
+      wsBase.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      [8, 2]
+    );
+    assert.equal(wsBase.effectiveReport.totalCost, 20);
+    assert.ok(Math.abs(wsBase.effectiveReport.expectedValueRate - -0.2089) < 1e-9);
+    assert.ok(Math.abs(wsBase.subjectiveEVPct - -20.89) < 1e-9);
+
+    // 2. Drag confidence slider to +15%: keeps [8, 2] & modeLabel '博热保本·分倍精算', EV jumps to +4.622975%!
+    const wsPlus15 = evaluateQuantWorkspace(
+      {
+        picks,
+        multiple: 5,
+        subjectiveDeltaPct: 15,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'bonus', optMode: 'hot-first', scaleMultiple: 1 },
+        targetIds: [sbM1.id, sbM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      matches
+    );
+    assert.equal(wsPlus15.effectiveReport.modeLabel, '博热保本·分倍精算');
+    assert.deepEqual(
+      wsPlus15.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      [8, 2]
+    );
+    assert.equal(wsPlus15.effectiveReport.totalCost, 20);
+    assert.ok(Math.abs(wsPlus15.appliedPlan!.lines[0].prob - 0.29095) < 1e-9);
+    assert.ok(Math.abs(wsPlus15.appliedPlan!.lines[1].prob - 0.1653125) < 1e-9);
+    assert.ok(Math.abs(wsPlus15.effectiveReport.expectedValueRate - 0.04622975) < 1e-9);
+    assert.ok(Math.abs(wsPlus15.subjectiveEVPct - 4.622975) < 1e-7);
+
+    // 3. Enable simVoidFirstMatch (first match odds -> 1.0): keeps [8, 2] & cost 20 (does NOT re-optimize!),
+    //    recomputes payouts [28.80, 7.20], flags shield line underwater (7.20 < 20), EV = -63.82%
+    const wsVoid = evaluateQuantWorkspace(
+      {
+        picks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'bonus', optMode: 'hot-first', scaleMultiple: 1 },
+        targetIds: [sbM1.id, sbM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      matches
+    );
+    assert.equal(wsVoid.effectiveReport.modeLabel, '博热保本·分倍精算');
+    assert.deepEqual(
+      wsVoid.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      [8, 2]
+    );
+    assert.deepEqual(
+      wsVoid.appliedPlan!.lines.map((l: { cost: number }) => l.cost),
+      [16, 4]
+    );
+    assert.equal(wsVoid.effectiveReport.totalCost, 20);
+    assert.equal(wsVoid.appliedPlan!.lines[0].legs[0].odds, 1.0);
+    assert.equal(wsVoid.appliedPlan!.lines[0].legs[1].odds, 1.8);
+    assert.equal(wsVoid.appliedPlan!.lines[0].unitPayout, 3.6);
+    assert.equal(wsVoid.appliedPlan!.lines[0].returnPayout, 28.8);
+    assert.equal(wsVoid.appliedPlan!.lines[1].returnPayout, 7.2);
+    assert.equal(wsVoid.effectiveReport.minPayout, 7.2);
+    assert.equal(wsVoid.effectiveReport.maxPayout, 28.8);
+    assert.equal(wsVoid.effectiveReport.underwaterCount, 1);
+    assert.ok(Math.abs(wsVoid.effectiveReport.realProfitProb - 0.22) < 1e-9);
+    assert.ok(Math.abs(wsVoid.effectiveReport.expectedValueRate - -0.6382) < 1e-9);
+    assert.ok(Math.abs(wsVoid.subjectiveEVPct - -63.82) < 1e-7);
+
+    // 4. Combined simVoidFirstMatch + subjectiveDeltaPct (+15%) + scaleMultiple (2x -> [16, 4], cost 40)
+    const wsVoidScaled = evaluateQuantWorkspace(
+      {
+        picks,
+        multiple: 5,
+        subjectiveDeltaPct: 15,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'bonus', optMode: 'hot-first', scaleMultiple: 2 },
+        targetIds: [sbM1.id, sbM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      matches
+    );
+    assert.deepEqual(
+      wsVoidScaled.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      [16, 4]
+    );
+    assert.equal(wsVoidScaled.effectiveReport.totalCost, 40);
+    assert.equal(wsVoidScaled.effectiveReport.minPayout, 14.4);
+    assert.equal(wsVoidScaled.effectiveReport.maxPayout, 57.6);
+    assert.ok(Math.abs(wsVoidScaled.effectiveReport.expectedValueRate - -0.5215195) < 1e-9);
+
+    // 5. Probability [0.02, 0.96] clamping + statutory 200,000 cap clipping & void cap relief
+    const capM1: MatchItem = {
+      ...sbM1,
+      id: 't2-cap-m1',
+      pools: {
+        ...sbM1.pools,
+        CRS: {
+          ...sbM1.pools.CRS,
+          single: true,
+          selling: true,
+          options: [
+            { key: '1:0', label: '1:0', odds: 5.0, trend: 0, fairProb: 0.85 },
+            { key: '3:2', label: '3:2', odds: 400.0, trend: 0, fairProb: 0.01 },
+          ],
+        },
+      },
+    };
+    const capM2: MatchItem = {
+      ...sbM2,
+      id: 't2-cap-m2',
+      pools: {
+        ...sbM2.pools,
+        CRS: {
+          ...sbM2.pools.CRS,
+          single: true,
+          selling: true,
+          options: [{ key: '3:2', label: '3:2', odds: 400.0, trend: 0, fairProb: 0.05 }],
+        },
+      },
+    };
+    const capPicks: SelectedPick[] = [
+      {
+        matchId: capM1.id,
+        matchNumStr: capM1.matchNumStr,
+        home: capM1.home,
+        away: capM1.away,
+        poolCode: 'CRS',
+        poolName: '比分',
+        singleAllowed: true,
+        optionKey: '1:0',
+        optionLabel: '1:0',
+        odds: 5.0,
+        fairProb: 0.85,
+      },
+      {
+        matchId: capM1.id,
+        matchNumStr: capM1.matchNumStr,
+        home: capM1.home,
+        away: capM1.away,
+        poolCode: 'CRS',
+        poolName: '比分',
+        singleAllowed: true,
+        optionKey: '3:2',
+        optionLabel: '3:2',
+        odds: 400.0,
+        fairProb: 0.01,
+      },
+      {
+        matchId: capM2.id,
+        matchNumStr: capM2.matchNumStr,
+        home: capM2.home,
+        away: capM2.away,
+        poolCode: 'CRS',
+        poolName: '比分',
+        singleAllowed: true,
+        optionKey: '3:2',
+        optionLabel: '3:2',
+        odds: 400.0,
+        fairProb: 0.05,
+      },
+    ];
+    const wsCapPlus20 = evaluateQuantWorkspace(
+      {
+        picks: capPicks,
+        multiple: 2,
+        subjectiveDeltaPct: 20,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'bonus', optMode: 'cold-first', scaleMultiple: 1 },
+        targetIds: [capM1.id, capM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      [capM1, capM2]
+    );
+    // 0.85 * 1.20 = 1.02 -> clamped to 0.96; 0.01 * 1.20 = 0.012 -> clamped to 0.02
+    const hotLine = wsCapPlus20.appliedPlan!.lines.find((l: { legs: Array<{ optionKey: string }> }) => l.legs[0].optionKey === '1:0')!;
+    const coldLine = wsCapPlus20.appliedPlan!.lines.find((l: { legs: Array<{ optionKey: string }> }) => l.legs[0].optionKey === '3:2')!;
+    assert.equal(hotLine.legs[0].fairProb, 0.96);
+    assert.equal(coldLine.legs[0].fairProb, 0.02);
+    assert.equal(coldLine.unitPayout, 200_000);
+    const coldCombo = wsCapPlus20.effectiveReport.combos.find((c: { id: string }) => c.id === coldLine.id)!;
+    assert.equal(coldCombo.cappedClipped, 120_000 * coldLine.multiple);
+    assert.equal(
+      wsCapPlus20.allWarnings.some((w: { id: string; severity: string }) => w.id === 'cap-clip' && w.severity === 'danger'),
+      true
+    );
+
+    // Voiding capM1 drops 400 * 400 -> 1.0 * 400 (unitPayout 800), eliminating cap clipping!
+    const wsCapVoid = evaluateQuantWorkspace(
+      {
+        picks: capPicks,
+        multiple: 2,
+        subjectiveDeltaPct: 20,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'bonus', optMode: 'cold-first', scaleMultiple: 1 },
+        targetIds: [capM1.id, capM2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      [capM1, capM2]
+    );
+    const coldComboVoid = wsCapVoid.effectiveReport.combos.find((c: { id: string }) => c.id === coldLine.id)!;
+    assert.equal(coldComboVoid.unitPayout, 800);
+    assert.equal(coldComboVoid.cappedClipped, 0);
+    assert.equal(
+      wsCapVoid.allWarnings.some((w: { id: string; severity: string }) => w.id === 'cap-clip' && w.severity === 'danger'),
+      false
+    );
+  });
+
+  it('Slice C: evaluateQuantWorkspace applies sandbox to Five Archetypes (spear-shield, fault-tolerant missOneReturn/maxReturn, and GB/T 8170 half-even rounding on voided snapshotPlan)', () => {
+    const m1 = FALLBACK_MATCHES[0] as MatchItem;
+    const m2 = FALLBACK_MATCHES[1] as MatchItem;
+
+    // 1. Five Archetypes spear-shield: keeps modeLabel & unequal multiples across +15% slider and first-match void
+    const wsSpearBase = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', scaleMultiple: 2 },
+        targetIds: [m1.id, m2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.equal(wsSpearBase.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    const spearBaseMults = wsSpearBase.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple);
+    const spearBaseCost = wsSpearBase.appliedPlan!.totalCost;
+    assert.ok(spearBaseMults.length >= 2);
+
+    const wsSpearPlus15 = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 15,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', scaleMultiple: 2 },
+        targetIds: [m1.id, m2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.equal(wsSpearPlus15.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    assert.deepEqual(
+      wsSpearPlus15.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      spearBaseMults
+    );
+    assert.equal(wsSpearPlus15.effectiveReport.totalCost, spearBaseCost);
+    assert.ok(wsSpearPlus15.subjectiveEVPct > wsSpearBase.subjectiveEVPct + 15);
+    assert.ok(
+      Math.abs(wsSpearPlus15.subjectiveEVPct - wsSpearPlus15.effectiveReport.expectedValueRate * 100) < 1e-9
+    );
+
+    const wsSpearVoid = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'archetype', key: 'spear-shield', scaleMultiple: 2 },
+        targetIds: [m1.id, m2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.equal(wsSpearVoid.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    assert.deepEqual(
+      wsSpearVoid.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
+      spearBaseMults
+    );
+    const spearFirstMid = wsSpearBase.appliedPlan!.lines[0].legs[0].matchId;
+    for (const line of wsSpearVoid.appliedPlan!.lines) {
+      for (const leg of line.legs) {
+        if (leg.matchId === spearFirstMid) {
+          assert.equal(leg.odds, 1.0);
+        }
+      }
+    }
+    assert.ok(wsSpearVoid.effectiveReport.maxPayout < wsSpearBase.effectiveReport.maxPayout);
+
+    // 2. 5-match fault-tolerant archetype: updates missOneReturn (from 2串1 pairs), stacked maxReturn, and ensures likelyRange[0] >= minPayout
+    const fiveTargets = [0, 1, 2, 3, 4].map((idx) => {
+      const tpl = FALLBACK_MATCHES[idx] as MatchItem;
+      const favOdds = idx === 0 ? 8.0 : 1.25;
+      const favProb = idx === 0 ? 0.4 : 0.65;
+      return {
+        ...tpl,
+        id: `t2-ft5-${idx}`,
+        matchNumStr: `周三00${idx + 1}`,
+        pools: {
+          ...tpl.pools,
+          HAD: {
+            ...tpl.pools.HAD,
+            selling: true,
+            single: true,
+            options: [
+              { key: 'h', label: '主胜', odds: favOdds, trend: 0, fairProb: favProb },
+              { key: 'd', label: '平', odds: 3.6, trend: 0, fairProb: (1 - favProb) / 2 },
+              { key: 'a', label: '客胜', odds: 4.2, trend: 0, fairProb: (1 - favProb) / 2 },
+            ],
+          },
+        },
+      } as MatchItem;
+    });
+
+    const wsFault5Void = evaluateQuantWorkspace(
+      {
+        picks: [
+          {
+            matchId: fiveTargets[0].id,
+            matchNumStr: fiveTargets[0].matchNumStr,
+            home: fiveTargets[0].home,
+            away: fiveTargets[0].away,
+            poolCode: 'HAD',
+            poolName: '胜平负',
+            singleAllowed: true,
+            optionKey: 'h',
+            optionLabel: '主胜',
+            odds: 8.0,
+            fairProb: 0.4,
+          },
+        ],
+        multiple: 5,
+        subjectiveDeltaPct: 10,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'archetype', key: 'fault-tolerant', scaleMultiple: 1 },
+        targetIds: fiveTargets.map((x) => x.id),
+        budget: 30,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      fiveTargets
+    );
+    assert.equal(wsFault5Void.effectiveReport.modeLabel, '🧩 容错防爆·分倍精算');
+    const pairLines = wsFault5Void.appliedPlan!.lines.filter(
+      (l: { legs: unknown[] }) => l.legs.length === 2
+    );
+    const fullLine = wsFault5Void.appliedPlan!.lines.find(
+      (l: { legs: unknown[] }) => l.legs.length === 5
+    )!;
+    assert.ok(fullLine.returnPayout < Math.min(...pairLines.map((l: { returnPayout: number }) => l.returnPayout)));
+    assert.equal(
+      wsFault5Void.appliedPlan!.missOneReturn,
+      Math.min(...pairLines.map((l: { returnPayout: number }) => l.returnPayout))
+    );
+    const expectedStackedMax = Number(
+      wsFault5Void.appliedPlan!.lines
+        .reduce((a: number, l: { returnPayout: number }) => a + l.returnPayout, 0)
+        .toFixed(2)
+    );
+    assert.equal(wsFault5Void.appliedPlan!.maxReturn, expectedStackedMax);
+    assert.equal(wsFault5Void.effectiveReport.minPayout, wsFault5Void.appliedPlan!.missOneReturn);
+    assert.equal(wsFault5Void.effectiveReport.maxPayout, expectedStackedMax);
+    assert.ok(
+      wsFault5Void.effectiveReport.likelyRange[0] >= wsFault5Void.effectiveReport.minPayout,
+      `Expected likelyRange[0] (${wsFault5Void.effectiveReport.likelyRange[0]}) >= minPayout (${wsFault5Void.effectiveReport.minPayout})`
+    );
+
+    // 3. Custom snapshotPlan with exact GB/T 8170 half-even rounding on voided first match:
+    //    Line 1: [1.75, 1.15, 1.75] -> void first -> [1.0, 1.15, 1.75] * 2 = 4.025 (2 is EVEN -> 4.02!) * 10x = 40.20
+    //    Line 2: [1.75, 1.35, 1.25] -> void first -> [1.0, 1.35, 1.25] * 2 = 3.375 (7 is ODD  -> 3.38!) * 10x = 33.80
+    const halfEvenSnap: ArchetypePlan = {
+      key: 'spear-shield',
+      shortTab: '🎯 博胆护盾',
+      badge: '🎯 博胆护盾流',
+      title: '银行家舍入腰斩测试',
+      tagline: '四舍六入五成双校验',
+      totalCost: 40,
+      savedCash: 0,
+      minReturn: 59.1,
+      maxReturn: 70.4,
+      winProb: 0.3,
+      profitProb: 0.3,
+      missOneReturn: null,
+      vigPct: 12,
+      reasons: ['GB/T 8170'],
+      lines: [
+        {
+          id: 'he-even',
+          roleLabel: '偶分位舍去',
+          legs: [
+            {
+              matchId: 'he-m1',
+              matchNumStr: '周四001',
+              home: '甲',
+              away: '乙',
+              kickoff: '20:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 1.75,
+              fairProb: 0.5,
+            },
+            {
+              matchId: 'he-m2',
+              matchNumStr: '周四002',
+              home: '丙',
+              away: '丁',
+              kickoff: '21:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 1.15,
+              fairProb: 0.7,
+            },
+            {
+              matchId: 'he-m3',
+              matchNumStr: '周四003',
+              home: '戊',
+              away: '己',
+              kickoff: '22:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 1.75,
+              fairProb: 0.5,
+            },
+          ],
+          modeLabel: '3串1',
+          multiple: 10,
+          cost: 20,
+          unitPayout: 7.04,
+          returnPayout: 70.4,
+          netProfit: 30.4,
+          prob: 0.175,
+        },
+        {
+          id: 'he-odd',
+          roleLabel: '奇分位进一',
+          legs: [
+            {
+              matchId: 'he-m1',
+              matchNumStr: '周四001',
+              home: '甲',
+              away: '乙',
+              kickoff: '20:00',
+              poolCode: 'HAD',
+              poolName: '胜平负',
+              optionKey: 'h',
+              optionLabel: '主胜',
+              odds: 1.75,
+              fairProb: 0.5,
+            },
+            {
+              matchId: 'he-m2',
+              matchNumStr: '周四002',
+              home: '丙',
+              away: '丁',
+              kickoff: '21:00',
+              poolCode: 'HHAD',
+              poolName: '让球(-1)',
+              optionKey: 'hh',
+              optionLabel: '让胜',
+              odds: 1.35,
+              fairProb: 0.5,
+            },
+            {
+              matchId: 'he-m3',
+              matchNumStr: '周四003',
+              home: '戊',
+              away: '己',
+              kickoff: '22:00',
+              poolCode: 'HHAD',
+              poolName: '让球(-1)',
+              optionKey: 'ha',
+              optionLabel: '让负',
+              odds: 1.25,
+              fairProb: 0.5,
+            },
+          ],
+          modeLabel: '3串1',
+          multiple: 10,
+          cost: 20,
+          unitPayout: 5.91,
+          returnPayout: 59.1,
+          netProfit: 19.1,
+          prob: 0.125,
+        },
+      ],
+    };
+
+    const wsHalfEvenVoid = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: true,
+        planSpec: { kind: 'archetype', key: 'spear-shield', snapshotPlan: halfEvenSnap, scaleMultiple: 1 },
+        targetIds: [],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.equal(wsHalfEvenVoid.appliedPlan!.lines[0].unitPayout, 4.02);
+    assert.equal(wsHalfEvenVoid.appliedPlan!.lines[0].returnPayout, 40.2);
+    assert.equal(wsHalfEvenVoid.appliedPlan!.lines[1].unitPayout, 3.38);
+    assert.equal(wsHalfEvenVoid.appliedPlan!.lines[1].returnPayout, 33.8);
+    assert.equal(wsHalfEvenVoid.effectiveReport.underwaterCount, 1); // 33.8 < 40, 40.2 >= 40
   });
 });
