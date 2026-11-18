@@ -39,8 +39,7 @@ trap 'rm -rf "${STAGE_DIR}"' EXIT
 
 cp -R dist "${STAGE_DIR}/dist"
 mkdir -p "${STAGE_DIR}/server"
-cp server/index.mjs "${STAGE_DIR}/server/index.mjs"
-cp server/xiaogaoCore.mjs "${STAGE_DIR}/server/xiaogaoCore.mjs"
+cp server/*.mjs "${STAGE_DIR}/server/"
 cp package.json "${STAGE_DIR}/package.json"
 
 echo "==> [2/5] Fetching fresh China Sports Lottery snapshot seed (if reachable)..."

@@ -6,7 +6,8 @@ import { ComparisonStage } from './studio/ComparisonStage';
 export function App() {
   const qs = new URLSearchParams(window.location.search);
   const skinParam = qs.get('s');
-  const embedded = qs.get('embed') === '1';
+  // Only honor embed=1 when genuinely inside a same-origin showcase iframe
+  const embedded = qs.get('embed') === '1' && window.self !== window.top;
   const [showStage, setShowStage] = useState<boolean>(() => qs.get('stage') === '1');
 
   if (showStage && !embedded) {

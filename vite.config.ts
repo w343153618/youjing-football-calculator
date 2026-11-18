@@ -1,32 +1,45 @@
+import path from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { createXiaoGaoMiddleware } from './server/xiaogaoRouter';
+import { createXiaoGaoService } from './server/xiaogaoCore.mjs';
+import { createSecurityAndQuantGateway } from './server/securityShield.mjs';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiKey = env.OPENCODE_API_KEY || process.env.OPENCODE_API_KEY || '';
+  const xiaogaoService = createXiaoGaoService();
+  const gateway = createSecurityAndQuantGateway({
+    snapshotFile: path.resolve(process.cwd(), 'data/sporttery-snapshot.json'),
+    xiaogaoService,
+    getApiKey: () => apiKey,
+  });
 
   return {
     plugins: [
       react(),
       tailwindcss(),
       {
-        name: 'saodiseng-xiaogao-api',
+        name: 'youjing-security-and-quant-gateway',
         configureServer(server) {
-          server.middlewares.use(createXiaoGaoMiddleware(apiKey));
+          server.middlewares.use(async (req, res, next) => {
+            try {
+              const u = new URL(req.url || '/', 'http://localhost');
+              const handled = await gateway.handleRequest(req, res, u.pathname);
+              if (!handled) next();
+            } catch (err) {
+              next(err);
+            }
+          });
         },
       },
     ],
+    build: {
+      sourcemap: false,
+      minify: 'esbuild',
+    },
     server: {
       port: 5173,
-      proxy: {
-        '/api/sporttery': {
-          target: 'https://webapi.sporttery.cn',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api\/sporttery/, ''),
-        },
-      },
     },
   };
 });

@@ -2,6 +2,16 @@
 
 本项目严格遵循语义化版本（Semantic Versioning）与原子化发布规范，每次线上发布均在服务器保留最近 5 个历史快照支持秒级回滚。
 
+## [v1.2.0] - 2026-11-18
+
+### Added
+- **四层纵深反爬虫、防 AI 读链与反逆向安全架构（`server/securityShield.mjs` + `server/quantEngine.mjs` + `src/security/*`）**：
+  - **边缘反 Reader 迷魂阵与蜜罐封禁**：`robots.txt` 全量屏蔽 60+ 主流 AI 爬虫与网页阅读器；针对豆包（`Doubao` / `Bytespider`）、Jina Reader、Firecrawl、GPTBot、ClaudeBot、`curl` 及无头抓取特征返回 `200 OK` 无害公开赛程时区静态假壳（零暴露真实品牌、说明书或精算术语）；内置隐藏蜜罐路由自动触发爬虫 IP 30 分钟熔断封禁。
+  - **核心精算策略全量上收服务端黑盒**：物理移除前端全部核心算法源码（五流派配单、三模奖金优化、泊松预期进球反推、一球卡盘温度计、四舍六入五成双、早晚场时间差锁利），全部由新加坡服务器内存黑盒闭环计算；前端仅保留纯 TypeScript 类型契约 `src/prototype/quantTypes.ts`。
+  - **动态子密钥派生 + `AES-256-GCM` 密文信封 + 端点绑定防重放签名**：启动时经 `/api/security/bootstrap` 协商会话并经 `SHA-256` 派生独立加密子密钥与消息认证子密钥；全部业务请求与响应均走 `{ iv, d }` 密文，附带路由绑定 `HMAC-SHA256` 与一次性 128-bit `Nonce`，任何抓包重放或跨接口篡改均立即返回 `403` 并触发 IP 熔断。
+  - **前端全量 AST 混淆 + 100% 中文与对象键 `RC4` 加密（`scripts/obfuscate-dist.mjs`）**：构建产物中中文明文字符数为 `0`、生产环境零 SourceMap、皮肤 CSS 自动剥离设计注释、首页静态 HTML 标题脱敏。
+  - **高压防逆向护盾（`src/security/antiReverseShield.ts`）**：拦截右键菜单、`F12`、`Ctrl+Shift+I/J/C`、`Cmd+Option+I/J/C`、`Ctrl+U`、`Ctrl+S` 与页面复制；针对桌面精细指针环境运行连续帧 `debugger` 断点耗时探针与无头指纹检测，触发后立即清空 DOM 并熔断会话令牌（同时避免共享 Wi-Fi/5G 基站 NAT 误伤同事与移动端软键盘误触发）。
+
 ## [v1.1.0] - 2026-11-18
 
 ### Added

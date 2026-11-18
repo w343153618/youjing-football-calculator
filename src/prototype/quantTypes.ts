@@ -1,0 +1,309 @@
+export type PoolCode = 'HAD' | 'HHAD' | 'HAFU' | 'TTG' | 'CRS';
+export type UserStance = 'objective' | 'home-lean' | 'upset-watch';
+export type ArchetypeKey =
+  | 'iron-shield'
+  | 'spear-shield'
+  | 'fault-tolerant'
+  | 'goal-structure'
+  | 'value-assassin';
+export type BonusOptMode = 'equal' | 'hot-first' | 'cold-first';
+
+export interface OddsOption {
+  key: string;
+  label: string;
+  odds: number;
+  trend: -1 | 0 | 1;
+  fairProb: number;
+}
+
+export interface MatchPool {
+  code: PoolCode;
+  name: string;
+  single: boolean;
+  goalLine?: string;
+  payoutRatio: number;
+  vig: number;
+  updateTime: string;
+  options: OddsOption[];
+}
+
+export interface MicroBadge {
+  text: string;
+  tone: 'emerald' | 'amber' | 'rose' | 'sky' | 'purple';
+}
+
+export interface EquivalentArbPickRef {
+  poolCode: PoolCode;
+  optionKey: string;
+}
+
+export interface EquivalentArbItem {
+  matchId: string;
+  title: string;
+  betterChoice: string;
+  worseChoice: string;
+  edgePct: number;
+  detail: string;
+  betterPicks: EquivalentArbPickRef[];
+  worsePicks: EquivalentArbPickRef[];
+  poolCode: PoolCode;
+  optionKey: string;
+}
+
+export interface MatchMicroQuant {
+  homeXG: number;
+  awayXG: number;
+  totalXG: number;
+  oneGoalProb: number;
+  oneGoalShareOfWins: number;
+  cardPanTip: string;
+  topTwoGoals: [string, string, number];
+  halfDrawProb: number;
+  arbitrages: EquivalentArbItem[];
+  steamSignal: string;
+  microBadges: MicroBadge[];
+}
+
+export interface MatchItem {
+  id: string;
+  matchNumStr: string;
+  league: string;
+  kickoff: string;
+  home: string;
+  away: string;
+  homeRank?: string;
+  awayRank?: string;
+  isHot?: boolean;
+  aiAlert?: {
+    level: 'high' | 'medium';
+    tag: string;
+    summary: string;
+    priceInStatus: string;
+    source: string;
+    suggestedDelta?: string;
+  };
+  pools: Record<PoolCode, MatchPool>;
+  microQuant: MatchMicroQuant;
+}
+
+export interface SelectedPick {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  poolCode: PoolCode;
+  poolName: string;
+  singleAllowed: boolean;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  fairProb: number;
+}
+
+export interface ComboRow {
+  id: string;
+  desc: string;
+  legs?: SelectedPick[];
+  prob: number;
+  unitPayout: number;
+  totalPayout: number;
+  cappedClipped: number;
+  netProfit: number;
+  isUnderwater: boolean;
+}
+
+export interface RadarWarning {
+  id: string;
+  severity: 'danger' | 'warn' | 'tip';
+  title: string;
+  detail: string;
+}
+
+export interface TruthReport {
+  matchCount: number;
+  comboCount: number;
+  multiple: number;
+  modeLabel: string;
+  canSingle: boolean;
+  hasSameMatchCrossPoolConflict: boolean;
+  totalCost: number;
+  minPayout: number;
+  maxPayout: number;
+  likelyRange: [number, number];
+  anyWinProb: number;
+  realProfitProb: number;
+  underwaterCount: number;
+  underwaterShareOfWins: number;
+  avgPayoutRatio: number;
+  avgVigLossPer100: number;
+  expectedValueRate: number;
+  dangerScore: number;
+  effectiveOdds: number;
+  breakevenUpgradeCost: number | null;
+  consolidatedTickets: number;
+  syntheticHint: string | null;
+  combos: ComboRow[];
+  warnings: RadarWarning[];
+}
+
+export interface PlanLeg {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  poolCode: PoolCode;
+  poolName: string;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  fairProb: number;
+}
+
+export interface PlanTicketLine {
+  id: string;
+  roleLabel: string;
+  legs: PlanLeg[];
+  modeLabel: string;
+  multiple: number;
+  cost: number;
+  unitPayout: number;
+  returnPayout: number;
+  netProfit: number;
+  prob: number;
+}
+
+export interface ArchetypePlan {
+  key: ArchetypeKey;
+  shortTab: string;
+  badge: string;
+  title: string;
+  tagline: string;
+  totalCost: number;
+  savedCash: number;
+  minReturn: number;
+  maxReturn: number;
+  winProb: number;
+  profitProb: number;
+  missOneReturn: number | null;
+  vigPct: number;
+  reasons: string[];
+  lines: PlanTicketLine[];
+}
+
+export interface StaggeredHedgePlan {
+  available: boolean;
+  gapMinutes: number;
+  gapText: string;
+  earlyMatchTitle: string;
+  lateMatchTitle: string;
+  earlyKickoff: string;
+  lateKickoff: string;
+  oppositeLabel: string;
+  oppositeOdds: number;
+  hedgeCost: number;
+  lockedNetProfit: number;
+  reason: string;
+}
+
+export interface WeakestLinkTip {
+  matchId: string;
+  matchTitle: string;
+  currentProfitProb: number;
+  afterRemoveProfitProb: number;
+  message: string;
+}
+
+export interface ProOrderInsights {
+  hedge: StaggeredHedgePlan;
+  weakestLink: WeakestLinkTip | null;
+  fiveLossStreakProb: number;
+  recommendedBankrollPct: number;
+  activeSwapTip: EquivalentArbItem | null;
+}
+
+export type AppliedPlanSpec =
+  | null
+  | { kind: 'bonus'; optMode: BonusOptMode }
+  | { kind: 'archetype'; key: ArchetypeKey; snapshotPlan?: ArchetypePlan };
+
+export interface QuantWorkspaceParams {
+  picks: SelectedPick[];
+  multiple: number;
+  subjectiveDeltaPct: number;
+  simVoidFirstMatch: boolean;
+  planSpec: AppliedPlanSpec;
+  targetIds: string[];
+  budget: number;
+  stance: UserStance;
+  unlockFullAgg: boolean;
+  clientAlerts?: Record<string, NonNullable<MatchItem['aiAlert']>>;
+}
+
+export interface QuantWorkspaceResponse {
+  manualReport: TruthReport;
+  effectiveReport: TruthReport;
+  appliedPlan: ArchetypePlan | null;
+  insights: ProOrderInsights;
+  fivePlans: ArchetypePlan[];
+  subjectiveEVPct: number;
+  allWarnings: RadarWarning[];
+}
+
+export const EMPTY_TRUTH_REPORT: TruthReport = {
+  matchCount: 0,
+  comboCount: 0,
+  multiple: 5,
+  modeLabel: '安全通道初始化中',
+  canSingle: false,
+  hasSameMatchCrossPoolConflict: false,
+  totalCost: 0,
+  minPayout: 0,
+  maxPayout: 0,
+  likelyRange: [0, 0],
+  anyWinProb: 0,
+  realProfitProb: 0,
+  underwaterCount: 0,
+  underwaterShareOfWins: 0,
+  avgPayoutRatio: 0,
+  avgVigLossPer100: 0,
+  expectedValueRate: 0,
+  dangerScore: 0,
+  effectiveOdds: 0,
+  breakevenUpgradeCost: null,
+  consolidatedTickets: 0,
+  syntheticHint: null,
+  combos: [],
+  warnings: [],
+};
+
+export const EMPTY_INSIGHTS: ProOrderInsights = {
+  hedge: {
+    available: false,
+    gapMinutes: 0,
+    gapText: '同时间段开球',
+    earlyMatchTitle: '',
+    lateMatchTitle: '',
+    earlyKickoff: '',
+    lateKickoff: '',
+    oppositeLabel: '',
+    oppositeOdds: 1.85,
+    hedgeCost: 0,
+    lockedNetProfit: 0,
+    reason: '需至少选择 2 场且开球时间间隔 ≥ 110 分钟',
+  },
+  weakestLink: null,
+  fiveLossStreakProb: 0,
+  recommendedBankrollPct: 5,
+  activeSwapTip: null,
+};
+
+export const EMPTY_WORKSPACE_RESPONSE: QuantWorkspaceResponse = {
+  manualReport: EMPTY_TRUTH_REPORT,
+  effectiveReport: EMPTY_TRUTH_REPORT,
+  appliedPlan: null,
+  insights: EMPTY_INSIGHTS,
+  fivePlans: [],
+  subjectiveEVPct: 0,
+  allWarnings: [],
+};

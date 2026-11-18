@@ -1,28 +1,25 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
-  FALLBACK_MATCHES,
-  computeTruthReport,
-  syncOfficialMatches,
-  type MatchItem,
-  type PoolCode,
-  type SelectedPick,
-  type TruthReport,
-} from '../prototype/data';
-import {
-  buildXiaoGaoWarnings,
-  requestXiaoGaoDiagnosis,
-} from '../intel/xiaogaoClient';
-import {
-  analyzeMatchMicroQuant,
-  computeProOrderInsights,
-  generateFiveArchetypes,
-  optimizeBonusPlan,
+  EMPTY_WORKSPACE_RESPONSE,
+  type AppliedPlanSpec,
   type ArchetypeKey,
   type ArchetypePlan,
   type BonusOptMode,
   type EquivalentArbItem,
+  type MatchItem,
+  type PoolCode,
+  type QuantWorkspaceParams,
+  type QuantWorkspaceResponse,
+  type SelectedPick,
   type UserStance,
-} from '../prototype/proQuant';
+} from '../prototype/quantTypes';
+import { requestXiaoGaoDiagnosis } from '../intel/xiaogaoClient';
+import {
+  bootstrapSecureWorkspace,
+  requestServerMatchesSync,
+  requestServerQuantCompute,
+} from '../security/secureClient';
+import { initHighPressureAntiReverseShield } from '../security/antiReverseShield';
 import {
   SKINS,
   Spring,
@@ -135,64 +132,6 @@ function makeUnderwaterDemoPicks(matches: MatchItem[]): SelectedPick[] {
   return out;
 }
 
-function archetypeToReport(plan: ArchetypePlan): TruthReport {
-  const matchSet = new Set<string>();
-  plan.lines.forEach((l) => l.legs.forEach((lg) => matchSet.add(lg.matchId)));
-  const combos = plan.lines.map((l) => ({
-    id: l.id,
-    desc:
-      `${l.roleLabel}(${l.multiple}倍) · ` +
-      l.legs.map((g) => `${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`).join('×'),
-    prob: l.prob,
-    unitPayout: l.unitPayout,
-    totalPayout: l.returnPayout,
-    cappedClipped: 0,
-    netProfit: l.netProfit,
-    isUnderwater: l.netProfit < 0 && plan.missOneReturn === null,
-  }));
-
-  const underwaterCombos = combos.filter((c) => c.isUnderwater);
-  const winProbSum = combos.reduce((a, c) => a + c.prob, 0);
-  const underwaterProbSum = underwaterCombos.reduce((a, c) => a + c.prob, 0);
-  const underwaterShareOfWins = winProbSum > 0 ? underwaterProbSum / winProbSum : 0;
-  const computedProfitProb =
-    plan.missOneReturn !== null
-      ? plan.profitProb
-      : Math.min(
-          plan.winProb,
-          combos.filter((c) => c.netProfit >= 0).reduce((a, c) => a + c.prob, 0)
-        );
-  const invUnitSum = combos.reduce((a, c) => a + 2 / Math.max(0.5, c.unitPayout), 0);
-  const harmonicEffOdds = invUnitSum > 0 ? 1 / invUnitSum : 1.5;
-
-  return {
-    matchCount: matchSet.size,
-    comboCount: plan.lines.length,
-    multiple: 1,
-    modeLabel: `${plan.shortTab}·分倍精算`,
-    canSingle: matchSet.size === 1,
-    hasSameMatchCrossPoolConflict: false,
-    totalCost: plan.totalCost,
-    minPayout: plan.missOneReturn ?? plan.minReturn,
-    maxPayout: plan.maxReturn,
-    likelyRange: [plan.minReturn, plan.maxReturn],
-    anyWinProb: plan.winProb,
-    realProfitProb: computedProfitProb,
-    underwaterCount: underwaterCombos.length,
-    underwaterShareOfWins,
-    avgPayoutRatio: (100 - plan.vigPct) / 100,
-    avgVigLossPer100: plan.vigPct,
-    expectedValueRate: -plan.vigPct / 100,
-    dangerScore: plan.key === 'value-assassin' ? 66 : underwaterCombos.length > 0 ? 48 : 29,
-    effectiveOdds: harmonicEffOdds,
-    breakevenUpgradeCost: null,
-    consolidatedTickets: plan.lines.length,
-    syntheticHint: `已启用【${plan.badge}】：${plan.tagline}`,
-    combos,
-    warnings: [],
-  };
-}
-
 export function SkinPhoneApp({
   initialSkin,
   embedded,
@@ -217,20 +156,19 @@ export function SkinPhoneApp({
   const [tab, setTab] = useState<AppTab>('match');
   const [mode, setMode] = useState<MatchMode>('mix');
   const [qFilter, setQFilter] = useState<QuickFilter>('all');
-  const [matches, setMatches] = useState<MatchItem[]>(FALLBACK_MATCHES);
-  const [picks, setPicks] = useState<SelectedPick[]>(() =>
-    makeUnderwaterDemoPicks(FALLBACK_MATCHES)
-  );
-  const [appliedPlan, setAppliedPlan] = useState<ArchetypePlan | null>(null);
+  const [matches, setMatches] = useState<MatchItem[]>([]);
+  const [picks, setPicks] = useState<SelectedPick[]>([]);
+  const [planSpec, setPlanSpec] = useState<AppliedPlanSpec>(null);
+  const [workspace, setWorkspace] = useState<QuantWorkspaceResponse>(EMPTY_WORKSPACE_RESPONSE);
+  const [bootstrapped, setBootstrapped] = useState<boolean>(false);
+  const setAppliedPlan = (_: null) => setPlanSpec(null);
   const [multiple, setMultiple] = useState<number>(5);
   const [syncing, setSyncing] = useState(false);
-  const [syncSummary, setSyncSummary] = useState('已连接体彩实盘快照 · 支持一键刷新官网水位');
+  const [syncSummary, setSyncSummary] = useState('正在建立 AES-256-GCM 加密精算会话...');
   const [syncClock, setSyncClock] = useState('21:05');
 
   // Archetype tab state
-  const [targetIds, setTargetIds] = useState<string[]>(() =>
-    FALLBACK_MATCHES.slice(0, 2).map((m) => m.id)
-  );
+  const [targetIds, setTargetIds] = useState<string[]>([]);
   const [budget, setBudget] = useState<number>(100);
   const [stance, setStance] = useState<UserStance>('objective');
   const [archKey, setArchKey] = useState<ArchetypeKey>('spear-shield');
@@ -288,8 +226,9 @@ export function SkinPhoneApp({
     return () => window.removeEventListener('resize', onResize);
   }, [embedded]);
 
-  // 1. Mount core.css + active skin.css
+  // 1. Mount High-Pressure Anti-Reverse Shield + core.css + active skin.css
   useEffect(() => {
+    initHighPressureAntiReverseShield(embedded);
     ensureGlobalTactileListener();
     setTactileCfg(updateTactileState({ skin }));
 
@@ -345,51 +284,116 @@ export function SkinPhoneApp({
     document.head.appendChild(next);
   };
 
-  // 2. Sync live matches from China Sports Lottery
-  const runOfficialSync = async (toastOnDone = false) => {
-    setSyncing(true);
-    const res = await syncOfficialMatches();
-    setMatches(res.matches);
-    const now = new Date();
-    setSyncClock(
-      `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
-        now.getSeconds()
-      ).padStart(2, '0')}`
-    );
-    setSyncSummary(res.syncNote);
+  const computeSeqRef = useRef<number>(0);
 
-    setTargetIds((prev) => {
-      const valid = res.matches.filter((m) => prev.includes(m.id)).map((m) => m.id);
-      return valid.length >= 1 ? valid : res.matches.slice(0, 2).map((m) => m.id);
-    });
-    setPicks((prev) => {
-      const synced = prev
-        .map((pk) => {
-          const um = res.matches.find(
-            (m) => m.id === pk.matchId || m.matchNumStr === pk.matchNumStr
-          );
-          const uo = um?.pools[pk.poolCode]?.options.find((o) => o.key === pk.optionKey);
-          if (!um || !uo) return null;
-          return {
-            ...pk,
-            matchId: um.id,
-            odds: uo.odds,
-            fairProb: uo.fairProb,
-            singleAllowed: um.pools[pk.poolCode].single,
-          };
-        })
-        .filter((x): x is SelectedPick => x !== null);
-      return synced.length >= 1 ? synced : makeUnderwaterDemoPicks(res.matches);
-    });
-    setSyncing(false);
-    if (toastOnDone) {
-      showSpringToast(layerRef.current, `已同步 ${res.matches.length} 场官网实盘`);
+  const buildWorkspaceParams = (
+    overridePicks?: SelectedPick[],
+    overridePlanSpec?: AppliedPlanSpec
+  ): QuantWorkspaceParams => {
+    const clientAlerts: Record<string, NonNullable<MatchItem['aiAlert']>> = {};
+    for (const m of matches) {
+      if (m.aiAlert) clientAlerts[m.id] = m.aiAlert;
     }
+    return {
+      picks: overridePicks ?? picks,
+      multiple,
+      subjectiveDeltaPct,
+      simVoidFirstMatch,
+      planSpec: overridePlanSpec !== undefined ? overridePlanSpec : planSpec,
+      targetIds,
+      budget,
+      stance,
+      unlockFullAgg,
+      clientAlerts,
+    };
   };
 
+  // 2. Initial 1-RTT Encrypted Handshake + Auto-Retry on Transient Blip
   useEffect(() => {
-    void runOfficialSync(false);
+    let alive = true;
+    (async () => {
+      setSyncing(true);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const boot = await bootstrapSecureWorkspace(attempt > 0);
+          if (!alive) return;
+          document.title = '优竞体育内部专用 · 智能精算与风控工作台';
+          setMatches(boot.matches);
+          setPicks(boot.initialPicks);
+          setTargetIds(boot.matches.slice(0, 2).map((m) => m.id));
+          setWorkspace(boot.workspace);
+          setSyncSummary(boot.syncNote);
+          const now = new Date();
+          setSyncClock(
+            `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
+              now.getSeconds()
+            ).padStart(2, '0')}`
+          );
+          setBootstrapped(true);
+          break;
+        } catch (err) {
+          if (String((err as Error)?.message) === 'Fused') break;
+          if (attempt === 0) {
+            await new Promise((r) => setTimeout(r, 800));
+          } else if (alive) {
+            setSyncSummary('网络波动，请点击右上角同步重试');
+          }
+        }
+      }
+      if (alive) setSyncing(false);
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  const runOfficialSync = async (toastOnDone = false) => {
+    setSyncing(true);
+    try {
+      const res = await requestServerMatchesSync(buildWorkspaceParams());
+      document.title = '优竞体育内部专用 · 智能精算与风控工作台';
+      setMatches(res.matches);
+      setWorkspace(res.workspace);
+      setBootstrapped(true);
+      const now = new Date();
+      setSyncClock(
+        `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
+          now.getSeconds()
+        ).padStart(2, '0')}`
+      );
+      setSyncSummary(res.syncNote);
+      setTargetIds((prev) => {
+        const valid = res.matches.filter((m) => prev.includes(m.id)).map((m) => m.id);
+        return valid.length >= 1 ? valid : res.matches.slice(0, 2).map((m) => m.id);
+      });
+      setPicks((prev) => {
+        const synced = prev
+          .map((pk) => {
+            const um = res.matches.find(
+              (m) => m.id === pk.matchId || m.matchNumStr === pk.matchNumStr
+            );
+            const uo = um?.pools[pk.poolCode]?.options.find((o) => o.key === pk.optionKey);
+            if (!um || !uo) return null;
+            return {
+              ...pk,
+              matchId: um.id,
+              odds: uo.odds,
+              fairProb: uo.fairProb,
+              singleAllowed: um.pools[pk.poolCode].single,
+            };
+          })
+          .filter((x): x is SelectedPick => x !== null);
+        return synced.length >= 1 ? synced : makeUnderwaterDemoPicks(res.matches);
+      });
+      if (toastOnDone) {
+        showSpringToast(layerRef.current, `已加密同步 ${res.matches.length} 场官网实盘`);
+      }
+    } catch {
+      if (toastOnDone) showSpringToast(layerRef.current, '同步繁忙，请稍后再试');
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // 3. Preset Demo Scenarios (restored from web version!)
   const loadPresetScenario = (kind: 'underwater' | 'synthetic' | 'parlay4' | 'hedge2') => {
@@ -462,22 +466,26 @@ export function SkinPhoneApp({
       if (!mEarly || !mLate) return;
       setMultiple(15);
       setPicks(
-        [mEarly, mLate].map((m) => {
-          const o = m.pools.HAD.options[0];
-          return {
-            matchId: m.id,
-            matchNumStr: m.matchNumStr,
-            home: m.home,
-            away: m.away,
-            poolCode: 'HAD' as PoolCode,
-            poolName: m.pools.HAD.name,
-            singleAllowed: m.pools.HAD.single,
-            optionKey: o.key,
-            optionLabel: o.label,
-            odds: o.odds,
-            fairProb: o.fairProb,
-          };
-        })
+        [mEarly, mLate]
+          .map((m): SelectedPick | null => {
+            const pCode: PoolCode = m.pools.HAD.options.length > 0 ? 'HAD' : 'HHAD';
+            const o = m.pools[pCode].options[0];
+            if (!o) return null;
+            return {
+              matchId: m.id,
+              matchNumStr: m.matchNumStr,
+              home: m.home,
+              away: m.away,
+              poolCode: pCode,
+              poolName: m.pools[pCode].name,
+              singleAllowed: m.pools[pCode].single,
+              optionKey: o.key,
+              optionLabel: o.label,
+              odds: o.odds,
+              fairProb: o.fairProb,
+            };
+          })
+          .filter((x): x is SelectedPick => x !== null)
       );
       showSpringToast(layerRef.current, '已载入：早晚场时间差锁利');
       setTab('audit');
@@ -557,7 +565,7 @@ export function SkinPhoneApp({
     }
   }, [tab, mode, qFilter]);
 
-  // 6. Computed Matches, Reports & Sandbox Adjustments
+  // 6. Server Black-Box Quant Sync & Pre-Computed Match Filtering
   const visibleMatches = useMemo(() => {
     const activeLeagues = Object.entries(leagueFilter)
       .filter(([, on]) => on)
@@ -573,61 +581,51 @@ export function SkinPhoneApp({
         Object.values(m.pools).some((p) => p.options.some((o) => o.trend === -1))
       );
     } else if (qFilter === 'arb') {
-      list = list.filter((m) => analyzeMatchMicroQuant(m).arbitrages.length > 0);
+      list = list.filter((m) => (m.microQuant?.arbitrages?.length ?? 0) > 0);
     }
     return list.length > 0 ? list : matches;
   }, [matches, mode, qFilter, leagueFilter]);
 
-  // Apply Sandbox (模拟首场腰斩赔率归 1.0 + 主观胜率信心滑块微调)
-  const sandboxAdjustedPicks = useMemo(() => {
-    const firstMid = picks[0]?.matchId;
-    return picks.map((pk) => {
-      const odds = simVoidFirstMatch && pk.matchId === firstMid ? 1.0 : pk.odds;
-      const prob = Math.min(
-        0.96,
-        Math.max(0.02, pk.fairProb * (1 + subjectiveDeltaPct / 100))
-      );
-      return { ...pk, odds, fairProb: prob };
-    });
-  }, [picks, simVoidFirstMatch, subjectiveDeltaPct]);
-
-  const manualReport = useMemo(
-    () => computeTruthReport(sandboxAdjustedPicks, multiple, matches),
-    [sandboxAdjustedPicks, multiple, matches]
-  );
-
-  const effectiveReport = useMemo(
-    () => (appliedPlan && !simVoidFirstMatch && subjectiveDeltaPct === 0 ? archetypeToReport(appliedPlan) : manualReport),
-    [appliedPlan, manualReport, simVoidFirstMatch, subjectiveDeltaPct]
-  );
-
-  const insights = useMemo(
-    () => computeProOrderInsights(sandboxAdjustedPicks, effectiveReport, matches),
-    [sandboxAdjustedPicks, effectiveReport, matches]
-  );
-
-  const allWarnings = useMemo(
-    () => [...effectiveReport.warnings, ...buildXiaoGaoWarnings(picks, matches)],
-    [effectiveReport.warnings, picks, matches]
-  );
+  useEffect(() => {
+    if (!bootstrapped) return;
+    const seq = ++computeSeqRef.current;
+    const timer = window.setTimeout(() => {
+      void requestServerQuantCompute(buildWorkspaceParams())
+        .then((res) => {
+          if (seq === computeSeqRef.current) {
+            setWorkspace(res);
+          }
+        })
+        .catch(() => {});
+    }, 18);
+    return () => window.clearTimeout(timer);
+  }, [
+    bootstrapped,
+    picks,
+    multiple,
+    subjectiveDeltaPct,
+    simVoidFirstMatch,
+    planSpec,
+    targetIds,
+    budget,
+    stance,
+    unlockFullAgg,
+    matches,
+  ]);
 
   const resolvedTargets = useMemo(() => {
     const found = matches.filter((m) => targetIds.includes(m.id));
     return found.length > 0 ? found : matches.slice(0, 2);
   }, [matches, targetIds]);
 
-  const fivePlans = useMemo(
-    () => generateFiveArchetypes(resolvedTargets, budget, stance, unlockFullAgg),
-    [resolvedTargets, budget, stance, unlockFullAgg]
-  );
+  const manualReport = workspace.manualReport;
+  const effectiveReport = workspace.effectiveReport;
+  const appliedPlan = planSpec ? workspace.appliedPlan : null;
+  const insights = workspace.insights;
+  const allWarnings = workspace.allWarnings;
+  const fivePlans = workspace.fivePlans;
   const currentArch = fivePlans.find((p) => p.key === archKey) ?? fivePlans[0];
-
-  // Subjective EV calculation when slider is moved
-  const subjectiveEVPct = useMemo(() => {
-    if (effectiveReport.totalCost <= 0) return 0;
-    const expRet = effectiveReport.combos.reduce((a, c) => a + c.prob * c.totalPayout, 0);
-    return ((expRet - effectiveReport.totalCost) / effectiveReport.totalCost) * 100;
-  }, [effectiveReport]);
+  const subjectiveEVPct = workspace.subjectiveEVPct;
 
   // 7. Slip Spring Choreography
   useLayoutEffect(() => {
@@ -782,7 +780,7 @@ export function SkinPhoneApp({
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
-    setAppliedPlan(plan);
+    setPlanSpec({ kind: 'archetype', key: plan.key, snapshotPlan: plan });
     setSimVoidFirstMatch(false);
     setSubjectiveDeltaPct(0);
     const map = new Map<string, SelectedPick>();
@@ -812,15 +810,16 @@ export function SkinPhoneApp({
     setTab('audit');
   };
 
-  // 三模智能奖金优化引擎（委托给 proQuant.ts 深模块，保留完整多场串关腿 + 触发流光与琶音触感）
+  // 三模智能奖金优化引擎（委托给服务端加密黑盒运算 + 触发流光与琶音触感）
   const applyBonusOptimization = (optMode: BonusOptMode, triggerEl?: HTMLElement | null) => {
-    const plan = optimizeBonusPlan(manualReport, matches, optMode);
-    if (!plan) return;
-    setAppliedPlan(plan);
+    if (manualReport.combos.length === 0) return;
+    setPlanSpec({ kind: 'bonus', optMode });
     playTactileCue('optimize-arpeggio');
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 22);
-    showSpringToast(layerRef.current, `已启用${plan.shortTab} (¥${plan.totalCost})`);
+    const modeTitle =
+      optMode === 'equal' ? '平均优化' : optMode === 'hot-first' ? '博热保本' : '博冷高弹';
+    showSpringToast(layerRef.current, `已启用 · ${modeTitle}`);
   };
 
   const upgradeToZeroUnderwater = (triggerEl?: HTMLElement | null) => {
@@ -868,7 +867,7 @@ export function SkinPhoneApp({
     setDiagnosingMatchId(m.id);
     playTactileCue('radar-ping');
     try {
-      const mq = analyzeMatchMicroQuant(m);
+      const mq = m.microQuant;
       const alert = await requestXiaoGaoDiagnosis(
         m,
         `${m.home} ${mq.homeXG} : ${mq.awayXG} ${m.away} (总预期${mq.totalXG}球)`,
@@ -971,7 +970,7 @@ export function SkinPhoneApp({
               )}
 
               {visibleMatches.map((m) => {
-                const mq = analyzeMatchMicroQuant(m);
+                const mq = m.microQuant;
                 const extN = extraCountOf(m.id);
                 const crsSelected = picks
                   .filter((p) => p.matchId === m.id && p.poolCode === 'CRS')
@@ -2128,7 +2127,7 @@ export function SkinPhoneApp({
             onClose={() => setSheet(null)}
           >
             {sheetMatch && (() => {
-              const mq = analyzeMatchMicroQuant(sheetMatch);
+              const mq = sheetMatch.microQuant;
               const hP = (sheetMatch.pools.HAD.options[0]?.fairProb ?? 0.45) * 100;
               const dP = (sheetMatch.pools.HAD.options[1]?.fairProb ?? 0.27) * 100;
               const aP = (sheetMatch.pools.HAD.options[2]?.fairProb ?? 0.28) * 100;
@@ -2477,10 +2476,23 @@ export function SkinPhoneApp({
         </div>
   );
 
+  const honeypotTrapNode = (
+    <a
+      href="/internal-export-trap"
+      rel="nofollow"
+      tabIndex={-1}
+      aria-hidden="true"
+      style={{ display: 'none' }}
+    >
+      strategy-dump
+    </a>
+  );
+
   // ==================== DESKTOP WIDE-SCREEN PRO WORKBENCH (>= 960px) ====================
   if (isDesktop && !embedded) {
     return (
       <div className="jz-root">
+        {honeypotTrapNode}
         <div ref={shellRef} className="jz-desktop">
           {/* Desktop Top Command Bar */}
           <header className="dk-topbar">
@@ -2707,6 +2719,7 @@ export function SkinPhoneApp({
   // ==================== MOBILE FULL-BLEED WEB APP (< 960px or embedded) ====================
   return (
     <div className={`jz-root ${embedded ? 'embed' : ''}`}>
+      {honeypotTrapNode}
       <div ref={shellRef} className="shell">
         {/* Fake Status Bar only inside 8-skin showcase iframes */}
         {embedded && (

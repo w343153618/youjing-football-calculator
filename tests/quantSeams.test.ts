@@ -2,20 +2,18 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FALLBACK_MATCHES,
+  analyzeMatchMicroQuant,
   bankerRoundCents,
   bankerRoundParlayUnitPayout,
-  computeTruthReport,
-  statutorySingleBetCap,
-  type MatchItem,
-  type SelectedPick,
-} from '../src/prototype/data.ts';
-import {
-  analyzeMatchMicroQuant,
+  buildXiaoGaoWarnings,
   computeProOrderInsights,
+  computeTruthReport,
+  evaluateQuantWorkspace,
   generateFiveArchetypes,
   optimizeBonusPlan,
-} from '../src/prototype/proQuant.ts';
-import { buildXiaoGaoWarnings } from '../src/intel/xiaogaoClient.ts';
+  statutorySingleBetCap,
+} from '../server/quantEngine.mjs';
+import type { MatchItem, SelectedPick } from '../src/prototype/quantTypes.ts';
 import { createXiaoGaoService } from '../server/xiaogaoCore.mjs';
 
 describe('Seam 1: Official China Sports Lottery Banker Rounding, Statutory Caps & Pure Math Isolation', () => {

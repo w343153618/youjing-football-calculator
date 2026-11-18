@@ -1,4 +1,5 @@
-import type { MatchItem, RadarWarning, SelectedPick } from '../prototype/data.ts';
+import type { MatchItem } from '../prototype/quantTypes';
+import { postEncryptedApi } from '../security/secureClient';
 
 export interface XiaoGaoAlert {
   level: 'high' | 'medium';
@@ -10,32 +11,7 @@ export interface XiaoGaoAlert {
 }
 
 /**
- * 汇总已选场次的「扫地僧小高」独立情报提示（遵循 ADR-0002，与纯数学 computeTruthReport 物理隔离）
- */
-export function buildXiaoGaoWarnings(
-  picks: SelectedPick[],
-  matches: MatchItem[]
-): RadarWarning[] {
-  const matchIds = Array.from(new Set(picks.map((p) => p.matchId)));
-  const out: RadarWarning[] = [];
-  for (const mid of matchIds) {
-    const m = matches.find((x) => x.id === mid);
-    if (!m?.aiAlert) continue;
-    out.push({
-      id: `xiaogao-${m.id}`,
-      severity: m.aiAlert.level === 'high' ? 'danger' : 'warn',
-      title: `🧹 扫地僧小高靶向排雷 · ${m.matchNumStr} ${m.aiAlert.tag}`,
-      detail: `${m.aiAlert.summary}（Price-In 消化度：${m.aiAlert.priceInStatus}${
-        m.aiAlert.suggestedDelta ? ` · ${m.aiAlert.suggestedDelta}` : ''
-      }）`,
-    });
-  }
-  return out;
-}
-
-/**
- * 独立情报参谋客户端（遵循 ADR-0002 与底层数学引擎物理隔离）：
- * 请求服务端「扫地僧小高」实时诊盘接口，不直接污染客观真实隐含概率。
+ * 独立情报参谋加密客户端（遵循 ADR-0002 与底层数学引擎物理隔离，全程走 AES-256-GCM 动态信封）
  */
 export async function requestXiaoGaoDiagnosis(
   m: MatchItem,
@@ -55,30 +31,20 @@ export async function requestXiaoGaoDiagnosis(
     ...m.pools.HHAD.options.filter((o) => o.trend === -1).map((o) => `${o.label}降水`),
   ].join('、');
 
-  const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
-  const base = metaEnv?.BASE_URL || '/';
-  const res = await fetch(`${base}api/xiaogao/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      matchNumStr: m.matchNumStr,
-      league: m.league,
-      kickoff: m.kickoff,
-      home: m.home,
-      away: m.away,
-      hadOdds,
-      hhadOdds,
-      vigSummary,
-      xgSummary: xgText,
-      oneGoalSharePct,
-      droppingTrends,
-      userNote,
-    }),
+  const res = await postEncryptedApi<{ alert: XiaoGaoAlert }>('xiaogao/analyze', {
+    matchId: m.id,
+    matchNumStr: m.matchNumStr,
+    league: m.league,
+    kickoff: m.kickoff,
+    home: m.home,
+    away: m.away,
+    hadOdds,
+    hhadOdds,
+    vigSummary,
+    xgSummary: xgText,
+    oneGoalSharePct,
+    droppingTrends,
+    userNote,
   });
-
-  const json = await res.json();
-  if (!res.ok || !json?.ok || !json?.alert) {
-    throw new Error(json?.error || '扫地僧小高诊盘请求失败');
-  }
-  return json.alert as XiaoGaoAlert;
+  return res.alert;
 }

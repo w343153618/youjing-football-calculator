@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { SKINS } from '../spring/engine';
+import { initHighPressureAntiReverseShield } from '../security/antiReverseShield';
 
 const STAGE_ACTIONS: Array<{ id: string; label: string; cmd: string; value: string | null }> = [
   { id: 'match', label: '赛事', cmd: 'setTab', value: 'match' },
@@ -17,6 +18,10 @@ export function ComparisonStage({ onExitStage }: { onExitStage?: () => void }) {
   const [slowMo, setSlowMo] = useState<boolean>(false);
   const stageRef = useRef<HTMLElement>(null);
   const base = import.meta.env.BASE_URL || '/';
+
+  useEffect(() => {
+    initHighPressureAntiReverseShield(false);
+  }, []);
 
   const broadcast = (msg: { cmd: string; value: unknown }) => {
     const frames = stageRef.current?.querySelectorAll('iframe') ?? [];
