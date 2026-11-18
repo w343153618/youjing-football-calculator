@@ -863,17 +863,6 @@ export function SkinPhoneApp({
   const recordToLedger = (kind: 'live' | 'paper') => {
     const draft = buildCurrentLedgerDraft();
     if (!draft) return;
-    if (kind === 'live' && draft.cost > ledger.dailyRemaining) {
-      shudderDangerElement(auditCockpitRef.current ?? slipRef.current);
-      haptic(20);
-      setStopLossPrompt({
-        draft,
-        dailyLimit: ledger.dailyLimit,
-        dailyRemaining: ledger.dailyRemaining,
-        overBy: Number((draft.cost - ledger.dailyRemaining).toFixed(2)),
-      });
-      return;
-    }
     void submitLedgerEntry(draft, kind, false);
   };
 

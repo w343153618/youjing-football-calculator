@@ -5,11 +5,28 @@ import path from 'node:path';
 const DEFAULT_DAILY_LIMIT = 300;
 const MIN_DAILY_LIMIT = 20;
 const MAX_DAILY_LIMIT = 100_000;
+const MAX_ENTRY_COST = 1_000_000;
+const MAX_PAYOUT = 10_000_000;
+const MAX_BET_COUNT = 100_000;
 const MAX_ENTRIES_PER_USER = 200;
 
 function round2(val) {
-  const n = Number(Number(val || 0).toFixed(2));
+  const raw = Number(val || 0);
+  if (!Number.isFinite(raw)) return 0;
+  const n = Number(raw.toFixed(2));
   return Object.is(n, -0) ? 0 : n;
+}
+
+function clampMoney(raw, maxVal) {
+  const n = Number(raw);
+  if (Number.isNaN(n) || n <= 0) return 0;
+  return round2(Math.min(maxVal, n));
+}
+
+function clampBetCount(raw) {
+  const n = Number(raw);
+  if (Number.isNaN(n) || n < 1) return 1;
+  return Math.max(1, Math.min(MAX_BET_COUNT, Math.round(n)));
 }
 
 function clampDailyLimit(raw) {
@@ -28,10 +45,12 @@ function sanitizeEntry(raw) {
   const kind = raw.kind === 'paper' ? 'paper' : raw.kind === 'live' ? 'live' : null;
   if (!kind || typeof raw.id !== 'string') return null;
   const status = ['pending', 'won', 'lost'].includes(raw.status) ? raw.status : 'pending';
-  const cost = kind === 'live' ? round2(Math.max(0, Number(raw.cost) || 0)) : 0;
-  const paperRefCost = kind === 'paper' ? round2(Math.max(0, Number(raw.paperRefCost) || 0)) : 0;
+  const cost = kind === 'live' ? clampMoney(raw.cost, MAX_ENTRY_COST) : 0;
+  const paperRefCost = kind === 'paper' ? clampMoney(raw.paperRefCost, MAX_ENTRY_COST) : 0;
   const settledReturn =
-    kind === 'live' && status === 'won' ? round2(Math.max(0, Number(raw.settledReturn) || 0)) : 0;
+    kind === 'live' && status === 'won' ? clampMoney(raw.settledReturn, MAX_PAYOUT) : 0;
+  const minPayout = clampMoney(raw.minPayout, MAX_PAYOUT);
+  const maxPayout = Math.max(minPayout, clampMoney(raw.maxPayout, MAX_PAYOUT));
   const netProfit =
     kind === 'live'
       ? status === 'won'
@@ -45,11 +64,11 @@ function sanitizeEntry(raw) {
     kind,
     title: String(raw.title || '方案').slice(0, 120),
     modeLabel: String(raw.modeLabel || '方案').slice(0, 40),
-    betCount: Math.max(1, Math.round(Number(raw.betCount) || 1)),
+    betCount: clampBetCount(raw.betCount),
     cost,
     paperRefCost,
-    minPayout: round2(Math.max(0, Number(raw.minPayout) || 0)),
-    maxPayout: round2(Math.max(0, Number(raw.maxPayout) || 0)),
+    minPayout,
+    maxPayout,
     status,
     settledReturn,
     netProfit,
@@ -231,28 +250,22 @@ export function createLedgerManager(opts = {}) {
         }
       }
 
-      const cost = kind === 'live' ? round2(Math.min(1_000_000, rawCost)) : 0;
+      const cost = kind === 'live' ? clampMoney(rawCost, MAX_ENTRY_COST) : 0;
       const paperRefCost =
         kind === 'paper'
-          ? round2(
-              Math.max(
-                0,
-                Number.isFinite(rawPaperRef) && rawPaperRef > 0
-                  ? rawPaperRef
-                  : Number.isFinite(rawCost) && rawCost > 0
-                    ? rawCost
-                    : 0
-              )
+          ? clampMoney(
+              !Number.isNaN(rawPaperRef) && rawPaperRef > 0 ? rawPaperRef : rawCost,
+              MAX_ENTRY_COST
             )
           : 0;
-      const betCount = Math.max(1, Math.min(100_000, Math.round(Number(payload?.betCount) || 1)));
+      const betCount = clampBetCount(payload?.betCount);
       const modeLabel = String(payload?.modeLabel || '方案').trim().slice(0, 40) || '方案';
       const title =
         String(payload?.title || `${modeLabel} · ${betCount}注方案`)
           .trim()
           .slice(0, 120) || `${modeLabel} · ${betCount}注方案`;
-      const minPayout = round2(Math.max(0, Number(payload?.minPayout) || 0));
-      const maxPayout = round2(Math.max(minPayout, Number(payload?.maxPayout) || 0));
+      const minPayout = clampMoney(payload?.minPayout, MAX_PAYOUT);
+      const maxPayout = Math.max(minPayout, clampMoney(payload?.maxPayout, MAX_PAYOUT));
 
       const entry = {
         id: `ldg_${now}_${crypto.randomBytes(4).toString('hex')}`,

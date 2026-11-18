@@ -3080,9 +3080,107 @@ function resolveComplementaryLateHedge(late, latePicks) {
       };
 }
 
+function extractPlanEffectivePicks(appliedPlan) {
+  if (!Array.isArray(appliedPlan?.lines) || appliedPlan.lines.length === 0) return null;
+  const byKey = new Map();
+  for (const l of appliedPlan.lines) {
+    for (const lg of l.legs || []) {
+      const k = `${lg.matchId}-${lg.poolCode}-${lg.optionKey}`;
+      if (!byKey.has(k)) {
+        byKey.set(k, {
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr,
+          home: lg.home,
+          away: lg.away,
+          poolCode: lg.poolCode,
+          poolName: lg.poolName,
+          singleAllowed: true,
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+          fairProb: lg.fairProb,
+        });
+      }
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+function validatePlanLateHedgeConsistency(appliedPlan, late) {
+  if (!Array.isArray(appliedPlan?.lines) || appliedPlan.lines.length === 0) {
+    return { ok: true, latePicks: null };
+  }
+  const lateLines = appliedPlan.lines.filter(
+    (l) => Array.isArray(l.legs) && l.legs.some((g) => g.matchId === late.id)
+  );
+  if (lateLines.length === 0) {
+    return {
+      ok: false,
+      reason: `当前分倍方案未包含末场 ${late.matchNumStr} 串关实票，无法执行末场补单锁利`,
+    };
+  }
+  const latePoolSet = new Set();
+  const latePickMap = new Map();
+  const earlySigToLateOpts = new Map();
+
+  for (const l of lateLines) {
+    const earlySig = l.legs
+      .filter((g) => g.matchId !== late.id)
+      .map((g) => `${g.matchId}:${g.poolCode}:${g.optionKey}`)
+      .sort()
+      .join('|');
+    const lateLegs = l.legs.filter((g) => g.matchId === late.id);
+    if (!earlySigToLateOpts.has(earlySig)) {
+      earlySigToLateOpts.set(earlySig, new Set());
+    }
+    const optSet = earlySigToLateOpts.get(earlySig);
+    for (const lg of lateLegs) {
+      latePoolSet.add(lg.poolCode);
+      optSet.add(`${lg.poolCode}:${lg.optionKey}`);
+      const pkKey = `${lg.poolCode}:${lg.optionKey}`;
+      if (!latePickMap.has(pkKey)) {
+        latePickMap.set(pkKey, {
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr,
+          home: lg.home,
+          away: lg.away,
+          poolCode: lg.poolCode,
+          poolName: lg.poolName,
+          singleAllowed: true,
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+          fairProb: lg.fairProb,
+        });
+      }
+    }
+  }
+
+  if (latePoolSet.size > 1) {
+    return {
+      ok: false,
+      reason: `当前分倍方案在末场 ${late.matchNumStr} 混合了跨玩法盘口，无法通过单一反向单 100% 无死角锁利`,
+    };
+  }
+
+  const canonicalOptionSets = Array.from(earlySigToLateOpts.values()).map((s) =>
+    Array.from(s).sort().join(',')
+  );
+  if (new Set(canonicalOptionSets).size > 1) {
+    return {
+      ok: false,
+      reason: `当前分倍方案各注前序赛果对应的末场 ${late.matchNumStr} 持仓不一致，需前序完场确认存活实票后再定向补单`,
+    };
+  }
+
+  return { ok: true, latePicks: Array.from(latePickMap.values()) };
+}
+
 /** 3. 审单细节小 Tips：早晚场时间差对冲锁利 + 串关拖油瓶体检 + 同义省钱替换 + 连黑预警 */
-export function computeProOrderInsights(picks, report, matches) {
-  const matchIds = Array.from(new Set(picks.map((p) => p.matchId)));
+export function computeProOrderInsights(picks, report, matches, appliedPlan = null) {
+  const planPicks = extractPlanEffectivePicks(appliedPlan);
+  const effectivePicks = planPicks && planPicks.length > 0 ? planPicks : picks;
+  const matchIds = Array.from(new Set(effectivePicks.map((p) => p.matchId)));
   const pickedMatches = matchIds
     .map((id) => matches.find((m) => m.id === id))
     .filter(Boolean);
@@ -3154,8 +3252,14 @@ export function computeProOrderInsights(picks, report, matches) {
               : `两场开球仅间隔 ${gap} 分钟（需 ≥ 110 分钟），前场尚未完场，暂无法执行早晚场补单锁利`,
         };
       } else {
-        const latePicks = picks.filter((p) => p.matchId === late.id);
-        const resolved = resolveComplementaryLateHedge(late, latePicks);
+        const planConsistency = validatePlanLateHedgeConsistency(appliedPlan, late);
+        const latePicks =
+          planConsistency.ok && planConsistency.latePicks
+            ? planConsistency.latePicks
+            : effectivePicks.filter((p) => p.matchId === late.id);
+        const resolved = planConsistency.ok
+          ? resolveComplementaryLateHedge(late, latePicks)
+          : { ok: false, reason: planConsistency.reason };
         if (!resolved.ok) {
           hedge = {
             ...hedge,
@@ -3216,7 +3320,7 @@ export function computeProOrderInsights(picks, report, matches) {
   let weakestLink = null;
   if (pickedMatches.length >= 2) {
     const perMatchProb = pickedMatches.map((m) => {
-      const mp = picks.filter((p) => p.matchId === m.id);
+      const mp = effectivePicks.filter((p) => p.matchId === m.id);
       const sumP = Math.min(0.95, mp.reduce((a, x) => a + x.fairProb, 0));
       return { m, sumP };
     });
@@ -3236,7 +3340,7 @@ export function computeProOrderInsights(picks, report, matches) {
 
   let activeSwapTip = null;
   for (const m of pickedMatches) {
-    const mpicks = picks.filter((p) => p.matchId === m.id);
+    const mpicks = effectivePicks.filter((p) => p.matchId === m.id);
     const mq = analyzeMatchMicroQuant(m);
     const matchedArb = mq.arbitrages.find((arb) => {
       const hasAllWorse =
@@ -3527,13 +3631,23 @@ function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjective
   });
 }
 
+function computeLineStatutoryPayout(legOdds, multiple) {
+  const mult = Math.max(1, Math.min(999, Math.round(Number(multiple) || 1)));
+  const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
+  const cap = statutorySingleBetCap(legOdds.length);
+  const unitPayout = Math.min(cap, unitBeforeCap);
+  const cappedClipped = Math.max(0, Number(((unitBeforeCap - unitPayout) * mult).toFixed(2)));
+  const returnPayout = Number((unitPayout * mult).toFixed(2));
+  return { mult, cost: mult * 2, unitBeforeCap, cap, unitPayout, cappedClipped, returnPayout };
+}
+
 function applySandboxToPlan(
   basePlan,
   matches,
   picks,
   simVoidFirstMatch,
   subjectiveDeltaPct,
-  { isArchetype = false, stance = 'objective', manualReport = null } = {}
+  { isArchetype = false, hasFrozenSnapshot = false, stance = 'objective', manualReport = null } = {}
 ) {
   if (!isValidPlanObject(basePlan)) return null;
   const planMatchIds = new Set();
@@ -3542,14 +3656,16 @@ function applySandboxToPlan(
       if (lg?.matchId) planMatchIds.add(lg.matchId);
     }
   }
+  const boardFirstMid = Array.isArray(matches)
+    ? matches.find((m) => planMatchIds.has(m.id))?.id
+    : undefined;
   const firstMid =
-    picks[0]?.matchId && planMatchIds.has(picks[0].matchId)
+    boardFirstMid ??
+    (picks[0]?.matchId && planMatchIds.has(picks[0].matchId)
       ? picks[0].matchId
-      : basePlan.lines[0]?.legs[0]?.matchId;
+      : basePlan.lines[0]?.legs[0]?.matchId);
 
   const lines = basePlan.lines.map((l) => {
-    const mult = Math.max(1, Math.min(999, Math.round(Number(l.multiple) || 1)));
-    const cost = mult * 2;
     const legs = l.legs.map((lg) => {
       const fm = Array.isArray(matches) ? matches.find((x) => x.id === lg.matchId) : null;
       const pool = fm?.pools?.[lg.poolCode];
@@ -3562,11 +3678,13 @@ function applySandboxToPlan(
           : authOpt
             ? authOpt.odds
             : Number(lg.odds) || 1.0;
-      const baseProb = authOpt
-        ? isArchetype
-          ? applyStanceToFairProb(authOpt.fairProb, lg.optionKey, stance)
-          : authOpt.fairProb
-        : Number(lg.fairProb) || 0.25;
+      const baseProb = hasFrozenSnapshot
+        ? Number(lg.fairProb) || (authOpt ? authOpt.fairProb : 0.25)
+        : authOpt
+          ? isArchetype
+            ? applyStanceToFairProb(authOpt.fairProb, lg.optionKey, stance)
+            : authOpt.fairProb
+          : Number(lg.fairProb) || 0.25;
       const odds = simVoidFirstMatch && lg.matchId === firstMid && baseOdds > 0 ? 1.0 : baseOdds;
       const fairProb = Math.min(
         0.96,
@@ -3579,14 +3697,10 @@ function applySandboxToPlan(
       };
     });
     const prob = legs.reduce((acc, it) => acc * it.fairProb, 1);
-    const unitBeforeCap = bankerRoundParlayUnitPayout(legs.map((it) => it.odds));
-    const cap = statutorySingleBetCap(legs.length);
-    const unitPayout = Math.min(cap, unitBeforeCap);
-    const cappedClipped = Math.max(
-      0,
-      Number(((unitBeforeCap - unitPayout) * mult).toFixed(2))
+    const { mult, cost, unitPayout, cappedClipped, returnPayout } = computeLineStatutoryPayout(
+      legs.map((it) => it.odds),
+      l.multiple
     );
-    const returnPayout = Number((unitPayout * mult).toFixed(2));
     return {
       ...l,
       legs,
@@ -3669,13 +3783,14 @@ export function archetypeToReport(plan, fallbackManual) {
   });
   const hasMissOne = typeof plan.missOneReturn === 'number' && Number.isFinite(plan.missOneReturn);
   const combos = plan.lines.map((l) => {
-    const mult = Math.max(1, Number(l.multiple) || 1);
-    const cap = statutorySingleBetCap(l.legs.length);
-    const rawBeforeCap = bankerRoundParlayUnitPayout(l.legs.map((g) => Number(g.odds)));
+    const { mult, cap, unitBeforeCap } = computeLineStatutoryPayout(
+      l.legs.map((g) => Number(g.odds)),
+      l.multiple
+    );
     const effectiveUnit = Math.min(cap, Number(l.unitPayout));
     const derivedClip =
-      rawBeforeCap > cap
-        ? Math.max(0, Number(((rawBeforeCap - effectiveUnit) * mult).toFixed(2)))
+      unitBeforeCap > cap
+        ? Math.max(0, Number(((unitBeforeCap - effectiveUnit) * mult).toFixed(2)))
         : 0;
     const lineClipped =
       typeof l.cappedClipped === 'number' && Number.isFinite(l.cappedClipped) && l.cappedClipped > 0
@@ -3911,7 +4026,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       picks,
       simVoidFirstMatch,
       subjectiveDeltaPct,
-      { isArchetype: true, stance, manualReport }
+      { isArchetype: true, hasFrozenSnapshot: Boolean(validSnap), stance, manualReport }
     );
   }
 
@@ -3919,7 +4034,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     ? archetypeToReport(appliedPlan, manualReport)
     : manualReport;
 
-  const insights = computeProOrderInsights(sandboxAdjustedPicks, effectiveReport, matches);
+  const insights = computeProOrderInsights(sandboxAdjustedPicks, effectiveReport, matches, appliedPlan);
 
   let subjectiveEVPct = 0;
   if (effectiveReport.totalCost > 0) {

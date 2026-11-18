@@ -816,12 +816,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           });
         })
       );
+      const boardIndex = new Map<string, number>();
+      state.matches.forEach((m, idx) => boardIndex.set(m.id, idx));
+      const orderedPicks = Array.from(map.values()).sort((a, b) => {
+        const ia = boardIndex.get(a.matchId) ?? Number.MAX_SAFE_INTEGER;
+        const ib = boardIndex.get(b.matchId) ?? Number.MAX_SAFE_INTEGER;
+        return ia - ib;
+      });
       state = {
         ...state,
         planSpec: { kind: 'archetype', key: plan.key, snapshotPlan: plan, scaleMultiple: 1 },
         simVoidFirstMatch: false,
         subjectiveDeltaPct: 0,
-        picks: Array.from(map.values()),
+        picks: orderedPicks,
       };
       emit();
       void scheduleRefresh();

@@ -399,12 +399,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     inFlightMatchLoad = (async () => {
       try {
         const res = await fetchMatchesFn(snapshotFile);
-        cachedMatches = res.matches.map((nm) => {
-          const existing = cachedMatches.find(
-            (em) => em.id === nm.id || em.matchNumStr === nm.matchNumStr
-          );
-          return existing?.aiAlert && !nm.aiAlert ? { ...nm, aiAlert: existing.aiAlert } : nm;
-        });
+        cachedMatches = res.matches;
         cachedSyncNote = res.syncNote;
         lastMatchFetchAt = nowFn();
         return { matches: cachedMatches, syncNote: cachedSyncNote };

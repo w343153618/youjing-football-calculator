@@ -1,7 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { Readable } from 'node:stream';
 import {
   FALLBACK_MATCHES,
   OFFICIAL_CRS_PAIRS,
@@ -11,8 +13,11 @@ import {
   computeTruthReport,
   evaluateQuantWorkspace,
   fetchOfficialMatchesServer,
+  generateFiveArchetypes,
   parseSportteryRawJson,
 } from '../server/quantEngine.mjs';
+import { createYouJingRuntime } from '../server/runtimeApp.mjs';
+import { createBetSlipController } from '../src/workspace/betSlipController.ts';
 import type {
   ArchetypePlan,
   MatchItem,
@@ -1204,11 +1209,12 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       wsSpearVoid.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
       spearBaseMults
     );
-    const spearFirstMid = wsSpearBase.appliedPlan!.lines[0].legs[0].matchId;
     for (const line of wsSpearVoid.appliedPlan!.lines) {
       for (const leg of line.legs) {
-        if (leg.matchId === spearFirstMid) {
-          assert.equal(leg.odds, 1.0);
+        if (leg.matchId === m1.id) {
+          assert.equal(leg.odds, 1.0, 'First match m1 must be voided to 1.0');
+        } else if (leg.matchId === m2.id) {
+          assert.notEqual(leg.odds, 1.0, 'Second match m2 must retain real odds');
         }
       }
     }
@@ -1437,5 +1443,289 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     assert.equal(wsHalfEvenVoid.appliedPlan!.lines[1].unitPayout, 3.38);
     assert.equal(wsHalfEvenVoid.appliedPlan!.lines[1].returnPayout, 33.8);
     assert.equal(wsHalfEvenVoid.effectiveReport.underwaterCount, 1); // 33.8 < 40, 40.2 >= 40
+  });
+
+  it('Cross-cutting regressions: securityShield live aiAlert purity, first-match void order, snapshotPlan stance lock, and asymmetric appliedPlan hedge guard', async () => {
+    // 1. securityShield ensureMatchesLoaded must NOT graft FALLBACK_MATCHES demo aiAlert onto live 周二002
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yj-0007-shield-'));
+    const liveMatchCollision = parseSportteryRawJson({
+      value: {
+        matchInfoList: [
+          {
+            subMatchList: [
+              {
+                matchId: 2059988,
+                matchNumStr: '周二002',
+                matchDate: '2026-05-12',
+                matchTime: '21:00:00',
+                leagueAbbName: '英冠',
+                homeTeamAbbName: '利兹联',
+                awayTeamAbbName: '伯恩利',
+                had: { h: '2.10', d: '3.20', a: '3.05', single: 1, poolStatus: 'Selling' },
+                hhad: { h: '4.35', d: '3.65', a: '1.58', goalLine: '-1', single: 0, poolStatus: 'Selling' },
+              },
+            ],
+          },
+        ],
+      },
+    })[0];
+    assert.equal(liveMatchCollision.aiAlert, undefined);
+
+    const runtime = createYouJingRuntime({
+      dataDir: tmpDir,
+      enableXiaoGaoProbe: false,
+      fetchMatches: async () => ({
+        matches: [liveMatchCollision],
+        source: 'sporttery-live',
+        syncNote: '已同步中国体彩官网实盘（共 1 场在售竞彩足球）',
+      }),
+    });
+    const prevStorageDesc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const prevFetch = globalThis.fetch;
+    const memStore = new Map<string, string>();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: {
+        getItem: (k: string) => (memStore.has(k) ? memStore.get(k)! : null),
+        setItem: (k: string, v: string) => {
+          memStore.set(k, String(v));
+        },
+        removeItem: (k: string) => {
+          memStore.delete(k);
+        },
+        clear: () => memStore.clear(),
+      },
+    });
+    try {
+      const u = runtime.accountManager.createAccount({
+        username: 'livepure1',
+        password: 'User@2026',
+        durationHours: 48,
+        maxDevices: 2,
+      });
+      assert.ok(u.user.id);
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const uStr = typeof input === 'string' ? input : input instanceof URL ? input.pathname : input.url;
+        const urlPath = uStr.startsWith('http') ? new URL(uStr).pathname : uStr;
+        const hdrs: Record<string, string> = {
+          host: 'localhost:5188',
+          'user-agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+          accept: 'application/json',
+        };
+        if (init?.headers) {
+          for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+            hdrs[k.toLowerCase()] = String(v);
+          }
+        }
+        const bodyBuf = init?.body ? Buffer.from(String(init.body), 'utf8') : Buffer.alloc(0);
+        let code = 200;
+        let respBody = '';
+        const fakeReq = Object.assign(
+          Readable.from(bodyBuf.length > 0 ? [bodyBuf] : []),
+          {
+            method: init?.method || 'GET',
+            url: urlPath,
+            headers: hdrs,
+            socket: { remoteAddress: '198.51.100.77' },
+          }
+        );
+        const fakeRes = {
+          statusCode: 200,
+          setHeader() {},
+          end(c?: string) {
+            code = this.statusCode;
+            respBody = c || '';
+          },
+        };
+        await runtime.gateway.handleRequest(fakeReq as never, fakeRes as never, urlPath);
+        return new Response(respBody, { status: code, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+      const clientMod = (await import(`../src/security/secureClient.ts?purity=${Date.now()}`)) as Record<string, any>;
+      await clientMod.bootstrapSecureWorkspace(true);
+      const loginRes = await clientMod.loginWithPassword('livepure1', 'User@2026');
+      assert.equal(loginRes.matches.length, 1);
+      assert.equal(loginRes.matches[0].matchNumStr, '周二002');
+      assert.equal(
+        loginRes.matches[0].aiAlert,
+        undefined,
+        'Gateway must NOT graft FALLBACK_MATCHES Dortmund aiAlert onto live 周二002'
+      );
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevStorageDesc) {
+        Object.defineProperty(globalThis, 'localStorage', prevStorageDesc);
+      } else {
+        delete (globalThis as Record<string, unknown>).localStorage;
+      }
+      runtime.dispose();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    // 2. betSlipController.applyArchetype & all 5 archetypes void m1 (1st match), NOT m2
+    const m1 = FALLBACK_MATCHES[0] as MatchItem;
+    const m2 = FALLBACK_MATCHES[1] as MatchItem;
+    const fivePlans = generateFiveArchetypes([m1, m2], 100, 'objective', false, []);
+    for (const plan of fivePlans) {
+      const wsVoid = evaluateQuantWorkspace(
+        {
+          picks: [],
+          multiple: 5,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: true,
+          planSpec: { kind: 'archetype', key: plan.key, snapshotPlan: plan, scaleMultiple: 1 },
+          targetIds: [m1.id, m2.id],
+          budget: 100,
+          stance: 'objective',
+          unlockFullAgg: false,
+        },
+        FALLBACK_MATCHES
+      );
+      for (const line of wsVoid.appliedPlan!.lines) {
+        for (const leg of line.legs) {
+          if (leg.matchId === m1.id) {
+            assert.equal(leg.odds, 1.0, `Archetype ${plan.key} must void m1`);
+          } else if (leg.matchId === m2.id) {
+            assert.notEqual(leg.odds, 1.0, `Archetype ${plan.key} must NOT void m2`);
+          }
+        }
+      }
+    }
+
+    const ctrl = createBetSlipController({
+      initialMatches: [m1, m2],
+      initialSyncNote: 'test',
+      evaluateFn: async (params, matches) => evaluateQuantWorkspace(params, matches),
+    });
+    const spearPlan = fivePlans.find((p: { key: string }) => p.key === 'spear-shield')!;
+    ctrl.applyArchetype(spearPlan);
+    assert.equal(ctrl.getState().picks[0].matchId, m1.id);
+
+    // 3. Frozen snapshotPlan preserves leg fairProb even when preview stance changes later
+    const wsObjSnap = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', snapshotPlan: spearPlan, scaleMultiple: 1 },
+        targetIds: [m1.id, m2.id],
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    const wsColdStanceWithObjSnap = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', snapshotPlan: spearPlan, scaleMultiple: 1 },
+        targetIds: [m1.id, m2.id],
+        budget: 100,
+        stance: 'cold',
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.deepEqual(
+      wsColdStanceWithObjSnap.appliedPlan!.lines.map((l: { prob: number }) => l.prob),
+      wsObjSnap.appliedPlan!.lines.map((l: { prob: number }) => l.prob),
+      'Frozen snapshotPlan must not drift when preview stance changes'
+    );
+
+    // 4. Staggered hedge on appliedPlan: works when picks=[] on consistent late pool, blocks cross-pool / asymmetric early legs
+    const earlyM: MatchItem = { ...(FALLBACK_MATCHES[0] as MatchItem), id: '20260512-101', matchNumStr: '周二101', kickoff: '18:00' };
+    const lateM: MatchItem = { ...(FALLBACK_MATCHES[1] as MatchItem), id: '20260512-102', matchNumStr: '周二102', kickoff: '22:00' };
+    const crossPoolSnap: ArchetypePlan = {
+      ...spearPlan,
+      lines: [
+        {
+          id: 'cp-1',
+          roleLabel: '主攻',
+          modeLabel: '2串1',
+          multiple: 5,
+          cost: 10,
+          unitPayout: 6.0,
+          returnPayout: 30,
+          netProfit: 10,
+          prob: 0.25,
+          legs: [
+            { matchId: earlyM.id, matchNumStr: earlyM.matchNumStr, home: earlyM.home, away: earlyM.away, kickoff: earlyM.kickoff, poolCode: 'HAD', poolName: '胜平负', optionKey: 'h', optionLabel: '主胜', odds: 1.5, fairProb: 0.6 },
+            { matchId: lateM.id, matchNumStr: lateM.matchNumStr, home: lateM.home, away: lateM.away, kickoff: lateM.kickoff, poolCode: 'HAD', poolName: '胜平负', optionKey: 'h', optionLabel: '主胜', odds: 2.0, fairProb: 0.45 },
+          ],
+        },
+        {
+          id: 'cp-2',
+          roleLabel: '副攻跨池',
+          modeLabel: '2串1',
+          multiple: 5,
+          cost: 10,
+          unitPayout: 9.0,
+          returnPayout: 45,
+          netProfit: 25,
+          prob: 0.15,
+          legs: [
+            { matchId: earlyM.id, matchNumStr: earlyM.matchNumStr, home: earlyM.home, away: earlyM.away, kickoff: earlyM.kickoff, poolCode: 'HAD', poolName: '胜平负', optionKey: 'h', optionLabel: '主胜', odds: 1.5, fairProb: 0.6 },
+            { matchId: lateM.id, matchNumStr: lateM.matchNumStr, home: lateM.home, away: lateM.away, kickoff: lateM.kickoff, poolCode: 'HHAD', poolName: '让球(-1)', optionKey: 'hd', optionLabel: '让平', odds: 3.4, fairProb: 0.25 },
+          ],
+        },
+      ],
+    };
+    const wsCrossPoolHedge = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', snapshotPlan: crossPoolSnap, scaleMultiple: 1 },
+        targetIds: [earlyM.id, lateM.id],
+        budget: 20,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      [earlyM, lateM]
+    );
+    assert.equal(
+      wsCrossPoolHedge.insights.hedge.available,
+      false,
+      'Cross-pool late legs in appliedPlan must NOT claim zero-blind-spot hedge'
+    );
+
+    const symSnap: ArchetypePlan = {
+      ...crossPoolSnap,
+      lines: [
+        crossPoolSnap.lines[0],
+        {
+          ...crossPoolSnap.lines[1],
+          legs: [
+            crossPoolSnap.lines[1].legs[0],
+            { matchId: lateM.id, matchNumStr: lateM.matchNumStr, home: lateM.home, away: lateM.away, kickoff: lateM.kickoff, poolCode: 'HAD', poolName: '胜平负', optionKey: 'd', optionLabel: '平', odds: 3.3, fairProb: 0.27 },
+          ],
+        },
+      ],
+    };
+    const wsSymHedge = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: 'archetype', key: 'spear-shield', snapshotPlan: symSnap, scaleMultiple: 1 },
+        targetIds: [earlyM.id, lateM.id],
+        budget: 20,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      [earlyM, lateM]
+    );
+    assert.equal(
+      wsSymHedge.insights.hedge.available,
+      true,
+      'Consistent single-pool late legs sharing early anchor must enable hedge even when picks=[]'
+    );
   });
 });

@@ -745,7 +745,31 @@ describe('Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
       const ledgerDbStat = fs.statSync(path.join(tmpDir, 'ledgers-db.json'));
       assert.equal(ledgerDbStat.mode & 0o777, 0o600);
 
-      // Verify SkinPhoneApp.tsx has removed hardcoded fake ledger items & static percentages
+      // Tampered numeric overflow inputs (e.g. 1e400 -> Infinity) must be clamped to finite bounds
+      const overflowRes = runtime.ledgerManager.mutateUserLedger(u2.user.id, {
+        action: 'add-entry',
+        kind: 'paper',
+        title: '极端数值篡改测试',
+        modeLabel: '2串1',
+        betCount: 1e400,
+        paperRefCost: 1e400,
+        minPayout: 1e400,
+        maxPayout: 1e400,
+      });
+      assert.equal(overflowRes.ok, true);
+      assert.equal(Number.isFinite(overflowRes.entry.paperRefCost), true);
+      assert.ok(overflowRes.entry.paperRefCost <= 1_000_000);
+      assert.equal(Number.isFinite(overflowRes.entry.minPayout), true);
+      assert.ok(overflowRes.entry.minPayout <= 10_000_000);
+      assert.equal(Number.isFinite(overflowRes.entry.maxPayout), true);
+      assert.ok(overflowRes.entry.maxPayout <= 10_000_000);
+      const reparsed = JSON.parse(JSON.stringify(overflowRes.entry));
+      assert.equal(reparsed.paperRefCost, 1_000_000);
+      assert.equal(reparsed.minPayout, 10_000_000);
+      assert.equal(reparsed.maxPayout, 10_000_000);
+      assert.equal(reparsed.betCount, 100_000);
+
+      // Verify SkinPhoneApp.tsx has removed hardcoded fake ledger items, static percentages & stale pre-midnight guard
       const skinAppSrc = fs.readFileSync(
         path.resolve(process.cwd(), 'src/mobile/SkinPhoneApp.tsx'),
         'utf8'
@@ -756,6 +780,11 @@ describe('Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
         skinAppSrc.includes('高危转0成本模拟单'),
         false,
         'Hardcoded fake ledger item l2 must be removed'
+      );
+      assert.equal(
+        skinAppSrc.includes('draft.cost > ledger.dailyRemaining'),
+        false,
+        'recordToLedger must delegate directly to server mutate endpoint so Beijing 00:00 reset is never short-circuited'
       );
     } finally {
       globalThis.fetch = prevFetch;
