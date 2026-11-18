@@ -10,15 +10,21 @@ import {
 } from '../prototype/quantTypes';
 import {
   bootstrapSecureWorkspace,
+  createEmptyLedgerSnapshot,
   logoutSession,
+  mutateServerLedger,
+  readCachedUserLedger,
   readPersistedWechatAuth,
   registerAuthRevokedHandler,
   requestServerMatchesSync,
   requestServerQuantCompute,
   requestXiaoGaoComboDiagnosis,
   requestXiaoGaoDiagnosis,
+  writeCachedUserLedger,
   type AuthenticatedWorkspaceBundle,
+  type LedgerEntry,
   type PublicAccountUser,
+  type UserLedgerSnapshot,
   type XiaoGaoComboReport,
 } from '../security/secureClient';
 import {
@@ -87,6 +93,23 @@ const MODE_OPTS: Array<[MatchMode, string]> = [
   ['single', '单关'],
 ];
 
+interface LedgerDraftPayload {
+  title: string;
+  modeLabel: string;
+  betCount: number;
+  cost: number;
+  paperRefCost: number;
+  minPayout: number;
+  maxPayout: number;
+}
+
+interface StopLossInterceptState {
+  draft: LedgerDraftPayload;
+  dailyLimit: number;
+  dailyRemaining: number;
+  overBy: number;
+}
+
 const ARCH_OPTS: Array<[ArchetypeKey, string]> = [
   ['iron-shield', '铁盾'],
   ['spear-shield', '博胆'],
@@ -126,14 +149,17 @@ export function SkinPhoneApp({
   const [archKey, setArchKey] = useState<ArchetypeKey>('spear-shield');
   const [simHedgeHit, setSimHedgeHit] = useState(true);
 
-  // Ledger state
-  const [dailyRemain, setDailyRemain] = useState(300);
-  const [ledgerItems, setLedgerItems] = useState<
-    Array<{ id: string; kind: 'live' | 'paper'; title: string; cost: number; tag: string }>
-  >([
-    { id: 'l1', kind: 'live', title: '2串1 · 博胆护盾分倍3张', cost: 100, tag: '+¥82.40' },
-    { id: 'l2', kind: 'paper', title: '4串1 · 高危转0成本模拟单', cost: 0, tag: '免损¥120' },
-  ]);
+  // Encrypted per-member dual-track stop-loss ledger state (with per-user localStorage offline fallback)
+  const [ledger, setLedger] = useState<UserLedgerSnapshot>(() => {
+    const initUid = readPersistedWechatAuth()?.cachedUser?.id;
+    return (initUid ? readCachedUserLedger(initUid) : null) ?? createEmptyLedgerSnapshot();
+  });
+  const [ledgerBusy, setLedgerBusy] = useState<boolean>(false);
+  const [editingLimit, setEditingLimit] = useState<boolean>(false);
+  const [limitDraft, setLimitDraft] = useState<string>('300');
+  const [stopLossPrompt, setStopLossPrompt] = useState<StopLossInterceptState | null>(null);
+  const [wonPromptEntryId, setWonPromptEntryId] = useState<string | null>(null);
+  const [wonPayoutDraft, setWonPayoutDraft] = useState<string>('');
 
   // Auth & Hidden Super-Admin Console (2b) + WeChat Offline Resilience state
   const [authUser, setAuthUser] = useState<PublicAccountUser | null>(
@@ -213,7 +239,7 @@ export function SkinPhoneApp({
   const skinLinkRef = useRef<HTMLLinkElement | null>(null);
   const puckSpringRef = useRef<Spring | null>(null);
   const prevAmtRef = useRef<number>(-1);
-  const prevBalRef = useRef<number>(300);
+  const prevBalRef = useRef<number>(ledger.dailyRemaining);
 
   useEffect(() => {
     if (embedded) return;
@@ -280,12 +306,27 @@ export function SkinPhoneApp({
     document.head.appendChild(next);
   };
 
+  const syncLedgerState = (nextLedger: UserLedgerSnapshot, explicitUserId?: string) => {
+    setLedger(nextLedger);
+    const uid = explicitUserId || authUser?.id || readPersistedWechatAuth()?.cachedUser?.id;
+    if (uid) {
+      writeCachedUserLedger(uid, nextLedger);
+    }
+  };
+
   const applyAuthenticatedBundle = (bundle: AuthenticatedWorkspaceBundle) => {
     document.title = '优竞体育内部专用 · 智能精算与风控工作台';
     setAuthUser(bundle.user);
     setAuthChecked(true);
     setAuthNotice(null);
     setOfflineMode(false);
+    const resolvedLedger =
+      bundle.ledger ?? readCachedUserLedger(bundle.user.id) ?? createEmptyLedgerSnapshot();
+    syncLedgerState(resolvedLedger, bundle.user.id);
+    setLimitDraft(String(resolvedLedger.dailyLimit));
+    setStopLossPrompt(null);
+    setEditingLimit(false);
+    setWonPromptEntryId(null);
     betCtrl.applyAuthenticatedBundle(bundle);
     setComboSelectedIds(bundle.matches.slice(0, 3).map((m) => m.id));
     setSyncSummary(bundle.syncNote);
@@ -315,6 +356,10 @@ export function SkinPhoneApp({
     registerAuthRevokedHandler((reason) => {
       if (!alive) return;
       setAuthUser(null);
+      setLedger(createEmptyLedgerSnapshot());
+      setStopLossPrompt(null);
+      setEditingLimit(false);
+      setWonPromptEntryId(null);
       betCtrl.setBootstrapped(false);
       setAuthChecked(true);
       setAuthNotice(reason);
@@ -328,6 +373,7 @@ export function SkinPhoneApp({
           if (!alive) return;
           if (!boot.authenticated) {
             setAuthUser(null);
+            setLedger(createEmptyLedgerSnapshot());
             betCtrl.setBootstrapped(false);
             setAuthChecked(true);
             if (boot.authError) setAuthNotice(boot.authError);
@@ -336,6 +382,10 @@ export function SkinPhoneApp({
           if (isReconnect && hasMatchesRef.current) {
             // Seamless silent reconnect after offline blip without wiping user's in-progress picks!
             setAuthUser(boot.user);
+            if (boot.ledger) {
+              syncLedgerState(boot.ledger, boot.user.id);
+              setLimitDraft(String(boot.ledger.dailyLimit));
+            }
             setOfflineMode(false);
             betCtrl.setBootstrapped(true);
             setSyncSummary(boot.syncNote);
@@ -352,6 +402,11 @@ export function SkinPhoneApp({
             const cached = readPersistedWechatAuth();
             if (cached?.cachedUser) {
               setAuthUser(cached.cachedUser);
+              const cachedLedger = readCachedUserLedger(cached.cachedUser.id);
+              if (cachedLedger) {
+                setLedger(cachedLedger);
+                setLimitDraft(String(cachedLedger.dailyLimit));
+              }
               setOfflineMode(true);
               setAuthChecked(true);
               setSyncSummary('当前网络离线波动 · 已保持长期免登状态，恢复联网后自动无感重连');
@@ -554,12 +609,12 @@ export function SkinPhoneApp({
       animateNumber(
         balValRef.current,
         prevBalRef.current,
-        dailyRemain,
-        (v) => `¥${Math.round(v)}.00`
+        ledger.dailyRemaining,
+        (v) => `¥${v.toFixed(2)}`
       );
-      prevBalRef.current = dailyRemain;
+      prevBalRef.current = ledger.dailyRemaining;
     }
-  }, [tab, isDesktop, embedded, dkRightTab, dailyRemain]);
+  }, [tab, isDesktop, embedded, dkRightTab, ledger.dailyRemaining]);
 
   // Danger shudder when manual underwater count increases
   const prevUwRef = useRef<number>(effectiveReport.underwaterCount);
@@ -723,24 +778,192 @@ export function SkinPhoneApp({
     );
   };
 
-  const recordToLedger = (kind: 'live' | 'paper') => {
-    if (effectiveReport.matchCount === 0) return;
-    const cost = kind === 'live' ? effectiveReport.totalCost : 0;
-    if (kind === 'live') setDailyRemain((r) => Math.max(0, r - cost));
-    setLedgerItems((prev) => [
-      {
-        id: `tk-${Date.now()}`,
+  const buildCurrentLedgerDraft = (): LedgerDraftPayload | null => {
+    if (
+      effectiveReport.matchCount === 0 ||
+      !effectiveReport.canCheckout ||
+      effectiveReport.totalCost <= 0
+    ) {
+      shudderDangerElement(auditCockpitRef.current ?? slipRef.current);
+      haptic(14);
+      showSpringToast(
+        layerRef.current,
+        effectiveReport.ruleBlockReason || '当前方案未满足出票条件，暂无法记入账本'
+      );
+      return null;
+    }
+    const title = appliedPlan
+      ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${appliedPlan.lines.length}张)`
+      : `${effectiveReport.modeLabel} · ${effectiveReport.betCount}注方案`;
+    return {
+      title,
+      modeLabel: effectiveReport.modeLabel,
+      betCount: Math.max(1, effectiveReport.betCount),
+      cost: effectiveReport.totalCost,
+      paperRefCost: effectiveReport.totalCost,
+      minPayout: effectiveReport.minPayout,
+      maxPayout: effectiveReport.maxPayout,
+    };
+  };
+
+  const submitLedgerEntry = async (
+    draft: LedgerDraftPayload,
+    kind: 'live' | 'paper',
+    forceConfirmed = false
+  ) => {
+    if (ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: 'add-entry',
         kind,
-        title: `${effectiveReport.modeLabel} · ${effectiveReport.comboCount}注方案`,
-        cost,
-        tag: kind === 'live' ? `本¥${cost}` : '0成本观察',
-      },
-      ...prev,
-    ]);
-    haptic(14);
-    showSpringToast(layerRef.current, kind === 'live' ? '已记入实买账本' : '已存为模拟观察单');
-    setTab('ledger');
-    setDkRightTab('ledger');
+        title: draft.title,
+        modeLabel: draft.modeLabel,
+        betCount: draft.betCount,
+        cost: kind === 'live' ? draft.cost : 0,
+        paperRefCost: kind === 'paper' ? draft.paperRefCost : undefined,
+        minPayout: draft.minPayout,
+        maxPayout: draft.maxPayout,
+        forceConfirmed,
+      });
+      syncLedgerState(res.ledger);
+      if (!res.ok && res.code === 'STOP_LOSS_EXCEEDED') {
+        shudderDangerElement(auditCockpitRef.current ?? slipRef.current);
+        haptic(20);
+        setStopLossPrompt({
+          draft,
+          dailyLimit: res.dailyLimit,
+          dailyRemaining: res.dailyRemaining,
+          overBy: res.overBy,
+        });
+        return;
+      }
+      setStopLossPrompt(null);
+      haptic(14);
+      playTactileCue(kind === 'paper' ? 'optimize-arpeggio' : 'ticket-stamp');
+      showSpringToast(
+        layerRef.current,
+        kind === 'live'
+          ? `已记入实买账本（本金 ¥${draft.cost}）`
+          : `已存为 0 成本模拟观察单（拟投 ¥${draft.paperRefCost}）`
+      );
+      setTab('ledger');
+      setDkRightTab('ledger');
+    } catch (err) {
+      if (err instanceof TypeError) setOfflineMode(true);
+      showSpringToast(
+        layerRef.current,
+        (err as Error)?.message || '当前网络离线，请恢复连接后再记账'
+      );
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const recordToLedger = (kind: 'live' | 'paper') => {
+    const draft = buildCurrentLedgerDraft();
+    if (!draft) return;
+    if (kind === 'live' && draft.cost > ledger.dailyRemaining) {
+      shudderDangerElement(auditCockpitRef.current ?? slipRef.current);
+      haptic(20);
+      setStopLossPrompt({
+        draft,
+        dailyLimit: ledger.dailyLimit,
+        dailyRemaining: ledger.dailyRemaining,
+        overBy: Number((draft.cost - ledger.dailyRemaining).toFixed(2)),
+      });
+      return;
+    }
+    void submitLedgerEntry(draft, kind, false);
+  };
+
+  const handleSaveDailyLimit = async () => {
+    const parsed = Math.round(Number(limitDraft));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      showSpringToast(layerRef.current, '请输入有效的每日止损上限（¥20 ~ ¥100000）');
+      return;
+    }
+    if (ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: 'set-daily-limit',
+        dailyLimit: parsed,
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        setLimitDraft(String(res.ledger.dailyLimit));
+        setEditingLimit(false);
+        haptic(8);
+        showSpringToast(layerRef.current, `已更新每日止损护栏上限 ¥${res.ledger.dailyLimit}`);
+      }
+    } catch (err) {
+      if (err instanceof TypeError) setOfflineMode(true);
+      showSpringToast(layerRef.current, (err as Error)?.message || '止损上限更新失败');
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const handleSettleEntry = async (
+    entry: LedgerEntry,
+    status: 'pending' | 'won' | 'lost',
+    customReturn?: number
+  ) => {
+    if (ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: 'settle-entry',
+        entryId: entry.id,
+        status,
+        settledReturn: status === 'won' && entry.kind === 'live' ? customReturn : undefined,
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        setWonPromptEntryId(null);
+        haptic(10);
+        if (status === 'won') playTactileCue('defuse-celebrate');
+        const msg =
+          status === 'pending'
+            ? '已重置为待开奖状态'
+            : status === 'won'
+              ? entry.kind === 'live'
+                ? '已结算红单并更新累计净盈亏'
+                : '已标记模拟观察单命中'
+              : entry.kind === 'paper'
+                ? `已标记未中 · 计入累计免损 ¥${entry.paperRefCost.toFixed(0)}`
+                : '已结算黑单并更新累计净盈亏';
+        showSpringToast(layerRef.current, msg);
+      }
+    } catch (err) {
+      if (err instanceof TypeError) setOfflineMode(true);
+      showSpringToast(layerRef.current, (err as Error)?.message || '结算状态更新失败');
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const handleDeleteEntry = async (entryId: string) => {
+    if (ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: 'delete-entry',
+        entryId,
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        if (wonPromptEntryId === entryId) setWonPromptEntryId(null);
+        haptic(8);
+        showSpringToast(layerRef.current, '已删除该条账本记录');
+      }
+    } catch (err) {
+      if (err instanceof TypeError) setOfflineMode(true);
+      showSpringToast(layerRef.current, (err as Error)?.message || '删除账本记录失败');
+    } finally {
+      setLedgerBusy(false);
+    }
   };
 
   const pickedMatchIds = useMemo(
@@ -757,6 +980,10 @@ export function SkinPhoneApp({
   const handleExplicitLogout = async () => {
     await logoutSession();
     setAuthUser(null);
+    setLedger(createEmptyLedgerSnapshot());
+    setStopLossPrompt(null);
+    setEditingLimit(false);
+    setWonPromptEntryId(null);
     betCtrl.setBootstrapped(false);
     setAdminOpen(false);
     setAuthNotice('已安全退出当前账号');
@@ -2228,26 +2455,96 @@ export function SkinPhoneApp({
                   </div>
                 ))}
 
-              {/* Stop-Loss Guardrail Balance */}
+              {/* Daily Stop-Loss Guardrail Balance Card */}
               <div className="card bal enter">
-                <span className="lbl">今日剩余止损护栏额度 (超限建议转模拟单)</span>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                  }}
+                >
+                  <span className="lbl">今日剩余止损护栏额度</span>
+                  <button
+                    type="button"
+                    className="key mini"
+                    data-spring="0.88"
+                    onClick={() => {
+                      setLimitDraft(String(ledger.dailyLimit));
+                      setEditingLimit((v) => !v);
+                    }}
+                  >
+                    {editingLimit ? '收起' : '⚙️ 设上限'}
+                  </button>
+                </div>
                 <span ref={balValRef} className="v num">
-                  ¥{dailyRemain}.00
+                  ¥{ledger.dailyRemaining.toFixed(2)}
                 </span>
+                <div className="small num" style={{ marginTop: 4 }}>
+                  今日已投 ¥{ledger.dailyLiveSpent} / 护栏上限 ¥{ledger.dailyLimit} · 北京时间00:00重置
+                </div>
+                {editingLimit && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10 }}>
+                    <input
+                      type="number"
+                      min={20}
+                      max={100000}
+                      step={10}
+                      value={limitDraft}
+                      onChange={(e) => setLimitDraft(e.target.value)}
+                      placeholder="每日止损上限 (¥20~100000)"
+                      className="ledger-input num"
+                    />
+                    <button
+                      type="button"
+                      className="key mini dark"
+                      disabled={ledgerBusy}
+                      onClick={() => void handleSaveDailyLimit()}
+                    >
+                      保存上限
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Personal Strength/Weakness Checkup */}
+              {/* Real 3-Cell Dynamic Ledger Stats Card */}
               <div className="card stats enter">
                 <div>
-                  <b className="num">+19.4%</b>
-                  <span>2串1博胆舒适区</span>
+                  <b
+                    className="num"
+                    style={{
+                      color:
+                        ledger.stats.liveNetProfit > 0
+                          ? 'var(--good)'
+                          : ledger.stats.liveNetProfit < 0
+                            ? 'var(--live)'
+                            : undefined,
+                    }}
+                  >
+                    {ledger.stats.liveNetProfit > 0
+                      ? `+¥${ledger.stats.liveNetProfit.toFixed(2)}`
+                      : ledger.stats.liveNetProfit < 0
+                        ? `-¥${Math.abs(ledger.stats.liveNetProfit).toFixed(2)}`
+                        : '¥0.00'}
+                  </b>
+                  <span>实买累计净盈亏</span>
                 </div>
                 <div>
-                  <b className="num">-62.0%</b>
-                  <span>4串1长串亏损源</span>
+                  <b className="num">{ledger.stats.liveWinRatePct.toFixed(1)}%</b>
+                  <span>
+                    实买结算红单率 ({ledger.stats.liveWonCount}/{ledger.stats.liveSettledCount})
+                  </span>
                 </div>
                 <div>
-                  <b className="num">¥120</b>
+                  <b
+                    className="num"
+                    style={{
+                      color: ledger.stats.paperSavedAmount > 0 ? 'var(--good)' : undefined,
+                    }}
+                  >
+                    ¥{ledger.stats.paperSavedAmount.toFixed(0)}
+                  </b>
                   <span>模拟单累计免损</span>
                 </div>
               </div>
@@ -2282,19 +2579,159 @@ export function SkinPhoneApp({
                 ))}
               </div>
 
-              {/* Dual-Track Ledger History */}
+              {/* Dual-Track Ledger History & Settlement Closure */}
               <div className="sec-lbl enter">
                 <span>实买真金单 / 0成本模拟单双轨账本</span>
+                <span className="num">共 {ledger.entries.length} 笔</span>
               </div>
-              {ledgerItems.map((it) => (
-                <div key={it.id} className="card opt-row enter">
-                  <div>
-                    <b>{it.title}</b>
-                    <div className="s">{it.kind === 'live' ? '实买真金单' : '0成本防上头模拟观察单'}</div>
+              {ledger.entries.length === 0 ? (
+                <div className="card enter">
+                  <div className="note-box">
+                    暂无账本记录 · 在【审单锁利】台配好方案后点击「<strong>记入实买</strong>」或「
+                    <strong>存模拟单</strong>」，即可按个人账号跨设备加密保存并复盘红黑盈亏。
                   </div>
-                  <span className="r num">{it.tag}</span>
                 </div>
-              ))}
+              ) : (
+                ledger.entries.map((it) => {
+                  const isLive = it.kind === 'live';
+                  const defaultWinReturn =
+                    it.settledReturn > 0
+                      ? it.settledReturn
+                      : it.minPayout > 0
+                        ? it.minPayout
+                        : it.maxPayout > 0
+                          ? it.maxPayout
+                          : it.cost;
+                  let badgeText = '⏳待开奖';
+                  let badgeCls = 'ledger-badge num';
+                  if (it.status === 'won') {
+                    if (isLive) {
+                      badgeText =
+                        it.netProfit >= 0
+                          ? `🔴红单 +¥${it.netProfit.toFixed(2)}`
+                          : `🔴中奖 -¥${Math.abs(it.netProfit).toFixed(2)}`;
+                      badgeCls = `ledger-badge num ${it.netProfit >= 0 ? 'won' : 'lost'}`;
+                    } else {
+                      badgeText = '🎯观察命中';
+                      badgeCls = 'ledger-badge num won';
+                    }
+                  } else if (it.status === 'lost') {
+                    if (isLive) {
+                      badgeText = `⚫黑单 -¥${it.cost.toFixed(2)}`;
+                      badgeCls = 'ledger-badge num lost';
+                    } else {
+                      badgeText = `🛡️未中免损 ¥${it.paperRefCost.toFixed(0)}`;
+                      badgeCls = 'ledger-badge num saved';
+                    }
+                  }
+
+                  return (
+                    <div key={it.id} className="card ledger-entry enter">
+                      <div className="ledger-entry-top">
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <b style={{ fontSize: 13, display: 'block' }}>{it.title}</b>
+                          <div className="small num">
+                            {isLive
+                              ? `实买真金单 · 本金¥${it.cost}${
+                                  it.minPayout > 0
+                                    ? ` · 保底¥${it.minPayout.toFixed(2)}`
+                                    : ''
+                                }${it.settledReturn > 0 ? ` · 实派¥${it.settledReturn.toFixed(2)}` : ''}`
+                              : `0成本模拟观察单 · 拟投¥${it.paperRefCost}`}
+                          </div>
+                        </div>
+                        <span className={badgeCls}>{badgeText}</span>
+                      </div>
+
+                      {isLive && wonPromptEntryId === it.id && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <input
+                            type="number"
+                            min={0.01}
+                            step={0.01}
+                            value={wonPayoutDraft}
+                            onChange={(e) => setWonPayoutDraft(e.target.value)}
+                            placeholder="实际到手派奖金额"
+                            className="ledger-input num"
+                          />
+                          <button
+                            type="button"
+                            className="key mini dark"
+                            disabled={ledgerBusy}
+                            onClick={() => {
+                              const val = Number(wonPayoutDraft);
+                              void handleSettleEntry(
+                                it,
+                                'won',
+                                Number.isFinite(val) && val > 0 ? val : undefined
+                              );
+                            }}
+                          >
+                            确认实派
+                          </button>
+                          <button
+                            type="button"
+                            className="key mini"
+                            onClick={() => setWonPromptEntryId(null)}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="ledger-acts">
+                        <div className="ledger-acts-grp">
+                          <button
+                            type="button"
+                            className={`key mini ${it.status === 'won' ? 'on' : ''}`}
+                            disabled={ledgerBusy}
+                            onClick={() => {
+                              if (isLive) {
+                                if (wonPromptEntryId === it.id) {
+                                  setWonPromptEntryId(null);
+                                } else {
+                                  setWonPayoutDraft(defaultWinReturn.toFixed(2));
+                                  setWonPromptEntryId(it.id);
+                                }
+                              } else {
+                                void handleSettleEntry(it, 'won');
+                              }
+                            }}
+                          >
+                            红单
+                          </button>
+                          <button
+                            type="button"
+                            className={`key mini ${it.status === 'lost' ? 'on' : ''}`}
+                            disabled={ledgerBusy}
+                            onClick={() => void handleSettleEntry(it, 'lost')}
+                          >
+                            黑单
+                          </button>
+                          {it.status !== 'pending' && (
+                            <button
+                              type="button"
+                              className="key mini"
+                              disabled={ledgerBusy}
+                              onClick={() => void handleSettleEntry(it, 'pending')}
+                            >
+                              重置待开
+                            </button>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          className="key mini"
+                          disabled={ledgerBusy}
+                          onClick={() => void handleDeleteEntry(it.id)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
 
               {/* Member Session Continuity Status & Explicit Logout */}
               {authUser && (
@@ -3422,6 +3859,60 @@ export function SkinPhoneApp({
     </div>
   );
 
+  const stopLossModalNode = stopLossPrompt ? (
+    <div className="manual-backdrop" onClick={() => setStopLossPrompt(null)}>
+      <div className="guardrail-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="guardrail-head">
+          <b>🛑 每日止损护栏超限预警</b>
+          <button
+            type="button"
+            className="key mini"
+            onClick={() => setStopLossPrompt(null)}
+          >
+            取消
+          </button>
+        </div>
+        <div className="note-box alert num">
+          当前待记方案【<strong>{stopLossPrompt.draft.title}</strong>】本金{' '}
+          <strong>¥{stopLossPrompt.draft.cost}</strong>，已超出今日剩余止损护栏额度{' '}
+          <strong>¥{stopLossPrompt.dailyRemaining.toFixed(2)}</strong>（单日上限 ¥
+          {stopLossPrompt.dailyLimit} · 超额{' '}
+          <strong>¥{stopLossPrompt.overBy.toFixed(2)}</strong>）。
+        </div>
+        <div className="small" style={{ lineHeight: 1.5 }}>
+          逆风或超额状态下盲目加码极易扩大回撤，建议先转为 0 成本模拟观察单验证判断，若黑单未中将自动计入累计免损金额。
+        </div>
+        <button
+          type="button"
+          className="key dark full"
+          disabled={ledgerBusy}
+          style={{ marginTop: 2 }}
+          onClick={() => void submitLedgerEntry(stopLossPrompt.draft, 'paper', false)}
+        >
+          🛡️ 一键转为 0 成本模拟观察单（防上头推荐）
+        </button>
+        <div className="two">
+          <button
+            type="button"
+            className="key"
+            disabled={ledgerBusy}
+            onClick={() => void submitLedgerEntry(stopLossPrompt.draft, 'live', true)}
+          >
+            ⚠️ 确认超限，仍记入实买
+          </button>
+          <button
+            type="button"
+            className="key"
+            disabled={ledgerBusy}
+            onClick={() => setStopLossPrompt(null)}
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   const honeypotTrapNode = (
     <a
       href="/internal-export-trap"
@@ -3693,6 +4184,7 @@ export function SkinPhoneApp({
           {desktopBetDockNode}
           {betPopoverNode}
           {overlayLayerNode}
+          {stopLossModalNode}
           <UserManualModal
             open={manualOpen}
             initialSection={manualSection}
@@ -4034,6 +4526,7 @@ export function SkinPhoneApp({
         </div>
 
         {overlayLayerNode}
+        {stopLossModalNode}
         <UserManualModal
           open={manualOpen}
           initialSection={manualSection}

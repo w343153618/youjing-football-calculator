@@ -320,6 +320,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
   const snapshotFile = opts.snapshotFile || null;
   const banStoreFile = opts.banStoreFile || null;
   const accountManager = opts.accountManager || null;
+  const ledgerManager = opts.ledgerManager || null;
   const manualQaEngine = opts.manualQaEngine || null;
   const xiaogaoService = opts.xiaogaoService;
   const getApiKey = opts.getApiKey || (() => '');
@@ -952,6 +953,10 @@ export function createSecurityAndQuantGateway(opts = {}) {
                 authenticated: true,
                 user: authRes.user,
                 authToken: rawAuthToken,
+                ledger:
+                  ledgerManager && authRes.user?.id
+                    ? ledgerManager.getUserLedger(authRes.user.id)
+                    : undefined,
                 ...bundle,
               }
             : bundle
@@ -1030,6 +1035,10 @@ export function createSecurityAndQuantGateway(opts = {}) {
             authenticated: true,
             user: loginRes.user,
             authToken: loginRes.authToken,
+            ledger:
+              ledgerManager && loginRes.user?.id
+                ? ledgerManager.getUserLedger(loginRes.user.id)
+                : undefined,
             ...bundle,
           };
         }
@@ -1160,7 +1169,38 @@ export function createSecurityAndQuantGateway(opts = {}) {
               selfAuthToken: data?.userId === user.id ? updated.freshAuthToken : undefined,
             };
           }
-          return accountManager.deleteAccount(data?.userId);
+          const delRes = accountManager.deleteAccount(data?.userId);
+          if (delRes?.ok && ledgerManager && data?.userId) {
+            ledgerManager.deleteUserLedger(String(data.userId));
+          }
+          return delRes;
+        }
+      );
+    }
+
+    // 8f. Encrypted Personal Dual-Track Stop-Loss Ledger (/api/ledger/mutate)
+    if (pathname === '/api/ledger/mutate' && req.method === 'POST') {
+      if (!ledgerManager || !accountManager) {
+        sendJson(res, 404, { ok: false, error: '账本服务暂未启用' });
+        return true;
+      }
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'ledger/mutate',
+          maxBodyBytes: 64_000,
+          requireAuth: true,
+          fallbackError: '账本安全校验失败或会话已过期',
+          onDomainError: (err) => {
+            const msg = String(err?.message || '');
+            const safeMsg = /[\u4e00-\u9fff]/.test(msg) ? msg : '账本操作参数无效';
+            sendJson(res, 400, { ok: false, error: safeMsg });
+          },
+        },
+        async ({ data, user }) => {
+          return ledgerManager.mutateUserLedger(user.id, data || {});
         }
       );
     }

@@ -318,6 +318,7 @@ export function createAccountManager(opts = {}) {
       }
 
       if (acc) {
+        acc.lastFailedIp = ip || acc.lastFailedIp || '';
         acc.failedLoginCount = (acc.failedLoginCount || 0) + 1;
         nextFailCount = acc.failedLoginCount;
         lockWaitMs = calcProgressiveLockMs(nextFailCount);
@@ -356,6 +357,7 @@ export function createAccountManager(opts = {}) {
     // Password matched! Reset account brute-force counter
     acc.failedLoginCount = 0;
     acc.loginLockedUntil = 0;
+    acc.lastFailedIp = '';
 
     if (acc.status === 'locked_violation') {
       return {
@@ -671,7 +673,19 @@ export function createAccountManager(opts = {}) {
     } else if (act === 'unlock-login') {
       acc.failedLoginCount = 0;
       acc.loginLockedUntil = 0;
-      ipBruteMap.clear();
+      const associatedIps = new Set(
+        [
+          acc.lastFailedIp,
+          acc.lastLoginIp,
+          ...(Array.isArray(acc.boundDevices) ? acc.boundDevices.map((d) => d?.lastIp) : []),
+        ]
+          .map((v) => String(v || '').trim())
+          .filter(Boolean)
+      );
+      for (const assocIp of associatedIps) {
+        ipBruteMap.delete(assocIp);
+      }
+      acc.lastFailedIp = '';
       if (acc.status === 'locked_violation') {
         acc.status = 'active';
         acc.lockedReason = null;

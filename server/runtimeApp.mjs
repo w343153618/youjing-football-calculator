@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createXiaoGaoService } from './xiaogaoCore.mjs';
 import { createAccountManager } from './accountManager.mjs';
+import { createLedgerManager } from './ledgerManager.mjs';
 import { createManualQaEngine } from './manualQaEngine.mjs';
 import { createSecurityAndQuantGateway } from './securityShield.mjs';
 
@@ -12,6 +13,7 @@ export function createYouJingRuntime(opts = {}) {
   const snapshotFile = opts.snapshotFile || path.join(dataDir, 'sporttery-snapshot.json');
   const banStoreFile = opts.banStoreFile || path.join(dataDir, 'security-bans.json');
   const accountsFile = opts.accountsFile || path.join(dataDir, 'accounts-db.json');
+  const ledgerFile = opts.ledgerFile || path.join(dataDir, 'ledgers-db.json');
   const adminCredsFile = opts.adminCredsFile || path.join(dataDir, 'admin-credentials.txt');
   const getApiKey =
     typeof opts.getApiKey === 'function'
@@ -30,6 +32,11 @@ export function createYouJingRuntime(opts = {}) {
     nowFn: opts.nowFn,
   });
 
+  const ledgerManager = createLedgerManager({
+    ledgerFile,
+    nowFn: opts.nowFn,
+  });
+
   const manualQaEngine = createManualQaEngine({
     accountManager,
     xiaogaoService,
@@ -41,6 +48,7 @@ export function createYouJingRuntime(opts = {}) {
     snapshotFile,
     banStoreFile,
     accountManager,
+    ledgerManager,
     manualQaEngine,
     xiaogaoService,
     getApiKey,
@@ -54,6 +62,7 @@ export function createYouJingRuntime(opts = {}) {
     dataDir,
     xiaogaoService,
     accountManager,
+    ledgerManager,
     manualQaEngine,
     gateway,
     dispose() {
