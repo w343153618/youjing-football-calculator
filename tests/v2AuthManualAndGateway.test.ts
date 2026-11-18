@@ -300,6 +300,7 @@ describe('Spec 0003: Auth Gate, Hidden Admin 2(b), First-Login Timer, Progressiv
       manualQaEngine: manualQa,
       xiaogaoService: fakeXiaoGao,
       getApiKey: () => 'mock-key',
+      fetchMatches: async () => ({ matches: FALLBACK_MATCHES, syncNote: '测试固定快照' }),
     });
 
     const memberHw = '11112222333344445555666677778888';
@@ -402,7 +403,7 @@ describe('Spec 0003: Auth Gate, Hidden Admin 2(b), First-Login Timer, Progressiv
       gateway,
       memSess,
       'xiaogao/analyze',
-      { matchId: FALLBACK_MATCHES[0].id, home: '中国', away: '巴林' },
+      { matchId: FALLBACK_MATCHES[0].id },
       clock,
       nonceCounter++,
       '198.51.100.77'
@@ -415,8 +416,8 @@ describe('Spec 0003: Auth Gate, Hidden Admin 2(b), First-Login Timer, Progressiv
       memSess,
       'xiaogao/analyze-combo',
       {
-        modeDesc: '3场串关会诊',
-        matches: FALLBACK_MATCHES.slice(0, 3).map((m) => ({ matchId: m.id, home: m.home, away: m.away })),
+        sourceMode: 'custom',
+        matchIds: FALLBACK_MATCHES.slice(0, 3).map((m) => m.id),
       },
       clock,
       nonceCounter++,

@@ -5,13 +5,13 @@ import {
   computeTruthReport,
   evaluateQuantWorkspace,
   parseSportteryRawJson,
-  validateSportteryPickToggle,
 } from '../server/quantEngine.mjs';
 import { createManualQaEngine } from '../server/manualQaEngine.mjs';
+import { createBetSlipController } from '../src/workspace/betSlipController.ts';
 import type { MatchItem, SelectedPick } from '../src/prototype/quantTypes.ts';
 
 describe('Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State Space & Five-Archetype Radar Sync', () => {
-  it('blocks same-match cross-pool parlay selection (e.g. Coritiba HAD win 3.63 + HHAD[+1] draw 3.04) while allowing same-pool multi-select and dual-single lock', () => {
+  it('blocks same-match cross-pool parlay selection (e.g. Coritiba HAD win 3.63 + HHAD[+1] draw 3.04) while allowing same-pool multi-select and dual-single lock', async () => {
     const coritibaMatch: MatchItem = {
       ...FALLBACK_MATCHES[0],
       id: '2042838',
@@ -81,39 +81,27 @@ describe('Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
       fairProb: 0.29,
     };
 
-    // 1. Same-pool double pick (HAD win + HAD draw) is 100% legal
-    const samePoolDraw: SelectedPick = {
-      ...hadWinPick,
-      optionKey: 'd',
-      optionLabel: '平',
-      odds: 3.5,
-      fairProb: 0.25,
-    };
-    const okSamePool = validateSportteryPickToggle(
-      [hadWinPick],
-      samePoolDraw,
+    // 1. Same-pool double pick (HAD win + HAD draw) is 100% legal via real BetSlipController interface
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) => evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
       [coritibaMatch],
-      { mode: 'mix' }
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, [coritibaMatch])
     );
-    assert.equal(okSamePool.allowed, true);
+    assert.equal((await ctrl.togglePick(coritibaMatch, 'HAD', 'h')).ok, true);
+    assert.equal((await ctrl.togglePick(coritibaMatch, 'HAD', 'd')).ok, true);
 
     // 2. Cross-pool pick on Coritiba (HAD win 3.63 -> HHAD[+1] draw 3.04) MUST be blocked in both mix and spf modes!
-    const blockedMix = validateSportteryPickToggle(
-      [hadWinPick],
-      hhadDrawPick,
-      [coritibaMatch],
-      { mode: 'mix' }
-    );
-    assert.equal(blockedMix.allowed, false);
-    assert.equal(blockedMix.code, 'SAME_MATCH_CROSS_POOL');
+    const blockedMix = await ctrl.togglePick(coritibaMatch, 'HHAD', 'hd');
+    assert.equal(blockedMix.ok, false);
+    assert.ok(blockedMix.blockedReason?.includes('同一场比赛只能选择一种玩法'));
 
-    const blockedSpf = validateSportteryPickToggle(
-      [hadWinPick],
-      hhadDrawPick,
-      [coritibaMatch],
-      { mode: 'spf' }
-    );
-    assert.equal(blockedSpf.allowed, false);
+    await ctrl.setMode('spf');
+    const blockedSpf = await ctrl.togglePick(coritibaMatch, 'HHAD', 'hd');
+    assert.equal(blockedSpf.ok, false);
 
     // Server defense-in-depth: forged cross-pool non-single payload cannot checkout (totalCost = 0)
     const forgedRep = computeTruthReport([hadWinPick, hhadDrawPick], 5, [coritibaMatch]);
@@ -129,44 +117,24 @@ describe('Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
     assert.ok(oneNonSingleRep.syntheticHint && oneNonSingleRep.syntheticHint.length > 0);
 
     // 4. Dual-single match (FALLBACK_MATCHES[1] where HAD.single=true & HHAD.single=true):
-    // blocked in 'mix' mode, allowed in 'spf' mode ONLY with forceSingleOnly=true
-    const dualSingleMatch = FALLBACK_MATCHES[1];
-    const sHad: SelectedPick = {
-      matchId: dualSingleMatch.id,
-      matchNumStr: dualSingleMatch.matchNumStr,
-      home: dualSingleMatch.home,
-      away: dualSingleMatch.away,
-      poolCode: 'HAD',
-      poolName: '胜平负',
-      singleAllowed: true,
-      optionKey: 'h',
-      optionLabel: '主胜',
-      odds: 1.36,
-      fairProb: 0.64,
-    };
-    const sHhad: SelectedPick = {
-      matchId: dualSingleMatch.id,
-      matchNumStr: dualSingleMatch.matchNumStr,
-      home: dualSingleMatch.home,
-      away: dualSingleMatch.away,
-      poolCode: 'HHAD',
-      poolName: '让球(-1)',
-      singleAllowed: true,
-      optionKey: 'hd',
-      optionLabel: '让平',
-      odds: 3.3,
-      fairProb: 0.26,
-    };
-    assert.equal(
-      validateSportteryPickToggle([sHad], sHhad, FALLBACK_MATCHES, { mode: 'mix' }).allowed,
-      false
+    // blocked in 'mix' mode, allowed in 'spf' mode ONLY with autoLockedSingleReason='dual-single'
+    const dualSingleMatch = FALLBACK_MATCHES[1] as MatchItem;
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
     );
-    const spfDual = validateSportteryPickToggle([sHad], sHhad, FALLBACK_MATCHES, { mode: 'spf' });
-    assert.equal(spfDual.allowed, true);
-    assert.equal(spfDual.forceSingleOnly, true);
+    await ctrl.setMode('mix');
+    assert.equal((await ctrl.togglePick(dualSingleMatch, 'HAD', 'h')).ok, true);
+    assert.equal((await ctrl.togglePick(dualSingleMatch, 'HHAD', 'hd')).ok, false);
+
+    await ctrl.setMode('spf');
+    const spfDual = await ctrl.togglePick(dualSingleMatch, 'HHAD', 'hd');
+    assert.equal(spfDual.ok, true);
+    assert.equal(spfDual.autoLockedSingleReason, 'dual-single');
   });
 
-  it('parses all 31 official CRS scorelines (including 胜其它/平其它/负其它), respects suspended pools, and caps 4/6/8 parlay legs', () => {
+  it('parses all 31 official CRS scorelines (including 胜其它/平其它/负其它), respects suspended pools, and caps 4/6/8 parlay legs', async () => {
     const crsRaw: Record<string, string> = {
       s01s00: '6.00', s02s00: '7.50', s02s01: '8.00', s03s00: '14.0', s03s01: '15.0', s03s02: '26.0',
       s04s00: '32.0', s04s01: '34.0', s04s02: '55.0', s05s00: '80.0', s05s01: '85.0', s05s02: '120',
@@ -256,31 +224,23 @@ describe('Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
     assert.equal(repCrs6.availableFreePasses.find((p) => p.size === 5)?.enabled, false);
     assert.equal(repCrs6.availableFreePasses.find((p) => p.size === 6)?.enabled, false);
 
-    // 9th match in mix mode is blocked
-    const eightHadPicks: SelectedPick[] = FALLBACK_MATCHES.slice(0, 8).map((m) => {
-      const o = m.pools.HAD.options[0];
-      return {
-        matchId: m.id,
-        matchNumStr: m.matchNumStr,
-        home: m.home,
-        away: m.away,
-        poolCode: 'HAD',
-        poolName: '胜平负',
-        singleAllowed: true,
-        optionKey: o.key,
-        optionLabel: o.label,
-        odds: o.odds,
-        fairProb: o.fairProb,
-      };
+    // 9th match in mix mode is blocked via real BetSlipController interface
+    const ninthMatch: MatchItem = { ...(FALLBACK_MATCHES[0] as MatchItem), id: 'match-9', matchNumStr: '周五009' };
+    const nineMatches = [...(FALLBACK_MATCHES as MatchItem[]), ninthMatch];
+    const ctrl9 = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) => evaluateQuantWorkspace(params, matches),
     });
-    const ninthMatch: MatchItem = { ...FALLBACK_MATCHES[0], id: 'match-9', matchNumStr: '周五009' };
-    const ninthPick: SelectedPick = { ...eightHadPicks[0], matchId: 'match-9', matchNumStr: '周五009' };
-    assert.equal(
-      validateSportteryPickToggle(eightHadPicks, ninthPick, [...FALLBACK_MATCHES, ninthMatch], {
-        mode: 'mix',
-      }).allowed,
-      false
+    ctrl9.initializeMatches(
+      nineMatches,
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 1 }, nineMatches)
     );
+    for (const m of nineMatches.slice(0, 8)) {
+      assert.equal((await ctrl9.togglePick(m, 'HAD', 'h')).ok, true);
+    }
+    const ninthAttempt = await ctrl9.togglePick(ninthMatch, 'HAD', 'h');
+    assert.equal(ninthAttempt.ok, false);
   });
 
   it('matches official m.sporttery.cn payout to 0.01 yuan and computes exact non-overlapping probabilities for 自由过关 & M串N (4串11)', () => {

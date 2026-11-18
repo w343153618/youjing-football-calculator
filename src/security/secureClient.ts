@@ -1,5 +1,7 @@
 import type {
+  AppliedPlanSpec,
   MatchItem,
+  PassSelectionSpec,
   QuantWorkspaceParams,
   QuantWorkspaceResponse,
   SelectedPick,
@@ -481,4 +483,60 @@ export async function requestServerMatchesSync(
     syncNote: string;
     workspace: QuantWorkspaceResponse;
   }>('quant/sync', { workspaceParams });
+}
+
+export interface XiaoGaoAlert {
+  level: 'high' | 'medium';
+  tag: string;
+  summary: string;
+  priceInStatus: string;
+  source: string;
+  suggestedDelta?: string;
+}
+
+export interface XiaoGaoComboPerMatch {
+  matchId: string;
+  matchTitle: string;
+  tag: string;
+  note: string;
+  priceInStatus: string;
+}
+
+export interface XiaoGaoComboReport {
+  level: 'high' | 'medium' | 'low';
+  comboTag: string;
+  summary: string;
+  weakestLeg: string;
+  structureAdvice: string;
+  priceInVerdict: string;
+  perMatch: XiaoGaoComboPerMatch[];
+  matchCount: number;
+  source: string;
+}
+
+export async function requestXiaoGaoDiagnosis(
+  matchId: string,
+  userNote?: string
+): Promise<{ alert: XiaoGaoAlert; aiRemaining?: number }> {
+  return postEncryptedApi<{ alert: XiaoGaoAlert; aiRemaining?: number }>('xiaogao/analyze', {
+    matchId,
+    userNote,
+  });
+}
+
+export async function requestXiaoGaoComboDiagnosis(params: {
+  sourceMode: 'picked' | 'custom';
+  matchIds: string[];
+  picks: SelectedPick[];
+  multiple: number;
+  passSpec: PassSelectionSpec;
+  planSpec: AppliedPlanSpec;
+  subjectiveDeltaPct?: number;
+  simVoidFirstMatch?: boolean;
+  userNote?: string;
+}): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }> {
+  return postEncryptedApi<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }>(
+    'xiaogao/analyze-combo',
+    params
+  );
 }

@@ -1,24 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  EMPTY_WORKSPACE_RESPONSE,
-  type AppliedPlanSpec,
   type ArchetypeKey,
   type ArchetypePlan,
   type BonusOptMode,
   type EquivalentArbItem,
   type MatchItem,
-  type PassSelectionSpec,
   type PoolCode,
-  type QuantWorkspaceParams,
-  type QuantWorkspaceResponse,
-  type SelectedPick,
   type UserStance,
 } from '../prototype/quantTypes';
-import {
-  requestXiaoGaoComboDiagnosis,
-  requestXiaoGaoDiagnosis,
-  type XiaoGaoComboReport,
-} from '../intel/xiaogaoClient';
 import {
   bootstrapSecureWorkspace,
   logoutSession,
@@ -26,9 +15,18 @@ import {
   registerAuthRevokedHandler,
   requestServerMatchesSync,
   requestServerQuantCompute,
+  requestXiaoGaoComboDiagnosis,
+  requestXiaoGaoDiagnosis,
   type AuthenticatedWorkspaceBundle,
   type PublicAccountUser,
+  type XiaoGaoComboReport,
 } from '../security/secureClient';
+import {
+  buildRadarSignature,
+  createBetSlipController,
+  type MatchMode,
+  type PresetScenarioKind,
+} from '../workspace/betSlipController';
 import { initHighPressureAntiReverseShield } from '../security/antiReverseShield';
 import { LoginGate } from '../auth/LoginGate';
 import { AdminConsoleModal } from '../admin/AdminConsoleModal';
@@ -70,7 +68,6 @@ import {
 import { UserManualModal, type ManualSectionId } from '../manual/UserManualModal';
 
 type AppTab = 'match' | 'archetypes' | 'audit' | 'ledger';
-type MatchMode = 'mix' | 'spf' | 'bf' | 'zjq' | 'bqc' | 'single';
 type QuickFilter = 'all' | 'single' | 'low-vig' | 'drop' | 'arb';
 
 type SheetState =
@@ -98,52 +95,6 @@ const ARCH_OPTS: Array<[ArchetypeKey, string]> = [
   ['value-assassin', '刺客'],
 ];
 
-function makeUnderwaterDemoPicks(matches: MatchItem[]): SelectedPick[] {
-  const m1 = matches[0];
-  const m2 = matches.find((x) => x.kickoff.startsWith('03:')) ?? matches[1];
-  const out: SelectedPick[] = [];
-  if (m1) {
-    // 选半全场 3 个不同赔率选项，立刻暴露假中奖陷阱 + 早晚场时间差锁利
-    for (const k of ['hh', 'dh', 'dd', 'ah']) {
-      const o = m1.pools.HAFU.options.find((x) => x.key === k);
-      if (o) {
-        out.push({
-          matchId: m1.id,
-          matchNumStr: m1.matchNumStr,
-          home: m1.home,
-          away: m1.away,
-          poolCode: 'HAFU',
-          poolName: m1.pools.HAFU.name,
-          singleAllowed: true,
-          optionKey: o.key,
-          optionLabel: o.label,
-          odds: o.odds,
-          fairProb: o.fairProb,
-        });
-      }
-    }
-  }
-  if (m2 && out.length === 0) {
-    const o = m2.pools.HAD.options[0];
-    if (o) {
-      out.push({
-        matchId: m2.id,
-        matchNumStr: m2.matchNumStr,
-        home: m2.home,
-        away: m2.away,
-        poolCode: 'HAD',
-        poolName: m2.pools.HAD.name,
-        singleAllowed: m2.pools.HAD.single,
-        optionKey: o.key,
-        optionLabel: o.label,
-        odds: o.odds,
-        fairProb: o.fairProb,
-      });
-    }
-  }
-  return out;
-}
-
 export function SkinPhoneApp({
   initialSkin,
   embedded,
@@ -166,35 +117,14 @@ export function SkinPhoneApp({
     setManualOpen(true);
   };
   const [tab, setTab] = useState<AppTab>('match');
-  const [mode, setMode] = useState<MatchMode>('mix');
   const [qFilter, setQFilter] = useState<QuickFilter>('all');
-  const [matches, setMatches] = useState<MatchItem[]>([]);
-  const [picks, setPicks] = useState<SelectedPick[]>([]);
-  const [planSpec, setPlanSpec] = useState<AppliedPlanSpec>(null);
-  const [workspace, setWorkspace] = useState<QuantWorkspaceResponse>(EMPTY_WORKSPACE_RESPONSE);
-  const [bootstrapped, setBootstrapped] = useState<boolean>(false);
-  const setAppliedPlan = (_: null) => setPlanSpec(null);
-  const [multiple, setMultiple] = useState<number>(5);
-  const [passSpec, setPassSpec] = useState<PassSelectionSpec>({ mode: 'auto' });
   const [barPopover, setBarPopover] = useState<null | 'pass' | 'keypad' | 'selected'>(null);
   const [keypadFresh, setKeypadFresh] = useState<boolean>(true);
   const [syncing, setSyncing] = useState(false);
   const [syncSummary, setSyncSummary] = useState('正在建立 AES-256-GCM 加密精算会话...');
   const [syncClock, setSyncClock] = useState('21:05');
-
-  // Archetype tab state
-  const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [anchorToRadarPicks, setAnchorToRadarPicks] = useState<boolean>(false);
-  const [syncedRadarSig, setSyncedRadarSig] = useState<string>('');
-  const [budget, setBudget] = useState<number>(100);
-  const [stance, setStance] = useState<UserStance>('objective');
   const [archKey, setArchKey] = useState<ArchetypeKey>('spear-shield');
-  const [unlockFullAgg, setUnlockFullAgg] = useState(false);
-
-  // Audit Sandbox & Hedge state
   const [simHedgeHit, setSimHedgeHit] = useState(true);
-  const [subjectiveDeltaPct, setSubjectiveDeltaPct] = useState<number>(0); // -15 ~ +15% 主观胜率微调滑块
-  const [simVoidFirstMatch, setSimVoidFirstMatch] = useState<boolean>(false); // 模拟首场腰斩延期(按1.0计奖)
 
   // Ledger state
   const [dailyRemain, setDailyRemain] = useState(300);
@@ -215,6 +145,42 @@ export function SkinPhoneApp({
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [offlineMode, setOfflineMode] = useState<boolean>(false);
   const [adminOpen, setAdminOpen] = useState<boolean>(false);
+
+  const betCtrlRef = useRef<ReturnType<typeof createBetSlipController> | null>(null);
+  if (!betCtrlRef.current) {
+    betCtrlRef.current = createBetSlipController({
+      debounceMs: 18,
+      computeWorkspace: (params) => requestServerQuantCompute(params),
+      onComputeSuccess: () => setOfflineMode(false),
+      onOfflineNetworkError: () => setOfflineMode(true),
+    });
+  }
+  const betCtrl = betCtrlRef.current;
+  const betState = useSyncExternalStore(betCtrl.subscribe, betCtrl.getState);
+  const {
+    matches,
+    picks,
+    mode,
+    multiple,
+    passSpec,
+    planSpec,
+    subjectiveDeltaPct,
+    simVoidFirstMatch,
+    targetIds,
+    anchorToRadarPicks,
+    syncedRadarSig,
+    budget,
+    stance,
+    unlockFullAgg,
+    workspace,
+  } = betState;
+
+  const setAnchorToRadarPicks = (v: boolean) => void betCtrl.setAnchorToRadarPicks(v);
+  const setBudget = (b: number) => void betCtrl.setBudget(b);
+  const setStance = (s: UserStance) => void betCtrl.setStance(s);
+  const setUnlockFullAgg = (v: boolean) => void betCtrl.setUnlockFullAgg(v);
+  const setSubjectiveDeltaPct = (v: number) => void betCtrl.setSubjectiveDeltaPct(v);
+  const setSimVoidFirstMatch = (v: boolean) => void betCtrl.setSimVoidFirstMatch(v);
 
   // Sheet & Dual-Mode XiaoGao Diagnosis state
   const [sheet, setSheet] = useState<SheetState>(null);
@@ -314,43 +280,14 @@ export function SkinPhoneApp({
     document.head.appendChild(next);
   };
 
-  const computeSeqRef = useRef<number>(0);
-
-  const buildWorkspaceParams = (
-    overridePicks?: SelectedPick[],
-    overridePlanSpec?: AppliedPlanSpec
-  ): QuantWorkspaceParams => {
-    const clientAlerts: Record<string, NonNullable<MatchItem['aiAlert']>> = {};
-    for (const m of matches) {
-      if (m.aiAlert) clientAlerts[m.id] = m.aiAlert;
-    }
-    return {
-      picks: overridePicks ?? picks,
-      multiple,
-      passSpec,
-      subjectiveDeltaPct,
-      simVoidFirstMatch,
-      planSpec: overridePlanSpec !== undefined ? overridePlanSpec : planSpec,
-      targetIds,
-      anchorToRadarPicks,
-      budget,
-      stance,
-      unlockFullAgg,
-      clientAlerts,
-    };
-  };
-
   const applyAuthenticatedBundle = (bundle: AuthenticatedWorkspaceBundle) => {
     document.title = '优竞体育内部专用 · 智能精算与风控工作台';
     setAuthUser(bundle.user);
     setAuthChecked(true);
     setAuthNotice(null);
     setOfflineMode(false);
-    setMatches(bundle.matches);
-    setPicks(bundle.initialPicks);
-    setTargetIds(bundle.matches.slice(0, 2).map((m) => m.id));
+    betCtrl.applyAuthenticatedBundle(bundle);
     setComboSelectedIds(bundle.matches.slice(0, 3).map((m) => m.id));
-    setWorkspace(bundle.workspace);
     setSyncSummary(bundle.syncNote);
     const now = new Date();
     setSyncClock(
@@ -358,7 +295,6 @@ export function SkinPhoneApp({
         now.getSeconds()
       ).padStart(2, '0')}`
     );
-    setBootstrapped(true);
   };
 
   const hasMatchesRef = useRef<boolean>(false);
@@ -379,7 +315,7 @@ export function SkinPhoneApp({
     registerAuthRevokedHandler((reason) => {
       if (!alive) return;
       setAuthUser(null);
-      setBootstrapped(false);
+      betCtrl.setBootstrapped(false);
       setAuthChecked(true);
       setAuthNotice(reason);
     });
@@ -392,7 +328,7 @@ export function SkinPhoneApp({
           if (!alive) return;
           if (!boot.authenticated) {
             setAuthUser(null);
-            setBootstrapped(false);
+            betCtrl.setBootstrapped(false);
             setAuthChecked(true);
             if (boot.authError) setAuthNotice(boot.authError);
             break;
@@ -401,7 +337,7 @@ export function SkinPhoneApp({
             // Seamless silent reconnect after offline blip without wiping user's in-progress picks!
             setAuthUser(boot.user);
             setOfflineMode(false);
-            setBootstrapped(true);
+            betCtrl.setBootstrapped(true);
             setSyncSummary(boot.syncNote);
           } else {
             applyAuthenticatedBundle(boot);
@@ -454,12 +390,10 @@ export function SkinPhoneApp({
   const runOfficialSync = async (toastOnDone = false) => {
     setSyncing(true);
     try {
-      const res = await requestServerMatchesSync(buildWorkspaceParams());
+      const res = await requestServerMatchesSync(betCtrl.buildWorkspaceParams());
       document.title = '优竞体育内部专用 · 智能精算与风控工作台';
       setOfflineMode(false);
-      setMatches(res.matches);
-      setWorkspace(res.workspace);
-      setBootstrapped(true);
+      betCtrl.applyMatchesSync(res);
       const now = new Date();
       setSyncClock(
         `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
@@ -467,29 +401,6 @@ export function SkinPhoneApp({
         ).padStart(2, '0')}`
       );
       setSyncSummary(res.syncNote);
-      setTargetIds((prev) => {
-        const valid = res.matches.filter((m) => prev.includes(m.id)).map((m) => m.id);
-        return valid.length >= 1 ? valid : res.matches.slice(0, 2).map((m) => m.id);
-      });
-      setPicks((prev) => {
-        const synced = prev
-          .map((pk) => {
-            const um = res.matches.find(
-              (m) => m.id === pk.matchId || m.matchNumStr === pk.matchNumStr
-            );
-            const uo = um?.pools[pk.poolCode]?.options.find((o) => o.key === pk.optionKey);
-            if (!um || !uo) return null;
-            return {
-              ...pk,
-              matchId: um.id,
-              odds: uo.odds,
-              fairProb: uo.fairProb,
-              singleAllowed: um.pools[pk.poolCode].single,
-            };
-          })
-          .filter((x): x is SelectedPick => x !== null);
-        return synced;
-      });
       if (toastOnDone) {
         showSpringToast(layerRef.current, `已加密同步 ${res.matches.length} 场官网实盘`);
       }
@@ -501,102 +412,18 @@ export function SkinPhoneApp({
     }
   };
 
-  // 3. Preset Demo Scenarios (restored from web version!)
-  const loadPresetScenario = (kind: 'underwater' | 'synthetic' | 'parlay4' | 'hedge2') => {
-    setAppliedPlan(null);
-    setPassSpec({ mode: 'auto' });
-    setSimVoidFirstMatch(false);
-    setSubjectiveDeltaPct(0);
+  // 3. Preset Demo Scenarios
+  const loadPresetScenario = (kind: PresetScenarioKind) => {
     haptic(10);
-
-    if (kind === 'underwater') {
-      setMultiple(5);
-      setPicks(makeUnderwaterDemoPicks(matches));
-      showSpringToast(layerRef.current, '已载入：半全场假中奖陷阱');
-      setTab('audit');
-    } else if (kind === 'synthetic') {
-      const m = matches.find((x) => !x.pools.HAD.single) ?? matches[0];
-      if (!m) return;
-      setMultiple(10);
-      setPicks(
-        ['hh', 'dh']
-          .map((k) => {
-            const o = m.pools.HAFU.options.find((x) => x.key === k);
-            if (!o) return null;
-            return {
-              matchId: m.id,
-              matchNumStr: m.matchNumStr,
-              home: m.home,
-              away: m.away,
-              poolCode: 'HAFU' as PoolCode,
-              poolName: m.pools.HAFU.name,
-              singleAllowed: true,
-              optionKey: o.key,
-              optionLabel: o.label,
-              odds: o.odds,
-              fairProb: o.fairProb,
-            };
-          })
-          .filter((x): x is SelectedPick => x !== null)
-      );
-      showSpringToast(layerRef.current, '已载入：半全场合成单关');
-      setTab('audit');
-    } else if (kind === 'parlay4') {
-      setMultiple(3);
-      setPicks(
-        matches
-          .slice(0, 4)
-          .map((m) => {
-            const o = m.pools.HAD.options[0];
-            if (!o) return null;
-            return {
-              matchId: m.id,
-              matchNumStr: m.matchNumStr,
-              home: m.home,
-              away: m.away,
-              poolCode: 'HAD' as PoolCode,
-              poolName: m.pools.HAD.name,
-              singleAllowed: m.pools.HAD.single,
-              optionKey: o.key,
-              optionLabel: o.label,
-              odds: o.odds,
-              fairProb: o.fairProb,
-            };
-          })
-          .filter((x): x is SelectedPick => x !== null)
-      );
-      showSpringToast(layerRef.current, '已载入：4串1连乘抽水雪崩');
-      setTab('audit');
-    } else if (kind === 'hedge2') {
-      const mEarly = matches[0];
-      const mLate = matches.find((x) => x.kickoff.startsWith('03:') || x.kickoff.startsWith('07:')) ?? matches[matches.length - 1];
-      if (!mEarly || !mLate) return;
-      setMultiple(15);
-      setPicks(
-        [mEarly, mLate]
-          .map((m): SelectedPick | null => {
-            const pCode: PoolCode = m.pools.HAD.options.length > 0 ? 'HAD' : 'HHAD';
-            const o = m.pools[pCode].options[0];
-            if (!o) return null;
-            return {
-              matchId: m.id,
-              matchNumStr: m.matchNumStr,
-              home: m.home,
-              away: m.away,
-              poolCode: pCode,
-              poolName: m.pools[pCode].name,
-              singleAllowed: m.pools[pCode].single,
-              optionKey: o.key,
-              optionLabel: o.label,
-              odds: o.odds,
-              fairProb: o.fairProb,
-            };
-          })
-          .filter((x): x is SelectedPick => x !== null)
-      );
-      showSpringToast(layerRef.current, '已载入：早晚场时间差锁利');
-      setTab('audit');
-    }
+    void betCtrl.loadPresetScenario(kind);
+    const toastMap: Record<PresetScenarioKind, string> = {
+      underwater: '已载入：半全场假中奖陷阱',
+      synthetic: '已载入：半全场合成单关',
+      parlay4: '已载入：4串1连乘抽水雪崩',
+      hedge2: '已载入：早晚场时间差锁利',
+    };
+    showSpringToast(layerRef.current, toastMap[kind]);
+    setTab('audit');
   };
 
   // 4. Parent ComparisonStage broadcast bridge
@@ -609,20 +436,16 @@ export function SkinPhoneApp({
         setTab(d.value as AppTab);
       } else if (d.cmd === 'openMore') {
         setTab('match');
-        setMode('mix');
+        void betCtrl.setMode('mix');
         setTimeout(() => {
-          setMatches((cur) => {
-            if (cur[0]) setSheet({ type: 'more', matchId: cur[0].id });
-            return cur;
-          });
+          const cur = betCtrl.getState().matches;
+          if (cur[0]) setSheet({ type: 'more', matchId: cur[0].id });
         }, 60);
       } else if (d.cmd === 'openIntel') {
         setTab('match');
         setTimeout(() => {
-          setMatches((cur) => {
-            if (cur[0]) setSheet({ type: 'intel', matchId: cur[0].id });
-            return cur;
-          });
+          const cur = betCtrl.getState().matches;
+          if (cur[0]) setSheet({ type: 'intel', matchId: cur[0].id });
         }, 60);
       } else if (d.cmd === 'openPoster') {
         setSheet({ type: 'poster' });
@@ -693,38 +516,6 @@ export function SkinPhoneApp({
     return list.length > 0 ? list : matches;
   }, [matches, mode, qFilter, leagueFilter]);
 
-  useEffect(() => {
-    if (!bootstrapped) return;
-    const seq = ++computeSeqRef.current;
-    const timer = window.setTimeout(() => {
-      void requestServerQuantCompute(buildWorkspaceParams())
-        .then((res) => {
-          if (seq === computeSeqRef.current) {
-            setOfflineMode(false);
-            setWorkspace(res);
-          }
-        })
-        .catch((err) => {
-          if (err instanceof TypeError) setOfflineMode(true);
-        });
-    }, 18);
-    return () => window.clearTimeout(timer);
-  }, [
-    bootstrapped,
-    picks,
-    multiple,
-    passSpec,
-    subjectiveDeltaPct,
-    simVoidFirstMatch,
-    planSpec,
-    targetIds,
-    anchorToRadarPicks,
-    budget,
-    stance,
-    unlockFullAgg,
-    matches,
-  ]);
-
   const resolvedTargets = useMemo(() => {
     const found = matches.filter((m) => targetIds.includes(m.id));
     return found.length > 0 ? found : matches.slice(0, 2);
@@ -779,30 +570,12 @@ export function SkinPhoneApp({
     prevUwRef.current = effectiveReport.underwaterCount;
   }, [effectiveReport.underwaterCount]);
 
-  // Actions
+  // Actions (delegated to deep BetSlipController; view layer handles only tactile & spring choreography)
   const isPicked = (matchId: string, poolCode: PoolCode, optKey: string) =>
-    picks.some(
-      (p) => p.matchId === matchId && p.poolCode === poolCode && p.optionKey === optKey
-    );
+    betCtrl.isPicked(matchId, poolCode, optKey);
 
-  const isAuthoritativePickSingle = (pk: SelectedPick) => {
-    const fm = matches.find((x) => x.id === pk.matchId);
-    const pool = fm?.pools[pk.poolCode];
-    return pool ? Boolean(pk.singleAllowed) && Boolean(pool.single) : Boolean(pk.singleAllowed);
-  };
-
-  const isPoolMutexLocked = (m: MatchItem, poolCode: PoolCode) => {
-    const sameMatch = picks.filter((p) => p.matchId === m.id);
-    if (sameMatch.length === 0) return false;
-    const otherPools = sameMatch.filter((p) => p.poolCode !== poolCode);
-    if (otherPools.length === 0) return false;
-    if (mode !== 'spf' && mode !== 'single') return true;
-    if (poolCode !== 'HAD' && poolCode !== 'HHAD') return true;
-    if (otherPools.some((p) => p.poolCode !== 'HAD' && p.poolCode !== 'HHAD')) return true;
-    const candPool = m.pools[poolCode];
-    if (!candPool?.single) return true;
-    return !picks.every(isAuthoritativePickSingle);
-  };
+  const isPoolMutexLocked = (m: MatchItem, poolCode: PoolCode) =>
+    betCtrl.isPoolMutexLocked(m, poolCode);
 
   const togglePick = (
     el: HTMLElement | null,
@@ -810,84 +583,25 @@ export function SkinPhoneApp({
     poolCode: PoolCode,
     optKey: string
   ) => {
-    const pool = m.pools[poolCode];
-    const opt = pool?.options.find((o) => o.key === optKey);
-    const currentlyOn = isPicked(m.id, poolCode, optKey);
-
-    if (!currentlyOn) {
-      if (!pool || pool.selling === false || pool.options.length === 0 || !opt || opt.odds <= 0) {
-        shudderDangerElement(el);
-        haptic(14);
-        showSpringToast(layerRef.current, '该玩法或选项当前暂未开售');
-        return;
-      }
-
-      const byMatchPools = new Map<string, Set<PoolCode>>();
-      for (const p of picks) {
-        const s = byMatchPools.get(p.matchId) ?? new Set<PoolCode>();
-        s.add(p.poolCode);
-        byMatchPools.set(p.matchId, s);
-      }
-      const existingHasCrossPool = Array.from(byMatchPools.values()).some((s) => s.size > 1);
-      const existingDistinctCount = byMatchPools.size;
-      const allSingleWithCand = picks.every(isAuthoritativePickSingle) && Boolean(pool.single);
-
-      if ((existingHasCrossPool || existingDistinctCount > 8) && !pool.single) {
-        shudderDangerElement(el);
-        haptic(16);
-        showSpringToast(
-          layerRef.current,
-          '当前选单已锁定【单关】模式，无法混入未开单关的选项！'
-        );
-        return;
-      }
-
-      const sameMatchOther = picks.filter(
-        (p) => p.matchId === m.id && p.poolCode !== poolCode
+    const verdict = betCtrl.togglePick(m, poolCode, optKey);
+    if (!verdict.ok) {
+      shudderDangerElement(el);
+      haptic(16);
+      showSpringToast(layerRef.current, verdict.blockedReason || '当前选项不可选');
+      return;
+    }
+    if (verdict.autoLockedSingleReason === 'dual-single') {
+      showSpringToast(
+        layerRef.current,
+        '同时选同场两个单关玩法，已按体彩规则自动锁定【单关】'
       );
-      if (sameMatchOther.length > 0) {
-        const isSpfDualSinglePair =
-          (mode === 'spf' || mode === 'single') &&
-          allSingleWithCand &&
-          (poolCode === 'HAD' || poolCode === 'HHAD') &&
-          sameMatchOther.every((p) => p.poolCode === 'HAD' || p.poolCode === 'HHAD');
-
-        if (!isSpfDualSinglePair) {
-          shudderDangerElement(el);
-          haptic(16);
-          showSpringToast(
-            layerRef.current,
-            '同一场比赛只能选择一种玩法进行串关计算；如需改选其他玩法，请先取消本场已选项'
-          );
-          return;
-        }
-        setPassSpec({ mode: 'free', passSizes: [1] });
-        showSpringToast(
-          layerRef.current,
-          '同时选同场两个单关玩法，已按体彩规则自动锁定【单关】'
-        );
-      } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 15) {
-        shudderDangerElement(el);
-        haptic(16);
-        showSpringToast(layerRef.current, '单次选单最多不能超过 15 场赛事');
-        return;
-      } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 8) {
-        if ((mode !== 'spf' && mode !== 'single') || !allSingleWithCand) {
-          shudderDangerElement(el);
-          haptic(16);
-          showSpringToast(layerRef.current, '过关数量不能超过 8 场赛事');
-          return;
-        }
-        setPassSpec({ mode: 'free', passSizes: [1] });
-        showSpringToast(layerRef.current, '超过 8 场赛事，已按体彩规则自动锁定【单关】');
-      }
+    } else if (verdict.autoLockedSingleReason === 'over-8-matches') {
+      showSpringToast(layerRef.current, '超过 8 场赛事，已按体彩规则自动锁定【单关】');
     }
 
-    if (!opt) return;
-    setAppliedPlan(null);
-    kickElement(el, currentlyOn ? -1.4 : 2.8);
-
-    if (currentlyOn) {
+    const removed = verdict.action === 'removed';
+    kickElement(el, removed ? -1.4 : 2.8);
+    if (removed) {
       playTactileCue('tap-off');
     } else {
       playTactileCue('tap-on');
@@ -895,107 +609,24 @@ export function SkinPhoneApp({
         isDesktop && !embedded
           ? auditCockpitRef.current ?? desktopAuditColRef.current
           : slipRef.current;
-      launchParabolicOrb(el, targetContainer, `+${opt.label}@${opt.odds.toFixed(2)}`);
+      launchParabolicOrb(
+        el,
+        targetContainer,
+        `+${verdict.optionLabel || ''}@${(verdict.odds ?? 0).toFixed(2)}`
+      );
     }
-
-    setPicks((prev) =>
-      currentlyOn
-        ? prev.filter(
-            (p) => !(p.matchId === m.id && p.poolCode === poolCode && p.optionKey === optKey)
-          )
-        : [
-            ...prev,
-            {
-              matchId: m.id,
-              matchNumStr: m.matchNumStr,
-              home: m.home,
-              away: m.away,
-              poolCode,
-              poolName: pool.name,
-              singleAllowed: pool.single,
-              optionKey: opt.key,
-              optionLabel: opt.label,
-              odds: opt.odds,
-              fairProb: opt.fairProb,
-            },
-          ]
-    );
   };
 
   const applyEquivalentSwap = (arb: EquivalentArbItem, triggerEl?: HTMLElement | null) => {
-    const fm = matches.find((x) => x.id === arb.matchId);
-    if (!fm) return;
-    setAppliedPlan(null);
-    const targetPools = new Set(arb.betterPicks.map((bp) => bp.poolCode));
-    setPicks((prev) => {
-      const cleaned = prev.filter(
-        (p) =>
-          !(
-            p.matchId === fm.id &&
-            (!targetPools.has(p.poolCode) ||
-              arb.worsePicks.some(
-                (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
-              ))
-          )
-      );
-      const additions: SelectedPick[] = [];
-      for (const bp of arb.betterPicks) {
-        const already = cleaned.some(
-          (p) => p.matchId === fm.id && p.poolCode === bp.poolCode && p.optionKey === bp.optionKey
-        );
-        if (already) continue;
-        const pool = fm.pools[bp.poolCode];
-        const opt = pool?.options.find((o) => o.key === bp.optionKey);
-        if (!pool || !opt) continue;
-        additions.push({
-          matchId: fm.id,
-          matchNumStr: fm.matchNumStr,
-          home: fm.home,
-          away: fm.away,
-          poolCode: bp.poolCode,
-          poolName: pool.name,
-          singleAllowed: pool.single,
-          optionKey: opt.key,
-          optionLabel: opt.label,
-          odds: opt.odds,
-          fairProb: opt.fairProb,
-        });
-      }
-      return [...cleaned, ...additions];
-    });
+    const applied = betCtrl.applyEquivalentSwap(arb);
+    if (!applied) return;
     playTactileCue('optimize-arpeggio');
     if (triggerEl) burstCelebrationSparks(triggerEl, 16);
     showSpringToast(layerRef.current, `已切换高水同义项 · ${arb.betterChoice}`);
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
-    setPlanSpec({ kind: 'archetype', key: plan.key, snapshotPlan: plan, scaleMultiple: 1 });
-    setSimVoidFirstMatch(false);
-    setSubjectiveDeltaPct(0);
-    const primaryPoolByMatch = new Map<string, PoolCode>();
-    const map = new Map<string, SelectedPick>();
-    plan.lines.forEach((l) =>
-      l.legs.forEach((lg) => {
-        const chosenPool = primaryPoolByMatch.get(lg.matchId) ?? lg.poolCode;
-        primaryPoolByMatch.set(lg.matchId, chosenPool);
-        if (lg.poolCode !== chosenPool) return;
-        const fm = matches.find((x) => x.id === lg.matchId);
-        map.set(`${lg.matchId}-${lg.poolCode}-${lg.optionKey}`, {
-          matchId: lg.matchId,
-          matchNumStr: lg.matchNumStr,
-          home: lg.home,
-          away: lg.away,
-          poolCode: lg.poolCode,
-          poolName: lg.poolName,
-          singleAllowed: fm?.pools[lg.poolCode]?.single ?? true,
-          optionKey: lg.optionKey,
-          optionLabel: lg.optionLabel,
-          odds: lg.odds,
-          fairProb: lg.fairProb,
-        });
-      })
-    );
-    setPicks(Array.from(map.values()));
+    betCtrl.applyArchetype(plan);
     playTactileCue('defuse-celebrate');
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(auditCockpitRef.current, 26);
@@ -1004,39 +635,24 @@ export function SkinPhoneApp({
   };
 
   const restoreEqualMultiple = () => {
-    setAppliedPlan(null);
-    setPicks((prev) => {
-      const poolByMatch = new Map<string, PoolCode>();
-      return prev.filter((p) => {
-        const firstPool = poolByMatch.get(p.matchId) ?? p.poolCode;
-        poolByMatch.set(p.matchId, firstPool);
-        return p.poolCode === firstPool;
-      });
-    });
+    betCtrl.restoreEqualMultiple();
     playTactileCue('tap-off');
     showSpringToast(layerRef.current, '已恢复默认等倍统配');
   };
 
   const scaleAppliedPlanBy = (factor: number) => {
-    setPlanSpec((prev) => {
-      if (!prev) return prev;
-      const nextScale = Math.max(1, Math.min(50, Math.round((prev.scaleMultiple ?? 1) * factor)));
-      return { ...prev, scaleMultiple: nextScale };
-    });
+    betCtrl.scaleAppliedPlanBy(factor);
     haptic(8);
     showSpringToast(layerRef.current, `智能分倍方案已扩倍 ×${factor}`);
   };
 
-  // 三模智能奖金优化引擎（委托给服务端加密黑盒运算 + 触发流光与琶音触感）
   const applyBonusOptimization = (optMode: BonusOptMode, triggerEl?: HTMLElement | null) => {
-    if (manualReport.combos.length === 0) return;
-    setPlanSpec({ kind: 'bonus', optMode, scaleMultiple: 1 });
+    const res = betCtrl.applyBonusOptimization(optMode);
+    if (!res.ok) return;
     playTactileCue('optimize-arpeggio');
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 22);
-    const modeTitle =
-      optMode === 'equal' ? '平均优化' : optMode === 'hot-first' ? '博热保本' : '博冷高弹';
-    showSpringToast(layerRef.current, `已启用 · ${modeTitle}`);
+    showSpringToast(layerRef.current, `已启用 · ${res.modeTitle}`);
   };
 
   const upgradeToZeroUnderwater = (triggerEl?: HTMLElement | null) => {
@@ -1045,9 +661,7 @@ export function SkinPhoneApp({
   };
 
   const applyDirectMultiple = (nextRaw: number) => {
-    setAppliedPlan(null);
-    const clamped = Math.max(1, Math.min(999, Math.round(nextRaw) || 1));
-    setMultiple(clamped);
+    betCtrl.setDirectMultiple(nextRaw);
     if (mulValRef.current) {
       fxOf(mulValRef.current).scale.kick(1.4);
     }
@@ -1055,111 +669,57 @@ export function SkinPhoneApp({
   };
 
   const stepMultiple = (delta: number) => {
-    setAppliedPlan(null);
-    setMultiple((prev) => {
-      const next = Math.max(1, Math.min(999, prev + delta));
-      if (mulValRef.current) {
-        const f = fxOf(mulValRef.current);
-        f.ty.jump(delta > 0 ? 8 : -8);
-        f.ty.config(520, 20).set(0);
-        f.scale.kick(1.6);
-      }
-      haptic(5);
-      return next;
-    });
+    betCtrl.stepMultiple(delta);
+    if (mulValRef.current) {
+      const f = fxOf(mulValRef.current);
+      f.ty.jump(delta > 0 ? 8 : -8);
+      f.ty.config(520, 20).set(0);
+      f.scale.kick(1.6);
+    }
+    haptic(5);
   };
 
-  const toggleFreePassSize = (
-    size: number,
-    enabled: boolean,
-    disabledReason: string | null
-  ) => {
-    if (!enabled) {
+  const toggleFreePassSize = (size: number) => {
+    const res = betCtrl.toggleFreePassSize(size);
+    if (!res.ok) {
       haptic(12);
-      showSpringToast(layerRef.current, disabledReason || '当前选单不满足该过关条件');
+      showSpringToast(layerRef.current, res.reason || '当前选单不满足该过关条件');
       return;
     }
-    setAppliedPlan(null);
     haptic(6);
-    const currentActive = manualReport.activeComboCode
-      ? []
-      : manualReport.availableFreePasses.filter((f) => f.active).map((f) => f.size);
-    const exists = currentActive.includes(size);
-    if (exists && currentActive.length <= 1) {
-      showSpringToast(layerRef.current, '至少需保留一种过关方式');
-      return;
-    }
-    const nextSizes = exists
-      ? currentActive.filter((s) => s !== size)
-      : [...currentActive, size].sort((a, b) => a - b);
-    setPassSpec({ mode: 'free', passSizes: nextSizes });
   };
 
-  const selectComboPass = (
-    code: string,
-    enabled: boolean,
-    disabledReason: string | null
-  ) => {
-    if (!enabled) {
+  const selectComboPass = (code: string) => {
+    const res = betCtrl.selectComboPass(code);
+    if (!res.ok) {
       haptic(12);
-      showSpringToast(layerRef.current, disabledReason || '当前选单不可选该多串组合');
+      showSpringToast(layerRef.current, res.reason || '当前选单不可选该多串组合');
       return;
     }
-    setAppliedPlan(null);
     haptic(7);
-    if (manualReport.activeComboCode === code) {
-      setPassSpec({ mode: 'auto' });
-    } else {
-      setPassSpec({ mode: 'combo', comboCode: code });
-    }
   };
 
   const handleModeChange = (nextMode: MatchMode) => {
-    setMode(nextMode);
-    if (nextMode !== 'spf' && nextMode !== 'single') {
-      const poolByMatch = new Map<string, PoolCode>();
-      let trimmed = false;
-      const cleaned = picks.filter((p) => {
-        const firstPool = poolByMatch.get(p.matchId) ?? p.poolCode;
-        poolByMatch.set(p.matchId, firstPool);
-        if (p.poolCode !== firstPool) {
-          trimmed = true;
-          return false;
-        }
-        return true;
-      });
-      if (trimmed) {
-        setPicks(cleaned);
-        setPassSpec({ mode: 'auto' });
-        showSpringToast(layerRef.current, '切换至混合/单项过关，同场仅保留单一玩法');
-      }
+    const { trimmed } = betCtrl.setMode(nextMode);
+    if (trimmed) {
+      showSpringToast(layerRef.current, '切换至混合/单项过关，同场仅保留单一玩法');
     }
   };
 
-  const currentRadarSig = useMemo(
-    () =>
-      picks
-        .map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
-        .sort()
-        .join('|'),
-    [picks]
-  );
+  const currentRadarSig = useMemo(() => buildRadarSignature(picks), [picks]);
 
   const syncRadarPicksToArchetypes = () => {
-    if (pickedMatchIds.length === 0) {
+    const res = betCtrl.syncRadarPicksToArchetypes();
+    if (!res.ok) {
       haptic(12);
       showSpringToast(layerRef.current, '请先在【赛事雷达】点选至少 1 场想买的球队');
       if (!isDesktop || embedded) setTab('match');
       return;
     }
-    const syncedIds = pickedMatchIds.slice(0, 8);
-    setTargetIds(syncedIds);
-    setAnchorToRadarPicks(true);
-    setSyncedRadarSig(currentRadarSig);
     playTactileCue('optimize-arpeggio');
     showSpringToast(
       layerRef.current,
-      `已匹配赛事雷达 ${syncedIds.length} 场已选球队并锚定推荐方向`
+      `已匹配赛事雷达 ${res.syncedCount} 场已选球队并锚定推荐方向`
     );
   };
 
@@ -1197,7 +757,7 @@ export function SkinPhoneApp({
   const handleExplicitLogout = async () => {
     await logoutSession();
     setAuthUser(null);
-    setBootstrapped(false);
+    betCtrl.setBootstrapped(false);
     setAdminOpen(false);
     setAuthNotice('已安全退出当前账号');
   };
@@ -1207,17 +767,9 @@ export function SkinPhoneApp({
     setDiagnosingMatchId(m.id);
     playTactileCue('radar-ping');
     try {
-      const mq = m.microQuant;
-      const { alert, aiRemaining } = await requestXiaoGaoDiagnosis(
-        m,
-        `${m.home} ${mq.homeXG} : ${mq.awayXG} ${m.away} (总预期${mq.totalXG}球)`,
-        Math.round(mq.oneGoalShareOfWins * 100),
-        extraNote
-      );
+      const { alert, aiRemaining } = await requestXiaoGaoDiagnosis(m.id, extraNote);
       syncRemainingAiQuota(aiRemaining);
-      setMatches((prev) =>
-        prev.map((item) => (item.id === m.id ? { ...item, aiAlert: alert } : item))
-      );
+      await betCtrl.applyMatchAiAlert(m.id, alert);
       playTactileCue('radar-lock');
       showSpringToast(layerRef.current, '扫地僧小高已完成单场实时排雷');
     } catch (err) {
@@ -1238,41 +790,21 @@ export function SkinPhoneApp({
     setDiagnosingCombo(true);
     playTactileCue('radar-ping');
     try {
-      const modeDesc =
-        sourceMode === 'picked'
-          ? `混合过关已选 ${targetList.length} 场实投串关联合会诊`
-          : `自由勾选 ${targetList.length} 场比赛横向联合会诊`;
-      const { comboReport: rep, aiRemaining } = await requestXiaoGaoComboDiagnosis(
-        targetList,
-        sourceMode === 'picked' ? picks : [],
-        sourceMode === 'picked' ? effectiveReport : { ...effectiveReport, matchCount: 0 },
-        modeDesc,
-        customIntelInput || undefined
-      );
+      const { comboReport: rep, aiRemaining } = await requestXiaoGaoComboDiagnosis({
+        sourceMode,
+        matchIds: targetList.map((m) => m.id),
+        picks: sourceMode === 'picked' ? picks : [],
+        multiple,
+        passSpec,
+        planSpec,
+        subjectiveDeltaPct,
+        simVoidFirstMatch,
+        userNote: customIntelInput || undefined,
+      });
       syncRemainingAiQuota(aiRemaining);
       setComboReport(rep);
       if (Array.isArray(rep.perMatch) && rep.perMatch.length > 0) {
-        setMatches((prev) =>
-          prev.map((item) => {
-            const pm = rep.perMatch.find(
-              (x) =>
-                x.matchId === item.id ||
-                x.matchId === item.matchNumStr ||
-                Boolean(x.matchTitle && x.matchTitle.includes(item.matchNumStr))
-            );
-            if (!pm) return item;
-            return {
-              ...item,
-              aiAlert: {
-                level: rep.level === 'high' ? 'high' : 'medium',
-                tag: pm.tag,
-                summary: pm.note,
-                priceInStatus: pm.priceInStatus,
-                source: rep.source,
-              },
-            };
-          })
-        );
+        await betCtrl.applyComboAiReport(rep);
       }
       playTactileCue('radar-lock');
       showSpringToast(layerRef.current, `已完成 ${targetList.length} 场串关联合排雷会诊`);
@@ -1782,8 +1314,7 @@ export function SkinPhoneApp({
                       className="help-pill"
                       onClick={() => {
                         haptic(6);
-                        setAnchorToRadarPicks(false);
-                        setTargetIds(matches.slice(0, 8).map((x) => x.id));
+                        void betCtrl.selectTargetSlice(8);
                       }}
                     >
                       全选{Math.min(8, matches.length)}场
@@ -1795,8 +1326,7 @@ export function SkinPhoneApp({
                       className="help-pill"
                       onClick={() => {
                         haptic(5);
-                        setAnchorToRadarPicks(false);
-                        setTargetIds(matches.slice(0, 2).map((x) => x.id));
+                        void betCtrl.selectTargetSlice(2);
                       }}
                     >
                       重置2场
@@ -1815,18 +1345,7 @@ export function SkinPhoneApp({
                       onClick={(e) => {
                         kickElement(e.currentTarget, 2.2);
                         haptic(6);
-                        setAnchorToRadarPicks(false);
-                        setTargetIds((prev) => {
-                          const valid = matches
-                            .filter((x) => prev.includes(x.id))
-                            .map((x) => x.id);
-                          if (valid.includes(m.id)) {
-                            return valid.length > 1 ? valid.filter((k) => k !== m.id) : valid;
-                          }
-                          return valid.length >= 8
-                            ? [...valid.slice(1), m.id]
-                            : [...valid, m.id];
-                        });
+                        void betCtrl.toggleTargetMatch(m.id);
                       }}
                       className={`key pillk num ${on ? 'on' : ''}`}
                     >
@@ -2115,8 +1634,7 @@ export function SkinPhoneApp({
                               className="key mini"
                               data-spring="0.85"
                               onClick={() => {
-                                setAppliedPlan(null);
-                                setPicks((prev) => prev.filter((x) => x.matchId !== mid));
+                                void betCtrl.removeMatchFromSlip(mid);
                                 haptic(6);
                               }}
                             >
@@ -2266,9 +1784,7 @@ export function SkinPhoneApp({
                                 onClick={() => {
                                   const nextPicks = effectiveReport.syntheticRescuePicks;
                                   if (nextPicks && nextPicks.length > 0) {
-                                    setAppliedPlan(null);
-                                    setPassSpec({ mode: 'auto' });
-                                    setPicks(nextPicks);
+                                    void betCtrl.replacePicks(nextPicks);
                                     playTactileCue('optimize-arpeggio');
                                     showSpringToast(layerRef.current, '已一键切换为本场半全场合成单关');
                                   }
@@ -2308,10 +1824,7 @@ export function SkinPhoneApp({
                             data-spring="0.88"
                             className="key mini dark"
                             onClick={() => {
-                              setAppliedPlan(null);
-                              setPicks((prev) =>
-                                prev.filter((x) => x.matchId !== insights.weakestLink!.matchId)
-                              );
+                              void betCtrl.removeMatchFromSlip(insights.weakestLink!.matchId);
                               showSpringToast(layerRef.current, '已砍掉拖后腿场次');
                             }}
                           >
@@ -3356,8 +2869,7 @@ export function SkinPhoneApp({
                   type="button"
                   className="key mini"
                   onClick={() => {
-                    setAppliedPlan(null);
-                    setPassSpec({ mode: 'auto' });
+                    void betCtrl.resetPassAuto();
                     haptic(5);
                   }}
                 >
@@ -3394,7 +2906,7 @@ export function SkinPhoneApp({
                 <button
                   key={fp.size}
                   type="button"
-                  onClick={() => toggleFreePassSize(fp.size, fp.enabled, fp.disabledReason)}
+                  onClick={() => toggleFreePassSize(fp.size)}
                   className={`pass-cell ${fp.active && !appliedPlan ? 'on' : ''} ${
                     !fp.enabled ? 'dis' : ''
                   }`}
@@ -3427,7 +2939,7 @@ export function SkinPhoneApp({
                   <button
                     key={cp.code}
                     type="button"
-                    onClick={() => selectComboPass(cp.code, cp.enabled, cp.disabledReason)}
+                    onClick={() => selectComboPass(cp.code)}
                     className={`pass-cell ${cp.active && !appliedPlan ? 'on' : ''} ${
                       !cp.enabled ? 'dis' : ''
                     }`}
@@ -3557,9 +3069,7 @@ export function SkinPhoneApp({
                     type="button"
                     className="key mini"
                     onClick={() => {
-                      setAppliedPlan(null);
-                      setPassSpec({ mode: 'auto' });
-                      setPicks([]);
+                      void betCtrl.clearPicks();
                       setBarPopover(null);
                     }}
                   >
@@ -3596,8 +3106,7 @@ export function SkinPhoneApp({
                         type="button"
                         className="key mini"
                         onClick={() => {
-                          setAppliedPlan(null);
-                          setPicks((prev) => prev.filter((x) => x.matchId !== mid));
+                          void betCtrl.removeMatchFromSlip(mid);
                         }}
                       >
                         移除
@@ -3623,9 +3132,7 @@ export function SkinPhoneApp({
             disabled={picks.length === 0}
             style={{ opacity: picks.length === 0 ? 0.45 : 1 }}
             onClick={() => {
-              setAppliedPlan(null);
-              setPassSpec({ mode: 'auto' });
-              setPicks([]);
+              void betCtrl.clearPicks();
               haptic(12);
             }}
           >
@@ -3810,9 +3317,7 @@ export function SkinPhoneApp({
             className="m-bet-trash"
             title="清空已选"
             onClick={() => {
-              setAppliedPlan(null);
-              setPassSpec({ mode: 'auto' });
-              setPicks([]);
+              void betCtrl.clearPicks();
               haptic(14);
             }}
           >
@@ -4114,8 +3619,7 @@ export function SkinPhoneApp({
                       type="button"
                       className="key mini"
                       onClick={() => {
-                        setAppliedPlan(null);
-                        setPicks([]);
+                        void betCtrl.clearPicks();
                       }}
                     >
                       清空已选

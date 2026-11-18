@@ -7,6 +7,10 @@ import {
   evaluateQuantWorkspace,
   fetchOfficialMatchesServer,
 } from './quantEngine.mjs';
+import {
+  buildComboDiagnosisContext,
+  buildSingleMatchDiagnosisContext,
+} from './xiaogaoCore.mjs';
 
 const AI_AND_SCRAPER_UA_RE =
   /Bytespider|Doubao|TikTokSpider|Baiduspider|Sogou[\s_-]*Spider|Sogou[\s]+web[\s]+spider|SogouInstSpider|YisouSpider|360Spider|Moonshot|Kimi|GPTBot|ChatGPT-User|OAI-SearchBot|ClaudeBot|Claude-Web|anthropic-ai|Perplexity|Cohere-ai|Google-Extended|Meta-ExternalAgent|FacebookExternalHit|Amazonbot|Applebot-Extended|Jina|r\.jina\.ai|Firecrawl|Crawl4AI|Diffbot|CCBot|PetalBot|SemrushBot|AhrefsBot|MJ12bot|DotBot|Scrapy|HTTrack|wget\/|curl\/|python-requests|python-httpx|aiohttp|Go-http-client|Java\/|okhttp|axios\/|node-fetch|undici|HeadlessChrome|PhantomJS|SlimerJS|Nightmare|CasperJS|Selenium/i;
@@ -324,6 +328,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
   const sessionTtlMs = opts.sessionTtlMs ?? 2 * 60 * 60 * 1000;
   const replayWindowMs = opts.replayWindowMs ?? 60_000;
   const fuseLoopback = Boolean(opts.fuseLoopback);
+  const fetchMatchesFn = opts.fetchMatches || fetchOfficialMatchesServer;
 
   const sessions = new Map();
   const fusedIps = new Map(); // ip -> expiresAtMs (48h whole-computer network ban)
@@ -392,7 +397,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
 
     inFlightMatchLoad = (async () => {
       try {
-        const res = await fetchOfficialMatchesServer(snapshotFile);
+        const res = await fetchMatchesFn(snapshotFile);
         cachedMatches = res.matches.map((nm) => {
           const existing = cachedMatches.find(
             (em) => em.id === nm.id || em.matchNumStr === nm.matchNumStr
@@ -673,6 +678,60 @@ export function createSecurityAndQuantGateway(opts = {}) {
     return { matches, syncNote, initialPicks, workspace };
   }
 
+  /**
+   * 统一加密信封路由管线（集中收拢：大小限制读取 -> AES-GCM/HMAC 防重放验签拆封 -> 会话/角色鉴权 -> 自动加密回封 -> 统一异常映射）
+   */
+  async function runEncryptedRoute(
+    req,
+    res,
+    ip,
+    {
+      endpoint,
+      maxBodyBytes = 64_000,
+      requireAuth = false,
+      requireSuperAdmin = false,
+      fallbackError = '加密信封校验失败或会话已过期',
+      onDomainError = null,
+    },
+    handler
+  ) {
+    let sess;
+    let data;
+    let authCtx;
+    try {
+      const body = await readJsonBody(req, maxBodyBytes);
+      const unsealed = verifyAndUnseal(req, body, ip, endpoint);
+      sess = unsealed.sess;
+      data = unsealed.data;
+      authCtx = requireAuth || requireSuperAdmin ? requireSessionAuth(req, sess, ip) : { user: null };
+      if (requireSuperAdmin && (!authCtx.user || authCtx.user.role !== 'superadmin')) {
+        sendJson(res, 403, { ok: false, error: '无权访问该资源' });
+        return true;
+      }
+    } catch (err) {
+      sendGatewayCatchError(res, err, fallbackError);
+      return true;
+    }
+
+    try {
+      const outcome = await handler({ sess, data, user: authCtx.user });
+      if (outcome && outcome.__handled) {
+        return true;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        payload: encryptEnvelope(sess.aesKey, outcome),
+      });
+    } catch (err) {
+      if (onDomainError) {
+        onDomainError(err);
+      } else {
+        sendGatewayCatchError(res, err, fallbackError);
+      }
+    }
+    return true;
+  }
+
   async function handleRequest(req, res, pathname) {
     pruneExpired(false);
 
@@ -680,7 +739,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (pathname === '/api/health' && req.method === 'GET') {
       sendJson(res, 200, {
         ok: true,
-        version: '2.1.0',
+        version: '2.2.0',
         uptimeSec: Math.round(process.uptime()),
       });
       return true;
@@ -907,89 +966,89 @@ export function createSecurityAndQuantGateway(opts = {}) {
         sendJson(res, 404, { ok: false, error: 'Auth service not enabled' });
         return true;
       }
-      try {
-        const body = await readJsonBody(req, 32_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'auth/login');
-        const effectiveHwFp =
-          sess.hwFp ||
-          (typeof data?.hwFp === 'string' && /^[0-9a-f]{32,64}$/i.test(data.hwFp)
-            ? data.hwFp.toLowerCase()
-            : null);
-        if (effectiveHwFp) sess.hwFp = effectiveHwFp;
-        const bindFp = effectiveHwFp || sess.deviceBindFp || deriveFallbackClientFp(req, ip);
-        sess.deviceBindFp = bindFp;
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'auth/login',
+          maxBodyBytes: 32_000,
+          fallbackError: '登录安全校验失败，请刷新重试',
+        },
+        async ({ sess, data }) => {
+          const effectiveHwFp =
+            sess.hwFp ||
+            (typeof data?.hwFp === 'string' && /^[0-9a-f]{32,64}$/i.test(data.hwFp)
+              ? data.hwFp.toLowerCase()
+              : null);
+          if (effectiveHwFp) sess.hwFp = effectiveHwFp;
+          const bindFp = effectiveHwFp || sess.deviceBindFp || deriveFallbackClientFp(req, ip);
+          sess.deviceBindFp = bindFp;
 
-        if (effectiveHwFp && fusedHwFps.has(effectiveHwFp)) {
-          const exp = fusedHwFps.get(effectiveHwFp);
-          if (ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
-            setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
-            schedulePersistBans();
+          if (effectiveHwFp && fusedHwFps.has(effectiveHwFp)) {
+            const exp = fusedHwFps.get(effectiveHwFp);
+            if (ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
+              setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
+              schedulePersistBans();
+            }
+            sendJson(res, 403, {
+              ok: false,
+              fused: true,
+              unlockAt: exp,
+              error: '熔断天平已触发：当前电脑硬件指纹处于 48 小时封禁期',
+            });
+            return { __handled: true };
           }
-          sendJson(res, 403, {
-            ok: false,
-            fused: true,
-            unlockAt: exp,
-            error: '熔断天平已触发：当前电脑硬件指纹处于 48 小时封禁期',
+
+          const loginRes = accountManager.authenticateLogin({
+            username: data?.username,
+            password: data?.password,
+            hwFp: bindFp,
+            deviceLabel: data?.deviceLabel,
+            ip,
           });
-          return true;
-        }
 
-        const loginRes = accountManager.authenticateLogin({
-          username: data?.username,
-          password: data?.password,
-          hwFp: bindFp,
-          deviceLabel: data?.deviceLabel,
-          ip,
-        });
+          if (!loginRes.ok) {
+            sendJson(res, loginRes.statusCode || 401, {
+              ok: false,
+              lockedRemainingSec: loginRes.lockedRemainingSec || 0,
+              error: loginRes.error,
+            });
+            return { __handled: true };
+          }
 
-        if (!loginRes.ok) {
-          sendJson(res, loginRes.statusCode || 401, {
-            ok: false,
-            lockedRemainingSec: loginRes.lockedRemainingSec || 0,
-            error: loginRes.error,
-          });
-          return true;
-        }
+          sess.authToken = loginRes.authToken;
+          const { matches, syncNote } = await ensureMatchesLoaded(false);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+          const bundle = buildInitialWorkspaceBundle(sessionMatches, syncNote);
 
-        sess.authToken = loginRes.authToken;
-        const { matches, syncNote } = await ensureMatchesLoaded(false);
-        const sessionMatches = mergeSessionAlerts(matches, sess);
-        const bundle = buildInitialWorkspaceBundle(sessionMatches, syncNote);
-
-        res.setHeader(
-          'Set-Cookie',
-          `yj_auth_tok=${loginRes.authToken}${cookieSuffix(req, 31536000)}`
-        );
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, {
+          res.setHeader(
+            'Set-Cookie',
+            `yj_auth_tok=${loginRes.authToken}${cookieSuffix(req, 31536000)}`
+          );
+          return {
             authenticated: true,
             user: loginRes.user,
             authToken: loginRes.authToken,
             ...bundle,
-          }),
-        });
-      } catch (err) {
-        sendGatewayCatchError(res, err, '登录安全校验失败，请刷新重试');
-      }
-      return true;
+          };
+        }
+      );
     }
 
     // 8c. Encrypted Explicit Logout (/api/auth/logout)
     if (pathname === '/api/auth/logout' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req, 16_000);
-        const { sess } = verifyAndUnseal(req, body, ip, 'auth/logout');
-        sess.authToken = null;
-        res.setHeader('Set-Cookie', `yj_auth_tok=${cookieSuffix(req, 0)}`);
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, { loggedOut: true }),
-        });
-      } catch (err) {
-        sendGatewayCatchError(res, err, '退出操作异常');
-      }
-      return true;
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        { endpoint: 'auth/logout', maxBodyBytes: 16_000, fallbackError: '退出操作异常' },
+        async ({ sess }) => {
+          sess.authToken = null;
+          res.setHeader('Set-Cookie', `yj_auth_tok=${cookieSuffix(req, 0)}`);
+          return { loggedOut: true };
+        }
+      );
     }
 
     // 8d. Encrypted Route-C Hybrid Iron-Cage Manual Q&A (/api/manual/ask)
@@ -998,49 +1057,50 @@ export function createSecurityAndQuantGateway(opts = {}) {
         sendJson(res, 404, { ok: false, error: 'Manual QA not enabled' });
         return true;
       }
-      try {
-        const body = await readJsonBody(req, 32_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'manual/ask');
-        const { user } = requireSessionAuth(req, sess, ip);
-        const qaRes = await manualQaEngine.answerManualQuestion({
-          userId: user.id,
-          question: data?.question,
-          ip,
-        });
-
-        // >4 violations auto-locks account AND immediately triggers 48h whole-computer meltdown fuse!
-        if (qaRes.accountLocked) {
-          const unlockAt = tripFuse(ip, sess.sid, fuseDurationMs, true, sess.hwFp);
-          res.setHeader('Set-Cookie', [
-            'yj_auth_tok=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
-            'yj_sh_sid=fused; Path=/; HttpOnly; SameSite=Lax; Max-Age=172800',
-          ]);
-          sendJson(res, 403, {
-            ok: false,
-            accountLocked: true,
-            fused: true,
-            unlockAt,
-            error: qaRes.error,
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'manual/ask',
+          maxBodyBytes: 32_000,
+          requireAuth: true,
+          fallbackError: '说明书助手繁忙，请稍后再试',
+        },
+        async ({ sess, data, user }) => {
+          const qaRes = await manualQaEngine.answerManualQuestion({
+            userId: user.id,
+            question: data?.question,
+            ip,
           });
-          return true;
-        }
 
-        if (!qaRes.ok) {
-          sendJson(res, qaRes.statusCode || 400, {
-            ok: false,
-            error: qaRes.error,
-          });
-          return true;
-        }
+          if (qaRes.accountLocked) {
+            const unlockAt = tripFuse(ip, sess.sid, fuseDurationMs, true, sess.hwFp);
+            res.setHeader('Set-Cookie', [
+              'yj_auth_tok=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+              'yj_sh_sid=fused; Path=/; HttpOnly; SameSite=Lax; Max-Age=172800',
+            ]);
+            sendJson(res, 403, {
+              ok: false,
+              accountLocked: true,
+              fused: true,
+              unlockAt,
+              error: qaRes.error,
+            });
+            return { __handled: true };
+          }
 
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, qaRes),
-        });
-      } catch (err) {
-        sendGatewayCatchError(res, err, '说明书助手繁忙，请稍后再试');
-      }
-      return true;
+          if (!qaRes.ok) {
+            sendJson(res, qaRes.statusCode || 400, {
+              ok: false,
+              error: qaRes.error,
+            });
+            return { __handled: true };
+          }
+
+          return qaRes;
+        }
+      );
     }
 
     // 8e. Encrypted Hidden Super-Admin RBAC Console Endpoints (/api/admin/*)
@@ -1058,205 +1118,232 @@ export function createSecurityAndQuantGateway(opts = {}) {
         sendJson(res, 404, { ok: false, error: 'Admin endpoint not found' });
         return true;
       }
-      try {
-        const body = await readJsonBody(req, 64_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, subEndpoint);
-        const { user } = requireSessionAuth(req, sess, ip);
-        if (!user || user.role !== 'superadmin') {
-          sendJson(res, 403, { ok: false, error: '无权访问该资源' });
-          return true;
-        }
-
-        if (subEndpoint === 'admin/overview') {
-          sendJson(res, 200, {
-            ok: true,
-            payload: encryptEnvelope(sess.aesKey, {
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: subEndpoint,
+          maxBodyBytes: 64_000,
+          requireSuperAdmin: true,
+          fallbackError: '管理操作鉴权失败',
+          onDomainError: (err) => {
+            const msg = String(err?.message || '');
+            const safeMsg = /[\u4e00-\u9fff]/.test(msg) ? msg : '管理操作失败';
+            sendJson(res, 400, { ok: false, error: safeMsg });
+          },
+        },
+        async ({ sess, data, user }) => {
+          if (subEndpoint === 'admin/overview') {
+            return {
               accounts: accountManager.listAccounts(),
               auditLogs: accountManager.listAuditLogs(),
               fusedIpsCount: fusedIps.size,
               fusedHwCount: fusedHwFps.size,
-            }),
-          });
-          return true;
-        }
-
-        if (subEndpoint === 'admin/create-user') {
-          const created = accountManager.createAccount(data || {});
-          sendJson(res, 200, {
-            ok: true,
-            payload: encryptEnvelope(sess.aesKey, created),
-          });
-          return true;
-        }
-
-        if (subEndpoint === 'admin/update-user') {
-          const updated = accountManager.updateAccount(data?.userId, data || {});
-          if (updated.freshAuthToken && data?.userId === user.id) {
-            sess.authToken = updated.freshAuthToken;
-            res.setHeader(
-              'Set-Cookie',
-              `yj_auth_tok=${updated.freshAuthToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`
-            );
+            };
           }
-          sendJson(res, 200, {
-            ok: true,
-            payload: encryptEnvelope(sess.aesKey, {
+          if (subEndpoint === 'admin/create-user') {
+            return accountManager.createAccount(data || {});
+          }
+          if (subEndpoint === 'admin/update-user') {
+            const updated = accountManager.updateAccount(data?.userId, data || {});
+            if (updated.freshAuthToken && data?.userId === user.id) {
+              sess.authToken = updated.freshAuthToken;
+              res.setHeader(
+                'Set-Cookie',
+                `yj_auth_tok=${updated.freshAuthToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`
+              );
+            }
+            return {
               user: updated.user,
               newPassword: updated.newPassword,
               selfAuthToken: data?.userId === user.id ? updated.freshAuthToken : undefined,
-            }),
-          });
-          return true;
+            };
+          }
+          return accountManager.deleteAccount(data?.userId);
         }
-
-        if (subEndpoint === 'admin/delete-user') {
-          const deleted = accountManager.deleteAccount(data?.userId);
-          sendJson(res, 200, {
-            ok: true,
-            payload: encryptEnvelope(sess.aesKey, deleted),
-          });
-          return true;
-        }
-      } catch (err) {
-        if (err?.authRequired || err?.fused || err?.sessionExpired) {
-          sendGatewayCatchError(res, err, '管理操作鉴权失败');
-        } else {
-          sendJson(res, 400, { ok: false, error: err?.message || '管理操作失败' });
-        }
-      }
-      return true;
+      );
     }
 
     // 9. Encrypted Black-Box Quant Workspace Compute
     if (pathname === '/api/quant/compute' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req, 400_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'quant/compute');
-        requireSessionAuth(req, sess, ip);
-        const { matches } = await ensureMatchesLoaded(false);
-        const sessionMatches = mergeSessionAlerts(matches, sess);
-        const workspace = evaluateQuantWorkspace(data, sessionMatches);
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, workspace),
-        });
-      } catch (err) {
-        sendGatewayCatchError(res, err, '加密信封校验失败或会话已过期');
-      }
-      return true;
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'quant/compute',
+          maxBodyBytes: 400_000,
+          requireAuth: true,
+          fallbackError: '加密信封校验失败或会话已过期',
+        },
+        async ({ sess, data }) => {
+          const { matches } = await ensureMatchesLoaded(false);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+          return evaluateQuantWorkspace(data, sessionMatches);
+        }
+      );
     }
 
     // 10. Encrypted Live Official Odds Sync
     if (pathname === '/api/quant/sync' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req, 400_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'quant/sync');
-        requireSessionAuth(req, sess, ip);
-        const { matches, syncNote } = await ensureMatchesLoaded(true);
-        const sessionMatches = mergeSessionAlerts(matches, sess);
-        const workspace = evaluateQuantWorkspace(data?.workspaceParams || {}, sessionMatches);
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, {
-            matches: sessionMatches,
-            syncNote,
-            workspace,
-          }),
-        });
-      } catch (err) {
-        sendGatewayCatchError(res, err, '同步校验失败');
-      }
-      return true;
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'quant/sync',
+          maxBodyBytes: 400_000,
+          requireAuth: true,
+          fallbackError: '同步校验失败',
+        },
+        async ({ sess, data }) => {
+          const { matches, syncNote } = await ensureMatchesLoaded(true);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+          const workspace = evaluateQuantWorkspace(data?.workspaceParams || {}, sessionMatches);
+          return { matches: sessionMatches, syncNote, workspace };
+        }
+      );
     }
 
-    // 11. Encrypted Match Diagnosis (verify cryptographic envelope + auth + AI quota BEFORE calling API!)
+    // 11. Encrypted Match Diagnosis (server builds authoritative odds/vig/xG context from matchId)
     if (pathname === '/api/xiaogao/analyze' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req, 200_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'xiaogao/analyze');
-        const { user } = requireSessionAuth(req, sess, ip);
-        const qCheck = consumeUserAiQuota(user, res);
-        if (!qCheck.ok) return true;
-        const apiKey = getApiKey();
-        if (!apiKey || !xiaogaoService) {
-          sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
-          return true;
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'xiaogao/analyze',
+          maxBodyBytes: 200_000,
+          requireAuth: true,
+          fallbackError: '安全会话已失效',
+          onDomainError: (err) => {
+            sendJson(res, err?.statusCode || 502, {
+              ok: false,
+              error: '服务繁忙，请稍后再试',
+            });
+          },
+        },
+        async ({ sess, data, user }) => {
+          const apiKey = getApiKey();
+          if (!apiKey || !xiaogaoService) {
+            sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
+            return { __handled: true };
+          }
+
+          const { matches } = await ensureMatchesLoaded(false);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+          const targetMatch = sessionMatches.find((m) => m.id === String(data?.matchId || ''));
+          if (!targetMatch) {
+            sendJson(res, 400, { ok: false, error: '未找到指定赛事盘口' });
+            return { __handled: true };
+          }
+          const reqCtx = buildSingleMatchDiagnosisContext(targetMatch, data?.userNote);
+
+          const qCheck = consumeUserAiQuota(user, res);
+          if (!qCheck.ok) return { __handled: true };
+
+          const alert = await xiaogaoService.analyzeMatch(apiKey, reqCtx);
+          setBoundedMap(sess.aiAlerts, String(targetMatch.id), alert, 32);
+          return { alert, aiRemaining: qCheck.remaining };
         }
-        const alert = await xiaogaoService.analyzeMatch(apiKey, data);
-        if (data?.matchId) {
-          setBoundedMap(sess.aiAlerts, String(data.matchId), alert, 32);
-        }
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, { alert, aiRemaining: qCheck.remaining }),
-        });
-      } catch (err) {
-        if (err?.authRequired || err?.fused || err?.sessionExpired) {
-          sendGatewayCatchError(res, err, '安全会话已失效');
-        } else {
-          sendJson(res, err.statusCode || 502, {
-            ok: false,
-            error: '服务繁忙，请稍后再试',
-          });
-        }
-      }
-      return true;
+      );
     }
 
-    // 12. Encrypted Multi-Match Joint Parlay Diagnosis (/api/xiaogao/analyze-combo)
+    // 12. Encrypted Multi-Match Joint Parlay Diagnosis (server resolves matches & parlay report)
     if (pathname === '/api/xiaogao/analyze-combo' && req.method === 'POST') {
-      try {
-        const body = await readJsonBody(req, 350_000);
-        const { sess, data } = verifyAndUnseal(req, body, ip, 'xiaogao/analyze-combo');
-        const { user } = requireSessionAuth(req, sess, ip);
-        const qCheck = consumeUserAiQuota(user, res);
-        if (!qCheck.ok) return true;
-        const apiKey = getApiKey();
-        if (!apiKey || !xiaogaoService?.analyzeComboMatches) {
-          sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
-          return true;
-        }
-        const comboReport = await xiaogaoService.analyzeComboMatches(apiKey, data);
-        if (Array.isArray(comboReport?.perMatch)) {
-          for (const pm of comboReport.perMatch) {
-            const matchedCanonical = cachedMatches.find(
-              (cm) =>
-                cm.id === pm?.matchId ||
-                cm.matchNumStr === pm?.matchId ||
-                (pm?.matchTitle && pm.matchTitle.includes(cm.matchNumStr))
-            );
-            const canonicalId = matchedCanonical?.id || pm?.matchId;
-            if (canonicalId) {
-              setBoundedMap(
-                sess.aiAlerts,
-                String(canonicalId),
-                {
-                  level: comboReport.level === 'high' ? 'high' : 'medium',
-                  tag: pm.tag,
-                  summary: pm.note,
-                  priceInStatus: pm.priceInStatus,
-                  source: comboReport.source,
-                },
-                32
+      return runEncryptedRoute(
+        req,
+        res,
+        ip,
+        {
+          endpoint: 'xiaogao/analyze-combo',
+          maxBodyBytes: 350_000,
+          requireAuth: true,
+          fallbackError: '安全会话已失效',
+          onDomainError: (err) => {
+            sendJson(res, err?.statusCode || 502, {
+              ok: false,
+              error: '服务繁忙，请稍后再试',
+            });
+          },
+        },
+        async ({ sess, data, user }) => {
+          const apiKey = getApiKey();
+          if (!apiKey || !xiaogaoService?.analyzeComboMatches) {
+            sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
+            return { __handled: true };
+          }
+
+          const { matches } = await ensureMatchesLoaded(false);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+
+          const rawIds = Array.isArray(data?.matchIds) ? data.matchIds : [];
+          const idSet = new Set(rawIds.filter(Boolean).map((x) => String(x)));
+          const targetMatches = sessionMatches.filter((m) => idSet.has(m.id)).slice(0, 8);
+          if (targetMatches.length < 2) {
+            sendJson(res, 400, { ok: false, error: '请至少选择 2 场比赛再发起多场联合会诊' });
+            return { __handled: true };
+          }
+          const sourceMode = data?.sourceMode === 'custom' ? 'custom' : 'picked';
+          const ws =
+            sourceMode === 'picked'
+              ? evaluateQuantWorkspace(
+                  {
+                    picks: Array.isArray(data?.picks) ? data.picks : [],
+                    multiple: data?.multiple ?? 5,
+                    passSpec: data?.passSpec ?? { mode: 'auto' },
+                    planSpec: data?.planSpec ?? null,
+                    subjectiveDeltaPct: Number(data?.subjectiveDeltaPct) || 0,
+                    simVoidFirstMatch: Boolean(data?.simVoidFirstMatch),
+                    targetIds: targetMatches.map((m) => m.id),
+                    budget: 100,
+                    stance: 'objective',
+                    unlockFullAgg: false,
+                  },
+                  sessionMatches
+                )
+              : null;
+          const comboCtx = buildComboDiagnosisContext({
+            sourceMode,
+            targetMatches,
+            picks: Array.isArray(data?.picks) ? data.picks : [],
+            effectiveReport: ws?.effectiveReport ?? null,
+            userNote: data?.userNote,
+          });
+
+          const qCheck = consumeUserAiQuota(user, res);
+          if (!qCheck.ok) return { __handled: true };
+
+          const comboReport = await xiaogaoService.analyzeComboMatches(apiKey, comboCtx);
+          if (Array.isArray(comboReport?.perMatch)) {
+            for (const pm of comboReport.perMatch) {
+              const matchedCanonical = sessionMatches.find(
+                (cm) =>
+                  cm.id === pm?.matchId ||
+                  (Boolean(cm.matchNumStr) && cm.matchNumStr === pm?.matchId) ||
+                  Boolean(cm.matchNumStr && pm?.matchTitle && pm.matchTitle.includes(cm.matchNumStr))
               );
+              const canonicalId = matchedCanonical?.id || pm?.matchId;
+              if (canonicalId) {
+                setBoundedMap(
+                  sess.aiAlerts,
+                  String(canonicalId),
+                  {
+                    level: comboReport.level === 'high' ? 'high' : 'medium',
+                    tag: pm.tag,
+                    summary: pm.note,
+                    priceInStatus: pm.priceInStatus,
+                    source: comboReport.source,
+                  },
+                  32
+                );
+              }
             }
           }
+          return { comboReport, aiRemaining: qCheck.remaining };
         }
-        sendJson(res, 200, {
-          ok: true,
-          payload: encryptEnvelope(sess.aesKey, { comboReport, aiRemaining: qCheck.remaining }),
-        });
-      } catch (err) {
-        if (err?.authRequired || err?.fused || err?.sessionExpired) {
-          sendGatewayCatchError(res, err, '安全会话已失效');
-        } else {
-          sendJson(res, err.statusCode || 502, {
-            ok: false,
-            error: '服务繁忙，请稍后再试',
-          });
-        }
-      }
-      return true;
+      );
     }
 
     return false;

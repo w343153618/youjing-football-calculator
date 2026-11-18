@@ -77,6 +77,124 @@ function extractJsonObject(raw) {
   return { summary: cleaned.slice(0, 160) };
 }
 
+function formatTrendArrow(trend) {
+  if (trend === 1) return '↑涨';
+  if (trend === -1) return '↓降';
+  return '';
+}
+
+function formatOptionsSummary(options = [], includePrefix = true) {
+  return options
+    .map(
+      (o) =>
+        `${o.label}@${Number(o.odds).toFixed(2)}${formatTrendArrow(o.trend)}(${
+          includePrefix ? '真率' : ''
+        }${Math.round((Number(o.fairProb) || 0) * 100)}%)`
+    )
+    .join(' / ');
+}
+
+function formatMatchTrends(m) {
+  const hadTrends = (m?.pools?.HAD?.options || [])
+    .filter((o) => o.trend !== 0)
+    .map((o) => `主盘${o.label}${formatTrendArrow(o.trend)}`);
+  const hhadTrends = (m?.pools?.HHAD?.options || [])
+    .filter((o) => o.trend !== 0)
+    .map((o) => `${o.label}${formatTrendArrow(o.trend)}`);
+  return [...hadTrends, ...hhadTrends].join('、');
+}
+
+/**
+ * 服务端权威盘口上下文构建（单场点诊）：直接基于服务端赛事快照生成完整排雷输入，杜绝前端拼接提示上下文
+ */
+export function buildSingleMatchDiagnosisContext(m, userNote) {
+  if (!m) throw new Error('Match not found');
+  const mq = m.microQuant || {};
+  const hadVig = ((Number(m.pools?.HAD?.vig) || 0) * 100).toFixed(1);
+  const hafuVig = ((Number(m.pools?.HAFU?.vig) || 0) * 100).toFixed(1);
+  return {
+    matchId: m.id,
+    matchNumStr: m.matchNumStr,
+    league: m.league,
+    kickoff: m.kickoff,
+    home: m.home,
+    away: m.away,
+    hadOdds: formatOptionsSummary(m.pools?.HAD?.options || [], true),
+    hhadOdds: formatOptionsSummary(m.pools?.HHAD?.options || [], true),
+    vigSummary: `胜平负抽水${hadVig}%，半全场抽水${hafuVig}%`,
+    xgSummary: `${m.home} ${mq.homeXG ?? '-'} : ${mq.awayXG ?? '-'} ${m.away} (总预期${mq.totalXG ?? '-'}球)`,
+    oneGoalSharePct: Math.round((Number(mq.oneGoalShareOfWins) || 0.45) * 100),
+    droppingTrends: formatMatchTrends(m),
+    userNote,
+  };
+}
+
+/**
+ * 服务端权威盘口上下文构建（多场串关联合会诊）
+ */
+export function buildComboDiagnosisContext({
+  sourceMode = 'picked',
+  targetMatches = [],
+  picks = [],
+  effectiveReport = null,
+  userNote,
+}) {
+  const safePicks = Array.isArray(picks) ? picks : [];
+  const matchesPayload = targetMatches.slice(0, 8).map((m) => {
+    const mq = m.microQuant || {};
+    const mpicks =
+      sourceMode === 'picked' ? safePicks.filter((p) => p && p.matchId === m.id) : [];
+    const userPickedDesc =
+      mpicks.length > 0
+        ? mpicks
+            .map((p) => {
+              const authPool = m.pools?.[p.poolCode];
+              const authOpt = authPool?.options?.find((o) => o.key === p.optionKey);
+              if (!authPool || !authOpt) return null;
+              return `${authPool.name}[${authOpt.label}@${Number(authOpt.odds).toFixed(2)}]`;
+            })
+            .filter(Boolean)
+            .join(' + ')
+        : '';
+
+    return {
+      matchId: m.id,
+      matchNumStr: m.matchNumStr,
+      league: m.league,
+      kickoff: m.kickoff,
+      home: m.home,
+      away: m.away,
+      userPickedDesc,
+      hadOdds: formatOptionsSummary(m.pools?.HAD?.options || [], false),
+      hhadOdds: formatOptionsSummary(m.pools?.HHAD?.options || [], false),
+      xgSummary: `${m.home} ${mq.homeXG ?? '-'} : ${mq.awayXG ?? '-'} ${m.away} (合计${mq.totalXG ?? '-'}球)`,
+      oneGoalSharePct: Math.round((Number(mq.oneGoalShareOfWins) || 0.45) * 100),
+      droppingTrends: formatMatchTrends(m),
+    };
+  });
+
+  const modeDesc =
+    sourceMode === 'picked'
+      ? `混合过关已选 ${matchesPayload.length} 场实投串关联合会诊`
+      : `自由勾选 ${matchesPayload.length} 场比赛横向联合会诊`;
+
+  const orderSummary =
+    sourceMode === 'picked' && effectiveReport && effectiveReport.matchCount >= 2
+      ? `${effectiveReport.modeLabel} · 总投入¥${effectiveReport.totalCost} · 保底¥${Number(
+          effectiveReport.minPayout || 0
+        ).toFixed(1)}~最高¥${Number(effectiveReport.maxPayout || 0).toFixed(1)} · 综合暗扣抽水${
+          effectiveReport.avgVigLossPer100
+        }% · 真赚钱率${((Number(effectiveReport.realProfitProb) || 0) * 100).toFixed(1)}%`
+      : `共勾选 ${matchesPayload.length} 场比赛进行多场联合排雷把脉`;
+
+  return {
+    modeDesc,
+    orderSummary,
+    matches: matchesPayload,
+    userNote,
+  };
+}
+
 /**
  * 创建「扫地僧小高」高可用主备路由实例（开发中间件、生产服务与契约测试共用同一接缝）
  * - 永远优先调用主模型 deepseek-v4.1-flash
