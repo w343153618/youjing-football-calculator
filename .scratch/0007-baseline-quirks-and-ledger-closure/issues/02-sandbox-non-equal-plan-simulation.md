@@ -5,8 +5,8 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 在 `evaluateQuantWorkspace` 中，当 `planSpec` 为 `bonus` 或 `archetype` 时，先基于未腰斩、`0%` 偏移的基准盘口生成确定性不等倍实票行倍数，再将 `simVoidFirstMatch`（首场赔率置 `1.0`）与 `subjectiveDeltaPct`（单腿概率按 `1 + delta/100` 缩放并夹逼 `[0.02, 0.96]`）作用于该不等倍方案的每条实票行。
-- [ ] `archetypeToReport` 与 `appliedPlan` 精确重算每行的 `unitPayout`（遵循 `GB/T 8170` 四舍六入五成双与对应关数 `10万/20万/50万/100万` 法定单注封顶）、真实 `cappedClipped`（超封顶截断总额，触发封顶警告）、`returnPayout`、`netProfit`、`isUnderwater`，并按线性期望精确计算 `expectedValueRate` 与 `subjectiveEVPct`（替代原先写死的 `-vigPct/100` 近似）。
-- [ ] 在 `tests/baselineQuirks0007.test.ts` 通过 TDD 新增断言验证：启用博热保本或五流派后拉动信心滑块至 `+15%` 及开启首场腰斩时，`effectiveReport` 保持分倍模式且 `EV`、保底派奖与封顶截断精确响应变化，既有全量测试 100% 通过。
+- [x] 在 `evaluateQuantWorkspace` 中，当 `planSpec` 为 `bonus` 或 `archetype` 时，先基于未腰斩、`0%` 偏移的基准盘口生成确定性不等倍实票行倍数，再将 `simVoidFirstMatch`（首场赔率置 `1.0`）与 `subjectiveDeltaPct`（单腿概率按 `1 + delta/100` 缩放并夹逼 `[0.02, 0.96]`）作用于该不等倍方案的每条实票行。
+- [x] `archetypeToReport` 与 `appliedPlan` 精确重算每行的 `unitPayout`（遵循 `GB/T 8170` 四舍六入五成双与对应关数 `10万/20万/50万/100万` 法定单注封顶）、真实 `cappedClipped`（超封顶截断总额，触发封顶警告）、`returnPayout`、`netProfit`、`isUnderwater`，并按线性期望精确计算 `expectedValueRate` 与 `subjectiveEVPct`（替代原先写死的 `-vigPct/100` 近似）。
+- [x] 在 `tests/baselineQuirks0007.test.ts` 通过 TDD 新增断言验证：启用博热保本或五流派后拉动信心滑块至 `+15%` 及开启首场腰斩时，`effectiveReport` 保持分倍模式且 `EV`、保底派奖与封顶截断精确响应变化，既有全量测试 100% 通过。

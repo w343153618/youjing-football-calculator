@@ -5,7 +5,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** done
+**Status:** resolved
 
 - [x] `accountManager` 记录账号最近密码输错 IP，`unlock-login` 仅清理该账号自身关联 IP 的防爆破冷却，绝不清空其他陌生攻击 IP 的 `429` 冷却状态，且保持 48 小时硬件/IP 熔断库不受影响。
 - [x] 新增服务端账本深模块 `server/ledgerManager.mjs`（持久化至 `data/ledgers-db.json`，支持注入 `nowFn`），集成至 `createYouJingRuntime` 与 `securityShield.mjs`：登录与握手加密包直接下发当前成员 `ledger` 快照（新账号零写死假数据），`POST /api/ledger/mutate` 支持修改每日止损上限（跨北京时间 `00:00` 自动归零当日已用实买额）、新增实买单/模拟观察单（超当日剩余额度且未确认时返回 `STOP_LOSS_EXCEEDED` 拦截详情）、切换 `pending / won / lost` 结算状态（实买红单支持默认保底或自定义实派金额，模拟单标记 `lost` 累加 `paperSavedAmount`）及删除记录；删除成员账号时同步清理其账本。
