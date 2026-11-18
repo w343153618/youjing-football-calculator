@@ -7,6 +7,7 @@ import {
   type BonusOptMode,
   type EquivalentArbItem,
   type MatchItem,
+  type PassSelectionSpec,
   type PoolCode,
   type QuantWorkspaceParams,
   type QuantWorkspaceResponse,
@@ -174,12 +175,17 @@ export function SkinPhoneApp({
   const [bootstrapped, setBootstrapped] = useState<boolean>(false);
   const setAppliedPlan = (_: null) => setPlanSpec(null);
   const [multiple, setMultiple] = useState<number>(5);
+  const [passSpec, setPassSpec] = useState<PassSelectionSpec>({ mode: 'auto' });
+  const [barPopover, setBarPopover] = useState<null | 'pass' | 'keypad' | 'selected'>(null);
+  const [keypadFresh, setKeypadFresh] = useState<boolean>(true);
   const [syncing, setSyncing] = useState(false);
   const [syncSummary, setSyncSummary] = useState('正在建立 AES-256-GCM 加密精算会话...');
   const [syncClock, setSyncClock] = useState('21:05');
 
   // Archetype tab state
   const [targetIds, setTargetIds] = useState<string[]>([]);
+  const [anchorToRadarPicks, setAnchorToRadarPicks] = useState<boolean>(false);
+  const [syncedRadarSig, setSyncedRadarSig] = useState<string>('');
   const [budget, setBudget] = useState<number>(100);
   const [stance, setStance] = useState<UserStance>('objective');
   const [archKey, setArchKey] = useState<ArchetypeKey>('spear-shield');
@@ -240,7 +246,6 @@ export function SkinPhoneApp({
 
   const skinLinkRef = useRef<HTMLLinkElement | null>(null);
   const puckSpringRef = useRef<Spring | null>(null);
-  const slipSpringRef = useRef<Spring | null>(null);
   const prevAmtRef = useRef<number>(-1);
   const prevBalRef = useRef<number>(300);
 
@@ -322,10 +327,12 @@ export function SkinPhoneApp({
     return {
       picks: overridePicks ?? picks,
       multiple,
+      passSpec,
       subjectiveDeltaPct,
       simVoidFirstMatch,
       planSpec: overridePlanSpec !== undefined ? overridePlanSpec : planSpec,
       targetIds,
+      anchorToRadarPicks,
       budget,
       stance,
       unlockFullAgg,
@@ -481,7 +488,7 @@ export function SkinPhoneApp({
             };
           })
           .filter((x): x is SelectedPick => x !== null);
-        return synced.length >= 1 ? synced : makeUnderwaterDemoPicks(res.matches);
+        return synced;
       });
       if (toastOnDone) {
         showSpringToast(layerRef.current, `已加密同步 ${res.matches.length} 场官网实盘`);
@@ -497,6 +504,7 @@ export function SkinPhoneApp({
   // 3. Preset Demo Scenarios (restored from web version!)
   const loadPresetScenario = (kind: 'underwater' | 'synthetic' | 'parlay4' | 'hedge2') => {
     setAppliedPlan(null);
+    setPassSpec({ mode: 'auto' });
     setSimVoidFirstMatch(false);
     setSubjectiveDeltaPct(0);
     haptic(10);
@@ -672,7 +680,7 @@ export function SkinPhoneApp({
     let list = matches;
     if (activeLeagues.length > 0) list = list.filter((m) => activeLeagues.includes(m.league));
     if (mode === 'single' || qFilter === 'single') {
-      list = list.filter((m) => m.pools.HAD.single);
+      list = list.filter((m) => m.pools.HAD.single || m.pools.HHAD.single);
     } else if (qFilter === 'low-vig') {
       list = list.filter((m) => m.pools.HAD.vig < 0.1228);
     } else if (qFilter === 'drop') {
@@ -705,10 +713,12 @@ export function SkinPhoneApp({
     bootstrapped,
     picks,
     multiple,
+    passSpec,
     subjectiveDeltaPct,
     simVoidFirstMatch,
     planSpec,
     targetIds,
+    anchorToRadarPicks,
     budget,
     stance,
     unlockFullAgg,
@@ -729,25 +739,9 @@ export function SkinPhoneApp({
   const currentArch = fivePlans.find((p) => p.key === archKey) ?? fivePlans[0];
   const subjectiveEVPct = workspace.subjectiveEVPct;
 
-  // 7. Slip Spring Choreography
+  // 7. Persistent BetBar Amount Counter Choreography
   useLayoutEffect(() => {
-    if (!slipSpringRef.current) {
-      slipSpringRef.current = new Spring(150, {
-        k: 380,
-        c: 22,
-        eps: 0.05,
-        onUpdate: (v) => {
-          if (slipRef.current) slipRef.current.style.transform = `translate3d(0,${v}px,0)`;
-        },
-      });
-    }
-    const show = tab === 'match' && effectiveReport.matchCount > 0;
-    slipSpringRef.current
-      .config(show ? 380 : 520, show ? 21 : 42)
-      .set(show ? 0 : 150);
-    if (slipRef.current) slipRef.current.style.pointerEvents = show ? 'auto' : 'none';
-
-    if (show && effectiveReport.totalCost !== prevAmtRef.current) {
+    if (effectiveReport.totalCost !== prevAmtRef.current) {
       if (prevAmtRef.current >= 0 && slipAmtRef.current) {
         animateNumber(
           slipAmtRef.current,
@@ -761,7 +755,7 @@ export function SkinPhoneApp({
       }
     }
     prevAmtRef.current = effectiveReport.totalCost;
-  }, [tab, effectiveReport.matchCount, effectiveReport.totalCost]);
+  }, [tab, isDesktop, effectiveReport.matchCount, effectiveReport.totalCost]);
 
   useLayoutEffect(() => {
     const ledgerVisible = tab === 'ledger' || (isDesktop && !embedded && dkRightTab === 'ledger');
@@ -791,17 +785,106 @@ export function SkinPhoneApp({
       (p) => p.matchId === matchId && p.poolCode === poolCode && p.optionKey === optKey
     );
 
+  const isAuthoritativePickSingle = (pk: SelectedPick) => {
+    const fm = matches.find((x) => x.id === pk.matchId);
+    const pool = fm?.pools[pk.poolCode];
+    return pool ? Boolean(pk.singleAllowed) && Boolean(pool.single) : Boolean(pk.singleAllowed);
+  };
+
+  const isPoolMutexLocked = (m: MatchItem, poolCode: PoolCode) => {
+    const sameMatch = picks.filter((p) => p.matchId === m.id);
+    if (sameMatch.length === 0) return false;
+    const otherPools = sameMatch.filter((p) => p.poolCode !== poolCode);
+    if (otherPools.length === 0) return false;
+    if (mode !== 'spf' && mode !== 'single') return true;
+    if (poolCode !== 'HAD' && poolCode !== 'HHAD') return true;
+    if (otherPools.some((p) => p.poolCode !== 'HAD' && p.poolCode !== 'HHAD')) return true;
+    const candPool = m.pools[poolCode];
+    if (!candPool?.single) return true;
+    return !picks.every(isAuthoritativePickSingle);
+  };
+
   const togglePick = (
     el: HTMLElement | null,
     m: MatchItem,
     poolCode: PoolCode,
     optKey: string
   ) => {
-    setAppliedPlan(null);
     const pool = m.pools[poolCode];
-    const opt = pool.options.find((o) => o.key === optKey);
-    if (!opt) return;
+    const opt = pool?.options.find((o) => o.key === optKey);
     const currentlyOn = isPicked(m.id, poolCode, optKey);
+
+    if (!currentlyOn) {
+      if (!pool || pool.selling === false || pool.options.length === 0 || !opt || opt.odds <= 0) {
+        shudderDangerElement(el);
+        haptic(14);
+        showSpringToast(layerRef.current, '该玩法或选项当前暂未开售');
+        return;
+      }
+
+      const byMatchPools = new Map<string, Set<PoolCode>>();
+      for (const p of picks) {
+        const s = byMatchPools.get(p.matchId) ?? new Set<PoolCode>();
+        s.add(p.poolCode);
+        byMatchPools.set(p.matchId, s);
+      }
+      const existingHasCrossPool = Array.from(byMatchPools.values()).some((s) => s.size > 1);
+      const existingDistinctCount = byMatchPools.size;
+      const allSingleWithCand = picks.every(isAuthoritativePickSingle) && Boolean(pool.single);
+
+      if ((existingHasCrossPool || existingDistinctCount > 8) && !pool.single) {
+        shudderDangerElement(el);
+        haptic(16);
+        showSpringToast(
+          layerRef.current,
+          '当前选单已锁定【单关】模式，无法混入未开单关的选项！'
+        );
+        return;
+      }
+
+      const sameMatchOther = picks.filter(
+        (p) => p.matchId === m.id && p.poolCode !== poolCode
+      );
+      if (sameMatchOther.length > 0) {
+        const isSpfDualSinglePair =
+          (mode === 'spf' || mode === 'single') &&
+          allSingleWithCand &&
+          (poolCode === 'HAD' || poolCode === 'HHAD') &&
+          sameMatchOther.every((p) => p.poolCode === 'HAD' || p.poolCode === 'HHAD');
+
+        if (!isSpfDualSinglePair) {
+          shudderDangerElement(el);
+          haptic(16);
+          showSpringToast(
+            layerRef.current,
+            '同一场比赛只能选择一种玩法进行串关计算；如需改选其他玩法，请先取消本场已选项'
+          );
+          return;
+        }
+        setPassSpec({ mode: 'free', passSizes: [1] });
+        showSpringToast(
+          layerRef.current,
+          '同时选同场两个单关玩法，已按体彩规则自动锁定【单关】'
+        );
+      } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 15) {
+        shudderDangerElement(el);
+        haptic(16);
+        showSpringToast(layerRef.current, '单次选单最多不能超过 15 场赛事');
+        return;
+      } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 8) {
+        if ((mode !== 'spf' && mode !== 'single') || !allSingleWithCand) {
+          shudderDangerElement(el);
+          haptic(16);
+          showSpringToast(layerRef.current, '过关数量不能超过 8 场赛事');
+          return;
+        }
+        setPassSpec({ mode: 'free', passSizes: [1] });
+        showSpringToast(layerRef.current, '超过 8 场赛事，已按体彩规则自动锁定【单关】');
+      }
+    }
+
+    if (!opt) return;
+    setAppliedPlan(null);
     kickElement(el, currentlyOn ? -1.4 : 2.8);
 
     if (currentlyOn) {
@@ -843,12 +926,16 @@ export function SkinPhoneApp({
     const fm = matches.find((x) => x.id === arb.matchId);
     if (!fm) return;
     setAppliedPlan(null);
+    const targetPools = new Set(arb.betterPicks.map((bp) => bp.poolCode));
     setPicks((prev) => {
       const cleaned = prev.filter(
         (p) =>
           !(
             p.matchId === fm.id &&
-            arb.worsePicks.some((wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey)
+            (!targetPools.has(p.poolCode) ||
+              arb.worsePicks.some(
+                (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
+              ))
           )
       );
       const additions: SelectedPick[] = [];
@@ -882,12 +969,16 @@ export function SkinPhoneApp({
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
-    setPlanSpec({ kind: 'archetype', key: plan.key, snapshotPlan: plan });
+    setPlanSpec({ kind: 'archetype', key: plan.key, snapshotPlan: plan, scaleMultiple: 1 });
     setSimVoidFirstMatch(false);
     setSubjectiveDeltaPct(0);
+    const primaryPoolByMatch = new Map<string, PoolCode>();
     const map = new Map<string, SelectedPick>();
     plan.lines.forEach((l) =>
       l.legs.forEach((lg) => {
+        const chosenPool = primaryPoolByMatch.get(lg.matchId) ?? lg.poolCode;
+        primaryPoolByMatch.set(lg.matchId, chosenPool);
+        if (lg.poolCode !== chosenPool) return;
         const fm = matches.find((x) => x.id === lg.matchId);
         map.set(`${lg.matchId}-${lg.poolCode}-${lg.optionKey}`, {
           matchId: lg.matchId,
@@ -912,10 +1003,34 @@ export function SkinPhoneApp({
     setTab('audit');
   };
 
+  const restoreEqualMultiple = () => {
+    setAppliedPlan(null);
+    setPicks((prev) => {
+      const poolByMatch = new Map<string, PoolCode>();
+      return prev.filter((p) => {
+        const firstPool = poolByMatch.get(p.matchId) ?? p.poolCode;
+        poolByMatch.set(p.matchId, firstPool);
+        return p.poolCode === firstPool;
+      });
+    });
+    playTactileCue('tap-off');
+    showSpringToast(layerRef.current, '已恢复默认等倍统配');
+  };
+
+  const scaleAppliedPlanBy = (factor: number) => {
+    setPlanSpec((prev) => {
+      if (!prev) return prev;
+      const nextScale = Math.max(1, Math.min(50, Math.round((prev.scaleMultiple ?? 1) * factor)));
+      return { ...prev, scaleMultiple: nextScale };
+    });
+    haptic(8);
+    showSpringToast(layerRef.current, `智能分倍方案已扩倍 ×${factor}`);
+  };
+
   // 三模智能奖金优化引擎（委托给服务端加密黑盒运算 + 触发流光与琶音触感）
   const applyBonusOptimization = (optMode: BonusOptMode, triggerEl?: HTMLElement | null) => {
     if (manualReport.combos.length === 0) return;
-    setPlanSpec({ kind: 'bonus', optMode });
+    setPlanSpec({ kind: 'bonus', optMode, scaleMultiple: 1 });
     playTactileCue('optimize-arpeggio');
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 22);
@@ -929,10 +1044,20 @@ export function SkinPhoneApp({
     playTactileCue('defuse-celebrate');
   };
 
+  const applyDirectMultiple = (nextRaw: number) => {
+    setAppliedPlan(null);
+    const clamped = Math.max(1, Math.min(999, Math.round(nextRaw) || 1));
+    setMultiple(clamped);
+    if (mulValRef.current) {
+      fxOf(mulValRef.current).scale.kick(1.4);
+    }
+    haptic(4);
+  };
+
   const stepMultiple = (delta: number) => {
     setAppliedPlan(null);
     setMultiple((prev) => {
-      const next = Math.max(1, Math.min(99, prev + delta));
+      const next = Math.max(1, Math.min(999, prev + delta));
       if (mulValRef.current) {
         const f = fxOf(mulValRef.current);
         f.ty.jump(delta > 0 ? 8 : -8);
@@ -942,6 +1067,100 @@ export function SkinPhoneApp({
       haptic(5);
       return next;
     });
+  };
+
+  const toggleFreePassSize = (
+    size: number,
+    enabled: boolean,
+    disabledReason: string | null
+  ) => {
+    if (!enabled) {
+      haptic(12);
+      showSpringToast(layerRef.current, disabledReason || '当前选单不满足该过关条件');
+      return;
+    }
+    setAppliedPlan(null);
+    haptic(6);
+    const currentActive = manualReport.activeComboCode
+      ? []
+      : manualReport.availableFreePasses.filter((f) => f.active).map((f) => f.size);
+    const exists = currentActive.includes(size);
+    if (exists && currentActive.length <= 1) {
+      showSpringToast(layerRef.current, '至少需保留一种过关方式');
+      return;
+    }
+    const nextSizes = exists
+      ? currentActive.filter((s) => s !== size)
+      : [...currentActive, size].sort((a, b) => a - b);
+    setPassSpec({ mode: 'free', passSizes: nextSizes });
+  };
+
+  const selectComboPass = (
+    code: string,
+    enabled: boolean,
+    disabledReason: string | null
+  ) => {
+    if (!enabled) {
+      haptic(12);
+      showSpringToast(layerRef.current, disabledReason || '当前选单不可选该多串组合');
+      return;
+    }
+    setAppliedPlan(null);
+    haptic(7);
+    if (manualReport.activeComboCode === code) {
+      setPassSpec({ mode: 'auto' });
+    } else {
+      setPassSpec({ mode: 'combo', comboCode: code });
+    }
+  };
+
+  const handleModeChange = (nextMode: MatchMode) => {
+    setMode(nextMode);
+    if (nextMode !== 'spf' && nextMode !== 'single') {
+      const poolByMatch = new Map<string, PoolCode>();
+      let trimmed = false;
+      const cleaned = picks.filter((p) => {
+        const firstPool = poolByMatch.get(p.matchId) ?? p.poolCode;
+        poolByMatch.set(p.matchId, firstPool);
+        if (p.poolCode !== firstPool) {
+          trimmed = true;
+          return false;
+        }
+        return true;
+      });
+      if (trimmed) {
+        setPicks(cleaned);
+        setPassSpec({ mode: 'auto' });
+        showSpringToast(layerRef.current, '切换至混合/单项过关，同场仅保留单一玩法');
+      }
+    }
+  };
+
+  const currentRadarSig = useMemo(
+    () =>
+      picks
+        .map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
+        .sort()
+        .join('|'),
+    [picks]
+  );
+
+  const syncRadarPicksToArchetypes = () => {
+    if (pickedMatchIds.length === 0) {
+      haptic(12);
+      showSpringToast(layerRef.current, '请先在【赛事雷达】点选至少 1 场想买的球队');
+      if (!isDesktop || embedded) setTab('match');
+      return;
+    }
+    const syncedIds = pickedMatchIds.slice(0, 8);
+    setTargetIds(syncedIds);
+    setAnchorToRadarPicks(true);
+    setSyncedRadarSig(currentRadarSig);
+    playTactileCue('optimize-arpeggio');
+    showSpringToast(
+      layerRef.current,
+      `已匹配赛事雷达 ${syncedIds.length} 场已选球队并锚定推荐方向`
+    );
   };
 
   const recordToLedger = (kind: 'live' | 'paper') => {
@@ -1240,6 +1459,9 @@ export function SkinPhoneApp({
                             <TeamCrest name={m.away} />
                           </div>
                         </div>
+                        {m.pools.TTG.selling === false || m.pools.TTG.options.length === 0 ? (
+                          <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, m, 'TTG', 'closed')}>总进球玩法暂未开售</button>
+                        ) : (
                         <div className="grid-keys c4">
                           {m.pools.TTG.options.map((opt) => (
                             <button
@@ -1247,7 +1469,9 @@ export function SkinPhoneApp({
                               type="button"
                               data-spring="0.86"
                               onClick={(e) => togglePick(e.currentTarget, m, 'TTG', opt.key)}
-                              className={`key cell num ${isPicked(m.id, 'TTG', opt.key) ? 'on' : ''}`}
+                              className={`key cell num ${isPicked(m.id, 'TTG', opt.key) ? 'on' : ''} ${
+                                isPoolMutexLocked(m, 'TTG') ? 'mutex-lock' : ''
+                              }`}
                             >
                               <small>
                                 {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
@@ -1259,6 +1483,7 @@ export function SkinPhoneApp({
                             </button>
                           ))}
                         </div>
+                        )}
                       </>
                     ) : mode === 'bqc' ? (
                       <>
@@ -1277,6 +1502,9 @@ export function SkinPhoneApp({
                             <TeamCrest name={m.away} />
                           </div>
                         </div>
+                        {m.pools.HAFU.selling === false || m.pools.HAFU.options.length === 0 ? (
+                          <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, m, 'HAFU', 'closed')}>半全场玩法暂未开售</button>
+                        ) : (
                         <div className="grid-keys c3">
                           {m.pools.HAFU.options.map((opt) => (
                             <button
@@ -1284,7 +1512,9 @@ export function SkinPhoneApp({
                               type="button"
                               data-spring="0.86"
                               onClick={(e) => togglePick(e.currentTarget, m, 'HAFU', opt.key)}
-                              className={`key cell num ${isPicked(m.id, 'HAFU', opt.key) ? 'on' : ''}`}
+                              className={`key cell num ${isPicked(m.id, 'HAFU', opt.key) ? 'on' : ''} ${
+                                isPoolMutexLocked(m, 'HAFU') ? 'mutex-lock' : ''
+                              }`}
                             >
                               <small>
                                 {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -1296,6 +1526,7 @@ export function SkinPhoneApp({
                             </button>
                           ))}
                         </div>
+                        )}
                       </>
                     ) : mode === 'bf' ? (
                       <>
@@ -1314,14 +1545,20 @@ export function SkinPhoneApp({
                             <TeamCrest name={m.away} />
                           </div>
                         </div>
+                        {m.pools.CRS.selling === false || m.pools.CRS.options.length === 0 ? (
+                          <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, m, 'CRS', 'closed')}>比分玩法暂未开售</button>
+                        ) : (
                         <button
                           type="button"
                           data-spring="0.95"
                           onClick={() => setSheet({ type: 'more', matchId: m.id })}
-                          className={`key wide num ${crsSelected.length > 0 ? 'on' : ''}`}
+                          className={`key wide num ${crsSelected.length > 0 ? 'on' : ''} ${
+                            isPoolMutexLocked(m, 'CRS') ? 'mutex-lock' : ''
+                          }`}
                         >
-                          {crsSelected.length > 0 ? crsSelected.join(' · ') : '+ 展开全部比分选项 (含真率)'}
+                          {crsSelected.length > 0 ? crsSelected.join(' · ') : '+ 展开全部 31 项比分选项 (含真率)'}
                         </button>
+                        )}
                       </>
                     ) : (
                       <div className="mgrid">
@@ -1342,22 +1579,44 @@ export function SkinPhoneApp({
                           </div>
                         </div>
                         <div className="rq num">
-                          <div>0</div>
-                          <div>{(m.pools.HHAD.goalLine ?? '-1').replace('-', '−')}</div>
+                          <div>
+                            {m.pools.HAD.selling === false || m.pools.HAD.options.length === 0 ? (
+                              <span className="rq-unsold">未</span>
+                            ) : (
+                              <>
+                                <span>0</span>
+                                {m.pools.HAD.single && <i className="rq-sgl">单</i>}
+                              </>
+                            )}
+                          </div>
+                          <div>
+                            {m.pools.HHAD.selling === false || m.pools.HHAD.options.length === 0 ? (
+                              <span className="rq-unsold">未</span>
+                            ) : (
+                              <>
+                                <span>{(m.pools.HHAD.goalLine ?? '-1').replace('-', '−')}</span>
+                                {m.pools.HHAD.single && <i className="rq-sgl">单</i>}
+                              </>
+                            )}
+                          </div>
                         </div>
                         {[0, 1, 2].map((idx) => {
                           const hadOpt = m.pools.HAD.options[idx];
                           const hhadOpt = m.pools.HHAD.options[idx];
+                          const hadOpen = m.pools.HAD.selling !== false && Boolean(hadOpt);
+                          const hhadOpen = m.pools.HHAD.selling !== false && Boolean(hhadOpt);
                           return (
                             <div key={idx} className="kcol">
-                              {hadOpt && (
+                              {hadOpen && hadOpt ? (
                                 <button
                                   type="button"
                                   data-spring="0.88"
                                   onClick={(e) =>
                                     togglePick(e.currentTarget, m, 'HAD', hadOpt.key)
                                   }
-                                  className={`key k2 num ${isPicked(m.id, 'HAD', hadOpt.key) ? 'on' : ''}`}
+                                  className={`key k2 num ${isPicked(m.id, 'HAD', hadOpt.key) ? 'on' : ''} ${
+                                    isPoolMutexLocked(m, 'HAD') ? 'mutex-lock' : ''
+                                  }`}
                                 >
                                   <span className="ko">
                                     {hadOpt.odds.toFixed(2)}
@@ -1365,21 +1624,41 @@ export function SkinPhoneApp({
                                   </span>
                                   <span className="kp">{(hadOpt.fairProb * 100).toFixed(0)}%</span>
                                 </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => togglePick(e.currentTarget, m, 'HAD', 'closed')}
+                                  className="key k2 unsold num"
+                                >
+                                  <span className="ko">—</span>
+                                  <span className="kp">未开售</span>
+                                </button>
                               )}
-                              {hhadOpt && (
+                              {hhadOpen && hhadOpt ? (
                                 <button
                                   type="button"
                                   data-spring="0.88"
                                   onClick={(e) =>
                                     togglePick(e.currentTarget, m, 'HHAD', hhadOpt.key)
                                   }
-                                  className={`key k2 num ${isPicked(m.id, 'HHAD', hhadOpt.key) ? 'on' : ''}`}
+                                  className={`key k2 num ${isPicked(m.id, 'HHAD', hhadOpt.key) ? 'on' : ''} ${
+                                    isPoolMutexLocked(m, 'HHAD') ? 'mutex-lock' : ''
+                                  }`}
                                 >
                                   <span className="ko">
                                     {hhadOpt.odds.toFixed(2)}
                                     {renderTrendArrow(hhadOpt.trend)}
                                   </span>
                                   <span className="kp">{(hhadOpt.fairProb * 100).toFixed(0)}%</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => togglePick(e.currentTarget, m, 'HHAD', 'closed')}
+                                  className="key k2 unsold num"
+                                >
+                                  <span className="ko">—</span>
+                                  <span className="kp">未开售</span>
                                 </button>
                               )}
                             </div>
@@ -1408,8 +1687,73 @@ export function SkinPhoneApp({
     </>
   );
 
+  const cappedRadarIds = useMemo(() => pickedMatchIds.slice(0, 8), [pickedMatchIds]);
+  const isTargetMatchingRadar = useMemo(
+    () =>
+      cappedRadarIds.length > 0 &&
+      cappedRadarIds.length === resolvedTargets.length &&
+      cappedRadarIds.every((id) => resolvedTargets.some((t) => t.id === id)) &&
+      currentRadarSig === syncedRadarSig,
+    [cappedRadarIds, resolvedTargets, currentRadarSig, syncedRadarSig]
+  );
+  const isFullySyncedToRadar = anchorToRadarPicks && isTargetMatchingRadar;
+
   const archetypesContent = currentArch ? (
     <>
+              {/* 🎯 新增：对齐扫地僧小高排雷舱的「一键匹配赛事雷达已选球队」联动总入口 */}
+              <div
+                className={`card radar-sync-card enter ${isFullySyncedToRadar ? 'synced' : ''}`}
+                style={{ marginBottom: 10 }}
+              >
+                <div className="radar-sync-head">
+                  <span className="radar-sync-title">
+                    <span>🎯 赛事雷达选队联动锚定</span>
+                  </span>
+                  <span className="qpill num">
+                    {isFullySyncedToRadar
+                      ? `✅ 已锚定雷达选队 (${cappedRadarIds.length}场)`
+                      : pickedMatchIds.length > 0
+                        ? `雷达已选 ${pickedMatchIds.length} 场`
+                        : '纯盘面客观模式'}
+                  </span>
+                </div>
+                <div className="radar-sync-sub">
+                  {isFullySyncedToRadar
+                    ? '当前五大流派已严格围绕你在【赛事雷达】亲手点选的球队/让球方向做精算配单，绝不违背你的看球意向反推对立面。'
+                    : '和小高排雷一样，点击下方按钮即可一键读取你在最左栏【赛事雷达】选过的比赛与球队方向，生成专属五流派方案。'}
+                </div>
+                <div className="radar-sync-acts">
+                  <button
+                    type="button"
+                    data-spring="0.92"
+                    className={`key main-btn num ${isFullySyncedToRadar ? 'on' : 'dark'}`}
+                    onClick={syncRadarPicksToArchetypes}
+                  >
+                    {pickedMatchIds.length === 0
+                      ? '🎯 一键匹配赛事雷达已选球队（去选球）'
+                      : isFullySyncedToRadar
+                        ? `✅ 已匹配赛事雷达已选球队（${cappedRadarIds.length} 场）`
+                        : anchorToRadarPicks && !isTargetMatchingRadar
+                          ? `🔄 雷达选单已更新（${cappedRadarIds.length} 场），点此同步`
+                          : `🎯 一键匹配赛事雷达已选球队（已选 ${cappedRadarIds.length} 场）`}
+                  </button>
+                  {anchorToRadarPicks && (
+                    <button
+                      type="button"
+                      data-spring="0.88"
+                      className="key sm"
+                      onClick={() => {
+                        haptic(5);
+                        setAnchorToRadarPicks(false);
+                        showSpringToast(layerRef.current, '已切回纯客观盘面自由选池');
+                      }}
+                    >
+                      纯盘面重选
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* 🩺 Restored: 买法不划算纠偏医生实时对比卡 */}
               {hasSuboptimalManual && (
                 <div className="card enter" style={{ marginBottom: 10 }}>
@@ -1438,6 +1782,7 @@ export function SkinPhoneApp({
                       className="help-pill"
                       onClick={() => {
                         haptic(6);
+                        setAnchorToRadarPicks(false);
                         setTargetIds(matches.slice(0, 8).map((x) => x.id));
                       }}
                     >
@@ -1450,6 +1795,7 @@ export function SkinPhoneApp({
                       className="help-pill"
                       onClick={() => {
                         haptic(5);
+                        setAnchorToRadarPicks(false);
                         setTargetIds(matches.slice(0, 2).map((x) => x.id));
                       }}
                     >
@@ -1469,6 +1815,7 @@ export function SkinPhoneApp({
                       onClick={(e) => {
                         kickElement(e.currentTarget, 2.2);
                         haptic(6);
+                        setAnchorToRadarPicks(false);
                         setTargetIds((prev) => {
                           const valid = matches
                             .filter((x) => prev.includes(x.id))
@@ -1681,11 +2028,7 @@ export function SkinPhoneApp({
                           type="button"
                           data-spring="0.88"
                           className="key"
-                          onClick={() => {
-                            setAppliedPlan(null);
-                            playTactileCue('tap-off');
-                            showSpringToast(layerRef.current, '已恢复默认等倍统配');
-                          }}
+                          onClick={restoreEqualMultiple}
                         >
                           还原等倍
                         </button>
@@ -1911,6 +2254,30 @@ export function SkinPhoneApp({
                       <div className="note-box">
                         <strong>💡 合成单关参谋：</strong>
                         {effectiveReport.syntheticHint}
+                        {effectiveReport.matchCount === 1 &&
+                          !effectiveReport.canCheckout &&
+                          effectiveReport.syntheticRescuePicks &&
+                          effectiveReport.syntheticRescuePicks.length > 0 && (
+                            <div className="note-act">
+                              <button
+                                type="button"
+                                data-spring="0.88"
+                                className="key mini dark"
+                                onClick={() => {
+                                  const nextPicks = effectiveReport.syntheticRescuePicks;
+                                  if (nextPicks && nextPicks.length > 0) {
+                                    setAppliedPlan(null);
+                                    setPassSpec({ mode: 'auto' });
+                                    setPicks(nextPicks);
+                                    playTactileCue('optimize-arpeggio');
+                                    showSpringToast(layerRef.current, '已一键切换为本场半全场合成单关');
+                                  }
+                                }}
+                              >
+                                ⚡ 一键切换半全场合成单关
+                              </button>
+                            </div>
+                          )}
                       </div>
                     )}
 
@@ -2054,7 +2421,7 @@ export function SkinPhoneApp({
 
                     {!appliedPlan && (
                       <div className="row">
-                        <span className="lbl">统配倍数 (单票上限99倍)</span>
+                        <span className="lbl">统配倍数 (1~999倍 · 超99倍自动拆票)</span>
                         <div className="stepper">
                           <button
                             type="button"
@@ -2064,9 +2431,19 @@ export function SkinPhoneApp({
                           >
                             −
                           </button>
-                          <span ref={mulValRef} className="num mv">
-                            {multiple}
-                          </span>
+                          <button
+                            type="button"
+                            className="key mini num"
+                            onClick={() => {
+                              setKeypadFresh(true);
+                              setBarPopover('keypad');
+                            }}
+                          >
+                            <span ref={mulValRef} className="num mv">
+                              {multiple}
+                            </span>
+                            <span>倍 ⌨️</span>
+                          </button>
                           <button
                             type="button"
                             className="key sq"
@@ -2474,9 +2851,13 @@ export function SkinPhoneApp({
                 </div>
 
                 <div className="sec num">
-                  总进球 · 单关 (返还率 {(sheetMatch.pools.TTG.payoutRatio * 100).toFixed(1)}% · 抽水{' '}
+                  总进球 · {sheetMatch.pools.TTG.single ? '单关' : '仅串关'} · 最高6关 (返还率{' '}
+                  {(sheetMatch.pools.TTG.payoutRatio * 100).toFixed(1)}% · 抽水{' '}
                   {(sheetMatch.pools.TTG.vig * 100).toFixed(1)}%)
                 </div>
+                {(sheetMatch.pools.TTG.selling === false || sheetMatch.pools.TTG.options.length === 0) && (
+                  <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'TTG', 'closed')}>总进球玩法暂未开售</button>
+                )}
                 <div className="grid-keys c4 pop">
                   {sheetMatch.pools.TTG.options.map((opt) => (
                     <button
@@ -2484,7 +2865,9 @@ export function SkinPhoneApp({
                       type="button"
                       data-spring="0.86"
                       onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'TTG', opt.key)}
-                      className={`key cell num ${isPicked(sheetMatch.id, 'TTG', opt.key) ? 'on' : ''}`}
+                      className={`key cell num ${isPicked(sheetMatch.id, 'TTG', opt.key) ? 'on' : ''} ${
+                        isPoolMutexLocked(sheetMatch, 'TTG') ? 'mutex-lock' : ''
+                      }`}
                     >
                       <small>
                         {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
@@ -2498,9 +2881,13 @@ export function SkinPhoneApp({
                 </div>
 
                 <div className="sec num" style={{ marginTop: 16 }}>
-                  半全场 · 单关 (返还率 {(sheetMatch.pools.HAFU.payoutRatio * 100).toFixed(1)}% · 抽水{' '}
+                  半全场 · {sheetMatch.pools.HAFU.single ? '单关' : '仅串关'} · 最高4关 (返还率{' '}
+                  {(sheetMatch.pools.HAFU.payoutRatio * 100).toFixed(1)}% · 抽水{' '}
                   {(sheetMatch.pools.HAFU.vig * 100).toFixed(1)}%)
                 </div>
+                {(sheetMatch.pools.HAFU.selling === false || sheetMatch.pools.HAFU.options.length === 0) && (
+                  <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'HAFU', 'closed')}>半全场玩法暂未开售</button>
+                )}
                 <div className="grid-keys c3 pop">
                   {sheetMatch.pools.HAFU.options.map((opt) => (
                     <button
@@ -2508,7 +2895,9 @@ export function SkinPhoneApp({
                       type="button"
                       data-spring="0.86"
                       onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'HAFU', opt.key)}
-                      className={`key cell num ${isPicked(sheetMatch.id, 'HAFU', opt.key) ? 'on' : ''}`}
+                      className={`key cell num ${isPicked(sheetMatch.id, 'HAFU', opt.key) ? 'on' : ''} ${
+                        isPoolMutexLocked(sheetMatch, 'HAFU') ? 'mutex-lock' : ''
+                      }`}
                     >
                       <small>
                         {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -2523,7 +2912,8 @@ export function SkinPhoneApp({
 
                 <div className="sec-row">
                   <span className="sec num">
-                    比分 · 单关 (抽水 {(sheetMatch.pools.CRS.vig * 100).toFixed(1)}%)
+                    比分 · {sheetMatch.pools.CRS.single ? '单关' : '仅串关'} · 最高4关 (抽水{' '}
+                    {(sheetMatch.pools.CRS.vig * 100).toFixed(1)}%)
                   </span>
                   <SpringSegmented
                     small
@@ -2540,9 +2930,15 @@ export function SkinPhoneApp({
                     skinKey={skin}
                   />
                 </div>
+                {(sheetMatch.pools.CRS.selling === false || sheetMatch.pools.CRS.options.length === 0) && (
+                  <button type="button" className="key wide unsold num" onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'CRS', 'closed')}>比分玩法暂未开售</button>
+                )}
                 <div ref={bfGridRef} className="grid-keys c4 pop">
                   {sheetMatch.pools.CRS.options
                     .filter((o) => {
+                      if (o.label === '胜其它' || o.key === 's1sh') return bfGrp === 'win';
+                      if (o.label === '平其它' || o.key === 's1sd') return bfGrp === 'draw';
+                      if (o.label === '负其它' || o.key === 's1sa') return bfGrp === 'lose';
                       const [h, a] = o.label.split(':').map(Number);
                       if (bfGrp === 'win') return h > a;
                       if (bfGrp === 'draw') return h === a;
@@ -2554,7 +2950,9 @@ export function SkinPhoneApp({
                         type="button"
                         data-spring="0.86"
                         onClick={(e) => togglePick(e.currentTarget, sheetMatch, 'CRS', opt.key)}
-                        className={`key cell num ${isPicked(sheetMatch.id, 'CRS', opt.key) ? 'on' : ''}`}
+                        className={`key cell num ${isPicked(sheetMatch.id, 'CRS', opt.key) ? 'on' : ''} ${
+                          isPoolMutexLocked(sheetMatch, 'CRS') ? 'mutex-lock' : ''
+                        }`}
                       >
                         <small>
                           {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -2721,11 +3119,19 @@ export function SkinPhoneApp({
                       .join('×'),
                     right: `${l.modeLabel} · ${l.multiple}倍 (¥${l.cost})`,
                   }))
-                : picks.map((p) => ({
-                    key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,
-                    left: `${p.matchNumStr} ${p.home}vs${p.away}`,
-                    right: `${p.poolName}[${p.optionLabel}] × ${multiple}倍`,
-                  }))
+                : manualReport.tickets && manualReport.tickets.length > 0
+                  ? manualReport.tickets.map((tk) => ({
+                      key: tk.id,
+                      left: (tk.legs ?? [])
+                        .map((g) => `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`)
+                        .join('×'),
+                      right: `${(tk.legs?.length ?? 1) === 1 ? '单关' : `${tk.legs?.length}串1`} · ${multiple}倍 (¥${multiple * 2})`,
+                    }))
+                  : picks.map((p) => ({
+                      key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,
+                      left: `${p.matchNumStr} ${p.home}vs${p.away}`,
+                      right: `${p.poolName}[${p.optionLabel}] × ${multiple}倍`,
+                    }))
               ).map((row, _, allRows) => {
                 const done = Boolean(checkedPosterLines[row.key]);
                 return (
@@ -2925,6 +3331,592 @@ export function SkinPhoneApp({
         </div>
   );
 
+  const isCompactMobileBar = tab === 'archetypes' || tab === 'ledger';
+
+  const betPopoverNode = barPopover ? (
+    <>
+      <div className="bet-pop-mask" onClick={() => setBarPopover(null)} />
+      <div className={`bet-pop ${!isDesktop && isCompactMobileBar ? 'from-compact' : ''}`}>
+        {barPopover === 'pass' && (
+          <>
+            <div className="bet-pop-head">
+              <div>
+                <b>过关方式选择</b>
+                <div className="small num">
+                  已选 {manualReport.matchCount} 场 · 最高可串 {manualReport.poolCap} 关
+                  {manualReport.poolCap <= 4
+                    ? '（含比分/半全场法定上限4关）'
+                    : manualReport.poolCap <= 6
+                      ? '（含总进球法定上限6关）'
+                      : ''}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  className="key mini"
+                  onClick={() => {
+                    setAppliedPlan(null);
+                    setPassSpec({ mode: 'auto' });
+                    haptic(5);
+                  }}
+                >
+                  自动最优
+                </button>
+                <button
+                  type="button"
+                  className="key mini dark"
+                  onClick={() => setBarPopover(null)}
+                >
+                  完成
+                </button>
+              </div>
+            </div>
+
+            {appliedPlan && (
+              <div className="note-box" style={{ marginBottom: 8 }}>
+                当前处于【{appliedPlan.shortTab}】不等倍智能拆票态；点选下方任一过关方式将自动切回手动过关。
+              </div>
+            )}
+
+            <div className="sec">自由过关（支持多选叠加拆票，如同时勾 2关+3关）</div>
+            <div className="pass-grid8 num">
+              {(manualReport.availableFreePasses.length > 0
+                ? manualReport.availableFreePasses
+                : [1, 2, 3, 4, 5, 6, 7, 8].map((sz) => ({
+                    size: sz,
+                    label: sz === 1 ? '单关' : `${sz}关`,
+                    enabled: false,
+                    active: false,
+                    disabledReason: '请先选比赛',
+                  }))
+              ).map((fp) => (
+                <button
+                  key={fp.size}
+                  type="button"
+                  onClick={() => toggleFreePassSize(fp.size, fp.enabled, fp.disabledReason)}
+                  className={`pass-cell ${fp.active && !appliedPlan ? 'on' : ''} ${
+                    !fp.enabled ? 'dis' : ''
+                  }`}
+                >
+                  <b>{fp.label}</b>
+                  <small>
+                    {fp.active && !appliedPlan
+                      ? '✓ 已选'
+                      : fp.enabled
+                        ? fp.size === 1
+                          ? '单场即买'
+                          : `${fp.size}串1`
+                        : fp.disabledReason || '不可选'}
+                  </small>
+                </button>
+              ))}
+            </div>
+
+            <div className="sec" style={{ marginTop: 12 }}>
+              多串容错过关（中国体彩官方 M串N 错场防爆快选）
+            </div>
+            {manualReport.availableComboPasses.length === 0 ? (
+              <div className="note-box">
+                选满 <strong>3 ~ 8 场</strong>比赛后，此处自动解锁官方标准多串容错组合（如{' '}
+                <strong>3串3 / 3串4 / 4串6 / 4串11 / 5串26 / 6串57</strong>），黑 1~2 场仍可回血保命。
+              </div>
+            ) : (
+              <div className="combo-pass-grid num">
+                {manualReport.availableComboPasses.map((cp) => (
+                  <button
+                    key={cp.code}
+                    type="button"
+                    onClick={() => selectComboPass(cp.code, cp.enabled, cp.disabledReason)}
+                    className={`pass-cell ${cp.active && !appliedPlan ? 'on' : ''} ${
+                      !cp.enabled ? 'dis' : ''
+                    }`}
+                  >
+                    <b>
+                      {cp.label} · {cp.actualBets ?? cp.baseBets}注
+                    </b>
+                    <small>{cp.enabled ? cp.desc : cp.disabledReason || '超玩法上限'}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {barPopover === 'keypad' && (
+          <>
+            <div className="bet-pop-head">
+              <div>
+                <b className="num">投倍设置 · 当前 {multiple} 倍</b>
+                <div className="small num">
+                  共 {effectiveReport.betCount} 注 · 应付总额 ¥{effectiveReport.totalCost}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="key mini dark"
+                onClick={() => setBarPopover(null)}
+              >
+                确定
+              </button>
+            </div>
+
+            {multiple > 99 && (
+              <div className="note-box" style={{ marginBottom: 8 }}>
+                💡 体彩终端单张实票最高 99 倍，当前 <strong>{multiple} 倍</strong> 将自动拆为{' '}
+                <strong>{Math.ceil(multiple / 99)} 张</strong>同号票出票，总赔付不变。
+              </div>
+            )}
+            {effectiveReport.totalCost > 20000 ? (
+              <div className="note-box alert" style={{ marginBottom: 8 }}>
+                <strong>🚨 超单次订单法定上限：</strong>当前总额 ¥{effectiveReport.totalCost} 已超体彩单次订单硬上限 ¥20,000，请调低倍数或分单。
+              </div>
+            ) : effectiveReport.totalCost > 6000 ? (
+              <div className="note-box" style={{ marginBottom: 8 }}>
+                <strong>⚠️ 大额理性提示：</strong>单次投入已超 ¥6,000，请结合止损账本理性控制仓位。
+              </div>
+            ) : null}
+
+            <div className="kpad-presets num">
+              {[1, 5, 10, 20, 50, 99].map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  onClick={() => {
+                    applyDirectMultiple(preset);
+                    setKeypadFresh(true);
+                  }}
+                  className={`key mini num ${multiple === preset && !appliedPlan ? 'on' : ''}`}
+                  style={{ width: '100%' }}
+                >
+                  {preset}倍
+                </button>
+              ))}
+            </div>
+
+            <div className="kpad-grid num">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
+                <button
+                  key={digit}
+                  type="button"
+                  className="kpad-key"
+                  onClick={() => {
+                    const next = keypadFresh ? digit : Math.min(999, multiple * 10 + digit);
+                    applyDirectMultiple(Math.max(1, next));
+                    setKeypadFresh(false);
+                  }}
+                >
+                  {digit}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="kpad-key fn"
+                onClick={() => {
+                  applyDirectMultiple(1);
+                  setKeypadFresh(true);
+                }}
+              >
+                重置1倍
+              </button>
+              <button
+                type="button"
+                className="kpad-key"
+                onClick={() => {
+                  if (keypadFresh) {
+                    applyDirectMultiple(1);
+                  } else {
+                    applyDirectMultiple(Math.max(1, Math.min(999, multiple * 10)));
+                  }
+                }}
+              >
+                0
+              </button>
+              <button
+                type="button"
+                className="kpad-key fn"
+                onClick={() => {
+                  const next = Math.floor(multiple / 10);
+                  applyDirectMultiple(next >= 1 ? next : 1);
+                  setKeypadFresh(next < 1);
+                }}
+              >
+                ⌫ 退格
+              </button>
+            </div>
+          </>
+        )}
+
+        {barPopover === 'selected' && (
+          <>
+            <div className="bet-pop-head">
+              <b>已选场次速览（{pickedMatchIds.length} 场）</b>
+              <div style={{ display: 'flex', gap: 6 }}>
+                {picks.length > 0 && (
+                  <button
+                    type="button"
+                    className="key mini"
+                    onClick={() => {
+                      setAppliedPlan(null);
+                      setPassSpec({ mode: 'auto' });
+                      setPicks([]);
+                      setBarPopover(null);
+                    }}
+                  >
+                    全部清空
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="key mini dark"
+                  onClick={() => setBarPopover(null)}
+                >
+                  关闭
+                </button>
+              </div>
+            </div>
+            {pickedMatchIds.length === 0 ? (
+              <div className="note-box">暂未选择比赛，请在【赛事雷达】点击赔率按钮选球。</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {pickedMatchIds.map((mid) => {
+                  const mp = picks.filter((p) => p.matchId === mid);
+                  const f = mp[0];
+                  return (
+                    <div key={mid} className="combo-item num">
+                      <div className="cdesc">
+                        <b>
+                          {f.matchNumStr} {f.home} vs {f.away}
+                        </b>
+                        <small>
+                          {mp.map((x) => `${x.poolName}[${x.optionLabel}@${x.odds.toFixed(2)}]`).join(' · ')}
+                        </small>
+                      </div>
+                      <button
+                        type="button"
+                        className="key mini"
+                        onClick={() => {
+                          setAppliedPlan(null);
+                          setPicks((prev) => prev.filter((x) => x.matchId !== mid));
+                        }}
+                      >
+                        移除
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </>
+  ) : null;
+
+  const desktopBetDockNode = (
+    <footer ref={slipRef} className="dk-betdock">
+      <div className="dk-betdock-inner">
+        <div className="dk-bet-left">
+          <button
+            type="button"
+            className="key sm"
+            disabled={picks.length === 0}
+            style={{ opacity: picks.length === 0 ? 0.45 : 1 }}
+            onClick={() => {
+              setAppliedPlan(null);
+              setPassSpec({ mode: 'auto' });
+              setPicks([]);
+              haptic(12);
+            }}
+          >
+            🗑 清空
+          </button>
+          <button
+            type="button"
+            className="key sm num"
+            onClick={() => setBarPopover((p) => (p === 'selected' ? null : 'selected'))}
+          >
+            已选 {effectiveReport.matchCount} 场 ▴
+          </button>
+          <button
+            type="button"
+            className={`key sm num ${
+              barPopover === 'pass' || (effectiveReport.matchCount > 0 && effectiveReport.canCheckout)
+                ? 'dark'
+                : ''
+            }`}
+            onClick={() => setBarPopover((p) => (p === 'pass' ? null : 'pass'))}
+          >
+            🎯 过关：{effectiveReport.matchCount === 0 ? '过关选择' : effectiveReport.modeLabel} ▴
+          </button>
+
+          {appliedPlan ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 4 }}>
+              <span className="qpill hi num">
+                ⚖️ 智能分倍中 (总¥{effectiveReport.totalCost})
+              </span>
+              <button
+                type="button"
+                className="key mini num"
+                onClick={() => scaleAppliedPlanBy(2)}
+              >
+                ×2倍扩仓
+              </button>
+              <button type="button" className="key mini" onClick={restoreEqualMultiple}>
+                还原等倍
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 4 }}>
+              <span className="small" style={{ margin: 0 }}>
+                倍数
+              </span>
+              <button type="button" className="key sq" onClick={() => stepMultiple(-1)}>
+                −
+              </button>
+              <button
+                type="button"
+                className={`key sm num ${barPopover === 'keypad' ? 'on' : ''}`}
+                onClick={() => {
+                  setKeypadFresh(true);
+                  setBarPopover((p) => (p === 'keypad' ? null : 'keypad'));
+                }}
+              >
+                <b>{multiple}倍</b>
+                <span style={{ fontSize: 11, opacity: 0.75 }}>⌨️</span>
+              </button>
+              <button type="button" className="key sq" onClick={() => stepMultiple(1)}>
+                +
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="dk-bet-mid num">
+          <div className="dk-bet-kpi">
+            <b>
+              应付 <span ref={slipAmtRef}>¥{effectiveReport.totalCost}</span>{' '}
+              <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-3)' }}>
+                ({effectiveReport.betCount}注)
+              </span>
+            </b>
+            <small
+              style={{
+                color:
+                  !effectiveReport.canCheckout && effectiveReport.matchCount > 0
+                    ? 'var(--live)'
+                    : effectiveReport.underwaterCount > 0
+                      ? 'var(--live)'
+                      : undefined,
+              }}
+            >
+              {effectiveReport.matchCount === 0
+                ? '在左栏【赛事雷达】点选赔率，随时调整过关方式与倍数'
+                : !effectiveReport.canCheckout
+                  ? effectiveReport.ruleBlockReason || '未开单关 · 还差 1 场凑 2串1'
+                  : effectiveReport.underwaterCount > 0
+                    ? `保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · ⚠️ ${effectiveReport.underwaterCount}组假中奖 · 真赚率 ${(effectiveReport.realProfitProb * 100).toFixed(1)}%`
+                    : `真实保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · 真赚率 ${(effectiveReport.realProfitProb * 100).toFixed(1)}%`}
+            </small>
+          </div>
+        </div>
+
+        <div className="dk-bet-right">
+          <button
+            type="button"
+            className="key sm dark"
+            disabled={!effectiveReport.canCheckout}
+            style={{ opacity: effectiveReport.canCheckout ? 1 : 0.45 }}
+            onClick={() => setSheet({ type: 'poster' })}
+          >
+            🧾 查看实票核对单
+          </button>
+        </div>
+      </div>
+    </footer>
+  );
+
+  const mobileBetBarNode = isCompactMobileBar ? (
+    <div ref={slipRef} className="m-betbar compact num">
+      <button
+        type="button"
+        className={`m-bet-pill ${
+          !effectiveReport.canCheckout && effectiveReport.matchCount > 0 ? 'warn' : 'hi'
+        }`}
+        onClick={() => setBarPopover((p) => (p === 'pass' ? null : 'pass'))}
+      >
+        {effectiveReport.matchCount}场 ·{' '}
+        {effectiveReport.matchCount === 0 ? '过关选择' : effectiveReport.modeLabel} ▴
+      </button>
+
+      {appliedPlan ? (
+        <div className="m-mul-grp">
+          <button type="button" className="m-mul-val" onClick={() => scaleAppliedPlanBy(2)}>
+            ×2倍扩仓
+          </button>
+          <button type="button" className="m-bet-pill" onClick={restoreEqualMultiple}>
+            还原等倍
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="m-mul-val"
+          onClick={() => {
+            setKeypadFresh(true);
+            setBarPopover((p) => (p === 'keypad' ? null : 'keypad'));
+          }}
+        >
+          {multiple}倍 ⌨️
+        </button>
+      )}
+
+      <div
+        className="m-bet-sum"
+        style={{ cursor: 'pointer' }}
+        onClick={() => {
+          if (appliedPlan) {
+            setBarPopover((p) => (p === 'pass' ? null : 'pass'));
+          } else {
+            setKeypadFresh(true);
+            setBarPopover((p) => (p === 'keypad' ? null : 'keypad'));
+          }
+        }}
+      >
+        <b ref={slipAmtRef}>
+          {appliedPlan
+            ? `⚖️智能分倍中 (总¥${effectiveReport.totalCost})`
+            : `¥${effectiveReport.totalCost}`}
+        </b>
+      </div>
+
+      <button
+        type="button"
+        className="m-bet-go"
+        onClick={() => {
+          setBarPopover(null);
+          setTab(effectiveReport.matchCount === 0 ? 'match' : 'audit');
+        }}
+      >
+        {effectiveReport.matchCount === 0 ? '选球' : '审单'}
+      </button>
+    </div>
+  ) : (
+    <div ref={slipRef} className="m-betbar num">
+      <div className="m-betbar-r1">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+          <button
+            type="button"
+            className="m-bet-trash"
+            title="清空已选"
+            onClick={() => {
+              setAppliedPlan(null);
+              setPassSpec({ mode: 'auto' });
+              setPicks([]);
+              haptic(14);
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6h16" />
+              <path d="M9 6V4h6v2" />
+              <path d="M18 6l-.8 13H6.8L6 6" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="m-bet-pill"
+            onClick={() => setBarPopover((p) => (p === 'selected' ? null : 'selected'))}
+          >
+            已选{effectiveReport.matchCount}场 ▴
+          </button>
+          <button
+            type="button"
+            className={`m-bet-pill ${
+              !effectiveReport.canCheckout && effectiveReport.matchCount > 0 ? 'warn' : 'hi'
+            }`}
+            onClick={() => setBarPopover((p) => (p === 'pass' ? null : 'pass'))}
+          >
+            🎯 {effectiveReport.matchCount === 0 ? '过关选择' : effectiveReport.modeLabel} ▴
+          </button>
+        </div>
+        <span style={{ fontSize: 10.5, opacity: 0.78, whiteSpace: 'nowrap' }}>
+          {effectiveReport.betCount}注
+          {effectiveReport.poolCap < 8 ? `·限${effectiveReport.poolCap}关` : ''}
+        </span>
+      </div>
+
+      <div className="m-betbar-r2">
+        {appliedPlan ? (
+          <div className="m-mul-grp">
+            <span className="m-bet-pill">⚖️智能分倍中(总¥{effectiveReport.totalCost})</span>
+            <button type="button" className="m-mul-val" onClick={() => scaleAppliedPlanBy(2)}>
+              ×2倍扩仓
+            </button>
+            <button type="button" className="m-bet-pill" onClick={restoreEqualMultiple}>
+              还原等倍
+            </button>
+          </div>
+        ) : (
+          <div className="m-mul-grp">
+            <button type="button" className="m-mul-step" onClick={() => stepMultiple(-1)}>
+              −
+            </button>
+            <button
+              type="button"
+              className="m-mul-val"
+              onClick={() => {
+                setKeypadFresh(true);
+                setBarPopover((p) => (p === 'keypad' ? null : 'keypad'));
+              }}
+            >
+              {multiple}倍 ⌨️
+            </button>
+            <button type="button" className="m-mul-step" onClick={() => stepMultiple(1)}>
+              +
+            </button>
+          </div>
+        )}
+
+        <div className="m-bet-sum">
+          <b ref={slipAmtRef}>¥{effectiveReport.totalCost}</b>
+          <small>
+            {effectiveReport.matchCount === 0
+              ? '点选赔率实时精算保底与真赚率'
+              : !effectiveReport.canCheckout
+                ? effectiveReport.ruleBlockReason || '未开单关·还差1场凑2串1'
+                : effectiveReport.underwaterCount > 0
+                  ? `保底¥${effectiveReport.minPayout.toFixed(0)} · ⚠️${effectiveReport.underwaterCount}注假中奖`
+                  : `保底¥${effectiveReport.minPayout.toFixed(0)}~${effectiveReport.maxPayout.toFixed(0)} · 真赚${(effectiveReport.realProfitProb * 100).toFixed(0)}%`}
+          </small>
+        </div>
+
+        <button
+          type="button"
+          className="m-bet-go"
+          onClick={() => {
+            setBarPopover(null);
+            if (tab === 'audit') {
+              if (effectiveReport.canCheckout) setSheet({ type: 'poster' });
+              else setTab('match');
+            } else {
+              setTab('audit');
+            }
+          }}
+        >
+          {tab === 'audit'
+            ? effectiveReport.canCheckout
+              ? '打票核对'
+              : '去凑场次'
+            : !effectiveReport.canCheckout && effectiveReport.matchCount === 1
+              ? '合成单关'
+              : effectiveReport.underwaterCount > 0
+                ? '审单纠偏'
+                : '五维审单'}
+        </button>
+      </div>
+    </div>
+  );
+
   const honeypotTrapNode = (
     <a
       href="/internal-export-trap"
@@ -3097,7 +4089,7 @@ export function SkinPhoneApp({
                     筛选联赛
                   </button>
                 </div>
-                <SpringSegmented options={MODE_OPTS} value={mode} onChange={setMode} skinKey={skin} />
+                <SpringSegmented options={MODE_OPTS} value={mode} onChange={handleModeChange} skinKey={skin} />
                 {filterStripNode}
               </div>
               <div className="dk-col-scroll">{matchContent}</div>
@@ -3194,6 +4186,8 @@ export function SkinPhoneApp({
             </section>
           </div>
 
+          {desktopBetDockNode}
+          {betPopoverNode}
           {overlayLayerNode}
           <UserManualModal
             open={manualOpen}
@@ -3316,7 +4310,7 @@ export function SkinPhoneApp({
                   </button>
                 </div>
               </div>
-              <SpringSegmented options={MODE_OPTS} value={mode} onChange={setMode} skinKey={skin} />
+              <SpringSegmented options={MODE_OPTS} value={mode} onChange={handleModeChange} skinKey={skin} />
               {filterStripNode}
             </>
           )}
@@ -3466,50 +4460,16 @@ export function SkinPhoneApp({
         </div>
 
         {/* Mobile Scrollable Content */}
-        <div ref={scrollRef} className="scroll">
+        <div ref={scrollRef} className={`scroll ${isCompactMobileBar ? 'compact-pad' : ''}`}>
           {tab === 'match' && matchContent}
           {tab === 'archetypes' && archetypesContent}
           {tab === 'audit' && auditContent}
           {tab === 'ledger' && ledgerContent}
         </div>
 
-        {/* Floating Slip on Match Tab */}
-        <div ref={slipRef} className="slip">
-          <button
-            type="button"
-            className="slip-trash"
-            data-spring="0.84"
-            onClick={() => {
-              setAppliedPlan(null);
-              setPicks([]);
-              haptic(14);
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 6h16" />
-              <path d="M9 6V4h6v2" />
-              <path d="M18 6l-.8 13H6.8L6 6" />
-            </svg>
-          </button>
-          <div className="slip-info">
-            <span ref={slipAmtRef} className="num slip-amt">
-              ¥{effectiveReport.totalCost}
-            </span>
-            <span className="num slip-sub">
-              {effectiveReport.underwaterCount > 0
-                ? `保底¥${effectiveReport.minPayout.toFixed(1)} · ⚠️${effectiveReport.underwaterCount}注假中奖 · 真赚${(effectiveReport.realProfitProb * 100).toFixed(0)}%`
-                : `保底¥${effectiveReport.minPayout.toFixed(1)}~${effectiveReport.maxPayout.toFixed(0)} · 真赚${(effectiveReport.realProfitProb * 100).toFixed(0)}%`}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="slip-go"
-            data-spring="0.9"
-            onClick={() => setTab('audit')}
-          >
-            {effectiveReport.underwaterCount > 0 ? '审单纠偏' : '五维审单'}
-          </button>
-        </div>
+        {/* Global Persistent Pass Selection + Multiplier Control Bar across ALL 4 Tabs */}
+        {mobileBetBarNode}
+        {betPopoverNode}
 
         {/* Bottom 4-Tab Dock */}
         <div className="dock">

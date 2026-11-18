@@ -20,6 +20,7 @@ export interface MatchPool {
   code: PoolCode;
   name: string;
   single: boolean;
+  selling?: boolean;
   goalLine?: string;
   payoutRatio: number;
   vig: number;
@@ -119,12 +120,46 @@ export interface RadarWarning {
   detail: string;
 }
 
+export type PassSelectionSpec = {
+  mode: 'auto' | 'free' | 'combo';
+  passSizes?: number[];
+  comboCode?: string;
+};
+
+export interface FreePassOption {
+  size: number;
+  label: string;
+  enabled: boolean;
+  active: boolean;
+  disabledReason: string | null;
+}
+
+export interface ComboPassOption {
+  code: string;
+  label: string;
+  sizes: number[];
+  baseBets: number;
+  actualBets?: number;
+  desc: string;
+  enabled: boolean;
+  active: boolean;
+  disabledReason: string | null;
+}
+
 export interface TruthReport {
   matchCount: number;
+  betCount: number;
   comboCount: number;
   multiple: number;
   modeLabel: string;
   canSingle: boolean;
+  canCheckout: boolean;
+  ruleBlockReason: string | null;
+  poolCap: number;
+  activePassSizes: number[];
+  activeComboCode: string | null;
+  availableFreePasses: FreePassOption[];
+  availableComboPasses: ComboPassOption[];
   hasSameMatchCrossPoolConflict: boolean;
   totalCost: number;
   minPayout: number;
@@ -142,6 +177,8 @@ export interface TruthReport {
   breakevenUpgradeCost: number | null;
   consolidatedTickets: number;
   syntheticHint: string | null;
+  syntheticRescuePicks?: SelectedPick[] | null;
+  tickets?: ComboRow[];
   combos: ComboRow[];
   warnings: RadarWarning[];
 }
@@ -224,16 +261,18 @@ export interface ProOrderInsights {
 
 export type AppliedPlanSpec =
   | null
-  | { kind: 'bonus'; optMode: BonusOptMode }
-  | { kind: 'archetype'; key: ArchetypeKey; snapshotPlan?: ArchetypePlan };
+  | { kind: 'bonus'; optMode: BonusOptMode; scaleMultiple?: number }
+  | { kind: 'archetype'; key: ArchetypeKey; snapshotPlan?: ArchetypePlan; scaleMultiple?: number };
 
 export interface QuantWorkspaceParams {
   picks: SelectedPick[];
   multiple: number;
+  passSpec?: PassSelectionSpec;
   subjectiveDeltaPct: number;
   simVoidFirstMatch: boolean;
   planSpec: AppliedPlanSpec;
   targetIds: string[];
+  anchorToRadarPicks?: boolean;
   budget: number;
   stance: UserStance;
   unlockFullAgg: boolean;
@@ -252,10 +291,18 @@ export interface QuantWorkspaceResponse {
 
 export const EMPTY_TRUTH_REPORT: TruthReport = {
   matchCount: 0,
+  betCount: 0,
   comboCount: 0,
   multiple: 5,
-  modeLabel: '安全通道初始化中',
+  modeLabel: '过关选择',
   canSingle: false,
+  canCheckout: false,
+  ruleBlockReason: null,
+  poolCap: 8,
+  activePassSizes: [],
+  activeComboCode: null,
+  availableFreePasses: [],
+  availableComboPasses: [],
   hasSameMatchCrossPoolConflict: false,
   totalCost: 0,
   minPayout: 0,
@@ -273,6 +320,7 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   breakevenUpgradeCost: null,
   consolidatedTickets: 0,
   syntheticHint: null,
+  tickets: [],
   combos: [],
   warnings: [],
 };

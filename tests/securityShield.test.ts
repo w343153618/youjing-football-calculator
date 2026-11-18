@@ -162,10 +162,29 @@ describe('Seam 4: Anti-Reader Decoy, Honeypot Fuse, Subkey Separation & AES-256-
     const { aesKey, hmacKey } = deriveSessionSubkeys(Buffer.from(bootJson.k, 'base64'));
     const bootData = decryptEnvelope(aesKey, bootJson.payload.iv, bootJson.payload.d);
     assert.ok(bootData.matches.length >= 4);
+    assert.deepEqual(bootData.initialPicks, [], 'Login bootstrap must start with clean empty picks');
+
+    const bm0 = bootData.matches[0];
+    const testPicks = ['hh', 'dh'].map((k) => {
+      const o = bm0.pools.HAFU.options.find((x: { key: string }) => x.key === k);
+      return {
+        matchId: bm0.id,
+        matchNumStr: bm0.matchNumStr,
+        home: bm0.home,
+        away: bm0.away,
+        poolCode: 'HAFU',
+        poolName: '半全场',
+        singleAllowed: true,
+        optionKey: o.key,
+        optionLabel: o.label,
+        odds: o.odds,
+        fairProb: o.fairProb,
+      };
+    });
 
     // Valid signed request bound to 'quant/compute'
     const plainReq = {
-      picks: bootData.initialPicks,
+      picks: testPicks,
       multiple: 5,
       subjectiveDeltaPct: 0,
       simVoidFirstMatch: false,

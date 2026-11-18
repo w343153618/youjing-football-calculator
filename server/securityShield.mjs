@@ -6,7 +6,6 @@ import {
   FALLBACK_MATCHES,
   evaluateQuantWorkspace,
   fetchOfficialMatchesServer,
-  makeUnderwaterDemoPicks,
 } from './quantEngine.mjs';
 
 const AI_AND_SCRAPER_UA_RE =
@@ -656,7 +655,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
   }
 
   function buildInitialWorkspaceBundle(matches, syncNote) {
-    const initialPicks = makeUnderwaterDemoPicks(matches);
+    const initialPicks = [];
     const workspace = evaluateQuantWorkspace(
       {
         picks: initialPicks,
@@ -681,7 +680,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (pathname === '/api/health' && req.method === 'GET') {
       sendJson(res, 200, {
         ok: true,
-        version: '2.0.0',
+        version: '2.1.0',
         uptimeSec: Math.round(process.uptime()),
       });
       return true;

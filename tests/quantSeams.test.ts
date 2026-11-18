@@ -80,14 +80,20 @@ describe('Seam 1: Official China Sports Lottery Banker Rounding, Statutory Caps 
     assert.equal(rep4.combos[0].unitPayout, 500_000);
     assert.equal(rep4.combos[0].cappedClipped, 1_120_000);
 
-    // 6串1: 12^6 * 2 = 5,971,968 -> cap 1,000,000
+    // 6串1 (TTG 总进球最高允许6关): 12^6 * 2 = 5,971,968 -> cap 1,000,000
     const sixMatches: MatchItem[] = Array.from({ length: 6 }, (_, idx) => ({
       ...FALLBACK_MATCHES[idx % FALLBACK_MATCHES.length],
       id: `syn-m-${idx}`,
       matchNumStr: `周六00${idx + 1}`,
     }));
     const rep6 = computeTruthReport(
-      sixMatches.map((m) => makeHighPick(m, 12)),
+      sixMatches.map((m) => ({
+        ...makeHighPick(m, 12),
+        poolCode: 'TTG' as const,
+        poolName: '总进球',
+        optionKey: 's7',
+        optionLabel: '7+球',
+      })),
       1,
       sixMatches
     );
