@@ -11,7 +11,7 @@ import {
   getCrossBrowserHardwareFingerprint,
   registerShieldSessionGetter,
   triggerSecurityMeltdown,
-} from './antiReverseShield';
+} from './antiReverseShield.ts';
 
 interface EncryptedEnvelope {
   iv: string;
@@ -55,6 +55,81 @@ export interface PublicAccountUser {
   loginLockedUntil: number | null;
 }
 
+export interface LedgerEntry {
+  id: string;
+  kind: 'live' | 'paper';
+  title: string;
+  modeLabel: string;
+  betCount: number;
+  cost: number;
+  paperRefCost: number;
+  minPayout: number;
+  maxPayout: number;
+  status: 'pending' | 'won' | 'lost';
+  settledReturn: number;
+  netProfit: number;
+  createdAt: number;
+  settledAt: number | null;
+}
+
+export interface LedgerStats {
+  liveSettledCount: number;
+  liveWonCount: number;
+  liveWinRatePct: number;
+  liveTotalStaked: number;
+  liveNetProfit: number;
+  liveRoiPct: number;
+  paperCount: number;
+  paperSavedAmount: number;
+}
+
+export interface UserLedgerSnapshot {
+  dailyLimit: number;
+  usageDate: string;
+  dailyLiveSpent: number;
+  dailyRemaining: number;
+  entries: LedgerEntry[];
+  stats: LedgerStats;
+}
+
+export type LedgerMutatePayload =
+  | { action: 'set-daily-limit'; dailyLimit: number }
+  | {
+      action: 'add-entry';
+      kind: 'live' | 'paper';
+      title: string;
+      modeLabel: string;
+      betCount: number;
+      cost: number;
+      paperRefCost?: number;
+      minPayout: number;
+      maxPayout: number;
+      forceConfirmed?: boolean;
+    }
+  | {
+      action: 'settle-entry';
+      entryId: string;
+      status: 'pending' | 'won' | 'lost';
+      settledReturn?: number;
+    }
+  | { action: 'delete-entry'; entryId: string };
+
+export type LedgerMutateResponse =
+  | {
+      ok: true;
+      entry?: LedgerEntry;
+      deletedId?: string;
+      ledger: UserLedgerSnapshot;
+    }
+  | {
+      ok: false;
+      code: 'STOP_LOSS_EXCEEDED';
+      dailyRemaining: number;
+      dailyLimit: number;
+      overBy: number;
+      ledger: UserLedgerSnapshot;
+    };
+
 export interface AuthenticatedWorkspaceBundle {
   authenticated: true;
   user: PublicAccountUser;
@@ -63,6 +138,7 @@ export interface AuthenticatedWorkspaceBundle {
   syncNote: string;
   initialPicks: SelectedPick[];
   workspace: QuantWorkspaceResponse;
+  ledger?: UserLedgerSnapshot;
 }
 
 export type BootstrapResult =
@@ -112,11 +188,27 @@ export class AuthLoginError extends Error {
 }
 
 const WECHAT_AUTH_STORAGE_KEY = 'yj_wechat_auth_v1';
+const LEDGER_CACHE_PREFIX = 'yj_ledger_cache_v1_';
 
 interface PersistedWechatAuth {
   authToken: string;
   cachedUser: PublicAccountUser;
   savedAt: number;
+}
+
+function resolveLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+    const desc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    if (desc && 'value' in desc && desc.value) {
+      return desc.value as Storage;
+    }
+  } catch {
+    // ignore storage restriction
+  }
+  return null;
 }
 
 let activeSession: SessionState | null = null;
@@ -131,7 +223,8 @@ export function registerAuthRevokedHandler(fn: ((reason: string) => void) | null
 
 export function readPersistedWechatAuth(): PersistedWechatAuth | null {
   try {
-    const raw = window.localStorage.getItem(WECHAT_AUTH_STORAGE_KEY);
+    const store = resolveLocalStorage();
+    const raw = store?.getItem(WECHAT_AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedWechatAuth;
     if (parsed && typeof parsed.authToken === 'string' && parsed.cachedUser?.id) {
@@ -145,12 +238,14 @@ export function readPersistedWechatAuth(): PersistedWechatAuth | null {
 
 export function writePersistedWechatAuth(authToken: string, user: PublicAccountUser): void {
   try {
+    const store = resolveLocalStorage();
+    if (!store) return;
     const payload: PersistedWechatAuth = {
       authToken,
       cachedUser: user,
       savedAt: Date.now(),
     };
-    window.localStorage.setItem(WECHAT_AUTH_STORAGE_KEY, JSON.stringify(payload));
+    store.setItem(WECHAT_AUTH_STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // ignore
   }
@@ -158,7 +253,61 @@ export function writePersistedWechatAuth(authToken: string, user: PublicAccountU
 
 export function clearPersistedWechatAuth(): void {
   try {
-    window.localStorage.removeItem(WECHAT_AUTH_STORAGE_KEY);
+    resolveLocalStorage()?.removeItem(WECHAT_AUTH_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+export function createEmptyLedgerSnapshot(dailyLimit = 300): UserLedgerSnapshot {
+  const bjDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+  return {
+    dailyLimit,
+    usageDate: bjDate,
+    dailyLiveSpent: 0,
+    dailyRemaining: dailyLimit,
+    entries: [],
+    stats: {
+      liveSettledCount: 0,
+      liveWonCount: 0,
+      liveWinRatePct: 0,
+      liveTotalStaked: 0,
+      liveNetProfit: 0,
+      liveRoiPct: 0,
+      paperCount: 0,
+      paperSavedAmount: 0,
+    },
+  };
+}
+
+export function readCachedUserLedger(userId: string): UserLedgerSnapshot | null {
+  try {
+    const cleanId = String(userId || '').trim();
+    if (!cleanId) return null;
+    const raw = resolveLocalStorage()?.getItem(`${LEDGER_CACHE_PREFIX}${cleanId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserLedgerSnapshot;
+    if (
+      parsed &&
+      typeof parsed.dailyLimit === 'number' &&
+      Array.isArray(parsed.entries) &&
+      parsed.stats &&
+      typeof parsed.stats === 'object'
+    ) {
+      return parsed;
+    }
+  } catch {
+    // ignore storage restriction
+  }
+  return null;
+}
+
+export function writeCachedUserLedger(userId: string, snapshot: UserLedgerSnapshot): void {
+  try {
+    const cleanId = String(userId || '').trim();
+    const store = resolveLocalStorage();
+    if (!cleanId || !store || !snapshot) return;
+    store.setItem(`${LEDGER_CACHE_PREFIX}${cleanId}`, JSON.stringify(snapshot));
   } catch {
     // ignore
   }
@@ -325,6 +474,9 @@ export async function bootstrapSecureWorkspace(forceReset = false): Promise<Boot
 
     if (unsealed.authenticated) {
       writePersistedWechatAuth(unsealed.authToken, unsealed.user);
+      if (unsealed.ledger) {
+        writeCachedUserLedger(unsealed.user.id, unsealed.ledger);
+      }
     } else if (persisted?.authToken && unsealed.authCode) {
       // Server explicitly confirmed the old token is expired/disabled/revoked/locked
       clearPersistedWechatAuth();
@@ -415,7 +567,21 @@ export async function loginWithPassword(
     deviceLabel: detectReadableDeviceLabel(),
   });
   writePersistedWechatAuth(bundle.authToken, bundle.user);
+  if (bundle.ledger) {
+    writeCachedUserLedger(bundle.user.id, bundle.ledger);
+  }
   return bundle;
+}
+
+export async function mutateServerLedger(
+  payload: LedgerMutatePayload
+): Promise<LedgerMutateResponse> {
+  const res = await postEncryptedApi<LedgerMutateResponse>('ledger/mutate', payload);
+  const uid = readPersistedWechatAuth()?.cachedUser?.id;
+  if (uid && res?.ledger) {
+    writeCachedUserLedger(uid, res.ledger);
+  }
+  return res;
 }
 
 export async function logoutSession(): Promise<void> {
