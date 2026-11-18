@@ -518,6 +518,210 @@ const RAW_FALLBACK_MATCHES = [
       ]),
     },
   },
+  {
+    id: '20261119-001',
+    matchNumStr: '周四001',
+    league: '欧国联',
+    kickoff: '01:00',
+    home: '比利时',
+    away: '意大利',
+    homeRank: '6',
+    awayRank: '9',
+    pools: {
+      HAD: buildPool('HAD', '胜平负', true, [
+        { key: 'h', label: '主胜', odds: 2.38, trend: 1 },
+        { key: 'd', label: '平', odds: 3.15, trend: -1 },
+        { key: 'a', label: '客胜', odds: 2.62, trend: -1 },
+      ]),
+      HHAD: buildPool('HHAD', '让球(-1)', true, [
+        { key: 'hh', label: '让胜', odds: 5.15, trend: 1 },
+        { key: 'hd', label: '让平', odds: 3.85, trend: 0 },
+        { key: 'ha', label: '让负', odds: 1.46, trend: -1 },
+      ], '18:10:00', '-1'),
+      HAFU: buildPool('HAFU', '半全场', true, [
+        { key: 'hh', label: '胜胜', odds: 3.95 },
+        { key: 'dh', label: '平胜', odds: 5.60 },
+        { key: 'dd', label: '平平', odds: 4.65, trend: -1 },
+        { key: 'da', label: '平负', odds: 5.85 },
+        { key: 'aa', label: '负负', odds: 4.30 },
+        { key: 'hd', label: '胜平', odds: 13.5 },
+        { key: 'ha', label: '胜负', odds: 26.0 },
+        { key: 'ah', label: '负胜', odds: 25.0 },
+        { key: 'ad', label: '负平', odds: 13.5 },
+      ]),
+      TTG: buildPool('TTG', '总进球', true, [
+        { key: 's0', label: '0球', odds: 9.20 },
+        { key: 's1', label: '1球', odds: 4.10 },
+        { key: 's2', label: '2球', odds: 3.15, trend: -1 },
+        { key: 's3', label: '3球', odds: 3.65 },
+        { key: 's4', label: '4球', odds: 6.40 },
+        { key: 's5', label: '5球', odds: 13.0 },
+        { key: 's6', label: '6球', odds: 26.0 },
+        { key: 's7', label: '7+球', odds: 35.0 },
+      ]),
+      CRS: buildPool('CRS', '比分', true, [
+        { key: '0:0', label: '0:0', odds: 9.80 },
+        { key: '1:1', label: '1:1', odds: 5.80, trend: -1 },
+        { key: '1:0', label: '1:0', odds: 7.50 },
+        { key: '2:1', label: '2:1', odds: 8.60 },
+        { key: '0:1', label: '0:1', odds: 7.90 },
+        { key: '1:2', label: '1:2', odds: 9.10 },
+      ]),
+    },
+  },
+  {
+    id: '20261119-002',
+    matchNumStr: '周四002',
+    league: '欧国联',
+    kickoff: '03:45',
+    home: '法国',
+    away: '以色列',
+    homeRank: '2',
+    awayRank: '81',
+    pools: {
+      HAD: buildPool('HAD', '胜平负', false, [
+        { key: 'h', label: '主胜', odds: 1.18, trend: 0 },
+        { key: 'd', label: '平', odds: 5.80, trend: 1 },
+        { key: 'a', label: '客胜', odds: 11.5, trend: 1 },
+      ]),
+      HHAD: buildPool('HHAD', '让球(-2)', true, [
+        { key: 'hh', label: '让胜', odds: 2.24, trend: -1 },
+        { key: 'hd', label: '让平', odds: 3.75, trend: 0 },
+        { key: 'ha', label: '让负', odds: 2.38, trend: 1 },
+      ], '18:12:00', '-2'),
+      HAFU: buildPool('HAFU', '半全场', true, [
+        { key: 'hh', label: '胜胜', odds: 1.56, trend: -1 },
+        { key: 'dh', label: '平胜', odds: 3.85 },
+        { key: 'dd', label: '平平', odds: 8.20 },
+        { key: 'da', label: '平负', odds: 19.0 },
+        { key: 'aa', label: '负负', odds: 18.0 },
+        { key: 'hd', label: '胜平', odds: 18.0 },
+        { key: 'ha', label: '胜负', odds: 50.0 },
+        { key: 'ah', label: '负胜', odds: 21.0 },
+        { key: 'ad', label: '负平', odds: 22.0 },
+      ]),
+      TTG: buildPool('TTG', '总进球', true, [
+        { key: 's0', label: '0球', odds: 15.0 },
+        { key: 's1', label: '1球', odds: 5.80 },
+        { key: 's2', label: '2球', odds: 3.75 },
+        { key: 's3', label: '3球', odds: 3.30, trend: -1 },
+        { key: 's4', label: '4球', odds: 4.70 },
+        { key: 's5', label: '5球', odds: 7.80 },
+        { key: 's6', label: '6球', odds: 14.5 },
+        { key: 's7', label: '7+球', odds: 18.0 },
+      ]),
+      CRS: buildPool('CRS', '比分', true, [
+        { key: '0:0', label: '0:0', odds: 16.0 },
+        { key: '1:0', label: '1:0', odds: 6.80 },
+        { key: '2:0', label: '2:0', odds: 5.40, trend: -1 },
+        { key: '3:0', label: '3:0', odds: 6.20 },
+        { key: '2:1', label: '2:1', odds: 8.20 },
+        { key: '1:1', label: '1:1', odds: 9.50 },
+      ]),
+    },
+  },
+  {
+    id: '20261119-003',
+    matchNumStr: '周四003',
+    league: '世南美预',
+    kickoff: '05:00',
+    home: '委内瑞拉',
+    away: '巴西',
+    homeRank: '44',
+    awayRank: '5',
+    pools: {
+      HAD: buildPool('HAD', '胜平负', true, [
+        { key: 'h', label: '主胜', odds: 5.25, trend: -1 },
+        { key: 'd', label: '平', odds: 3.60, trend: -1 },
+        { key: 'a', label: '客胜', odds: 1.52, trend: 1 },
+      ]),
+      HHAD: buildPool('HHAD', '让球(+1)', true, [
+        { key: 'hh', label: '让胜', odds: 2.16, trend: -1 },
+        { key: 'hd', label: '让平', odds: 3.30, trend: 0 },
+        { key: 'ha', label: '让负', odds: 2.72, trend: 1 },
+      ], '18:15:00', '+1'),
+      HAFU: buildPool('HAFU', '半全场', true, [
+        { key: 'aa', label: '负负', odds: 2.35, trend: 1 },
+        { key: 'da', label: '平负', odds: 3.95 },
+        { key: 'dd', label: '平平', odds: 5.10, trend: -1 },
+        { key: 'hh', label: '胜胜', odds: 8.80 },
+        { key: 'dh', label: '平胜', odds: 10.5 },
+        { key: 'hd', label: '胜平', odds: 15.0 },
+        { key: 'ha', label: '胜负', odds: 24.0 },
+        { key: 'ah', label: '负胜', odds: 42.0 },
+        { key: 'ad', label: '负平', odds: 15.0 },
+      ]),
+      TTG: buildPool('TTG', '总进球', true, [
+        { key: 's0', label: '0球', odds: 8.80 },
+        { key: 's1', label: '1球', odds: 3.95 },
+        { key: 's2', label: '2球', odds: 3.10 },
+        { key: 's3', label: '3球', odds: 3.75 },
+        { key: 's4', label: '4球', odds: 6.80 },
+        { key: 's5', label: '5球', odds: 14.0 },
+        { key: 's6', label: '6球', odds: 28.0 },
+        { key: 's7', label: '7+球', odds: 38.0 },
+      ]),
+      CRS: buildPool('CRS', '比分', true, [
+        { key: '0:0', label: '0:0', odds: 9.20 },
+        { key: '0:1', label: '0:1', odds: 5.60 },
+        { key: '0:2', label: '0:2', odds: 6.50 },
+        { key: '1:1', label: '1:1', odds: 6.40, trend: -1 },
+        { key: '1:2', label: '1:2', odds: 7.80 },
+        { key: '1:0', label: '1:0', odds: 11.0 },
+      ]),
+    },
+  },
+  {
+    id: '20261119-004',
+    matchNumStr: '周四004',
+    league: '世南美预',
+    kickoff: '07:30',
+    home: '巴拉圭',
+    away: '阿根廷',
+    homeRank: '55',
+    awayRank: '1',
+    pools: {
+      HAD: buildPool('HAD', '胜平负', true, [
+        { key: 'h', label: '主胜', odds: 4.85, trend: 0 },
+        { key: 'd', label: '平', odds: 3.35, trend: -1 },
+        { key: 'a', label: '客胜', odds: 1.62, trend: 1 },
+      ]),
+      HHAD: buildPool('HHAD', '让球(+1)', true, [
+        { key: 'hh', label: '让胜', odds: 2.02, trend: -1 },
+        { key: 'hd', label: '让平', odds: 3.18, trend: -1 },
+        { key: 'ha', label: '让负', odds: 3.05, trend: 1 },
+      ], '18:18:00', '+1'),
+      HAFU: buildPool('HAFU', '半全场', true, [
+        { key: 'aa', label: '负负', odds: 2.55 },
+        { key: 'da', label: '平负', odds: 3.85, trend: -1 },
+        { key: 'dd', label: '平平', odds: 4.60, trend: -1 },
+        { key: 'hh', label: '胜胜', odds: 8.20 },
+        { key: 'dh', label: '平胜', odds: 9.80 },
+        { key: 'hd', label: '胜平', odds: 14.5 },
+        { key: 'ha', label: '胜负', odds: 25.0 },
+        { key: 'ah', label: '负胜', odds: 40.0 },
+        { key: 'ad', label: '负平', odds: 14.5 },
+      ]),
+      TTG: buildPool('TTG', '总进球', true, [
+        { key: 's0', label: '0球', odds: 7.40, trend: -1 },
+        { key: 's1', label: '1球', odds: 3.55 },
+        { key: 's2', label: '2球', odds: 3.05 },
+        { key: 's3', label: '3球', odds: 4.10 },
+        { key: 's4', label: '4球', odds: 7.80 },
+        { key: 's5', label: '5球', odds: 16.5 },
+        { key: 's6', label: '6球', odds: 32.0 },
+        { key: 's7', label: '7+球', odds: 45.0 },
+      ]),
+      CRS: buildPool('CRS', '比分', true, [
+        { key: '0:0', label: '0:0', odds: 7.90 },
+        { key: '0:1', label: '0:1', odds: 5.10, trend: -1 },
+        { key: '0:2', label: '0:2', odds: 6.80 },
+        { key: '1:1', label: '1:1', odds: 6.10 },
+        { key: '1:2', label: '1:2', odds: 8.20 },
+        { key: '1:0', label: '1:0', odds: 10.2 },
+      ]),
+    },
+  },
 ];
 
 export const FALLBACK_MATCHES = attachMicroQuant(RAW_FALLBACK_MATCHES);
@@ -1070,7 +1274,7 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
   const cleanBudget = Math.max(20, Math.round(budgetYuan / 2) * 2);
   if (targetMatches.length === 0) return [];
 
-  const selected = targetMatches.slice(0, 4);
+  const selected = targetMatches.slice(0, 8);
   const primaryPoolOf = (m) => (m.pools.HAD.options.length >= 2 ? 'HAD' : 'HHAD');
 
   const ranked = [...selected].sort((a, b) => {
@@ -1195,14 +1399,56 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
         cleanBudget
       );
 
+  const topPrimaryLegOf = (m) => {
+    const pCode = primaryPoolOf(m);
+    const top = [...m.pools[pCode].options].sort((a, b) => b.fairProb - a.fairProb)[0];
+    return top ? makeLeg(m, pCode, top.key, stance) : makeLeg(m, 'HAFU', 'hh', stance);
+  };
+
   let faultLines = [];
   let missOneReturn = 0;
-  if (selected.length >= 3) {
-    const topLegs = selected.slice(0, 3).map((m) => {
-      const pCode = primaryPoolOf(m);
-      const top = [...m.pools[pCode].options].sort((a, b) => b.fairProb - a.fairProb)[0];
-      return top ? makeLeg(m, pCode, top.key, stance) : makeLeg(m, 'HAFU', 'hh', stance);
+  if (selected.length >= 5) {
+    // 5~8 场完整覆盖的两两 2串1 分组容错矩阵（确保第 1..N 场每一场均进入 2串1 容错网）+ 全串冲顶票
+    const allTopLegs = selected.map(topPrimaryLegOf);
+    const pairSpecs = [];
+    for (let i = 0; i < allTopLegs.length; i += 2) {
+      if (i + 1 < allTopLegs.length) {
+        pairSpecs.push({
+          id: `ft_${pairSpecs.length + 1}`,
+          roleLabel: `容错组${pairSpecs.length + 1} (第${i + 1}+${i + 2}场·2串1)`,
+          legs: [allTopLegs[i], allTopLegs[i + 1]],
+        });
+      } else {
+        // Odd count (5 or 7 matches): pair last match with match 1 so zero matches are dropped!
+        pairSpecs.push({
+          id: `ft_${pairSpecs.length + 1}`,
+          roleLabel: `容错组${pairSpecs.length + 1} (第1+${i + 1}场·2串1)`,
+          legs: [allTopLegs[0], allTopLegs[i]],
+        });
+      }
+    }
+    pairSpecs.push({
+      id: `ft_all`,
+      roleLabel: `${allTopLegs.length}场全红冲顶串`,
+      legs: allTopLegs,
     });
+    faultLines = allocateLines(pairSpecs, cleanBudget);
+    const pairPayouts = faultLines.slice(0, pairSpecs.length - 1).map((l) => l.returnPayout);
+    missOneReturn = pairPayouts.length > 0 ? Math.min(...pairPayouts) : faultLines[0].returnPayout;
+  } else if (selected.length === 4) {
+    const topLegs = selected.map(topPrimaryLegOf);
+    faultLines = allocateLines(
+      [
+        { id: 'ft1', roleLabel: '容错组① (ABC·3串1)', legs: [topLegs[0], topLegs[1], topLegs[2]] },
+        { id: 'ft2', roleLabel: '容错组② (ABD·3串1)', legs: [topLegs[0], topLegs[1], topLegs[3]] },
+        { id: 'ft3', roleLabel: '容错组③ (ACD·3串1)', legs: [topLegs[0], topLegs[2], topLegs[3]] },
+        { id: 'ft4', roleLabel: '容错组④ (BCD·3串1)', legs: [topLegs[1], topLegs[2], topLegs[3]] },
+      ],
+      cleanBudget
+    );
+    missOneReturn = Math.min(...faultLines.map((l) => l.returnPayout));
+  } else if (selected.length === 3) {
+    const topLegs = selected.slice(0, 3).map(topPrimaryLegOf);
     faultLines = allocateLines(
       [
         { id: 'ft1', roleLabel: '容错组① (AB)', legs: [topLegs[0], topLegs[1]] },
@@ -1258,6 +1504,11 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
 
   const q1 = analyzeMatchMicroQuant(m1);
   const q2 = analyzeMatchMicroQuant(m2);
+  // 总进球官方最高支持 6串1
+  const extraGoalLegs = extras.slice(0, 4).map((em) => {
+    const qEm = analyzeMatchMicroQuant(em);
+    return makeLeg(em, 'TTG', qEm.topTwoGoals[0], stance);
+  }).filter(Boolean);
   const structLines = isSingleMatch
     ? allocateLines(
         [
@@ -1270,18 +1521,18 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
         [
           {
             id: 'st1',
-            roleLabel: '双场主流进球A',
-            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[0], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[0], stance)],
+            roleLabel: `${Math.min(6, selected.length)}场主流进球A`,
+            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[0], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[0], stance), ...extraGoalLegs],
           },
           {
             id: 'st2',
-            roleLabel: '双场主流进球B',
-            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[1], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[0], stance)],
+            roleLabel: `${Math.min(6, selected.length)}场主流进球B`,
+            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[1], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[0], stance), ...extraGoalLegs],
           },
           {
             id: 'st3',
-            roleLabel: '双场主流进球C',
-            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[0], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[1], stance)],
+            roleLabel: `${Math.min(6, selected.length)}场主流进球C`,
+            legs: [makeLeg(m1, 'TTG', q1.topTwoGoals[0], stance), makeLeg(m2, 'TTG', q2.topTwoGoals[1], stance), ...extraGoalLegs],
           },
         ],
         cleanBudget
@@ -1290,6 +1541,9 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
   const aggBudget = unlockFullAgg
     ? cleanBudget
     : Math.max(16, Math.round((cleanBudget * 0.36) / 4) * 4);
+  const extraValueLegs = extras
+    .map((em) => makeLeg(em, 'HHAD', 'hd', stance) ?? topPrimaryLegOf(em))
+    .filter(Boolean);
   const assassinLines = isSingleMatch
     ? allocateLines(
         [
@@ -1310,6 +1564,19 @@ export function generateFiveArchetypes(targetMatches, budgetYuan, stance, unlock
             roleLabel: '卡盘×轮换冷平刺客',
             legs: [makeLeg(m2, 'HHAD', 'hd', stance), makeLeg(m1, 'HAD', 'd', stance)],
           },
+          ...(extraValueLegs.length > 0
+            ? [
+                {
+                  id: 'as3',
+                  roleLabel: `${selected.length}场高水卡盘长狙`,
+                  legs: [
+                    makeLeg(m1, 'HHAD', 'hd', stance),
+                    makeLeg(m2, 'HHAD', 'hd', stance),
+                    ...extraValueLegs,
+                  ],
+                },
+              ]
+            : []),
         ],
         aggBudget
       );

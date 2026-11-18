@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import {
   FALLBACK_MATCHES,
   evaluateQuantWorkspace,
@@ -22,6 +25,8 @@ const HONEYPOT_PATHS = new Set([
 const MAX_SESSIONS = 4000;
 const MAX_FUSED_SIDS = 8000;
 const MAX_FUSED_IPS = 10000;
+const MAX_FUSED_HW = 8000;
+export const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 
 export const ROBOTS_TXT = [
   '# Anti-AI & Anti-Scraper Policy',
@@ -79,26 +84,38 @@ export const DECOY_HTML = `<!doctype html>
 </body>
 </html>`;
 
-export const FUSED_HTML = `<!doctype html>
+export function renderFusedHtml(remainingMs = FORTY_EIGHT_HOURS_MS) {
+  const safeRem = Math.max(60_000, remainingMs);
+  const hrs = Math.floor(safeRem / 3_600_000);
+  const mins = Math.ceil((safeRem % 3_600_000) / 60_000);
+  const timeText = hrs > 0 ? `${hrs} 小时 ${mins % 60} 分钟` : `${mins} 分钟`;
+  return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>访问受限 · 安全熔断保护中</title>
+  <title>访问阻断 · 熔断天平 48 小时整机锁定中</title>
   <style>
-    body { background: #090d16; color: #e2e8f0; font-family: -apple-system, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 20px; text-align: center; }
-    .box { max-width: 420px; padding: 28px; border-radius: 18px; background: rgba(30,41,59,0.75); border: 1px solid rgba(239,68,68,0.4); }
-    h2 { margin: 0 0 10px; font-size: 18px; color: #f87171; }
-    p { margin: 0; font-size: 13px; color: #94a3b8; line-height: 1.6; }
+    body { background: #070a12; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; padding: 20px; text-align: center; user-select: none; }
+    .box { max-width: 450px; padding: 30px 26px; border-radius: 20px; background: rgba(15,23,42,0.88); border: 1px solid rgba(239,68,68,0.5); box-shadow: 0 28px 70px rgba(0,0,0,0.75); }
+    .ico { font-size: 34px; margin-bottom: 10px; }
+    h2 { margin: 0 0 10px; font-size: 18px; color: #f87171; letter-spacing: -0.01em; }
+    .cd { display: inline-block; margin: 10px 0 12px; padding: 5px 14px; border-radius: 99px; background: rgba(239,68,68,0.16); color: #fca5a5; font-size: 12.5px; font-weight: 600; border: 1px solid rgba(239,68,68,0.32); }
+    p { margin: 0; font-size: 12.5px; color: #94a3b8; line-height: 1.65; }
   </style>
 </head>
 <body>
   <div class="box">
-    <h2>⚠️ 安全防护已触发 · 当前会话熔断锁定</h2>
-    <p>系统检测到调试器开启、抓包重放或异常自动化抓取特征，已自动清空工作台并临时封禁当前访问通道（15 分钟后自动解除）。</p>
+    <div class="ico">⚖️</div>
+    <h2>安全熔断天平已触发 · 整机全浏览器封禁 48 小时</h2>
+    <div class="cd">剩余锁定时长：${timeText}</div>
+    <p>系统检测到开发者调试工具探测、抓包重放或逆向抓取行为，已同步锁定当前硬件设备指纹、网络出口与全部浏览器会话，更换浏览器或无痕模式均无法解除。</p>
   </div>
 </body>
 </html>`;
+}
+
+export const FUSED_HTML = renderFusedHtml(FORTY_EIGHT_HOURS_MS);
 
 export function deriveSessionSubkeys(masterKeyBuf) {
   const aesKey = crypto
@@ -295,18 +312,68 @@ function setBoundedMap(map, key, val, maxCap) {
  */
 export function createSecurityAndQuantGateway(opts = {}) {
   const snapshotFile = opts.snapshotFile || null;
+  const banStoreFile = opts.banStoreFile || null;
+  const accountManager = opts.accountManager || null;
+  const manualQaEngine = opts.manualQaEngine || null;
   const xiaogaoService = opts.xiaogaoService;
   const getApiKey = opts.getApiKey || (() => '');
   const nowFn = opts.nowFn || (() => Date.now());
-  const fuseDurationMs = opts.fuseDurationMs ?? 15 * 60 * 1000;
+  const fuseDurationMs = opts.fuseDurationMs ?? FORTY_EIGHT_HOURS_MS;
   const sessionTtlMs = opts.sessionTtlMs ?? 2 * 60 * 60 * 1000;
   const replayWindowMs = opts.replayWindowMs ?? 60_000;
   const fuseLoopback = Boolean(opts.fuseLoopback);
 
   const sessions = new Map();
-  const fusedIps = new Map(); // ip -> expiresAtMs
+  const fusedIps = new Map(); // ip -> expiresAtMs (48h whole-computer network ban)
+  const fusedHwFps = new Map(); // hwFp -> expiresAtMs (48h cross-browser GPU/screen hardware ban)
   const fusedSids = new Map(); // sid -> expiresAtMs
-  const bootstrapRateMap = new Map(); // ip -> { windowStart, count }
+
+  // Load persisted 48-hour bans across server restarts
+  if (banStoreFile && fs.existsSync(banStoreFile)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(banStoreFile, 'utf8'));
+      const bootNow = nowFn();
+      for (const [k, exp] of saved.ips || []) {
+        if (exp > bootNow) fusedIps.set(k, exp);
+      }
+      for (const [k, exp] of saved.hwFps || []) {
+        if (exp > bootNow) fusedHwFps.set(k, exp);
+      }
+      for (const [k, exp] of saved.sids || []) {
+        if (exp > bootNow) fusedSids.set(k, exp);
+      }
+    } catch {
+      // ignore corrupted ban file
+    }
+  }
+
+  let persistTimer = null;
+  let banPersistSeq = 0;
+  function schedulePersistBans() {
+    if (!banStoreFile || persistTimer) return;
+    const mySeq = ++banPersistSeq;
+    persistTimer = setTimeout(async () => {
+      try {
+        if (mySeq !== banPersistSeq) return;
+        await fsp.mkdir(path.dirname(banStoreFile), { recursive: true });
+        const tmp = `${banStoreFile}.tmp.${process.pid}.${Date.now()}`;
+        const data = JSON.stringify({
+          ips: [...fusedIps.entries()],
+          hwFps: [...fusedHwFps.entries()],
+          sids: [...fusedSids.entries()],
+        });
+        await fsp.writeFile(tmp, data, { encoding: 'utf8', mode: 0o600 });
+        await fsp.rename(tmp, banStoreFile);
+      } catch {
+        // ignore disk error
+      } finally {
+        persistTimer = null;
+      }
+    }, 150);
+    persistTimer.unref?.();
+  }
+
+  const bootstrapRateMap = new Map();
 
   let cachedMatches = FALLBACK_MATCHES;
   let cachedSyncNote = '已连接体彩实盘快照 · 支持一键刷新官网水位';
@@ -356,6 +423,9 @@ export function createSecurityAndQuantGateway(opts = {}) {
     for (const [ip, exp] of fusedIps) {
       if (now >= exp) fusedIps.delete(ip);
     }
+    for (const [fp, exp] of fusedHwFps) {
+      if (now >= exp) fusedHwFps.delete(fp);
+    }
     for (const [sid, exp] of fusedSids) {
       if (now >= exp) fusedSids.delete(sid);
     }
@@ -367,25 +437,60 @@ export function createSecurityAndQuantGateway(opts = {}) {
     }
   }
 
-  function tripFuse(ip, sid, durationMs = fuseDurationMs, banIp = true) {
+  function tripFuse(ip, sid, durationMs = fuseDurationMs, banIp = true, hwFp = null) {
     const exp = nowFn() + durationMs;
-    if (sid && sessions.has(sid)) {
+    const sess = sid ? sessions.get(sid) : null;
+    const resolvedHwFp = sess?.hwFp || (typeof hwFp === 'string' && /^[0-9a-f]{32,64}$/i.test(hwFp) ? hwFp : null);
+
+    if (sid && sess) {
       sessions.delete(sid);
       setBoundedMap(fusedSids, sid, exp, MAX_FUSED_SIDS);
+    }
+    if (resolvedHwFp) {
+      setBoundedMap(fusedHwFps, resolvedHwFp, exp, MAX_FUSED_HW);
     }
     if (banIp && ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
       setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
     }
+    schedulePersistBans();
+    return exp;
+  }
+
+  function getFusedExpiry(req, ip) {
+    pruneExpired(false);
+    const now = nowFn();
+    if (ip && fusedIps.has(ip)) {
+      const exp = fusedIps.get(ip);
+      if (exp > now) return exp;
+      fusedIps.delete(ip);
+    }
+    const cookies = parseCookies(req.headers?.cookie);
+    const sidHeader = String(req.headers?.['x-yj-sid'] || cookies.yj_sh_sid || '');
+    if (sidHeader && fusedSids.has(sidHeader)) {
+      const exp = fusedSids.get(sidHeader);
+      if (exp > now) return exp;
+      fusedSids.delete(sidHeader);
+    }
+    if (cookies.yj_sh_sid === 'fused') return now + fuseDurationMs;
+    const hwHeader = String(req.headers?.['x-yj-hw'] || '').toLowerCase();
+    if (hwHeader && fusedHwFps.has(hwHeader)) {
+      const exp = fusedHwFps.get(hwHeader);
+      if (exp <= now) {
+        fusedHwFps.delete(hwHeader);
+        return null;
+      }
+      // Contagious cross-network lock: if banned hardware switches IP/VPN, lock the new IP too!
+      if (ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
+        setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
+        schedulePersistBans();
+      }
+      return exp;
+    }
+    return null;
   }
 
   function isRequestFused(req, ip) {
-    pruneExpired(true);
-    if (ip && fusedIps.has(ip)) return true;
-    const cookies = parseCookies(req.headers?.cookie);
-    if (cookies.yj_sh_sid === 'fused') return true;
-    const sidHeader = String(req.headers?.['x-yj-sid'] || cookies.yj_sh_sid || '');
-    if (sidHeader && fusedSids.has(sidHeader)) return true;
-    return false;
+    return getFusedExpiry(req, ip) !== null;
   }
 
   function checkBootstrapRateLimit(ip) {
@@ -421,6 +526,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (!sess) {
       const err = new Error('Session expired or invalid');
       err.statusCode = 401;
+      err.sessionExpired = true;
       throw err;
     }
 
@@ -476,6 +582,95 @@ export function createSecurityAndQuantGateway(opts = {}) {
     return { sess, data };
   }
 
+  function cookieSuffix(req, maxAgeSec) {
+    const isSecure =
+      String(req.headers?.['x-forwarded-proto'] || '').toLowerCase() === 'https' ||
+      Boolean(req.socket?.encrypted);
+    return `; Path=/; HttpOnly; SameSite=Lax${isSecure ? '; Secure' : ''}; Max-Age=${maxAgeSec}`;
+  }
+
+  function deriveFallbackClientFp(req, ip) {
+    return crypto
+      .createHash('sha256')
+      .update(`fb:${ip}:${String(req.headers?.['user-agent'] || '')}`)
+      .digest('hex')
+      .slice(0, 32);
+  }
+
+  function consumeUserAiQuota(user, res) {
+    if (!accountManager || !user) return { ok: true, remaining: undefined };
+    const quota = accountManager.consumeAiQuota(user.id);
+    if (!quota.ok) {
+      sendJson(res, quota.statusCode || 403, { ok: false, error: quota.error });
+      return { ok: false, remaining: 0 };
+    }
+    return { ok: true, remaining: quota.remaining };
+  }
+
+  function extractAuthToken(req, sess) {
+    const hdr = String(req.headers?.['x-yj-auth'] || '').trim();
+    if (hdr) return hdr;
+    const cookies = parseCookies(req.headers?.cookie);
+    if (cookies.yj_auth_tok) return cookies.yj_auth_tok;
+    return sess?.authToken || '';
+  }
+
+  function requireSessionAuth(req, sess, ip) {
+    if (!accountManager) {
+      return { user: null };
+    }
+    const rawToken = extractAuthToken(req, sess);
+    const authRes = accountManager.verifyAuthTokenDetailed(rawToken, sess?.hwFp, ip);
+    if (!authRes.ok) {
+      const err = new Error(authRes.error || '请先登录授权账号');
+      err.statusCode =
+        authRes.code === 'AUTH_MISSING' || authRes.code === 'AUTH_REVOKED' ? 401 : 403;
+      err.authRequired = true;
+      err.authCode = authRes.code;
+      err.authError = authRes.error;
+      throw err;
+    }
+    sess.authToken = rawToken;
+    return { user: authRes.user };
+  }
+
+  function sendGatewayCatchError(res, err, fallbackMsg = '加密信封校验失败或会话已过期') {
+    if (err?.authRequired) {
+      sendJson(res, err.statusCode || 401, {
+        ok: false,
+        authRequired: true,
+        authCode: err.authCode || 'AUTH_REVOKED',
+        error: err.authError || err.message || '登录已失效，请重新登录',
+      });
+      return;
+    }
+    sendJson(res, err?.statusCode || 403, {
+      ok: false,
+      fused: Boolean(err?.fused),
+      sessionExpired: Boolean(err?.sessionExpired),
+      error: fallbackMsg,
+    });
+  }
+
+  function buildInitialWorkspaceBundle(matches, syncNote) {
+    const initialPicks = makeUnderwaterDemoPicks(matches);
+    const workspace = evaluateQuantWorkspace(
+      {
+        picks: initialPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: matches.slice(0, 2).map((m) => m.id),
+        budget: 100,
+        stance: 'objective',
+        unlockFullAgg: false,
+      },
+      matches
+    );
+    return { matches, syncNote, initialPicks, workspace };
+  }
+
   async function handleRequest(req, res, pathname) {
     pruneExpired(false);
 
@@ -483,7 +678,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (pathname === '/api/health' && req.method === 'GET') {
       sendJson(res, 200, {
         ok: true,
-        version: '1.2.0',
+        version: '2.0.0',
         uptimeSec: Math.round(process.uptime()),
       });
       return true;
@@ -511,21 +706,30 @@ export function createSecurityAndQuantGateway(opts = {}) {
 
     const ip = extractClientIp(req);
 
-    // 3. Honeypot trap routes -> immediate 30-minute IP fuse!
+    // 3. Honeypot trap routes -> immediate 48-hour IP fuse!
     if (HONEYPOT_PATHS.has(pathname)) {
-      tripFuse(ip, null, 30 * 60 * 1000, true);
-      sendHtml(res, 403, FUSED_HTML);
+      tripFuse(ip, null, fuseDurationMs, true);
+      sendHtml(res, 403, renderFusedHtml(fuseDurationMs));
       return true;
     }
 
     // 4. Fuse check (except fuse report endpoint itself)
-    if (pathname !== '/api/security/fuse' && isRequestFused(req, ip)) {
-      if (pathname.startsWith('/api/')) {
-        sendJson(res, 403, { ok: false, fused: true, error: '当前会话已触发安全熔断保护' });
-      } else {
-        sendHtml(res, 403, FUSED_HTML);
+    if (pathname !== '/api/security/fuse') {
+      const fusedExp = getFusedExpiry(req, ip);
+      if (fusedExp !== null) {
+        const remMs = Math.max(60_000, fusedExp - nowFn());
+        if (pathname.startsWith('/api/')) {
+          sendJson(res, 403, {
+            ok: false,
+            fused: true,
+            unlockAt: fusedExp,
+            error: '熔断天平已触发：当前设备与网络已被锁定 48 小时',
+          });
+        } else {
+          sendHtml(res, 403, renderFusedHtml(remMs));
+        }
+        return true;
       }
-      return true;
     }
 
     // 5. Anti-AI-Reader / Anti-Scraper Decoy & Asset Shield
@@ -548,15 +752,28 @@ export function createSecurityAndQuantGateway(opts = {}) {
       return true;
     }
 
-    // 6. Client Security Fuse Endpoint (session + cookie fuse only to protect shared office/5G NAT)
+    // 6. High-Pressure 48-Hour Whole-Computer Fuse Endpoint (locks IP + Hardware GPU/Screen Fingerprint + Session + 48h Cookie!)
     if (pathname === '/api/security/fuse' && req.method === 'POST') {
+      let fuseBody = {};
+      try {
+        fuseBody = await readJsonBody(req, 16_000);
+      } catch {
+        // ignore
+      }
       const sid = String(req.headers['x-yj-sid'] || '');
-      tripFuse(ip, sid || null, fuseDurationMs, false);
-      res.setHeader(
-        'Set-Cookie',
-        'yj_sh_sid=fused; Path=/; HttpOnly; SameSite=Lax; Max-Age=900'
-      );
-      sendJson(res, 200, { ok: true, fused: true });
+      const sess = sid ? sessions.get(sid) : null;
+      const isGenericMobileUa = /iPhone|iPad|Android/i.test(String(req.headers['user-agent'] || ''));
+      // Prevent unauthenticated hwFp spoofing DoS: require matching session IP, and on generic mobile UA require authenticated session
+      const canBanHwFp =
+        sess &&
+        sess.ip === ip &&
+        (Boolean(sess.authToken) || !isGenericMobileUa);
+      const verifiedHwFp = canBanHwFp
+        ? sess.hwFp || (typeof fuseBody?.hwFp === 'string' ? fuseBody.hwFp.toLowerCase() : null)
+        : null;
+      const unlockAt = tripFuse(ip, sid || null, fuseDurationMs, true, verifiedHwFp);
+      res.setHeader('Set-Cookie', `yj_sh_sid=fused${cookieSuffix(req, 172800)}`);
+      sendJson(res, 200, { ok: true, fused: true, unlockAt });
       return true;
     }
 
@@ -591,9 +808,32 @@ export function createSecurityAndQuantGateway(opts = {}) {
         return true;
       }
 
+      const rawHwFp = typeof body.hwFp === 'string' && /^[0-9a-f]{32,64}$/i.test(body.hwFp) ? body.hwFp.toLowerCase() : null;
+      if (rawHwFp && fusedHwFps.has(rawHwFp)) {
+        const exp = fusedHwFps.get(rawHwFp);
+        // Contagious cross-browser & cross-IP ban: lock new IP/profile too!
+        if (ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
+          setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
+          schedulePersistBans();
+        }
+        res.setHeader('Set-Cookie', `yj_sh_sid=fused${cookieSuffix(req, 172800)}`);
+        sendJson(res, 403, {
+          ok: false,
+          fused: true,
+          unlockAt: exp,
+          error: '熔断天平已触发：当前电脑硬件指纹处于 48 小时封禁期',
+        });
+        return true;
+      }
+
       const sid = crypto.randomBytes(16).toString('hex');
       const masterKeyBuf = crypto.randomBytes(32);
       const { aesKey, hmacKey } = deriveSessionSubkeys(masterKeyBuf);
+      const rawAuthToken = extractAuthToken(req, null);
+      const deviceBindFp = rawHwFp || deriveFallbackClientFp(req, ip);
+      const authRes = accountManager
+        ? accountManager.verifyAuthTokenDetailed(rawAuthToken, deviceBindFp, ip)
+        : { ok: true, user: null };
 
       setBoundedMap(
         sessions,
@@ -604,44 +844,284 @@ export function createSecurityAndQuantGateway(opts = {}) {
           hmacKey,
           createdAt: nowFn(),
           ip,
+          hwFp: rawHwFp,
+          deviceBindFp,
+          authToken: authRes.ok && rawAuthToken ? rawAuthToken : null,
           seenNonces: new Map(),
           aiAlerts: new Map(),
         },
         MAX_SESSIONS
       );
 
-      const { matches, syncNote } = await ensureMatchesLoaded(false);
-      const initialPicks = makeUnderwaterDemoPicks(matches);
-      const workspace = evaluateQuantWorkspace(
-        {
-          picks: initialPicks,
-          multiple: 5,
-          subjectiveDeltaPct: 0,
-          simVoidFirstMatch: false,
-          planSpec: null,
-          targetIds: matches.slice(0, 2).map((m) => m.id),
-          budget: 100,
-          stance: 'objective',
-          unlockFullAgg: false,
-        },
-        matches
-      );
+      // Full-gate login mode: unauthenticated sessions receive ONLY handshake keys + authenticated:false (zero match/quant data!)
+      if (accountManager && !authRes.ok) {
+        const cookiesOut = [`yj_sh_sid=${sid}${cookieSuffix(req, 7200)}`];
+        if (rawAuthToken) {
+          cookiesOut.push(`yj_auth_tok=${cookieSuffix(req, 0)}`);
+        }
+        res.setHeader('Set-Cookie', cookiesOut);
+        sendJson(res, 200, {
+          ok: true,
+          sid,
+          k: masterKeyBuf.toString('base64'),
+          payload: encryptEnvelope(aesKey, {
+            authenticated: false,
+            authCode: authRes.code,
+            authError: rawAuthToken ? authRes.error : null,
+          }),
+        });
+        return true;
+      }
 
-      res.setHeader(
-        'Set-Cookie',
-        `yj_sh_sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=7200`
-      );
+      const { matches, syncNote } = await ensureMatchesLoaded(false);
+      const bundle = buildInitialWorkspaceBundle(matches, syncNote);
+      const cookiesOut = [`yj_sh_sid=${sid}${cookieSuffix(req, 7200)}`];
+      if (accountManager && rawAuthToken) {
+        cookiesOut.push(`yj_auth_tok=${rawAuthToken}${cookieSuffix(req, 31536000)}`);
+      }
+      res.setHeader('Set-Cookie', cookiesOut);
       sendJson(res, 200, {
         ok: true,
         sid,
         k: masterKeyBuf.toString('base64'),
-        payload: encryptEnvelope(aesKey, {
-          matches,
-          syncNote,
-          initialPicks,
-          workspace,
-        }),
+        payload: encryptEnvelope(
+          aesKey,
+          accountManager
+            ? {
+                authenticated: true,
+                user: authRes.user,
+                authToken: rawAuthToken,
+                ...bundle,
+              }
+            : bundle
+        ),
       });
+      return true;
+    }
+
+    // 8b. Encrypted Member & Super-Admin Login (/api/auth/login)
+    if (pathname === '/api/auth/login' && req.method === 'POST') {
+      if (!accountManager) {
+        sendJson(res, 404, { ok: false, error: 'Auth service not enabled' });
+        return true;
+      }
+      try {
+        const body = await readJsonBody(req, 32_000);
+        const { sess, data } = verifyAndUnseal(req, body, ip, 'auth/login');
+        const effectiveHwFp =
+          sess.hwFp ||
+          (typeof data?.hwFp === 'string' && /^[0-9a-f]{32,64}$/i.test(data.hwFp)
+            ? data.hwFp.toLowerCase()
+            : null);
+        if (effectiveHwFp) sess.hwFp = effectiveHwFp;
+        const bindFp = effectiveHwFp || sess.deviceBindFp || deriveFallbackClientFp(req, ip);
+        sess.deviceBindFp = bindFp;
+
+        if (effectiveHwFp && fusedHwFps.has(effectiveHwFp)) {
+          const exp = fusedHwFps.get(effectiveHwFp);
+          if (ip && (!isLoopbackAddr(ip) || fuseLoopback)) {
+            setBoundedMap(fusedIps, ip, exp, MAX_FUSED_IPS);
+            schedulePersistBans();
+          }
+          sendJson(res, 403, {
+            ok: false,
+            fused: true,
+            unlockAt: exp,
+            error: '熔断天平已触发：当前电脑硬件指纹处于 48 小时封禁期',
+          });
+          return true;
+        }
+
+        const loginRes = accountManager.authenticateLogin({
+          username: data?.username,
+          password: data?.password,
+          hwFp: bindFp,
+          deviceLabel: data?.deviceLabel,
+          ip,
+        });
+
+        if (!loginRes.ok) {
+          sendJson(res, loginRes.statusCode || 401, {
+            ok: false,
+            lockedRemainingSec: loginRes.lockedRemainingSec || 0,
+            error: loginRes.error,
+          });
+          return true;
+        }
+
+        sess.authToken = loginRes.authToken;
+        const { matches, syncNote } = await ensureMatchesLoaded(false);
+        const sessionMatches = mergeSessionAlerts(matches, sess);
+        const bundle = buildInitialWorkspaceBundle(sessionMatches, syncNote);
+
+        res.setHeader(
+          'Set-Cookie',
+          `yj_auth_tok=${loginRes.authToken}${cookieSuffix(req, 31536000)}`
+        );
+        sendJson(res, 200, {
+          ok: true,
+          payload: encryptEnvelope(sess.aesKey, {
+            authenticated: true,
+            user: loginRes.user,
+            authToken: loginRes.authToken,
+            ...bundle,
+          }),
+        });
+      } catch (err) {
+        sendGatewayCatchError(res, err, '登录安全校验失败，请刷新重试');
+      }
+      return true;
+    }
+
+    // 8c. Encrypted Explicit Logout (/api/auth/logout)
+    if (pathname === '/api/auth/logout' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 16_000);
+        const { sess } = verifyAndUnseal(req, body, ip, 'auth/logout');
+        sess.authToken = null;
+        res.setHeader('Set-Cookie', `yj_auth_tok=${cookieSuffix(req, 0)}`);
+        sendJson(res, 200, {
+          ok: true,
+          payload: encryptEnvelope(sess.aesKey, { loggedOut: true }),
+        });
+      } catch (err) {
+        sendGatewayCatchError(res, err, '退出操作异常');
+      }
+      return true;
+    }
+
+    // 8d. Encrypted Route-C Hybrid Iron-Cage Manual Q&A (/api/manual/ask)
+    if (pathname === '/api/manual/ask' && req.method === 'POST') {
+      if (!manualQaEngine || !accountManager) {
+        sendJson(res, 404, { ok: false, error: 'Manual QA not enabled' });
+        return true;
+      }
+      try {
+        const body = await readJsonBody(req, 32_000);
+        const { sess, data } = verifyAndUnseal(req, body, ip, 'manual/ask');
+        const { user } = requireSessionAuth(req, sess, ip);
+        const qaRes = await manualQaEngine.answerManualQuestion({
+          userId: user.id,
+          question: data?.question,
+          ip,
+        });
+
+        // >4 violations auto-locks account AND immediately triggers 48h whole-computer meltdown fuse!
+        if (qaRes.accountLocked) {
+          const unlockAt = tripFuse(ip, sess.sid, fuseDurationMs, true, sess.hwFp);
+          res.setHeader('Set-Cookie', [
+            'yj_auth_tok=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+            'yj_sh_sid=fused; Path=/; HttpOnly; SameSite=Lax; Max-Age=172800',
+          ]);
+          sendJson(res, 403, {
+            ok: false,
+            accountLocked: true,
+            fused: true,
+            unlockAt,
+            error: qaRes.error,
+          });
+          return true;
+        }
+
+        if (!qaRes.ok) {
+          sendJson(res, qaRes.statusCode || 400, {
+            ok: false,
+            error: qaRes.error,
+          });
+          return true;
+        }
+
+        sendJson(res, 200, {
+          ok: true,
+          payload: encryptEnvelope(sess.aesKey, qaRes),
+        });
+      } catch (err) {
+        sendGatewayCatchError(res, err, '说明书助手繁忙，请稍后再试');
+      }
+      return true;
+    }
+
+    // 8e. Encrypted Hidden Super-Admin RBAC Console Endpoints (/api/admin/*)
+    if (pathname.startsWith('/api/admin/') && req.method === 'POST') {
+      if (!accountManager) {
+        sendJson(res, 404, { ok: false, error: 'Admin service not enabled' });
+        return true;
+      }
+      const subEndpoint = pathname.slice('/api/'.length);
+      if (
+        !['admin/overview', 'admin/create-user', 'admin/update-user', 'admin/delete-user'].includes(
+          subEndpoint
+        )
+      ) {
+        sendJson(res, 404, { ok: false, error: 'Admin endpoint not found' });
+        return true;
+      }
+      try {
+        const body = await readJsonBody(req, 64_000);
+        const { sess, data } = verifyAndUnseal(req, body, ip, subEndpoint);
+        const { user } = requireSessionAuth(req, sess, ip);
+        if (!user || user.role !== 'superadmin') {
+          sendJson(res, 403, { ok: false, error: '无权访问该资源' });
+          return true;
+        }
+
+        if (subEndpoint === 'admin/overview') {
+          sendJson(res, 200, {
+            ok: true,
+            payload: encryptEnvelope(sess.aesKey, {
+              accounts: accountManager.listAccounts(),
+              auditLogs: accountManager.listAuditLogs(),
+              fusedIpsCount: fusedIps.size,
+              fusedHwCount: fusedHwFps.size,
+            }),
+          });
+          return true;
+        }
+
+        if (subEndpoint === 'admin/create-user') {
+          const created = accountManager.createAccount(data || {});
+          sendJson(res, 200, {
+            ok: true,
+            payload: encryptEnvelope(sess.aesKey, created),
+          });
+          return true;
+        }
+
+        if (subEndpoint === 'admin/update-user') {
+          const updated = accountManager.updateAccount(data?.userId, data || {});
+          if (updated.freshAuthToken && data?.userId === user.id) {
+            sess.authToken = updated.freshAuthToken;
+            res.setHeader(
+              'Set-Cookie',
+              `yj_auth_tok=${updated.freshAuthToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`
+            );
+          }
+          sendJson(res, 200, {
+            ok: true,
+            payload: encryptEnvelope(sess.aesKey, {
+              user: updated.user,
+              newPassword: updated.newPassword,
+              selfAuthToken: data?.userId === user.id ? updated.freshAuthToken : undefined,
+            }),
+          });
+          return true;
+        }
+
+        if (subEndpoint === 'admin/delete-user') {
+          const deleted = accountManager.deleteAccount(data?.userId);
+          sendJson(res, 200, {
+            ok: true,
+            payload: encryptEnvelope(sess.aesKey, deleted),
+          });
+          return true;
+        }
+      } catch (err) {
+        if (err?.authRequired || err?.fused || err?.sessionExpired) {
+          sendGatewayCatchError(res, err, '管理操作鉴权失败');
+        } else {
+          sendJson(res, 400, { ok: false, error: err?.message || '管理操作失败' });
+        }
+      }
       return true;
     }
 
@@ -650,6 +1130,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
       try {
         const body = await readJsonBody(req, 400_000);
         const { sess, data } = verifyAndUnseal(req, body, ip, 'quant/compute');
+        requireSessionAuth(req, sess, ip);
         const { matches } = await ensureMatchesLoaded(false);
         const sessionMatches = mergeSessionAlerts(matches, sess);
         const workspace = evaluateQuantWorkspace(data, sessionMatches);
@@ -658,11 +1139,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
           payload: encryptEnvelope(sess.aesKey, workspace),
         });
       } catch (err) {
-        sendJson(res, err.statusCode || 403, {
-          ok: false,
-          fused: Boolean(err.fused),
-          error: '加密信封校验失败或会话已过期',
-        });
+        sendGatewayCatchError(res, err, '加密信封校验失败或会话已过期');
       }
       return true;
     }
@@ -672,6 +1149,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
       try {
         const body = await readJsonBody(req, 400_000);
         const { sess, data } = verifyAndUnseal(req, body, ip, 'quant/sync');
+        requireSessionAuth(req, sess, ip);
         const { matches, syncNote } = await ensureMatchesLoaded(true);
         const sessionMatches = mergeSessionAlerts(matches, sess);
         const workspace = evaluateQuantWorkspace(data?.workspaceParams || {}, sessionMatches);
@@ -684,20 +1162,19 @@ export function createSecurityAndQuantGateway(opts = {}) {
           }),
         });
       } catch (err) {
-        sendJson(res, err.statusCode || 403, {
-          ok: false,
-          fused: Boolean(err.fused),
-          error: '同步校验失败',
-        });
+        sendGatewayCatchError(res, err, '同步校验失败');
       }
       return true;
     }
 
-    // 11. Encrypted Match Diagnosis (verify cryptographic envelope BEFORE checking apiKey!)
+    // 11. Encrypted Match Diagnosis (verify cryptographic envelope + auth + AI quota BEFORE calling API!)
     if (pathname === '/api/xiaogao/analyze' && req.method === 'POST') {
       try {
         const body = await readJsonBody(req, 200_000);
         const { sess, data } = verifyAndUnseal(req, body, ip, 'xiaogao/analyze');
+        const { user } = requireSessionAuth(req, sess, ip);
+        const qCheck = consumeUserAiQuota(user, res);
+        if (!qCheck.ok) return true;
         const apiKey = getApiKey();
         if (!apiKey || !xiaogaoService) {
           sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
@@ -709,17 +1186,73 @@ export function createSecurityAndQuantGateway(opts = {}) {
         }
         sendJson(res, 200, {
           ok: true,
-          payload: encryptEnvelope(sess.aesKey, { alert }),
+          payload: encryptEnvelope(sess.aesKey, { alert, aiRemaining: qCheck.remaining }),
         });
       } catch (err) {
-        sendJson(res, err.statusCode || 502, {
-          ok: false,
-          fused: Boolean(err.fused),
-          error:
-            err.statusCode === 401 || err.statusCode === 403
-              ? '安全会话已失效'
-              : '服务繁忙，请稍后再试',
+        if (err?.authRequired || err?.fused || err?.sessionExpired) {
+          sendGatewayCatchError(res, err, '安全会话已失效');
+        } else {
+          sendJson(res, err.statusCode || 502, {
+            ok: false,
+            error: '服务繁忙，请稍后再试',
+          });
+        }
+      }
+      return true;
+    }
+
+    // 12. Encrypted Multi-Match Joint Parlay Diagnosis (/api/xiaogao/analyze-combo)
+    if (pathname === '/api/xiaogao/analyze-combo' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req, 350_000);
+        const { sess, data } = verifyAndUnseal(req, body, ip, 'xiaogao/analyze-combo');
+        const { user } = requireSessionAuth(req, sess, ip);
+        const qCheck = consumeUserAiQuota(user, res);
+        if (!qCheck.ok) return true;
+        const apiKey = getApiKey();
+        if (!apiKey || !xiaogaoService?.analyzeComboMatches) {
+          sendJson(res, 500, { ok: false, error: '服务暂未就绪' });
+          return true;
+        }
+        const comboReport = await xiaogaoService.analyzeComboMatches(apiKey, data);
+        if (Array.isArray(comboReport?.perMatch)) {
+          for (const pm of comboReport.perMatch) {
+            const matchedCanonical = cachedMatches.find(
+              (cm) =>
+                cm.id === pm?.matchId ||
+                cm.matchNumStr === pm?.matchId ||
+                (pm?.matchTitle && pm.matchTitle.includes(cm.matchNumStr))
+            );
+            const canonicalId = matchedCanonical?.id || pm?.matchId;
+            if (canonicalId) {
+              setBoundedMap(
+                sess.aiAlerts,
+                String(canonicalId),
+                {
+                  level: comboReport.level === 'high' ? 'high' : 'medium',
+                  tag: pm.tag,
+                  summary: pm.note,
+                  priceInStatus: pm.priceInStatus,
+                  source: comboReport.source,
+                },
+                32
+              );
+            }
+          }
+        }
+        sendJson(res, 200, {
+          ok: true,
+          payload: encryptEnvelope(sess.aesKey, { comboReport, aiRemaining: qCheck.remaining }),
         });
+      } catch (err) {
+        if (err?.authRequired || err?.fused || err?.sessionExpired) {
+          sendGatewayCatchError(res, err, '安全会话已失效');
+        } else {
+          sendJson(res, err.statusCode || 502, {
+            ok: false,
+            error: '服务繁忙，请稍后再试',
+          });
+        }
       }
       return true;
     }

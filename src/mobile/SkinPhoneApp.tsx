@@ -13,13 +13,24 @@ import {
   type SelectedPick,
   type UserStance,
 } from '../prototype/quantTypes';
-import { requestXiaoGaoDiagnosis } from '../intel/xiaogaoClient';
+import {
+  requestXiaoGaoComboDiagnosis,
+  requestXiaoGaoDiagnosis,
+  type XiaoGaoComboReport,
+} from '../intel/xiaogaoClient';
 import {
   bootstrapSecureWorkspace,
+  logoutSession,
+  readPersistedWechatAuth,
+  registerAuthRevokedHandler,
   requestServerMatchesSync,
   requestServerQuantCompute,
+  type AuthenticatedWorkspaceBundle,
+  type PublicAccountUser,
 } from '../security/secureClient';
 import { initHighPressureAntiReverseShield } from '../security/antiReverseShield';
+import { LoginGate } from '../auth/LoginGate';
+import { AdminConsoleModal } from '../admin/AdminConsoleModal';
 import {
   SKINS,
   Spring,
@@ -188,12 +199,26 @@ export function SkinPhoneApp({
     { id: 'l2', kind: 'paper', title: '4串1 · 高危转0成本模拟单', cost: 0, tag: '免损¥120' },
   ]);
 
-  // Sheet state
+  // Auth & Hidden Super-Admin Console (2b) + WeChat Offline Resilience state
+  const [authUser, setAuthUser] = useState<PublicAccountUser | null>(
+    () => readPersistedWechatAuth()?.cachedUser ?? null
+  );
+  const [authChecked, setAuthChecked] = useState<boolean>(() =>
+    Boolean(readPersistedWechatAuth()?.cachedUser)
+  );
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [offlineMode, setOfflineMode] = useState<boolean>(false);
+  const [adminOpen, setAdminOpen] = useState<boolean>(false);
+
+  // Sheet & Dual-Mode XiaoGao Diagnosis state
   const [sheet, setSheet] = useState<SheetState>(null);
   const [bfGrp, setBfGrp] = useState<'win' | 'draw' | 'lose'>('win');
   const [checkedPosterLines, setCheckedPosterLines] = useState<Record<string, boolean>>({});
   const [leagueFilter, setLeagueFilter] = useState<Record<string, boolean>>({});
   const [diagnosingMatchId, setDiagnosingMatchId] = useState<string | null>(null);
+  const [diagnosingCombo, setDiagnosingCombo] = useState<boolean>(false);
+  const [comboSelectedIds, setComboSelectedIds] = useState<string[]>([]);
+  const [comboReport, setComboReport] = useState<XiaoGaoComboReport | null>(null);
   const [customIntelInput, setCustomIntelInput] = useState<string>('');
   const [tactileCfg, setTactileCfg] = useState(() => getTactileState());
 
@@ -308,42 +333,114 @@ export function SkinPhoneApp({
     };
   };
 
-  // 2. Initial 1-RTT Encrypted Handshake + Auto-Retry on Transient Blip
+  const applyAuthenticatedBundle = (bundle: AuthenticatedWorkspaceBundle) => {
+    document.title = '优竞体育内部专用 · 智能精算与风控工作台';
+    setAuthUser(bundle.user);
+    setAuthChecked(true);
+    setAuthNotice(null);
+    setOfflineMode(false);
+    setMatches(bundle.matches);
+    setPicks(bundle.initialPicks);
+    setTargetIds(bundle.matches.slice(0, 2).map((m) => m.id));
+    setComboSelectedIds(bundle.matches.slice(0, 3).map((m) => m.id));
+    setWorkspace(bundle.workspace);
+    setSyncSummary(bundle.syncNote);
+    const now = new Date();
+    setSyncClock(
+      `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
+        now.getSeconds()
+      ).padStart(2, '0')}`
+    );
+    setBootstrapped(true);
+  };
+
+  const hasMatchesRef = useRef<boolean>(false);
+  hasMatchesRef.current = matches.length > 0;
+  const offlineModeRef = useRef<boolean>(false);
+  offlineModeRef.current = offlineMode;
+
+  const syncRemainingAiQuota = (remaining?: number) => {
+    if (remaining === undefined) return;
+    setAuthUser((prev) =>
+      prev ? { ...prev, aiUsedToday: Math.max(0, prev.dailyAiLimit - remaining) } : prev
+    );
+  };
+
+  // 2. Initial 1-RTT Encrypted Handshake + WeChat-Style Permanent Login & Offline Reconnect Protection
   useEffect(() => {
     let alive = true;
-    (async () => {
-      setSyncing(true);
+    registerAuthRevokedHandler((reason) => {
+      if (!alive) return;
+      setAuthUser(null);
+      setBootstrapped(false);
+      setAuthChecked(true);
+      setAuthNotice(reason);
+    });
+
+    const runHandshake = async (isReconnect = false) => {
+      if (!isReconnect) setSyncing(true);
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const boot = await bootstrapSecureWorkspace(attempt > 0);
+          const boot = await bootstrapSecureWorkspace(attempt > 0 || isReconnect);
           if (!alive) return;
-          document.title = '优竞体育内部专用 · 智能精算与风控工作台';
-          setMatches(boot.matches);
-          setPicks(boot.initialPicks);
-          setTargetIds(boot.matches.slice(0, 2).map((m) => m.id));
-          setWorkspace(boot.workspace);
-          setSyncSummary(boot.syncNote);
-          const now = new Date();
-          setSyncClock(
-            `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(
-              now.getSeconds()
-            ).padStart(2, '0')}`
-          );
-          setBootstrapped(true);
+          if (!boot.authenticated) {
+            setAuthUser(null);
+            setBootstrapped(false);
+            setAuthChecked(true);
+            if (boot.authError) setAuthNotice(boot.authError);
+            break;
+          }
+          if (isReconnect && hasMatchesRef.current) {
+            // Seamless silent reconnect after offline blip without wiping user's in-progress picks!
+            setAuthUser(boot.user);
+            setOfflineMode(false);
+            setBootstrapped(true);
+            setSyncSummary(boot.syncNote);
+          } else {
+            applyAuthenticatedBundle(boot);
+          }
           break;
         } catch (err) {
           if (String((err as Error)?.message) === 'Fused') break;
           if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 800));
+            await new Promise((r) => setTimeout(r, 700));
           } else if (alive) {
-            setSyncSummary('网络波动，请点击右上角同步重试');
+            // WeChat Offline Guarantee: NEVER kick cached logged-in user out on transient network loss!
+            const cached = readPersistedWechatAuth();
+            if (cached?.cachedUser) {
+              setAuthUser(cached.cachedUser);
+              setOfflineMode(true);
+              setAuthChecked(true);
+              setSyncSummary('当前网络离线波动 · 已保持长期免登状态，恢复联网后自动无感重连');
+            } else {
+              setAuthChecked(true);
+            }
           }
         }
       }
-      if (alive) setSyncing(false);
-    })();
+      if (alive && !isReconnect) setSyncing(false);
+    };
+
+    void runHandshake(false);
+
+    const handleOnline = () => {
+      if (readPersistedWechatAuth()?.authToken) {
+        void runHandshake(true);
+      }
+    };
+    const handleVisibility = () => {
+      if (!document.hidden && offlineModeRef.current && readPersistedWechatAuth()?.authToken) {
+        void runHandshake(true);
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       alive = false;
+      registerAuthRevokedHandler(null);
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
 
@@ -352,6 +449,7 @@ export function SkinPhoneApp({
     try {
       const res = await requestServerMatchesSync(buildWorkspaceParams());
       document.title = '优竞体育内部专用 · 智能精算与风控工作台';
+      setOfflineMode(false);
       setMatches(res.matches);
       setWorkspace(res.workspace);
       setBootstrapped(true);
@@ -388,7 +486,8 @@ export function SkinPhoneApp({
       if (toastOnDone) {
         showSpringToast(layerRef.current, `已加密同步 ${res.matches.length} 场官网实盘`);
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof TypeError) setOfflineMode(true);
       if (toastOnDone) showSpringToast(layerRef.current, '同步繁忙，请稍后再试');
     } finally {
       setSyncing(false);
@@ -593,10 +692,13 @@ export function SkinPhoneApp({
       void requestServerQuantCompute(buildWorkspaceParams())
         .then((res) => {
           if (seq === computeSeqRef.current) {
+            setOfflineMode(false);
             setWorkspace(res);
           }
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (err instanceof TypeError) setOfflineMode(true);
+        });
     }, 18);
     return () => window.clearTimeout(timer);
   }, [
@@ -862,27 +964,103 @@ export function SkinPhoneApp({
     setDkRightTab('ledger');
   };
 
+  const pickedMatchIds = useMemo(
+    () => Array.from(new Set(picks.map((p) => p.matchId))),
+    [picks]
+  );
+
+  const renderTrendArrow = (trend?: -1 | 0 | 1) => {
+    if (trend === 1) return <i className="trd up" title="水位上调(红升)">▲</i>;
+    if (trend === -1) return <i className="trd dn" title="水位下调(绿降)">▼</i>;
+    return null;
+  };
+
+  const handleExplicitLogout = async () => {
+    await logoutSession();
+    setAuthUser(null);
+    setBootstrapped(false);
+    setAdminOpen(false);
+    setAuthNotice('已安全退出当前账号');
+  };
+
   const triggerXiaoGaoLive = async (m: MatchItem, extraNote?: string) => {
-    if (diagnosingMatchId) return;
+    if (diagnosingMatchId || diagnosingCombo) return;
     setDiagnosingMatchId(m.id);
     playTactileCue('radar-ping');
     try {
       const mq = m.microQuant;
-      const alert = await requestXiaoGaoDiagnosis(
+      const { alert, aiRemaining } = await requestXiaoGaoDiagnosis(
         m,
         `${m.home} ${mq.homeXG} : ${mq.awayXG} ${m.away} (总预期${mq.totalXG}球)`,
         Math.round(mq.oneGoalShareOfWins * 100),
         extraNote
       );
+      syncRemainingAiQuota(aiRemaining);
       setMatches((prev) =>
         prev.map((item) => (item.id === m.id ? { ...item, aiAlert: alert } : item))
       );
       playTactileCue('radar-lock');
-      showSpringToast(layerRef.current, '扫地僧小高已完成实时排雷');
-    } catch {
-      showSpringToast(layerRef.current, '诊盘繁忙，请稍后再试');
+      showSpringToast(layerRef.current, '扫地僧小高已完成单场实时排雷');
+    } catch (err) {
+      showSpringToast(layerRef.current, (err as Error)?.message || '诊盘繁忙，请稍后再试');
     } finally {
       setDiagnosingMatchId(null);
+    }
+  };
+
+  const triggerXiaoGaoComboLive = async (sourceMode: 'picked' | 'custom') => {
+    if (diagnosingCombo || diagnosingMatchId) return;
+    const ids = sourceMode === 'picked' ? pickedMatchIds : comboSelectedIds;
+    const targetList = matches.filter((m) => ids.includes(m.id));
+    if (targetList.length < 2) {
+      showSpringToast(layerRef.current, '请至少选择 2 场比赛再发起多场联合会诊');
+      return;
+    }
+    setDiagnosingCombo(true);
+    playTactileCue('radar-ping');
+    try {
+      const modeDesc =
+        sourceMode === 'picked'
+          ? `混合过关已选 ${targetList.length} 场实投串关联合会诊`
+          : `自由勾选 ${targetList.length} 场比赛横向联合会诊`;
+      const { comboReport: rep, aiRemaining } = await requestXiaoGaoComboDiagnosis(
+        targetList,
+        sourceMode === 'picked' ? picks : [],
+        sourceMode === 'picked' ? effectiveReport : { ...effectiveReport, matchCount: 0 },
+        modeDesc,
+        customIntelInput || undefined
+      );
+      syncRemainingAiQuota(aiRemaining);
+      setComboReport(rep);
+      if (Array.isArray(rep.perMatch) && rep.perMatch.length > 0) {
+        setMatches((prev) =>
+          prev.map((item) => {
+            const pm = rep.perMatch.find(
+              (x) =>
+                x.matchId === item.id ||
+                x.matchId === item.matchNumStr ||
+                Boolean(x.matchTitle && x.matchTitle.includes(item.matchNumStr))
+            );
+            if (!pm) return item;
+            return {
+              ...item,
+              aiAlert: {
+                level: rep.level === 'high' ? 'high' : 'medium',
+                tag: pm.tag,
+                summary: pm.note,
+                priceInStatus: pm.priceInStatus,
+                source: rep.source,
+              },
+            };
+          })
+        );
+      }
+      playTactileCue('radar-lock');
+      showSpringToast(layerRef.current, `已完成 ${targetList.length} 场串关联合排雷会诊`);
+    } catch (err) {
+      showSpringToast(layerRef.current, (err as Error)?.message || '联合会诊繁忙，请稍后再试');
+    } finally {
+      setDiagnosingCombo(false);
     }
   };
 
@@ -1074,7 +1252,10 @@ export function SkinPhoneApp({
                               <small>
                                 {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
                               </small>
-                              <b>{opt.odds.toFixed(2)}</b>
+                              <b>
+                                {opt.odds.toFixed(2)}
+                                {renderTrendArrow(opt.trend)}
+                              </b>
                             </button>
                           ))}
                         </div>
@@ -1108,7 +1289,10 @@ export function SkinPhoneApp({
                               <small>
                                 {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
                               </small>
-                              <b>{opt.odds.toFixed(2)}</b>
+                              <b>
+                                {opt.odds.toFixed(2)}
+                                {renderTrendArrow(opt.trend)}
+                              </b>
                             </button>
                           ))}
                         </div>
@@ -1177,8 +1361,7 @@ export function SkinPhoneApp({
                                 >
                                   <span className="ko">
                                     {hadOpt.odds.toFixed(2)}
-                                    {hadOpt.trend === -1 && <i className="trd dn">↓</i>}
-                                    {hadOpt.trend === 1 && <i className="trd up">↑</i>}
+                                    {renderTrendArrow(hadOpt.trend)}
                                   </span>
                                   <span className="kp">{(hadOpt.fairProb * 100).toFixed(0)}%</span>
                                 </button>
@@ -1194,8 +1377,7 @@ export function SkinPhoneApp({
                                 >
                                   <span className="ko">
                                     {hhadOpt.odds.toFixed(2)}
-                                    {hhadOpt.trend === -1 && <i className="trd dn">↓</i>}
-                                    {hhadOpt.trend === 1 && <i className="trd up">↑</i>}
+                                    {renderTrendArrow(hhadOpt.trend)}
                                   </span>
                                   <span className="kp">{(hhadOpt.fairProb * 100).toFixed(0)}%</span>
                                 </button>
@@ -1247,8 +1429,34 @@ export function SkinPhoneApp({
               )}
 
               <div className="sec-lbl enter">
-                <span>① 目标对决池 (点选 1~4 场想买的球)</span>
-                <span className="num">已圈 {resolvedTargets.length} 场</span>
+                <span>① 目标对决池 (自由点选 1~8 场想买的球)</span>
+                <span className="num" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <span>已圈 {resolvedTargets.length}/8 场</span>
+                  {matches.length > 2 && (
+                    <button
+                      type="button"
+                      className="help-pill"
+                      onClick={() => {
+                        haptic(6);
+                        setTargetIds(matches.slice(0, 8).map((x) => x.id));
+                      }}
+                    >
+                      全选{Math.min(8, matches.length)}场
+                    </button>
+                  )}
+                  {resolvedTargets.length !== 2 && matches.length >= 2 && (
+                    <button
+                      type="button"
+                      className="help-pill"
+                      onClick={() => {
+                        haptic(5);
+                        setTargetIds(matches.slice(0, 2).map((x) => x.id));
+                      }}
+                    >
+                      重置2场
+                    </button>
+                  )}
+                </span>
               </div>
               <div className="pool-scroll enter" style={{ marginBottom: 10 }}>
                 {matches.map((m) => {
@@ -1268,7 +1476,7 @@ export function SkinPhoneApp({
                           if (valid.includes(m.id)) {
                             return valid.length > 1 ? valid.filter((k) => k !== m.id) : valid;
                           }
-                          return valid.length >= 4
+                          return valid.length >= 8
                             ? [...valid.slice(1), m.id]
                             : [...valid, m.id];
                         });
@@ -1495,10 +1703,49 @@ export function SkinPhoneApp({
                       totalCost={effectiveReport.totalCost}
                     />
                   </div>
-                  {/* Selected Match Chips */}
-                  {Array.from(new Set(picks.map((p) => p.matchId))).map((mid) => {
+                  {/* Multi-Match Joint Parlay Diagnosis Quick Trigger right inside Audit! */}
+                  {pickedMatchIds.length >= 2 && (
+                    <div
+                      className={`card sonar-card enter ${diagnosingCombo ? 'scanning' : ''}`}
+                      style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+                    >
+                      <div className="co-head" style={{ marginBottom: 0 }}>
+                        <span className="sec num" style={{ margin: 0 }}>
+                          🧹 多场串关联合会诊（已选 {pickedMatchIds.length} 场）
+                        </span>
+                        <button
+                          type="button"
+                          data-spring="0.88"
+                          className="key mini dark"
+                          onClick={() => {
+                            void triggerXiaoGaoComboLive('picked');
+                            if (isDesktop && !embedded) setDkRightTab('ledger');
+                          }}
+                        >
+                          {diagnosingCombo
+                            ? '小高联合把脉中...'
+                            : `一键联合会诊这 ${pickedMatchIds.length} 场`}
+                        </button>
+                      </div>
+                      {comboReport && (
+                        <div className="note-box" style={{ marginTop: 2 }}>
+                          <strong>
+                            [{comboReport.comboTag}] 最弱短板：{comboReport.weakestLeg}
+                          </strong>
+                          <div>{comboReport.summary}</div>
+                          <div style={{ marginTop: 3, fontWeight: 600, color: 'var(--mark)' }}>
+                            改单建议：{comboReport.structureAdvice}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Selected Match Chips with Live Trend Arrows & Single-Match Quick Diagnosis */}
+                  {pickedMatchIds.map((mid) => {
                     const mpicks = picks.filter((p) => p.matchId === mid);
                     const first = mpicks[0];
+                    const fullMatch = matches.find((x) => x.id === mid);
                     return (
                       <div key={mid} className="card enter">
                         <div className="co-head">
@@ -1509,31 +1756,50 @@ export function SkinPhoneApp({
                             <TeamCrest name={first.away} size={20} />
                             <b>{first.away}</b>
                           </div>
-                          <button
-                            type="button"
-                            className="key mini"
-                            data-spring="0.85"
-                            onClick={() => {
-                              setAppliedPlan(null);
-                              setPicks((prev) => prev.filter((x) => x.matchId !== mid));
-                              haptic(6);
-                            }}
-                          >
-                            移除
-                          </button>
+                          <div style={{ display: 'flex', gap: 5 }}>
+                            {fullMatch && (
+                              <button
+                                type="button"
+                                className="key mini"
+                                data-spring="0.85"
+                                onClick={() => void triggerXiaoGaoLive(fullMatch)}
+                              >
+                                {diagnosingMatchId === mid ? '诊盘中' : '单诊'}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="key mini"
+                              data-spring="0.85"
+                              onClick={() => {
+                                setAppliedPlan(null);
+                                setPicks((prev) => prev.filter((x) => x.matchId !== mid));
+                                haptic(6);
+                              }}
+                            >
+                              移除
+                            </button>
+                          </div>
                         </div>
                         <div className="chips">
-                          {mpicks.map((v) => (
-                            <span
-                              key={`${v.poolCode}-${v.optionKey}`}
-                              className="chip num"
-                            >
-                              {v.poolName}·{v.optionLabel}
-                              <i>
-                                @{v.odds.toFixed(2)} ({(v.fairProb * 100).toFixed(0)}%)
-                              </i>
-                            </span>
-                          ))}
+                          {mpicks.map((v) => {
+                            const liveOpt = fullMatch?.pools[v.poolCode]?.options.find(
+                              (o) => o.key === v.optionKey
+                            );
+                            return (
+                              <span
+                                key={`${v.poolCode}-${v.optionKey}`}
+                                className="chip num"
+                              >
+                                {v.poolName}·{v.optionLabel}
+                                <i>
+                                  @{v.odds.toFixed(2)}
+                                  {renderTrendArrow(liveOpt?.trend)} (
+                                  {(v.fairProb * 100).toFixed(0)}%)
+                                </i>
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     );
@@ -1541,8 +1807,17 @@ export function SkinPhoneApp({
 
                   {/* Full 6-Tile Five-Dimension Truth Cockpit! */}
                   <div className="card enter">
-                    <div className="sec num">
-                      五维真相透视舱 · {effectiveReport.modeLabel} (总本金 ¥{effectiveReport.totalCost})
+                    <div className="co-head" style={{ marginBottom: 6 }}>
+                      <div className="sec num" style={{ margin: 0 }}>
+                        五维真相透视舱 · {effectiveReport.modeLabel} (总本金 ¥{effectiveReport.totalCost})
+                      </div>
+                      <button
+                        type="button"
+                        className="help-pill"
+                        onClick={() => openManual('sandbox')}
+                      >
+                        ? 6块仪表解读
+                      </button>
                     </div>
                     <div className="tiles num">
                       <div
@@ -1731,8 +2006,17 @@ export function SkinPhoneApp({
                   {/* Restored: 推演沙盒 (主观信心微调滑块 + 模拟比赛延期腰斩按1.0计奖 + 倍数步进) */}
                   <div className="card rows enter">
                     <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-                        <span className="lbl">主观胜率信心微调沙盒</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+                        <span className="lbl" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <span>主观胜率信心微调沙盒</span>
+                          <button
+                            type="button"
+                            className="help-pill"
+                            onClick={() => openManual('sandbox')}
+                          >
+                            ? 往哪拉
+                          </button>
+                        </span>
                         <span className="num" style={{ fontWeight: 600 }}>
                           {subjectiveDeltaPct > 0 ? `+${subjectiveDeltaPct}%` : `${subjectiveDeltaPct}%`} · 期望EV{' '}
                           <b style={{ color: subjectiveEVPct >= 0 ? 'var(--good)' : 'var(--text-2)' }}>
@@ -1866,20 +2150,28 @@ export function SkinPhoneApp({
                 <div className="note-box">{syncSummary}</div>
               </div>
 
-              {/* 扫地僧小高靶向排雷全列表 + 实时在线诊盘 */}
+              {/* 扫地僧小高双模靶向排雷：模式A 单场随时点诊 + 模式B 多场串关联合会诊 */}
               <div className="sec-lbl enter">
-                <span>扫地僧小高靶向排雷 · 临场风控</span>
-                <span className="num">点击任一场可实时诊盘</span>
+                <span>扫地僧小高双模排雷 · 单场点诊 + 多场联合会诊</span>
+                <button
+                  type="button"
+                  className="help-pill"
+                  onClick={() => openManual('xiaogao')}
+                >
+                  ? 什么是消息消化度
+                </button>
               </div>
               <div
-                className={`card sonar-card enter ${diagnosingMatchId ? 'scanning' : ''}`}
+                className={`card sonar-card enter ${
+                  diagnosingMatchId || diagnosingCombo ? 'scanning' : ''
+                }`}
                 style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
               >
                 <input
                   type="text"
                   value={customIntelInput}
                   onChange={(e) => setCustomIntelInput(e.target.value)}
-                  placeholder="可选：粘贴你看到的赛前突发伤停/轮换消息交由小高研判..."
+                  placeholder="可选：粘贴你看到的赛前伤停/轮换消息交由小高联合研判..."
                   style={{
                     width: '100%',
                     height: 32,
@@ -1892,6 +2184,64 @@ export function SkinPhoneApp({
                     outline: 'none',
                   }}
                 />
+
+                {/* Mode B1: One-click diagnose currently picked parlay */}
+                {pickedMatchIds.length >= 2 && (
+                  <button
+                    type="button"
+                    data-spring="0.92"
+                    className="key dark full num"
+                    onClick={() => void triggerXiaoGaoComboLive('picked')}
+                  >
+                    {diagnosingCombo
+                      ? '🧹 扫地僧小高正在联合会诊串关...'
+                      : `🧹 一键联合会诊当前已买 ${pickedMatchIds.length} 场串关方案`}
+                  </button>
+                )}
+
+                {/* Mode B2: Free multi-select checkboxes for any 2~8 matches */}
+                <div className="small" style={{ fontWeight: 600 }}>
+                  多场自由勾选会诊（打钩任意 2~8 场一起把脉）：
+                </div>
+                <div className="pool-scroll">
+                  {matches.map((m) => {
+                    const checked = comboSelectedIds.includes(m.id);
+                    return (
+                      <button
+                        key={`cb-${m.id}`}
+                        type="button"
+                        data-spring="0.88"
+                        onClick={() => {
+                          haptic(5);
+                          setComboSelectedIds((prev) =>
+                            prev.includes(m.id)
+                              ? prev.filter((id) => id !== m.id)
+                              : prev.length >= 8
+                                ? [...prev.slice(1), m.id]
+                                : [...prev, m.id]
+                          );
+                        }}
+                        className={`key pillk num ${checked ? 'on' : ''}`}
+                      >
+                        {checked ? '✓ ' : '□ '}
+                        {m.matchNumStr.slice(-3)} {m.home}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    data-spring="0.88"
+                    onClick={() => void triggerXiaoGaoComboLive('custom')}
+                    className="key pillk dark num"
+                  >
+                    {diagnosingCombo ? '会诊中...' : `联合会诊已勾(${comboSelectedIds.length}场)`}
+                  </button>
+                </div>
+
+                {/* Mode A: Single-match 1-click on-demand diagnosis (even without betting on it!) */}
+                <div className="small" style={{ fontWeight: 600 }}>
+                  单场独立点诊（不买也能单独点看任意一场）：
+                </div>
                 <div className="pool-scroll">
                   {matches.map((m) => (
                     <button
@@ -1903,11 +2253,63 @@ export function SkinPhoneApp({
                     >
                       {diagnosingMatchId === m.id
                         ? `小高诊盘中...`
-                        : `诊:${m.matchNumStr.slice(-3)} ${m.home}`}
+                        : `单诊:${m.matchNumStr.slice(-3)} ${m.home}`}
                     </button>
                   ))}
                 </div>
               </div>
+
+              {/* Multi-Match Joint Parlay Diagnosis Report Card */}
+              {comboReport && (
+                <div
+                  className="card enter yj-cipher-reveal"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                    border: '1px solid var(--mark)',
+                  }}
+                >
+                  <div className="co-head" style={{ marginBottom: 0 }}>
+                    <b>🧹 {comboReport.matchCount} 场联合串关会诊报告</b>
+                    <span className="qpill warn">
+                      {comboReport.level === 'high'
+                        ? '🚨高危结构'
+                        : comboReport.level === 'low'
+                          ? '✅结构稳健'
+                          : '⚠️中度关注'}{' '}
+                      · {comboReport.comboTag}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, lineHeight: 1.55, color: 'var(--text-2)' }}>
+                    {comboReport.summary}
+                  </div>
+                  <div className="note-box alert" style={{ margin: 0 }}>
+                    <div>
+                      <strong>💣 最易黑单短板场：</strong>
+                      {comboReport.weakestLeg}
+                    </div>
+                    <div style={{ marginTop: 3 }}>
+                      <strong>🛠️ 串关拆单/补防建议：</strong>
+                      {comboReport.structureAdvice}
+                    </div>
+                  </div>
+                  {comboReport.perMatch.length > 0 && (
+                    <div className="chips">
+                      {comboReport.perMatch.map((pm, idx) => (
+                        <span key={`${pm.matchId}-${idx}`} className="chip num">
+                          {pm.matchTitle} · <i>{pm.tag}</i>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="small num" style={{ color: 'var(--mark)', fontWeight: 600 }}>
+                    📊 消息入价消化度（Price-In）：{comboReport.priceInVerdict}
+                  </div>
+                  <div className="small">{comboReport.source}</div>
+                </div>
+              )}
+
               {matches
                 .filter((m) => m.aiAlert)
                 .map((m) => (
@@ -1929,7 +2331,7 @@ export function SkinPhoneApp({
                       {m.aiAlert!.summary}
                     </div>
                     <div className="small num" style={{ color: 'var(--mark)', fontWeight: 600 }}>
-                      Price-In 消化度：{m.aiAlert!.priceInStatus}
+                      消息入价消化度（Price-In）：{m.aiAlert!.priceInStatus}
                       {m.aiAlert!.suggestedDelta ? ` · ${m.aiAlert!.suggestedDelta}` : ''}
                     </div>
                     <div className="small">{m.aiAlert!.source}</div>
@@ -2003,6 +2405,44 @@ export function SkinPhoneApp({
                   <span className="r num">{it.tag}</span>
                 </div>
               ))}
+
+              {/* Member Session Continuity Status & Explicit Logout */}
+              {authUser && (
+                <div className="card opt-row enter" style={{ marginTop: 6 }}>
+                  <div>
+                    <b>
+                      当前授权账号：{authUser.username}
+                      {offlineMode ? '（离线重连保护中）' : '（长期在线免重登）'}
+                    </b>
+                    <div className="s num">
+                      今日智能诊盘额度：
+                      {authUser.aiEnabled
+                        ? `${authUser.aiUsedToday}/${authUser.dailyAiLimit} 次`
+                        : '未开通'}
+                      {' · '}设备绑定 {authUser.boundDevicesCount}/
+                      {authUser.maxDevices >= 99 ? '∞' : authUser.maxDevices} 台
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {authUser.role === 'superadmin' && (
+                      <button
+                        type="button"
+                        className="key mini dark"
+                        onClick={() => setAdminOpen(true)}
+                      >
+                        👑 总控台
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="key mini"
+                      onClick={() => void handleExplicitLogout()}
+                    >
+                      退出账号
+                    </button>
+                  </div>
+                </div>
+              )}
     </>
   );
 
@@ -2049,7 +2489,10 @@ export function SkinPhoneApp({
                       <small>
                         {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
                       </small>
-                      <b>{opt.odds.toFixed(2)}</b>
+                      <b>
+                        {opt.odds.toFixed(2)}
+                        {renderTrendArrow(opt.trend)}
+                      </b>
                     </button>
                   ))}
                 </div>
@@ -2070,7 +2513,10 @@ export function SkinPhoneApp({
                       <small>
                         {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
                       </small>
-                      <b>{opt.odds.toFixed(2)}</b>
+                      <b>
+                        {opt.odds.toFixed(2)}
+                        {renderTrendArrow(opt.trend)}
+                      </b>
                     </button>
                   ))}
                 </div>
@@ -2113,7 +2559,10 @@ export function SkinPhoneApp({
                         <small>
                           {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
                         </small>
-                        <b>{opt.odds.toFixed(2)}</b>
+                        <b>
+                          {opt.odds.toFixed(2)}
+                          {renderTrendArrow(opt.trend)}
+                        </b>
                       </button>
                     ))}
                 </div>
@@ -2488,6 +2937,35 @@ export function SkinPhoneApp({
     </a>
   );
 
+  // Full-Gate Member Authentication Barrier (WeChat-style persistent login; zero calculator data before auth!)
+  if (!authChecked && !authUser) {
+    return (
+      <div
+        style={{
+          minHeight: '100dvh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#070b14',
+          color: '#94a3b8',
+          fontSize: 13,
+        }}
+      >
+        {honeypotTrapNode}
+        正在验证加密通行状态...
+      </div>
+    );
+  }
+
+  if (!authUser) {
+    return (
+      <>
+        {honeypotTrapNode}
+        <LoginGate initialNotice={authNotice} onLoginSuccess={applyAuthenticatedBundle} />
+      </>
+    );
+  }
+
   // ==================== DESKTOP WIDE-SCREEN PRO WORKBENCH (>= 960px) ====================
   if (isDesktop && !embedded) {
     return (
@@ -2556,10 +3034,21 @@ export function SkinPhoneApp({
                 type="button"
                 data-spring="0.9"
                 className="key sm dark"
-                onClick={() => openManual('optimizer')}
+                onClick={() => openManual('sandbox')}
               >
                 📘 图文说明书
               </button>
+              {authUser.role === 'superadmin' && (
+                <button
+                  type="button"
+                  data-spring="0.9"
+                  className="key sm dark"
+                  onClick={() => setAdminOpen(true)}
+                  title="超级管理员专属隐形总控台"
+                >
+                  👑 总控台
+                </button>
+              )}
               {effectiveReport.matchCount > 0 && (
                 <button
                   type="button"
@@ -2710,7 +3199,15 @@ export function SkinPhoneApp({
             open={manualOpen}
             initialSection={manualSection}
             onClose={() => setManualOpen(false)}
+            onQuotaUpdate={syncRemainingAiQuota}
           />
+          {authUser.role === 'superadmin' && (
+            <AdminConsoleModal
+              open={adminOpen}
+              currentUser={authUser}
+              onClose={() => setAdminOpen(false)}
+            />
+          )}
         </div>
       </div>
     );
@@ -2766,10 +3263,20 @@ export function SkinPhoneApp({
                     type="button"
                     className="key pillk dark"
                     data-spring="0.88"
-                    onClick={() => openManual('quickstart')}
+                    onClick={() => openManual('sandbox')}
                   >
                     📘说明书
                   </button>
+                  {authUser.role === 'superadmin' && (
+                    <button
+                      type="button"
+                      className="key pillk dark"
+                      data-spring="0.88"
+                      onClick={() => setAdminOpen(true)}
+                    >
+                      👑总控
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="round-key"
@@ -2838,6 +3345,15 @@ export function SkinPhoneApp({
                   >
                     📘图解
                   </button>
+                  {authUser.role === 'superadmin' && (
+                    <button
+                      type="button"
+                      className="key mini dark"
+                      onClick={() => setAdminOpen(true)}
+                    >
+                      👑总控
+                    </button>
+                  )}
                   {[50, 100, 200, 500].map((b) => (
                     <button
                       key={b}
@@ -2880,6 +3396,16 @@ export function SkinPhoneApp({
                 >
                   📘说明书
                 </button>
+                {authUser.role === 'superadmin' && (
+                  <button
+                    type="button"
+                    className="key pillk dark"
+                    data-spring="0.88"
+                    onClick={() => setAdminOpen(true)}
+                  >
+                    👑总控
+                  </button>
+                )}
                 {effectiveReport.matchCount > 0 && (
                   <button
                     type="button"
@@ -2916,6 +3442,16 @@ export function SkinPhoneApp({
                 >
                   📘说明书
                 </button>
+                {authUser.role === 'superadmin' && (
+                  <button
+                    type="button"
+                    className="key pillk dark"
+                    data-spring="0.88"
+                    onClick={() => setAdminOpen(true)}
+                  >
+                    👑总控
+                  </button>
+                )}
                 <button
                   type="button"
                   data-spring="0.88"
@@ -3039,6 +3575,13 @@ export function SkinPhoneApp({
           initialSection={manualSection}
           onClose={() => setManualOpen(false)}
         />
+        {authUser.role === 'superadmin' && (
+          <AdminConsoleModal
+            open={adminOpen}
+            currentUser={authUser}
+            onClose={() => setAdminOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

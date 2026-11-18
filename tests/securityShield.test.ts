@@ -247,8 +247,19 @@ describe('Seam 4: Anti-Reader Decoy, Honeypot Fuse, Subkey Separation & AES-256-
     await gateway.handleRequest(switchedIpEx.req, switchedIpEx.res, '/');
     assert.equal(switchedIpEx.getResult().statusCode, 403);
 
-    // After 16 minutes cooldown, IP fuse releases cleanly
-    clock += 16 * 60 * 1000;
+    // At 47 hours, 48-hour meltdown fuse MUST still block access!
+    clock += 47 * 60 * 60 * 1000;
+    const stillFusedNav = makeMockHttpExchange({
+      method: 'GET',
+      url: '/',
+      remoteAddress: '198.51.100.42',
+      headers: REAL_BROWSER_HEADERS,
+    });
+    await gateway.handleRequest(stillFusedNav.req, stillFusedNav.res, '/');
+    assert.equal(stillFusedNav.getResult().statusCode, 403);
+
+    // After 48 hours + 2 minutes cooldown, IP fuse releases cleanly
+    clock += 62 * 60 * 1000;
     const recoveredNav = makeMockHttpExchange({
       method: 'GET',
       url: '/',

@@ -5,19 +5,35 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { createXiaoGaoService } from './xiaogaoCore.mjs';
+import { createAccountManager } from './accountManager.mjs';
+import { createManualQaEngine } from './manualQaEngine.mjs';
 import { createSecurityAndQuantGateway } from './securityShield.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST_DIR = path.resolve(process.env.DIST_DIR || path.resolve(__dirname, '../dist'));
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.resolve(__dirname, '../data'));
 const SNAPSHOT_FILE = path.join(DATA_DIR, 'sporttery-snapshot.json');
+const ADMIN_CREDS_FILE =
+  process.env.ADMIN_CREDS_FILE || path.join(DATA_DIR, 'admin-credentials.txt');
 const PORT = Number(process.env.PORT || 18768);
 const HOST = process.env.HOST || '127.0.0.1';
 const API_KEY = process.env.OPENCODE_API_KEY || '';
 
 const xiaogaoService = createXiaoGaoService();
+const accountManager = createAccountManager({
+  accountsFile: path.join(DATA_DIR, 'accounts-db.json'),
+  adminCredsFile: ADMIN_CREDS_FILE,
+});
+const manualQaEngine = createManualQaEngine({
+  accountManager,
+  xiaogaoService,
+  getApiKey: () => API_KEY,
+});
 const gateway = createSecurityAndQuantGateway({
   snapshotFile: SNAPSHOT_FILE,
+  banStoreFile: path.join(DATA_DIR, 'security-bans.json'),
+  accountManager,
+  manualQaEngine,
   xiaogaoService,
   getApiKey: () => API_KEY,
 });

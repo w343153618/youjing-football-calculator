@@ -1,40 +1,153 @@
+const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
+
 let shieldMounted = false;
 let fusedTriggered = false;
+let cachedHwFp: string | null = null;
 let currentSessionIdGetter: () => string | null = () => null;
 
 export function registerShieldSessionGetter(fn: () => string | null) {
   currentSessionIdGetter = fn;
 }
 
+function bytesToHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i].toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
 /**
- * 立即触发高压熔断保护：通知服务端封禁当前会话令牌（15分钟冷却），并彻底销毁前端 DOM
+ * 提取跨浏览器/跨 Profile 物理硬件特征指纹（GPU 渲染器型号 + 显存纹理上限 + 物理屏幕尺寸色深 + CPU 核心数 + 时区）
+ * 在同一台电脑上切换无痕窗口、新建 Chrome Profile 或换用 Edge/Brave 均保持一致
  */
-export function triggerSecurityMeltdown(_reason: string) {
+export async function getCrossBrowserHardwareFingerprint(): Promise<string> {
+  if (cachedHwFp) return cachedHwFp;
+  if (typeof window === 'undefined') return '0'.repeat(64);
+
+  let gpuSig = 'no-webgl';
+  try {
+    const canvas = document.createElement('canvas');
+    const gl =
+      (canvas.getContext('webgl') as WebGLRenderingContext | null) ||
+      (canvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+    if (gl) {
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const vendor = dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : '';
+      const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : '';
+      const maxTex = String(gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      const maxRb = String(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+      const maxVp = Array.from((gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array) || []).join(
+        'x'
+      );
+      gpuSig = `${vendor}|${renderer}|${maxTex}|${maxRb}|${maxVp}`;
+    }
+  } catch {
+    // ignore webgl errors
+  }
+
+  const scr = typeof window.screen !== 'undefined' ? window.screen : { width: 0, height: 0, colorDepth: 24 };
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const rawTrait = [
+    navigator.platform || 'unk',
+    `${scr.width}x${scr.height}x${scr.colorDepth}`,
+    String(navigator.hardwareConcurrency || 4),
+    String(navigator.maxTouchPoints || 0),
+    tz,
+    gpuSig,
+  ].join('||');
+
+  try {
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(rawTrait) as BufferSource
+    );
+    cachedHwFp = bytesToHex(new Uint8Array(digest));
+    return cachedHwFp;
+  } catch {
+    // fallback simple deterministic hex if subtle unavailable
+    let h = 2166136261;
+    for (let i = 0; i < rawTrait.length; i++) {
+      h ^= rawTrait.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    cachedHwFp = Math.abs(h).toString(16).padStart(32, '0').repeat(2);
+    return cachedHwFp;
+  }
+}
+
+function renderMeltdownDom(unlockAtMs: number) {
+  if (typeof document === 'undefined' || !document.body) return;
+  const rem = Math.max(60_000, unlockAtMs - Date.now());
+  const hrs = Math.floor(rem / 3_600_000);
+  const mins = Math.ceil((rem % 3_600_000) / 60_000) % 60;
+  const timeText = hrs > 0 ? `${hrs} 小时 ${mins} 分钟` : `${Math.ceil(rem / 60_000)} 分钟`;
+
+  document.title = '访问阻断 · 熔断天平 48 小时整机锁定中';
+  document.body.innerHTML = `
+    <div style="position:fixed;inset:0;z-index:999999;background:#070a12;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;user-select:none;">
+      <div style="max-width:450px;padding:30px 26px;border-radius:22px;background:rgba(15,23,42,0.88);border:1px solid rgba(239,68,68,0.5);box-shadow:0 28px 70px rgba(0,0,0,0.75);">
+        <div style="font-size:34px;margin-bottom:10px;">⚖️</div>
+        <h2 style="margin:0 0 10px;font-size:18px;font-weight:700;color:#f87171;">安全熔断天平已触发 · 整机全浏览器封禁 48 小时</h2>
+        <div style="display:inline-block;margin:6px 0 14px;padding:5px 14px;border-radius:99px;background:rgba(239,68,68,0.16);color:#fca5a5;font-size:12.5px;font-weight:600;border:1px solid rgba(239,68,68,0.32);">
+          剩余锁定时长：${timeText}
+        </div>
+        <p style="margin:0;font-size:12.5px;line-height:1.68;color:#94a3b8;">
+          系统检测到开发者调试工具探测、抓包重放或异常抓取行为，已同步锁定当前电脑硬件设备指纹、网络出口与全部浏览器会话，切换浏览器、新建 Profile 或无痕窗口均无法解除。
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 立即触发 48 小时整机熔断天平：通知服务端封禁硬件指纹 + 网络 IP + 会话，并清空前端 DOM
+ */
+export function triggerSecurityMeltdown(reason: string, serverUnlockAt?: number) {
   if (fusedTriggered || typeof window === 'undefined') return;
   fusedTriggered = true;
 
-  try {
-    if (window.self !== window.top) {
-      window.top?.postMessage({ cmd: 'yj-security-meltdown' }, window.location.origin);
-    }
-  } catch {
-    // ignore cross-frame error
-  }
+  const unlockAt =
+    serverUnlockAt && serverUnlockAt > Date.now()
+      ? serverUnlockAt
+      : Date.now() + FORTY_EIGHT_HOURS_MS;
 
   try {
-    const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
-    const base = metaEnv?.BASE_URL || '/';
-    const sid = currentSessionIdGetter();
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (sid) headers['X-YJ-Sid'] = sid;
-    void fetch(`${base}api/security/fuse`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ t: Date.now() }),
-      keepalive: true,
-    }).catch(() => {});
+    if (window.self !== window.top) {
+      window.top?.postMessage({ cmd: 'yj-security-meltdown', unlockAt }, window.location.origin);
+    }
   } catch {
-    // ignore network error during meltdown
+    // ignore
+  }
+
+  const alreadyFusedOnServer =
+    reason === 'bootstrap-fused' ||
+    reason === 'api-fused' ||
+    reason === 'qa-violation-lock' ||
+    reason === 'child-frame-meltdown';
+
+  if (!alreadyFusedOnServer) {
+    void (async () => {
+      try {
+        const hwFp = await getCrossBrowserHardwareFingerprint();
+        const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
+        const base = metaEnv?.BASE_URL || '/';
+        const sid = currentSessionIdGetter();
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'X-YJ-Hw': hwFp,
+        };
+        if (sid) headers['X-YJ-Sid'] = sid;
+        await fetch(`${base}api/security/fuse`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ t: Date.now(), hwFp }),
+          keepalive: true,
+        });
+      } catch {
+        // ignore network error during meltdown
+      }
+    })();
   }
 
   try {
@@ -43,20 +156,7 @@ export function triggerSecurityMeltdown(_reason: string) {
     // ignore
   }
 
-  if (typeof document !== 'undefined' && document.body) {
-    document.title = '安全熔断保护中';
-    document.body.innerHTML = `
-      <div style="position:fixed;inset:0;z-index:999999;background:#090d16;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;user-select:none;">
-        <div style="max-width:430px;padding:28px 24px;border-radius:20px;background:rgba(30,41,59,0.82);border:1px solid rgba(239,68,68,0.45);box-shadow:0 24px 60px rgba(0,0,0,0.65);">
-          <div style="font-size:28px;margin-bottom:10px;">🛡️</div>
-          <h2 style="margin:0 0 10px;font-size:17px;font-weight:700;color:#f87171;">安全防护已触发 · 会话已熔断锁定</h2>
-          <p style="margin:0;font-size:13px;line-height:1.65;color:#94a3b8;">
-            系统检测到开发者调试工具、抓包重放或异常抓取环境，已自动清空精算工作台并临时封禁当前会话（15 分钟后自动解除）。
-          </p>
-        </div>
-      </div>
-    `;
-  }
+  renderMeltdownDom(unlockAt);
 }
 
 function isHeadlessOrAutomationEnv(): boolean {
@@ -82,11 +182,14 @@ function isHeadlessOrAutomationEnv(): boolean {
 }
 
 /**
- * 挂载高压防逆向与防扒取护盾（零误伤移动端软键盘与浏览器书签栏）
+ * 挂载高压防逆向与 48 小时整机熔断天平护盾
  */
 export function initHighPressureAntiReverseShield(embedded = false) {
   if (shieldMounted || typeof window === 'undefined' || typeof document === 'undefined') return;
   shieldMounted = true;
+
+  // Warm hardware fingerprint immediately (authoritative 48h lock resides in server security-bans.json so SSH unban works cleanly!)
+  void getCrossBrowserHardwareFingerprint();
 
   if (isHeadlessOrAutomationEnv()) {
     triggerSecurityMeltdown('headless-signature');
@@ -95,11 +198,10 @@ export function initHighPressureAntiReverseShield(embedded = false) {
 
   window.addEventListener('message', (ev) => {
     if (ev.origin === window.location.origin && ev.data?.cmd === 'yj-security-meltdown') {
-      triggerSecurityMeltdown('child-frame-meltdown');
+      triggerSecurityMeltdown('child-frame-meltdown', ev.data.unlockAt);
     }
   });
 
-  // Global CSS user-select protection (allow <input>/<textarea> typing)
   const style = document.createElement('style');
   style.textContent = `
     body, .jz-root, .manual-dialog {
@@ -139,7 +241,6 @@ export function initHighPressureAntiReverseShield(embedded = false) {
   document.addEventListener('copy', blockClipboard, { capture: true });
   document.addEventListener('cut', blockClipboard, { capture: true });
 
-  // High-Pressure DevTools & View-Source Shortcut Interceptor
   window.addEventListener(
     'keydown',
     (e) => {
@@ -153,7 +254,6 @@ export function initHighPressureAntiReverseShield(embedded = false) {
       if (isSavePage || isViewSource) {
         e.preventDefault();
         e.stopPropagation();
-        if (isViewSource) triggerSecurityMeltdown('view-source-shortcut');
         return;
       }
 
@@ -168,7 +268,6 @@ export function initHighPressureAntiReverseShield(embedded = false) {
 
   if (embedded) return;
 
-  // Multi-consecutive Debugger Breakpoint Pause Probe (desktop fine-pointer only; zero false-positives on CPU/background spikes)
   const isCoarsePointer =
     typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
   if (isCoarsePointer) return;
