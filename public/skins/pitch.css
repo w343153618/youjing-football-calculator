@@ -28,6 +28,7 @@
   --prob1: #0E5C3A; --prob2: #8FB8A0; --prob3: #D7E4DA; --prob-track: #E8EFE9;
   --ava: linear-gradient(180deg, #EDF3EE, #E0E9E2); --ava-text: #0E5C3A;
   --toast: linear-gradient(180deg, #14402C, #0B2B1D); --dash: #C9D6CC;
+  --spring-press: 1180 54;
   --spring-release: 480 14;
 }
 .key.dark { background: var(--key-on); box-shadow: var(--key-on-sh); }

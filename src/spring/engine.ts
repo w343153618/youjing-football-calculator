@@ -141,19 +141,26 @@ export function readSpringTokens() {
   if (r.length === 2 && r.every(Number.isFinite)) RELEASE_CFG = [r[0], r[1]];
 }
 
+import {
+  currentSkinProfile,
+  playTactileCue,
+  spawnPointerShockwave,
+  vibratePattern,
+} from './tactileSymphony';
+
 export function haptic(ms = 8) {
-  try {
-    navigator.vibrate?.(ms);
-  } catch {
-    // ignore
-  }
+  vibratePattern([ms]);
 }
 
 interface ElementFX {
   s: number;
+  sx: number;
+  sy: number;
   x: number;
   y: number;
   scale: Spring;
+  scaleX: Spring;
+  scaleY: Spring;
   tx: Spring;
   ty: Spring;
 }
@@ -163,15 +170,33 @@ const FX = new WeakMap<HTMLElement, ElementFX>();
 export function fxOf(el: HTMLElement): ElementFX {
   let f = FX.get(el);
   if (!f) {
-    const state = { s: 1, x: 0, y: 0 } as ElementFX;
+    const state = { s: 1, sx: 1, sy: 1, x: 0, y: 0 } as ElementFX;
     const apply = () => {
-      el.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale(${state.s})`;
+      const fxX = state.s * state.sx;
+      const fxY = state.s * state.sy;
+      el.style.transform = `translate3d(${state.x}px,${state.y}px,0) scale3d(${fxX},${fxY},1)`;
     };
     state.scale = new Spring(1, {
       k: RELEASE_CFG[0],
       c: RELEASE_CFG[1],
       onUpdate: (v) => {
         state.s = v;
+        apply();
+      },
+    });
+    state.scaleX = new Spring(1, {
+      k: 540,
+      c: 15,
+      onUpdate: (v) => {
+        state.sx = v;
+        apply();
+      },
+    });
+    state.scaleY = new Spring(1, {
+      k: 460,
+      c: 13,
+      onUpdate: (v) => {
+        state.sy = v;
         apply();
       },
     });
@@ -256,32 +281,73 @@ export function animateNumber(
   s.set(to);
 }
 
-/** 3D Perspective Tilt on Pointer Move */
-export function bindTilt(el: HTMLElement | null) {
-  if (!el) return;
+/** 3D Perspective Tilt + Holographic Specular Glare (Pointer + Mobile Gyroscope) */
+const TILT_CLEANUP = new WeakMap<HTMLElement, () => void>();
+
+export function bindTilt(el: HTMLElement | null): () => void {
+  if (!el) return () => {};
+  TILT_CLEANUP.get(el)?.();
+
   const rx = new Spring(0, { k: 260, c: 16, eps: 0.01, onUpdate: apply });
   const ry = new Spring(0, { k: 260, c: 16, eps: 0.01, onUpdate: apply });
+
   function apply() {
     if (!el) return;
-    el.style.transform = `perspective(700px) rotateX(${rx.x}deg) rotateY(${ry.x}deg)`;
+    el.style.transform = `perspective(720px) rotateX(${rx.x}deg) rotateY(${ry.x}deg)`;
+    const gx = 50 + ry.x * 3.2;
+    const gy = 50 - rx.x * 3.2;
+    el.style.setProperty('--glare-x', `${gx.toFixed(1)}%`);
+    el.style.setProperty('--glare-y', `${gy.toFixed(1)}%`);
   }
-  el.addEventListener('pointermove', (e) => {
+
+  const onMove = (e: PointerEvent) => {
     const r = el.getBoundingClientRect();
-    ry.set(((e.clientX - r.left) / r.width - 0.5) * 15);
-    rx.set(-((e.clientY - r.top) / r.height - 0.5) * 15);
-  });
-  el.addEventListener('pointerleave', () => {
+    if (r.width === 0 || r.height === 0) return;
+    ry.set(((e.clientX - r.left) / r.width - 0.5) * 16);
+    rx.set(-((e.clientY - r.top) / r.height - 0.5) * 16);
+    el.style.setProperty('--glare-o', '0.26');
+  };
+
+  const onLeave = () => {
     rx.set(0);
     ry.set(0);
-  });
+    el.style.setProperty('--glare-o', '0.12');
+  };
+
+  const onOrient = (ev: DeviceOrientationEvent) => {
+    if (ev.gamma === null || ev.beta === null) return;
+    const clampedX = Math.max(-14, Math.min(14, ev.gamma * 0.42));
+    const clampedY = Math.max(-14, Math.min(14, (ev.beta - 45) * 0.38));
+    ry.set(clampedX);
+    rx.set(-clampedY);
+    el.style.setProperty('--glare-o', '0.24');
+  };
+
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerleave', onLeave);
+  window.addEventListener('deviceorientation', onOrient, { passive: true });
+
+  const cleanup = () => {
+    rx.stop();
+    ry.stop();
+    el.removeEventListener('pointermove', onMove);
+    el.removeEventListener('pointerleave', onLeave);
+    window.removeEventListener('deviceorientation', onOrient);
+    TILT_CLEANUP.delete(el);
+  };
+  TILT_CLEANUP.set(el, cleanup);
+  return cleanup;
 }
 
-/** Spring Toast Notification */
+/** Spring Toast Notification (XSS-safe textContent) */
 export function showSpringToast(layer: HTMLElement | null, msg: string) {
   if (!layer) return;
   const t = document.createElement('div');
   t.className = 'toast';
-  t.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"/></svg><span>${msg}</span>`;
+  t.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"/></svg>`;
+  const textSpan = document.createElement('span');
+  textSpan.textContent = msg;
+  t.appendChild(textSpan);
   layer.appendChild(t);
   const st = { s: 0.6, y: -18 };
   let leaving = false;
@@ -318,7 +384,7 @@ export function showSpringToast(layer: HTMLElement | null, msg: string) {
   }, 1500 / TIME_SCALE);
 }
 
-/** Bind global tactile press/release listener once */
+/** Bind global tactile press/release listener once with Anisotropic Jelly Squash + Shockwave */
 let globalBound = false;
 export function ensureGlobalTactileListener(
   onSwitchPress?: (swId: string, down: boolean) => void
@@ -341,8 +407,16 @@ export function ensureGlobalTactileListener(
     if (!el) return;
     pressed = el;
     el.classList.add('down');
+
+    spawnPointerShockwave(e.clientX, e.clientY);
+    playTactileCue('press');
+
     const ratio = parseFloat(el.dataset.spring || '0.92') || 0.92;
-    fxOf(el).scale.config(PRESS_CFG[0], PRESS_CFG[1]).set(ratio);
+    const prof = currentSkinProfile();
+    const fx = fxOf(el);
+    fx.scale.config(PRESS_CFG[0], PRESS_CFG[1]).set(ratio);
+    fx.scaleX.config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62).set(prof.squashX);
+    fx.scaleY.config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62).set(prof.squashY);
   });
 
   const release = () => {
@@ -354,7 +428,10 @@ export function ensureGlobalTactileListener(
     const el = pressed;
     pressed = null;
     el.classList.remove('down');
-    fxOf(el).scale.config(RELEASE_CFG[0], RELEASE_CFG[1]).set(1);
+    const fx = fxOf(el);
+    fx.scale.config(RELEASE_CFG[0], RELEASE_CFG[1]).set(1);
+    fx.scaleX.config(RELEASE_CFG[0] * 1.08, RELEASE_CFG[1]).set(1);
+    fx.scaleY.config(RELEASE_CFG[0] * 0.92, Math.max(10, RELEASE_CFG[1] - 2)).set(1);
   };
 
   document.addEventListener('pointerup', release);

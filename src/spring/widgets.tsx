@@ -213,7 +213,7 @@ interface SpringSheetProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
-  onAfterOpen?: (sheetEl: HTMLElement) => void;
+  onAfterOpen?: (sheetEl: HTMLElement) => void | (() => void);
 }
 
 export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringSheetProps) {
@@ -270,10 +270,11 @@ export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringShee
       d += 65;
     });
 
-    onAfterOpen?.(sh);
+    const afterDisposer = onAfterOpen?.(sh);
 
     return () => {
       y.stop();
+      if (typeof afterDisposer === 'function') afterDisposer();
     };
   }, [open]);
 
@@ -395,4 +396,86 @@ export function SpringProbBar({ probs }: { probs: [number, number, number] }) {
 export function kickElement(el: HTMLElement | null, velocity = 2.6) {
   if (!el) return;
   fxOf(el).scale.kick(velocity);
+}
+
+
+/* ---------- Live Spring-Animated Payout Equalizer Bars ---------- */
+export interface EqualizerComboBar {
+  id: string;
+  label: string;
+  totalPayout: number;
+  prob: number;
+}
+
+export function PayoutEqualizerBars({
+  combos,
+  totalCost,
+}: {
+  combos: EqualizerComboBar[];
+  totalCost: number;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const springsRef = useRef<Spring[]>([]);
+
+  const visible = combos.slice(0, 8);
+  const maxVal = Math.max(totalCost * 1.35, ...visible.map((c) => c.totalPayout), 10);
+  const costPct = Math.min(88, Math.max(12, (totalCost / maxVal) * 100));
+
+  useLayoutEffect(() => {
+    const root = wrapRef.current;
+    if (!root) return;
+    const barEls = [...root.querySelectorAll<HTMLElement>('.eq-bar-fill')];
+
+    while (springsRef.current.length < barEls.length) {
+      springsRef.current.push(new Spring(15, { k: 290, c: 19, eps: 0.1 }));
+    }
+
+    barEls.forEach((el, idx) => {
+      const item = visible[idx];
+      if (!item) return;
+      const targetPct = Math.min(100, Math.max(8, (item.totalPayout / maxVal) * 100));
+      const sp = springsRef.current[idx];
+      sp.onUpdate = (v) => {
+        el.style.height = `${Math.max(4, v)}%`;
+      };
+      sp.set(targetPct);
+    });
+
+    return () => {
+      // Keep spring positions across re-renders so mode switches morph smoothly!
+    };
+  }, [visible.map((c) => `${c.id}:${c.totalPayout.toFixed(1)}`).join('|'), totalCost, maxVal]);
+
+  useEffect(() => {
+    return () => {
+      springsRef.current.forEach((s) => s.stop());
+    };
+  }, []);
+
+  if (visible.length < 2) return null;
+
+  return (
+    <div ref={wrapRef} className="eq-chart num">
+      <div className="eq-cost-line" style={{ bottom: `${costPct}%` }}>
+        <span>本金线 ¥{totalCost}</span>
+      </div>
+      <div className="eq-bars" style={{ gridTemplateColumns: `repeat(${visible.length}, 1fr)` }}>
+        {visible.map((c, idx) => {
+          const isLoss = c.totalPayout < totalCost - 0.01;
+          return (
+            <div key={c.id} className="eq-col" title={`${c.label} · 实派 ¥${c.totalPayout.toFixed(1)}`}>
+              <div className="eq-track">
+                <div className={`eq-bar-fill ${isLoss ? 'loss' : 'win'}`}>
+                  <em className="eq-val">¥{Math.round(c.totalPayout)}</em>
+                </div>
+              </div>
+              <small className="eq-lbl">
+                #{idx + 1}·{(c.prob * 100).toFixed(0)}%
+              </small>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

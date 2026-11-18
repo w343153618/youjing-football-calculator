@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export type ManualSectionId =
   | 'quickstart'
@@ -122,7 +122,7 @@ export function UserManualModal({
   const [query, setQuery] = useState('');
 
   // Sync section when opened from a contextual [?] button
-  useMemo(() => {
+  useEffect(() => {
     if (open && initialSection) {
       setActiveSec(initialSection);
     }
@@ -549,7 +549,7 @@ export function UserManualModal({
                   </p>
                   <ul>
                     <li>例 A：买 `总进球·0球` 赔率 <b>9.50</b>，而买完全等价的 `比分·0:0` 赔率却是 <b>10.50</b> —— 直接白捡 <b>+10.5%</b> 奖金！</li>
-                    <li>例 B：买 `让球(+1)让胜`（即主不败）赔率 1.42，有时不如用 `胜平负·主胜 + 平` 做平均优化等效赔率 1.47 划算。系统会自动扫描并弹出「💰省钱替换」按钮。</li>
+                    <li>例 B：买 `让球(+1)让胜`（即主不败）赔率 1.42，有时不如用 `胜平负·主胜 + 平` 做平均优化后的合成等效水位 1.47 划算。系统会自动扫描并弹出「💰省钱替换」按钮。</li>
                   </ul>
                 </div>
 

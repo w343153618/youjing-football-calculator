@@ -29,7 +29,8 @@ fi
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-echo "==> [1/5] Running TypeScript check & Vite production build..."
+echo "==> [1/5] Running TDD seam tests, TypeScript check & Vite production build..."
+pnpm test
 pnpm run build
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -39,6 +40,7 @@ trap 'rm -rf "${STAGE_DIR}"' EXIT
 cp -R dist "${STAGE_DIR}/dist"
 mkdir -p "${STAGE_DIR}/server"
 cp server/index.mjs "${STAGE_DIR}/server/index.mjs"
+cp server/xiaogaoCore.mjs "${STAGE_DIR}/server/xiaogaoCore.mjs"
 cp package.json "${STAGE_DIR}/package.json"
 
 echo "==> [2/5] Fetching fresh China Sports Lottery snapshot seed (if reachable)..."

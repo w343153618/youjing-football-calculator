@@ -1,2 +1,6 @@
 /* 00 · 素白 Air — refined Pure Air+ (core defaults). Ink-black is the only accent. */
-:root { --mark: #0B0D12; }
+:root {
+  --mark: #0B0D12;
+  --spring-press: 1080 50;
+  --spring-release: 470 13;
+}

@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   FALLBACK_MATCHES,
-  bankerRoundCents,
   computeTruthReport,
-  requestXiaoGaoDiagnosis,
   syncOfficialMatches,
   type MatchItem,
   type PoolCode,
@@ -11,11 +9,18 @@ import {
   type TruthReport,
 } from '../prototype/data';
 import {
+  buildXiaoGaoWarnings,
+  requestXiaoGaoDiagnosis,
+} from '../intel/xiaogaoClient';
+import {
   analyzeMatchMicroQuant,
   computeProOrderInsights,
   generateFiveArchetypes,
+  optimizeBonusPlan,
   type ArchetypeKey,
   type ArchetypePlan,
+  type BonusOptMode,
+  type EquivalentArbItem,
   type UserStance,
 } from '../prototype/proQuant';
 import {
@@ -33,6 +38,19 @@ import {
   showSpringToast,
 } from '../spring/engine';
 import {
+  SKIN_PHYSICS_PROFILES,
+  burstCelebrationSparks,
+  getTactileState,
+  launchParabolicOrb,
+  playTactileCue,
+  runHyperDemoShowcase,
+  shudderDangerElement,
+  triggerShimmerSweep,
+  updateTactileState,
+  type HapticIntensity,
+} from '../spring/tactileSymphony';
+import {
+  PayoutEqualizerBars,
   SpringProbBar,
   SpringSegmented,
   SpringSheet,
@@ -51,7 +69,8 @@ type SheetState =
   | { type: 'more'; matchId: string }
   | { type: 'intel'; matchId: string }
   | { type: 'poster' }
-  | { type: 'filter' };
+  | { type: 'filter' }
+  | { type: 'tactile' };
 
 const MODE_OPTS: Array<[MatchMode, string]> = [
   ['mix', '混合'],
@@ -132,6 +151,20 @@ function archetypeToReport(plan: ArchetypePlan): TruthReport {
     isUnderwater: l.netProfit < 0 && plan.missOneReturn === null,
   }));
 
+  const underwaterCombos = combos.filter((c) => c.isUnderwater);
+  const winProbSum = combos.reduce((a, c) => a + c.prob, 0);
+  const underwaterProbSum = underwaterCombos.reduce((a, c) => a + c.prob, 0);
+  const underwaterShareOfWins = winProbSum > 0 ? underwaterProbSum / winProbSum : 0;
+  const computedProfitProb =
+    plan.missOneReturn !== null
+      ? plan.profitProb
+      : Math.min(
+          plan.winProb,
+          combos.filter((c) => c.netProfit >= 0).reduce((a, c) => a + c.prob, 0)
+        );
+  const invUnitSum = combos.reduce((a, c) => a + 2 / Math.max(0.5, c.unitPayout), 0);
+  const harmonicEffOdds = invUnitSum > 0 ? 1 / invUnitSum : 1.5;
+
   return {
     matchCount: matchSet.size,
     comboCount: plan.lines.length,
@@ -144,14 +177,14 @@ function archetypeToReport(plan: ArchetypePlan): TruthReport {
     maxPayout: plan.maxReturn,
     likelyRange: [plan.minReturn, plan.maxReturn],
     anyWinProb: plan.winProb,
-    realProfitProb: plan.profitProb,
-    underwaterCount: 0,
-    underwaterShareOfWins: 0,
+    realProfitProb: computedProfitProb,
+    underwaterCount: underwaterCombos.length,
+    underwaterShareOfWins,
     avgPayoutRatio: (100 - plan.vigPct) / 100,
     avgVigLossPer100: plan.vigPct,
     expectedValueRate: -plan.vigPct / 100,
-    dangerScore: plan.key === 'value-assassin' ? 66 : 29,
-    effectiveOdds: plan.totalCost > 0 ? plan.maxReturn / plan.totalCost : 1.5,
+    dangerScore: plan.key === 'value-assassin' ? 66 : underwaterCombos.length > 0 ? 48 : 29,
+    effectiveOdds: harmonicEffOdds,
     breakevenUpgradeCost: null,
     consolidatedTickets: plan.lines.length,
     syntheticHint: `已启用【${plan.badge}】：${plan.tagline}`,
@@ -224,6 +257,7 @@ export function SkinPhoneApp({
   const [leagueFilter, setLeagueFilter] = useState<Record<string, boolean>>({});
   const [diagnosingMatchId, setDiagnosingMatchId] = useState<string | null>(null);
   const [customIntelInput, setCustomIntelInput] = useState<string>('');
+  const [tactileCfg, setTactileCfg] = useState(() => getTactileState());
 
   // DOM Refs for spring physics
   const shellRef = useRef<HTMLDivElement>(null);
@@ -233,6 +267,10 @@ export function SkinPhoneApp({
   const puckRef = useRef<HTMLDivElement>(null);
   const slipRef = useRef<HTMLDivElement>(null);
   const slipAmtRef = useRef<HTMLSpanElement>(null);
+  const auditCockpitRef = useRef<HTMLDivElement>(null);
+  const desktopAuditColRef = useRef<HTMLElement>(null);
+  const underwaterTileRef = useRef<HTMLDivElement>(null);
+  const demoBtnRef = useRef<HTMLButtonElement>(null);
   const mulValRef = useRef<HTMLSpanElement>(null);
   const balValRef = useRef<HTMLSpanElement>(null);
   const bfGridRef = useRef<HTMLDivElement>(null);
@@ -253,6 +291,7 @@ export function SkinPhoneApp({
   // 1. Mount core.css + active skin.css
   useEffect(() => {
     ensureGlobalTactileListener();
+    setTactileCfg(updateTactileState({ skin }));
 
     let coreLink = document.getElementById('jz-core-css') as HTMLLinkElement | null;
     if (!coreLink) {
@@ -281,7 +320,8 @@ export function SkinPhoneApp({
   const switchSkinSmooth = (nextId: string, silent = false) => {
     if (nextId === skin) return;
     setSkin(nextId);
-    if (!silent) haptic(10);
+    setTactileCfg(updateTactileState({ skin: nextId }));
+    if (!silent) playTactileCue('skin-shift');
     const sh = shellRef.current;
     sh?.classList.add('skin-anim');
 
@@ -566,6 +606,11 @@ export function SkinPhoneApp({
     [sandboxAdjustedPicks, effectiveReport, matches]
   );
 
+  const allWarnings = useMemo(
+    () => [...effectiveReport.warnings, ...buildXiaoGaoWarnings(picks, matches)],
+    [effectiveReport.warnings, picks, matches]
+  );
+
   const resolvedTargets = useMemo(() => {
     const found = matches.filter((m) => targetIds.includes(m.id));
     return found.length > 0 ? found : matches.slice(0, 2);
@@ -619,7 +664,8 @@ export function SkinPhoneApp({
   }, [tab, effectiveReport.matchCount, effectiveReport.totalCost]);
 
   useLayoutEffect(() => {
-    if (tab === 'ledger' && balValRef.current) {
+    const ledgerVisible = tab === 'ledger' || (isDesktop && !embedded && dkRightTab === 'ledger');
+    if (ledgerVisible && balValRef.current) {
       animateNumber(
         balValRef.current,
         prevBalRef.current,
@@ -628,7 +674,16 @@ export function SkinPhoneApp({
       );
       prevBalRef.current = dailyRemain;
     }
-  }, [tab, dailyRemain]);
+  }, [tab, isDesktop, embedded, dkRightTab, dailyRemain]);
+
+  // Danger shudder when manual underwater count increases
+  const prevUwRef = useRef<number>(effectiveReport.underwaterCount);
+  useEffect(() => {
+    if (effectiveReport.underwaterCount > prevUwRef.current && effectiveReport.underwaterCount > 0) {
+      shudderDangerElement(underwaterTileRef.current ?? slipRef.current);
+    }
+    prevUwRef.current = effectiveReport.underwaterCount;
+  }, [effectiveReport.underwaterCount]);
 
   // Actions
   const isPicked = (matchId: string, poolCode: PoolCode, optKey: string) =>
@@ -648,7 +703,17 @@ export function SkinPhoneApp({
     if (!opt) return;
     const currentlyOn = isPicked(m.id, poolCode, optKey);
     kickElement(el, currentlyOn ? -1.4 : 2.8);
-    haptic(currentlyOn ? 5 : 10);
+
+    if (currentlyOn) {
+      playTactileCue('tap-off');
+    } else {
+      playTactileCue('tap-on');
+      const targetContainer =
+        isDesktop && !embedded
+          ? auditCockpitRef.current ?? desktopAuditColRef.current
+          : slipRef.current;
+      launchParabolicOrb(el, targetContainer, `+${opt.label}@${opt.odds.toFixed(2)}`);
+    }
 
     setPicks((prev) =>
       currentlyOn
@@ -672,6 +737,48 @@ export function SkinPhoneApp({
             },
           ]
     );
+  };
+
+  const applyEquivalentSwap = (arb: EquivalentArbItem, triggerEl?: HTMLElement | null) => {
+    const fm = matches.find((x) => x.id === arb.matchId);
+    if (!fm) return;
+    setAppliedPlan(null);
+    setPicks((prev) => {
+      const cleaned = prev.filter(
+        (p) =>
+          !(
+            p.matchId === fm.id &&
+            arb.worsePicks.some((wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey)
+          )
+      );
+      const additions: SelectedPick[] = [];
+      for (const bp of arb.betterPicks) {
+        const already = cleaned.some(
+          (p) => p.matchId === fm.id && p.poolCode === bp.poolCode && p.optionKey === bp.optionKey
+        );
+        if (already) continue;
+        const pool = fm.pools[bp.poolCode];
+        const opt = pool?.options.find((o) => o.key === bp.optionKey);
+        if (!pool || !opt) continue;
+        additions.push({
+          matchId: fm.id,
+          matchNumStr: fm.matchNumStr,
+          home: fm.home,
+          away: fm.away,
+          poolCode: bp.poolCode,
+          poolName: pool.name,
+          singleAllowed: pool.single,
+          optionKey: opt.key,
+          optionLabel: opt.label,
+          odds: opt.odds,
+          fairProb: opt.fairProb,
+        });
+      }
+      return [...cleaned, ...additions];
+    });
+    playTactileCue('optimize-arpeggio');
+    if (triggerEl) burstCelebrationSparks(triggerEl, 16);
+    showSpringToast(layerRef.current, `已切换高水同义项 · ${arb.betterChoice}`);
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
@@ -698,163 +805,28 @@ export function SkinPhoneApp({
       })
     );
     setPicks(Array.from(map.values()));
-    haptic(12);
+    playTactileCue('defuse-celebrate');
+    triggerShimmerSweep(auditCockpitRef.current);
+    burstCelebrationSparks(auditCockpitRef.current, 26);
     showSpringToast(layerRef.current, `已套用 · ${plan.shortTab}`);
     setTab('audit');
   };
 
-  // 三模智能奖金优化引擎：平均优化(均衡派奖) / 博热保本(主攻吃肉+次选护盾) / 博冷高弹(正路保底+高赔放大)
-  const applyBonusOptimization = (optMode: 'equal' | 'hot-first' | 'cold-first') => {
-    if (manualReport.combos.length === 0) return;
-    const sorted = [...manualReport.combos].sort((a, b) => b.prob - a.prob);
-    const k = sorted.length;
-    const baseBudget = Math.max(
-      manualReport.totalCost,
-      manualReport.breakevenUpgradeCost ?? manualReport.totalCost,
-      k * 6
-    );
-    const totalTickets = Math.max(k + 2, Math.round(baseBudget / 2));
-    const targetStake = totalTickets * 2;
-
-    let mults: number[] = [];
-    if (optMode === 'equal' || k === 1) {
-      const invSum = sorted.reduce((acc, c) => acc + 1 / Math.max(0.5, c.unitPayout), 0);
-      mults = sorted.map((c) =>
-        Math.max(1, Math.round((totalTickets * (1 / Math.max(0.5, c.unitPayout))) / invSum))
-      );
-      // 若等效水位 > 1.02，自动微调消除残余水下组合
-      if (manualReport.effectiveOdds > 1.02) {
-        for (let guard = 0; guard < 24; guard++) {
-          const curCost = mults.reduce((a, m) => a + m * 2, 0);
-          const uwIdx = sorted.findIndex((c, i) => c.unitPayout * mults[i] < curCost);
-          if (uwIdx === -1) break;
-          mults[uwIdx] += 1;
-        }
-      }
-    } else if (optMode === 'hot-first') {
-      mults = sorted.map((c, idx) =>
-        idx === 0 ? 1 : Math.max(1, Math.ceil(targetStake / Math.max(2.02, c.unitPayout)))
-      );
-      const shieldSum = mults.slice(1).reduce((a, m) => a + m, 0);
-      mults[0] = Math.max(
-        Math.ceil(((shieldSum + 2) * 2) / Math.max(2.02, sorted[0].unitPayout)) + 2,
-        totalTickets - shieldSum
-      );
-      // 二次校准次选保本盾
-      const finalCost = mults.reduce((a, m) => a + m * 2, 0);
-      if (manualReport.effectiveOdds > 1.02) {
-        for (let i = 1; i < k; i++) {
-          while (sorted[i].unitPayout * mults[i] < finalCost && mults[i] < 99) {
-            mults[i] += 1;
-          }
-        }
-      }
-    } else {
-      // cold-first: 前 k-1 项保底回本，余量倾斜给最高赔冷门项 sorted[k-1]
-      mults = sorted.map((c, idx) =>
-        idx === k - 1 ? 1 : Math.max(1, Math.ceil(targetStake / Math.max(2.02, c.unitPayout)))
-      );
-      const shieldSum = mults.slice(0, k - 1).reduce((a, m) => a + m, 0);
-      mults[k - 1] = Math.max(2, totalTickets - shieldSum);
-      const finalCost = mults.reduce((a, m) => a + m * 2, 0);
-      if (manualReport.effectiveOdds > 1.02) {
-        for (let i = 0; i < k - 1; i++) {
-          while (sorted[i].unitPayout * mults[i] < finalCost && mults[i] < 99) {
-            mults[i] += 1;
-          }
-        }
-      }
-    }
-
-    const lines = sorted.map((c, idx) => {
-      const mult = Math.min(99, mults[idx]);
-      const role =
-        optMode === 'equal'
-          ? `均衡分倍#${idx + 1}`
-          : optMode === 'hot-first'
-            ? idx === 0
-              ? '🔥主攻重锤'
-              : `🛡️次选回本盾#${idx}`
-            : idx === k - 1
-              ? '⚡博冷高弹箭'
-              : `🛡️正路免单盾#${idx + 1}`;
-      return {
-        id: `opt-${optMode}-${idx}`,
-        roleLabel: role,
-        legs: picks.slice(0, 1).map((p) => ({
-          matchId: p.matchId,
-          matchNumStr: p.matchNumStr,
-          home: p.home,
-          away: p.away,
-          kickoff: '21:10',
-          poolCode: p.poolCode,
-          poolName: p.poolName,
-          optionKey: p.optionKey,
-          optionLabel: c.desc.replace(/^.*?\[|\]$/g, ''),
-          odds: bankerRoundCents(c.unitPayout / 2),
-          fairProb: c.prob,
-        })),
-        modeLabel: manualReport.modeLabel,
-        multiple: mult,
-        cost: mult * 2,
-        unitPayout: c.unitPayout,
-        returnPayout: Number((c.unitPayout * mult).toFixed(2)),
-        netProfit: 0,
-        prob: c.prob,
-      };
-    });
-
-    const actualTotal = lines.reduce((a, l) => a + l.cost, 0);
-    lines.forEach((l) => {
-      l.netProfit = Number((l.returnPayout - actualTotal).toFixed(2));
-    });
-    const profitLinesProb = lines
-      .filter((l) => l.netProfit >= 0)
-      .reduce((a, l) => a + l.prob, 0);
-
-    const metaMap = {
-      equal: {
-        shortTab: '平均优化',
-        badge: '⚖️ 平均优化（均衡派奖）',
-        title: '反比例均注 · 全选项均衡稳赚',
-        reason: '按每注返奖额反比例精密分配整数倍，彻底消灭假中奖倒贴',
-      },
-      'hot-first': {
-        shortTab: '博热保本',
-        badge: '🔥 博热保本优化',
-        title: '次选回本护盾 + 第一主攻利润最大化',
-        reason: '防冷次选仅配保本倍数，省下筹码集中放大最高概率主方向收益',
-      },
-      'cold-first': {
-        shortTab: '博冷高弹',
-        badge: '⚡ 博冷高弹优化',
-        title: '正路免单兜底 + 高赔冷门暴击放大',
-        reason: '大热方向锁住保本回血线，溢价倍数倾斜博取高赔冷门超额回报',
-      },
-    }[optMode];
-
-    setAppliedPlan({
-      key: 'iron-shield',
-      shortTab: metaMap.shortTab,
-      badge: metaMap.badge,
-      title: metaMap.title,
-      tagline: `总投入 ¥${actualTotal} · 保底返 ¥${Math.min(...lines.map((l) => l.returnPayout)).toFixed(1)} ~ 最高 ¥${Math.max(...lines.map((l) => l.returnPayout)).toFixed(1)}`,
-      totalCost: actualTotal,
-      savedCash: 0,
-      minReturn: Math.min(...lines.map((l) => l.returnPayout)),
-      maxReturn: Math.max(...lines.map((l) => l.returnPayout)),
-      winProb: manualReport.anyWinProb,
-      profitProb: profitLinesProb > 0 ? profitLinesProb : manualReport.anyWinProb,
-      missOneReturn: null,
-      vigPct: manualReport.avgVigLossPer100,
-      reasons: [metaMap.reason],
-      lines,
-    });
-    haptic(12);
-    showSpringToast(layerRef.current, `已启用${metaMap.shortTab} (¥${actualTotal})`);
+  // 三模智能奖金优化引擎（委托给 proQuant.ts 深模块，保留完整多场串关腿 + 触发流光与琶音触感）
+  const applyBonusOptimization = (optMode: BonusOptMode, triggerEl?: HTMLElement | null) => {
+    const plan = optimizeBonusPlan(manualReport, matches, optMode);
+    if (!plan) return;
+    setAppliedPlan(plan);
+    playTactileCue('optimize-arpeggio');
+    triggerShimmerSweep(auditCockpitRef.current);
+    burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 22);
+    showSpringToast(layerRef.current, `已启用${plan.shortTab} (¥${plan.totalCost})`);
   };
 
-  const upgradeToZeroUnderwater = () => applyBonusOptimization('equal');
+  const upgradeToZeroUnderwater = (triggerEl?: HTMLElement | null) => {
+    applyBonusOptimization('equal', triggerEl);
+    playTactileCue('defuse-celebrate');
+  };
 
   const stepMultiple = (delta: number) => {
     setAppliedPlan(null);
@@ -888,12 +860,13 @@ export function SkinPhoneApp({
     haptic(14);
     showSpringToast(layerRef.current, kind === 'live' ? '已记入实买账本' : '已存为模拟观察单');
     setTab('ledger');
+    setDkRightTab('ledger');
   };
 
   const triggerXiaoGaoLive = async (m: MatchItem, extraNote?: string) => {
     if (diagnosingMatchId) return;
     setDiagnosingMatchId(m.id);
-    haptic(8);
+    playTactileCue('radar-ping');
     try {
       const mq = analyzeMatchMicroQuant(m);
       const alert = await requestXiaoGaoDiagnosis(
@@ -905,7 +878,7 @@ export function SkinPhoneApp({
       setMatches((prev) =>
         prev.map((item) => (item.id === m.id ? { ...item, aiAlert: alert } : item))
       );
-      haptic(12);
+      playTactileCue('radar-lock');
       showSpringToast(layerRef.current, '扫地僧小高已完成实时排雷');
     } catch {
       showSpringToast(layerRef.current, '诊盘繁忙，请稍后再试');
@@ -1457,8 +1430,8 @@ export function SkinPhoneApp({
                 </div>
               ) : (
                 <>
-                  {/* 三模智能奖金优化器 (平均优化 / 博热保本 / 博冷高弹) */}
-                  <div className="card enter">
+                  {/* 三模智能奖金优化器 (平均优化 / 博热保本 / 博冷高弹 + 动态弹簧奖金天平柱状图) */}
+                  <div ref={auditCockpitRef} className="card enter yj-shimmer-host">
                     <div className="co-head" style={{ marginBottom: 8 }}>
                       <span className="sec num" style={{ margin: 0 }}>
                         ⚖️ 智能奖金优化分倍器
@@ -1476,7 +1449,7 @@ export function SkinPhoneApp({
                         type="button"
                         data-spring="0.88"
                         className={`key ${appliedPlan?.shortTab === '平均优化' ? 'on' : ''}`}
-                        onClick={() => applyBonusOptimization('equal')}
+                        onClick={(e) => applyBonusOptimization('equal', e.currentTarget)}
                       >
                         ① 平均优化
                       </button>
@@ -1484,7 +1457,7 @@ export function SkinPhoneApp({
                         type="button"
                         data-spring="0.88"
                         className={`key ${appliedPlan?.shortTab === '博热保本' ? 'on' : ''}`}
-                        onClick={() => applyBonusOptimization('hot-first')}
+                        onClick={(e) => applyBonusOptimization('hot-first', e.currentTarget)}
                       >
                         ② 博热保本
                       </button>
@@ -1492,7 +1465,7 @@ export function SkinPhoneApp({
                         type="button"
                         data-spring="0.88"
                         className={`key ${appliedPlan?.shortTab === '博冷高弹' ? 'on' : ''}`}
-                        onClick={() => applyBonusOptimization('cold-first')}
+                        onClick={(e) => applyBonusOptimization('cold-first', e.currentTarget)}
                       >
                         ③ 博冷高弹
                       </button>
@@ -1503,6 +1476,7 @@ export function SkinPhoneApp({
                           className="key"
                           onClick={() => {
                             setAppliedPlan(null);
+                            playTactileCue('tap-off');
                             showSpringToast(layerRef.current, '已恢复默认等倍统配');
                           }}
                         >
@@ -1510,6 +1484,17 @@ export function SkinPhoneApp({
                         </button>
                       )}
                     </div>
+                    <PayoutEqualizerBars
+                      combos={[...effectiveReport.combos]
+                        .sort((a, b) => b.prob - a.prob)
+                        .map((c) => ({
+                          id: c.id,
+                          label: c.desc,
+                          totalPayout: c.totalPayout,
+                          prob: c.prob,
+                        }))}
+                      totalCost={effectiveReport.totalCost}
+                    />
                   </div>
                   {/* Selected Match Chips */}
                   {Array.from(new Set(picks.map((p) => p.matchId))).map((mid) => {
@@ -1587,6 +1572,7 @@ export function SkinPhoneApp({
                         <em>净利&gt;0 才算真赢</em>
                       </div>
                       <div
+                        ref={underwaterTileRef}
                         className={`tile ${effectiveReport.underwaterCount > 0 ? 'danger' : ''}`}
                       >
                         <span>假中奖倒贴检测</span>
@@ -1621,7 +1607,10 @@ export function SkinPhoneApp({
                   </div>
 
                   {/* Restored: +几元全保本弹性升级 + 合成单关提示 + 防坑/省钱/拖油瓶一键操作卡 */}
-                  <div className="card enter" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div
+                className={`card sonar-card enter ${diagnosingMatchId ? 'scanning' : ''}`}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+              >
                     <div className="sec">防坑雷达 · 弹性保本 · 省钱动作</div>
 
                     {effectiveReport.underwaterCount > 0 && effectiveReport.effectiveOdds > 1.03 && (
@@ -1636,7 +1625,7 @@ export function SkinPhoneApp({
                             type="button"
                             data-spring="0.88"
                             className="key mini dark"
-                            onClick={upgradeToZeroUnderwater}
+                            onClick={(e) => upgradeToZeroUnderwater(e.currentTarget)}
                           >
                             一键配平 100% 全保本
                           </button>
@@ -1651,7 +1640,7 @@ export function SkinPhoneApp({
                       </div>
                     )}
 
-                    {insights.activeSwapTip && picks[0] && (
+                    {insights.activeSwapTip && (
                       <div className="note-box">
                         <strong>💰 同义买法省钱差价 (+{insights.activeSwapTip.edgePct}%)：</strong>
                         {insights.activeSwapTip.detail}
@@ -1660,20 +1649,9 @@ export function SkinPhoneApp({
                             type="button"
                             data-spring="0.88"
                             className="key mini dark"
-                            onClick={() => {
-                              const fm = matches.find((x) => x.id === picks[0].matchId);
-                              if (fm) {
-                                togglePick(
-                                  null,
-                                  fm,
-                                  insights.activeSwapTip!.poolCode,
-                                  insights.activeSwapTip!.optionKey
-                                );
-                                showSpringToast(layerRef.current, '已加入高水同义项');
-                              }
-                            }}
+                            onClick={(e) => applyEquivalentSwap(insights.activeSwapTip!, e.currentTarget)}
                           >
-                            选用 {insights.activeSwapTip.betterChoice}
+                            一键替换 {insights.activeSwapTip.betterChoice}
                           </button>
                         </div>
                       </div>
@@ -1702,7 +1680,7 @@ export function SkinPhoneApp({
                       </div>
                     )}
 
-                    {effectiveReport.warnings.map((w) => (
+                    {allWarnings.map((w) => (
                       <div key={w.id} className="note-box alert">
                         <strong>{w.title}：</strong>
                         {w.detail}
@@ -1769,7 +1747,13 @@ export function SkinPhoneApp({
                         max={20}
                         step={1}
                         value={subjectiveDeltaPct}
-                        onChange={(e) => setSubjectiveDeltaPct(Number(e.target.value))}
+                        onChange={(e) => {
+                          const next = Number(e.target.value);
+                          if (next !== subjectiveDeltaPct) {
+                            playTactileCue(next === 0 ? 'detent-zero' : 'detent-tick');
+                            setSubjectiveDeltaPct(next);
+                          }
+                        }}
                         className="srange"
                       />
                     </div>
@@ -1888,7 +1872,10 @@ export function SkinPhoneApp({
                 <span>扫地僧小高靶向排雷 · 临场风控</span>
                 <span className="num">点击任一场可实时诊盘</span>
               </div>
-              <div className="card enter" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div
+                className={`card sonar-card enter ${diagnosingMatchId ? 'scanning' : ''}`}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+              >
                 <input
                   type="text"
                   value={customIntelInput}
@@ -1925,7 +1912,11 @@ export function SkinPhoneApp({
               {matches
                 .filter((m) => m.aiAlert)
                 .map((m) => (
-                  <div key={m.id} className="card enter" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div
+                    key={`${m.id}-${m.aiAlert!.tag}-${m.aiAlert!.summary.slice(0, 12)}`}
+                    className="card enter yj-cipher-reveal"
+                    style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+                  >
                     <div className="co-head" style={{ marginBottom: 0 }}>
                       <div className="duo">
                         <TeamCrest name={m.home} size={18} />
@@ -2218,10 +2209,9 @@ export function SkinPhoneApp({
                             type="button"
                             data-spring="0.88"
                             className="key mini dark"
-                            onClick={() => {
-                              togglePick(null, sheetMatch, arb.poolCode, arb.optionKey);
+                            onClick={(e) => {
+                              applyEquivalentSwap(arb, e.currentTarget);
                               setSheet(null);
-                              showSpringToast(layerRef.current, `已选高水入口 ${arb.betterChoice}`);
                             }}
                           >
                             一键选用 {arb.betterChoice}
@@ -2229,9 +2219,16 @@ export function SkinPhoneApp({
                         </div>
                       </div>
                     ))}
-                    <div className="tile w" style={{ fontFamily: 'var(--font-ui)' }}>
+                    <div
+                      className={`tile w sonar-card ${diagnosingMatchId === sheetMatch.id ? 'scanning' : ''}`}
+                      style={{ fontFamily: 'var(--font-ui)' }}
+                    >
                       <span>扫地僧小高靶向排雷 & 变盘鉴别</span>
-                      <b style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
+                      <b
+                        key={sheetMatch.aiAlert?.summary || mq.steamSignal}
+                        className="yj-cipher-reveal"
+                        style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}
+                      >
                         {sheetMatch.aiAlert
                           ? `${sheetMatch.aiAlert.summary}（${sheetMatch.aiAlert.priceInStatus}${sheetMatch.aiAlert.suggestedDelta ? ` · ${sheetMatch.aiAlert.suggestedDelta}` : ''} · ${sheetMatch.aiAlert.source}）`
                           : mq.steamSignal}
@@ -2281,14 +2278,23 @@ export function SkinPhoneApp({
                     left: `${p.matchNumStr} ${p.home}vs${p.away}`,
                     right: `${p.poolName}[${p.optionLabel}] × ${multiple}倍`,
                   }))
-              ).map((row) => {
+              ).map((row, _, allRows) => {
                 const done = Boolean(checkedPosterLines[row.key]);
                 return (
                   <div
                     key={row.key}
-                    onClick={() => {
-                      haptic(6);
-                      setCheckedPosterLines((prev) => ({ ...prev, [row.key]: !done }));
+                    onClick={(e) => {
+                      const nextDone = !done;
+                      kickElement(e.currentTarget, nextDone ? 2.4 : -1.2);
+                      playTactileCue(nextDone ? 'ticket-stamp' : 'tap-off');
+                      setCheckedPosterLines((prev) => {
+                        const updated = { ...prev, [row.key]: nextDone };
+                        if (nextDone && allRows.every((r) => updated[r.key])) {
+                          playTactileCue('defuse-celebrate');
+                          burstCelebrationSparks(e.currentTarget, 30);
+                        }
+                        return updated;
+                      });
                     }}
                     className={`p-line num ${done ? 'done' : ''}`}
                   >
@@ -2366,6 +2372,108 @@ export function SkinPhoneApp({
               })}
             </div>
           </SpringSheet>
+
+          {/* Sheet 5: 🎮 超感物理与多维震动体感控制台 */}
+          <SpringSheet open={sheet?.type === 'tactile'} onClose={() => setSheet(null)}>
+            {(() => {
+              const prof = SKIN_PHYSICS_PROFILES[skin] ?? SKIN_PHYSICS_PROFILES.air;
+              return (
+                <>
+                  <div className="sh-head">
+                    <div>
+                      <span className="h2">🎮 超感物理与手机震动舱</span>
+                      <div className="small">240Hz 弹簧形变 × 多段震动波形 × 拟真微声场</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="key dark sm"
+                      data-spring="0.88"
+                      onClick={() => setSheet(null)}
+                    >
+                      完成
+                    </button>
+                  </div>
+
+                  <div className="sec">手机震动与触感反馈档位</div>
+                  <div className="grid-keys c4 pop">
+                    {(
+                      [
+                        ['mute', '静音关闭', '0×'],
+                        ['soft', '轻柔微振', '0.55×'],
+                        ['standard', '标准棘轮', '1.0×'],
+                        ['hyper', '🔥超感狂暴', '1.55×'],
+                      ] as Array<[HapticIntensity, string, string]>
+                    ).map(([lvl, name, multLbl]) => (
+                      <button
+                        key={lvl}
+                        type="button"
+                        data-spring="0.86"
+                        onClick={() => {
+                          const next = updateTactileState({ intensity: lvl });
+                          setTactileCfg(next);
+                          if (lvl !== 'mute') playTactileCue('optimize-arpeggio');
+                        }}
+                        className={`key cell num ${tactileCfg.intensity === lvl ? 'on' : ''}`}
+                      >
+                        <small>{multLbl}</small>
+                        <b style={{ fontSize: 11.5 }}>{name}</b>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="card rows" style={{ marginTop: 12 }}>
+                    <div className="row">
+                      <div>
+                        <div className="lbl" style={{ fontWeight: 600, color: 'var(--text)' }}>
+                          🔊 拟真机械轴体微音效 (WebAudio 零延迟合成)
+                        </div>
+                        <div className="small">即使手机系统静音，也能提供干脆利落的微动与落袋锤感</div>
+                      </div>
+                      <SpringSwitch
+                        checked={tactileCfg.soundEnabled}
+                        onChange={(en) => {
+                          const next = updateTactileState({ soundEnabled: en });
+                          setTactileCfg(next);
+                          if (en) playTactileCue('tap-on');
+                        }}
+                      />
+                    </div>
+                    <div className="row">
+                      <div>
+                        <div className="lbl" style={{ fontWeight: 600, color: 'var(--text)' }}>
+                          当前皮肤物理轴体：{prof.title}
+                        </div>
+                        <div className="small num">
+                          {prof.feelDesc} · 震动序列 [{prof.pressPattern.join('ms, ')}ms] · 基频 {prof.baseFreqHz}Hz
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    ref={demoBtnRef}
+                    type="button"
+                    data-spring="0.92"
+                    className="key dark full"
+                    onClick={(e) => {
+                      const tgt =
+                        isDesktop && !embedded
+                          ? auditCockpitRef.current ?? desktopAuditColRef.current
+                          : slipRef.current;
+                      runHyperDemoShowcase(
+                        e.currentTarget,
+                        tgt ?? e.currentTarget,
+                        auditCockpitRef.current ?? desktopAuditColRef.current
+                      );
+                      showSpringToast(layerRef.current, '🎆 已触发：抛物线双连弹 + 琶音扫频 + 360°流光礼花');
+                    }}
+                  >
+                    🎆 一键试玩全套超感震动连招演示
+                  </button>
+                </>
+              );
+            })()}
+          </SpringSheet>
         </div>
   );
 
@@ -2422,6 +2530,15 @@ export function SkinPhoneApp({
                   <path d="M16 16h5v5" />
                 </svg>
                 <span>同步水位</span>
+              </button>
+              <button
+                type="button"
+                data-spring="0.9"
+                className="key sm"
+                onClick={() => setSheet({ type: 'tactile' })}
+                title="调节手机震动波形强度与超感特效"
+              >
+                🎮 超感舱
               </button>
               <button
                 type="button"
@@ -2486,7 +2603,7 @@ export function SkinPhoneApp({
             </section>
 
             {/* Column 2: 五维审单锁利 & 三模奖金优化 */}
-            <section className="dk-col">
+            <section ref={desktopAuditColRef} className="dk-col">
               <div className="dk-col-head">
                 <div className="dk-col-head-row" style={{ marginBottom: 0 }}>
                   <span className="dk-col-title">
@@ -2626,6 +2743,14 @@ export function SkinPhoneApp({
                 <div className="hdr-acts">
                   <button
                     type="button"
+                    className="key pillk"
+                    data-spring="0.88"
+                    onClick={() => setSheet({ type: 'tactile' })}
+                  >
+                    🎮超感
+                  </button>
+                  <button
+                    type="button"
                     className="key pillk dark"
                     data-spring="0.88"
                     onClick={() => openManual('quickstart')}
@@ -2686,12 +2811,21 @@ export function SkinPhoneApp({
                 <div className="hdr-acts">
                   <button
                     type="button"
+                    className="key mini"
+                    data-spring="0.88"
+                    onClick={() => setSheet({ type: 'tactile' })}
+                    title="超感震动舱"
+                  >
+                    🎮
+                  </button>
+                  <button
+                    type="button"
                     className="help-pill"
                     onClick={() => openManual('archetypes')}
                   >
                     📘图解
                   </button>
-                  {[50, 100, 200].map((b) => (
+                  {[50, 100, 200, 500].map((b) => (
                     <button
                       key={b}
                       type="button"
@@ -2720,6 +2854,14 @@ export function SkinPhoneApp({
               <div className="hdr-acts">
                 <button
                   type="button"
+                  className="key pillk"
+                  data-spring="0.88"
+                  onClick={() => setSheet({ type: 'tactile' })}
+                >
+                  🎮超感
+                </button>
+                <button
+                  type="button"
                   className="help-pill"
                   onClick={() => openManual('optimizer')}
                 >
@@ -2746,6 +2888,14 @@ export function SkinPhoneApp({
                 <span className="sub num">扫地僧小高排雷 · 止损账本 · 皮肤</span>
               </div>
               <div className="hdr-acts">
+                <button
+                  type="button"
+                  className="key pillk"
+                  data-spring="0.88"
+                  onClick={() => setSheet({ type: 'tactile' })}
+                >
+                  🎮超感
+                </button>
                 <button
                   type="button"
                   className="help-pill"
@@ -2834,7 +2984,7 @@ export function SkinPhoneApp({
                   'audit',
                   '审单锁利',
                   <svg key="u" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-                  effectiveReport.warnings.length > 0,
+                  allWarnings.length > 0,
                 ],
                 [
                   'ledger',

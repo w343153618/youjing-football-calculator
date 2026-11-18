@@ -1,4 +1,11 @@
-import { bankerRoundCents, type MatchItem, type PoolCode, type SelectedPick, type TruthReport } from './data';
+import {
+  bankerRoundParlayUnitPayout,
+  statutorySingleBetCap,
+  type MatchItem,
+  type PoolCode,
+  type SelectedPick,
+  type TruthReport,
+} from './data.ts';
 
 export type UserStance = 'objective' | 'home-lean' | 'upset-watch';
 export type ArchetypeKey = 'iron-shield' | 'spear-shield' | 'fault-tolerant' | 'goal-structure' | 'value-assassin';
@@ -8,12 +15,20 @@ export interface MicroBadge {
   tone: 'emerald' | 'amber' | 'rose' | 'sky' | 'purple';
 }
 
+export interface EquivalentArbPickRef {
+  poolCode: PoolCode;
+  optionKey: string;
+}
+
 export interface EquivalentArbItem {
+  matchId: string;
   title: string;
   betterChoice: string;
   worseChoice: string;
   edgePct: number;
   detail: string;
+  betterPicks: EquivalentArbPickRef[];
+  worsePicks: EquivalentArbPickRef[];
   poolCode: PoolCode;
   optionKey: string;
 }
@@ -164,14 +179,23 @@ export function analyzeMatchMicroQuant(m: MatchItem): MatchMicroQuant {
     const hi = ttgBetter ? ttg0.odds : crs00.odds;
     const lo = ttgBetter ? crs00.odds : ttg0.odds;
     const edge = ((hi - lo) / lo) * 100;
+    const betterPicks: EquivalentArbPickRef[] = [
+      ttgBetter ? { poolCode: 'TTG', optionKey: 's0' } : { poolCode: 'CRS', optionKey: '0:0' },
+    ];
+    const worsePicks: EquivalentArbPickRef[] = [
+      ttgBetter ? { poolCode: 'CRS', optionKey: '0:0' } : { poolCode: 'TTG', optionKey: 's0' },
+    ];
     arbitrages.push({
+      matchId: m.id,
       title: '0:0 闷平同义差价',
       betterChoice: ttgBetter ? `总进球·0球(@${hi.toFixed(2)})` : `比分·0:0(@${hi.toFixed(2)})`,
       worseChoice: ttgBetter ? `比分·0:0(@${lo.toFixed(2)})` : `总进球·0球(@${lo.toFixed(2)})`,
       edgePct: Number(edge.toFixed(1)),
       detail: `两者100%同义！选【${ttgBetter ? '总进球0球' : '比分0:0'}】白多赚 +${edge.toFixed(1)}% 奖金`,
-      poolCode: ttgBetter ? 'TTG' : 'CRS',
-      optionKey: ttgBetter ? 's0' : '0:0',
+      betterPicks,
+      worsePicks,
+      poolCode: betterPicks[0].poolCode,
+      optionKey: betterPicks[0].optionKey,
     });
   }
 
@@ -187,16 +211,31 @@ export function analyzeMatchMicroQuant(m: MatchItem): MatchMicroQuant {
       const hi = Math.max(hhadAway.odds, synDouble);
       const lo = Math.min(hhadAway.odds, synDouble);
       const edge = ((hi - lo) / lo) * 100;
+      const betterPicks: EquivalentArbPickRef[] = hhadBetter
+        ? [{ poolCode: 'HHAD', optionKey: 'ha' }]
+        : [
+            { poolCode: 'HAD', optionKey: 'd' },
+            { poolCode: 'HAD', optionKey: 'a' },
+          ];
+      const worsePicks: EquivalentArbPickRef[] = hhadBetter
+        ? [
+            { poolCode: 'HAD', optionKey: 'd' },
+            { poolCode: 'HAD', optionKey: 'a' },
+          ]
+        : [{ poolCode: 'HHAD', optionKey: 'ha' }];
       arbitrages.push({
+        matchId: m.id,
         title: `${m.away}受让不败同义比价`,
         betterChoice: hhadBetter ? `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})` : `胜平负[平+客胜]配平(@${synDouble.toFixed(2)})`,
         worseChoice: hhadBetter ? `胜平负[平+客胜]双选(@${synDouble.toFixed(2)})` : `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})`,
         edgePct: Number(edge.toFixed(1)),
         detail: hhadBetter
-          ? `直接买单选「让负@${hhadAway.odds.toFixed(2)}」比双选「平+负(等效@${synDouble.toFixed(2)})」多赚 +${edge.toFixed(1)}% 且免凑整损耗！`
-          : `手动配平「平+客胜(等效@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%！`,
-        poolCode: 'HHAD',
-        optionKey: 'ha',
+          ? `直接买单选「让负@${hhadAway.odds.toFixed(2)}」比双选「平+负(合成等效水位@${synDouble.toFixed(2)})」多赚 +${edge.toFixed(1)}% 且免凑整损耗！`
+          : `配平「平+客胜(合成等效水位@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%！`,
+        betterPicks,
+        worsePicks,
+        poolCode: betterPicks[0].poolCode,
+        optionKey: betterPicks[0].optionKey,
       });
     }
   } else if (goalLine === '+1' && hadH && hadD) {
@@ -207,16 +246,31 @@ export function analyzeMatchMicroQuant(m: MatchItem): MatchMicroQuant {
       const hi = Math.max(hhadHome.odds, synDouble);
       const lo = Math.min(hhadHome.odds, synDouble);
       const edge = ((hi - lo) / lo) * 100;
+      const betterPicks: EquivalentArbPickRef[] = hhadBetter
+        ? [{ poolCode: 'HHAD', optionKey: 'hh' }]
+        : [
+            { poolCode: 'HAD', optionKey: 'h' },
+            { poolCode: 'HAD', optionKey: 'd' },
+          ];
+      const worsePicks: EquivalentArbPickRef[] = hhadBetter
+        ? [
+            { poolCode: 'HAD', optionKey: 'h' },
+            { poolCode: 'HAD', optionKey: 'd' },
+          ]
+        : [{ poolCode: 'HHAD', optionKey: 'hh' }];
       arbitrages.push({
+        matchId: m.id,
         title: `${m.home}不败同义比价`,
         betterChoice: hhadBetter ? `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})` : `胜平负[胜+平]配平(@${synDouble.toFixed(2)})`,
         worseChoice: hhadBetter ? `胜平负[胜+平]双选(@${synDouble.toFixed(2)})` : `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})`,
         edgePct: Number(edge.toFixed(1)),
         detail: hhadBetter
-          ? `单选「让胜@${hhadHome.odds.toFixed(2)}」比双选「主胜+平(等效@${synDouble.toFixed(2)})」高 +${edge.toFixed(1)}% 且仅需1注！`
-          : `配平「主胜+平」等效赔率高出 +${edge.toFixed(1)}%！`,
-        poolCode: 'HHAD',
-        optionKey: 'hh',
+          ? `单选「让胜@${hhadHome.odds.toFixed(2)}」比双选「主胜+平(合成等效水位@${synDouble.toFixed(2)})」高 +${edge.toFixed(1)}% 且仅需1注！`
+          : `配平「主胜+平」合成等效水位高出 +${edge.toFixed(1)}%！`,
+        betterPicks,
+        worsePicks,
+        poolCode: betterPicks[0].poolCode,
+        optionKey: betterPicks[0].optionKey,
       });
     }
   }
@@ -231,7 +285,7 @@ export function analyzeMatchMicroQuant(m: MatchItem): MatchMicroQuant {
       ? `🔥 真防冷急降：体彩正下调【${droppingOpts.slice(0, 2).join('/')}】赔付`
       : '⚖️ 盘面平稳：暂无剧烈急跌诱盘';
 
-  // 提炼手机卡片 3~4 个浓缩微结论胶囊 (3秒扫全局核心！)
+  // 提炼手机卡片浓缩微结论胶囊 (纯数学指标，遵循 ADR-0002 与情报隔离)
   const microBadges: MicroBadge[] = [
     {
       text: `xG ${homeXG}:${awayXG}`,
@@ -252,12 +306,7 @@ export function analyzeMatchMicroQuant(m: MatchItem): MatchMicroQuant {
       tone: 'emerald',
     });
   }
-  if (m.aiAlert) {
-    microBadges.push({
-      text: `📰 ${m.aiAlert.tag.slice(0, 6)}`,
-      tone: 'rose',
-    });
-  } else if (droppingOpts.length > 0) {
+  if (droppingOpts.length > 0) {
     microBadges.push({
       text: `🔻${droppingOpts[0]}降水`,
       tone: 'purple',
@@ -311,6 +360,25 @@ function makeLeg(
   };
 }
 
+function repairUnderwaterMultiples(
+  initialMults: number[],
+  unitPayouts: number[],
+  shouldRepair: boolean
+): number[] {
+  const mults = initialMults.map((m) => Math.max(1, Math.min(99, Math.round(m))));
+  if (!shouldRepair) return mults;
+
+  for (let guard = 0; guard < 64; guard++) {
+    const curCost = mults.reduce((a, m) => a + m * 2, 0);
+    const uwIdx = unitPayouts.findIndex(
+      (u, i) => u * mults[i] < curCost && mults[i] < 99 && u > 2.01
+    );
+    if (uwIdx === -1) break;
+    mults[uwIdx] += 1;
+  }
+  return mults;
+}
+
 function allocateLines(
   rawLines: Array<{ id: string; roleLabel: string; legs: PlanLeg[]; shieldOnly?: boolean }>,
   targetBudgetYuan: number
@@ -319,13 +387,16 @@ function allocateLines(
   if (validLines.length === 0) return [];
 
   const totalNotes = Math.max(validLines.length, Math.floor(targetBudgetYuan / 2));
-  const unitPayouts = validLines.map((rl) => {
-    const prod = rl.legs.reduce((a, l) => a * l.odds, 1);
-    return Math.max(2.02, bankerRoundCents(prod * 2));
+  const realUnitPayouts = validLines.map((rl) => {
+    const cap = statutorySingleBetCap(rl.legs.length);
+    return Math.min(cap, bankerRoundParlayUnitPayout(rl.legs.map((l) => l.odds)));
   });
+  const safeUnitPayouts = realUnitPayouts.map((u) => Math.max(2.02, u));
 
   const approxCost = totalNotes * 2;
-  const minMults = validLines.map((_, idx) => Math.max(1, Math.ceil(approxCost / unitPayouts[idx])));
+  const minMults = validLines.map((_, idx) =>
+    Math.min(99, Math.max(1, Math.ceil(approxCost / safeUnitPayouts[idx])))
+  );
   const minSum = minMults.reduce((a, b) => a + b, 0);
 
   let mults: number[];
@@ -337,21 +408,28 @@ function allocateLines(
     );
     const wSum = weights.reduce((a, b) => a + b, 0) || 1;
     for (let i = 0; i < validLines.length; i++) {
-      const add = i === validLines.length - 1 ? rem : Math.min(rem, Math.round(((totalNotes - minSum) * weights[i]) / wSum));
-      mults[i] += Math.max(0, add);
+      const add =
+        i === validLines.length - 1
+          ? rem
+          : Math.min(rem, Math.round(((totalNotes - minSum) * weights[i]) / wSum));
+      mults[i] = Math.min(99, mults[i] + Math.max(0, add));
       rem -= Math.max(0, add);
     }
-    if (rem > 0) mults[0] += rem;
+    if (rem > 0) mults[0] = Math.min(99, mults[0] + rem);
   } else {
-    const invSum = unitPayouts.reduce((a, u) => a + 1 / u, 0);
-    mults = unitPayouts.map((u) => Math.max(1, Math.round((totalNotes * (1 / u)) / invSum)));
+    const invSum = safeUnitPayouts.reduce((a, u) => a + 1 / u, 0);
+    mults = safeUnitPayouts.map((u) =>
+      Math.min(99, Math.max(1, Math.round((totalNotes * (1 / u)) / invSum)))
+    );
   }
+
+  const effOdds = 1 / safeUnitPayouts.reduce((a, u) => a + 2 / u, 0);
+  mults = repairUnderwaterMultiples(mults, realUnitPayouts, effOdds > 1.02);
 
   const actualCost = mults.reduce((a, m) => a + m * 2, 0);
   return validLines.map((rl, idx) => {
-    const prod = rl.legs.reduce((a, l) => a * l.odds, 1);
     const prob = rl.legs.reduce((a, l) => a * l.fairProb, 1);
-    const unitPayout = bankerRoundCents(prod * 2);
+    const unitPayout = realUnitPayouts[idx];
     const returnPayout = Number((unitPayout * mults[idx]).toFixed(2));
     return {
       id: rl.id,
@@ -812,12 +890,26 @@ export function computeProOrderInsights(
     }
   }
 
-  // ③ 检查当前已选里是否踩中了“同义低水入口”可白捡钱替换
+  // ③ 检查当前已选里是否真实踩中了某一场的“同义低水劣势项”可白捡钱替换
   let activeSwapTip: EquivalentArbItem | null = null;
   for (const m of pickedMatches) {
+    const mpicks = picks.filter((p) => p.matchId === m.id);
     const mq = analyzeMatchMicroQuant(m);
-    if (mq.arbitrages.length > 0) {
-      activeSwapTip = mq.arbitrages[0];
+    const matchedArb = mq.arbitrages.find((arb) => {
+      const hasAllWorse =
+        arb.worsePicks.length > 0 &&
+        arb.worsePicks.every((wp) =>
+          mpicks.some((p) => p.poolCode === wp.poolCode && p.optionKey === wp.optionKey)
+        );
+      const hasAllBetter =
+        arb.betterPicks.length > 0 &&
+        arb.betterPicks.every((bp) =>
+          mpicks.some((p) => p.poolCode === bp.poolCode && p.optionKey === bp.optionKey)
+        );
+      return hasAllWorse && !hasAllBetter;
+    });
+    if (matchedArb) {
+      activeSwapTip = matchedArb;
       break;
     }
   }
@@ -833,5 +925,159 @@ export function computeProOrderInsights(
     fiveLossStreakProb,
     recommendedBankrollPct,
     activeSwapTip,
+  };
+}
+
+
+export type BonusOptMode = 'equal' | 'hot-first' | 'cold-first';
+
+/**
+ * 三模智能奖金优化深模块：
+ * - equal: 反比例均衡派奖，消灭假中奖倒贴
+ * - hot-first: 次选刚性保本护盾 + 第一主攻利润最大化
+ * - cold-first: 正路免单兜底 + 高赔冷门暴击放大
+ * 严格保留每个组合的完整多场串关腿（c.legs），确保 2串1~8串1 实票核对零丢腿！
+ */
+export function optimizeBonusPlan(
+  manualReport: TruthReport,
+  matches: MatchItem[],
+  optMode: BonusOptMode
+): ArchetypePlan | null {
+  if (manualReport.combos.length === 0) return null;
+
+  const sorted = [...manualReport.combos].sort((a, b) => b.prob - a.prob);
+  const k = sorted.length;
+  const baseBudget = Math.max(
+    manualReport.totalCost,
+    manualReport.breakevenUpgradeCost ?? manualReport.totalCost,
+    k * 6
+  );
+  const totalTickets = Math.max(k + 2, Math.round(baseBudget / 2));
+  const targetStake = totalTickets * 2;
+
+  const cappedUnits = sorted.map((c) => {
+    const legCount = c.legs?.length ?? manualReport.matchCount;
+    return Math.min(statutorySingleBetCap(legCount), c.unitPayout);
+  });
+
+  let mults: number[] = [];
+  if (optMode === 'equal' || k === 1) {
+    const invSum = cappedUnits.reduce((acc, u) => acc + 1 / Math.max(0.5, u), 0);
+    mults = cappedUnits.map((u) =>
+      Math.max(1, Math.round((totalTickets * (1 / Math.max(0.5, u))) / invSum))
+    );
+  } else if (optMode === 'hot-first') {
+    mults = cappedUnits.map((u, idx) =>
+      idx === 0 ? 1 : Math.max(1, Math.ceil(targetStake / Math.max(2.02, u)))
+    );
+    const shieldSum = mults.slice(1).reduce((a, m) => a + m, 0);
+    mults[0] = Math.max(
+      Math.ceil(((shieldSum + 2) * 2) / Math.max(2.02, cappedUnits[0])) + 2,
+      totalTickets - shieldSum
+    );
+  } else {
+    mults = cappedUnits.map((u, idx) =>
+      idx === k - 1 ? 1 : Math.max(1, Math.ceil(targetStake / Math.max(2.02, u)))
+    );
+    const shieldSum = mults.slice(0, k - 1).reduce((a, m) => a + m, 0);
+    mults[k - 1] = Math.max(
+      Math.ceil(((shieldSum + 2) * 2) / Math.max(2.02, cappedUnits[k - 1])) + 2,
+      totalTickets - shieldSum
+    );
+  }
+
+  mults = repairUnderwaterMultiples(mults, cappedUnits, manualReport.effectiveOdds > 1.02);
+
+  const lines: PlanTicketLine[] = sorted.map((c, idx) => {
+    const mult = mults[idx];
+    const unit = cappedUnits[idx];
+    const role =
+      optMode === 'equal'
+        ? `均衡分倍#${idx + 1}`
+        : optMode === 'hot-first'
+          ? idx === 0
+            ? '🔥主攻重锤'
+            : `🛡️次选回本盾#${idx}`
+          : idx === k - 1
+            ? '⚡博冷高弹箭'
+            : `🛡️正路免单盾#${idx + 1}`;
+
+    const fullLegs = (c.legs ?? []).map((p) => {
+      const fm = matches.find((m) => m.id === p.matchId);
+      return {
+        matchId: p.matchId,
+        matchNumStr: p.matchNumStr,
+        home: p.home,
+        away: p.away,
+        kickoff: fm?.kickoff ?? '21:00',
+        poolCode: p.poolCode,
+        poolName: p.poolName,
+        optionKey: p.optionKey,
+        optionLabel: p.optionLabel,
+        odds: p.odds,
+        fairProb: p.fairProb,
+      };
+    });
+
+    return {
+      id: `opt-${optMode}-${idx}`,
+      roleLabel: role,
+      legs: fullLegs,
+      modeLabel: manualReport.modeLabel,
+      multiple: mult,
+      cost: mult * 2,
+      unitPayout: unit,
+      returnPayout: Number((unit * mult).toFixed(2)),
+      netProfit: 0,
+      prob: c.prob,
+    };
+  });
+
+  const actualTotal = lines.reduce((a, l) => a + l.cost, 0);
+  lines.forEach((l) => {
+    l.netProfit = Number((l.returnPayout - actualTotal).toFixed(2));
+  });
+
+  const profitLinesProb = lines
+    .filter((l) => l.netProfit >= 0)
+    .reduce((a, l) => a + l.prob, 0);
+
+  const metaMap = {
+    equal: {
+      shortTab: '平均优化',
+      badge: '⚖️ 平均优化（均衡派奖）',
+      title: '反比例均注 · 全选项均衡稳赚',
+      reason: '按每注返奖额反比例精密分配整数倍，彻底消灭假中奖倒贴',
+    },
+    'hot-first': {
+      shortTab: '博热保本',
+      badge: '🔥 博热保本优化',
+      title: '次选回本护盾 + 第一主攻利润最大化',
+      reason: '防冷次选仅配保本倍数，省下筹码集中放大最高概率主方向收益',
+    },
+    'cold-first': {
+      shortTab: '博冷高弹',
+      badge: '⚡ 博冷高弹优化',
+      title: '正路免单兜底 + 高赔冷门暴击放大',
+      reason: '大热方向锁住保本回血线，溢价倍数倾斜博取高赔冷门超额回报',
+    },
+  }[optMode];
+
+  return {
+    key: 'iron-shield',
+    shortTab: metaMap.shortTab,
+    badge: metaMap.badge,
+    title: metaMap.title,
+    tagline: `总投入 ¥${actualTotal} · 保底返 ¥${Math.min(...lines.map((l) => l.returnPayout)).toFixed(1)} ~ 最高 ¥${Math.max(...lines.map((l) => l.returnPayout)).toFixed(1)}`,
+    totalCost: actualTotal,
+    savedCash: 0,
+    minReturn: Math.min(...lines.map((l) => l.returnPayout)),
+    maxReturn: Math.max(...lines.map((l) => l.returnPayout)),
+    winProb: manualReport.anyWinProb,
+    profitProb: profitLinesProb > 0 ? Math.min(manualReport.anyWinProb, profitLinesProb) : manualReport.anyWinProb,
+    missOneReturn: null,
+    vigPct: manualReport.avgVigLossPer100,
+    reasons: [metaMap.reason],
+    lines,
   };
 }

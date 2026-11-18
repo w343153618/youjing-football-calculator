@@ -1,5 +1,5 @@
 /* =========================================================
-   竞足智算 · Skin Core (every color, shadow, radius & spring is a token)
+   优竞体育内部专用 · Skin Core (every color, shadow, radius & spring is a token)
    Type scale: 10.5 / 11 / 12 / 13 / 14 / 15 / 22 / 28   Weights: 400 / 500 / 600
    ========================================================= */
 :root {
@@ -628,21 +628,29 @@ button { font-family: inherit; color: inherit; }
   scrollbar-width: thin;
 }
 
-/* Desktop centered sheet override inside .jz-desktop .layer */
+/* Desktop centered sheet override inside .jz-desktop .layer (preserves SpringSheet translate3d animation) */
 .jz-desktop .layer {
   position: fixed;
   z-index: 60;
 }
 .jz-desktop .sheet {
-  left: 50%;
-  right: auto;
-  bottom: auto;
-  top: 50%;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  margin: auto;
   width: min(620px, 92vw);
+  height: fit-content;
   max-height: 84vh;
   border-radius: 24px;
-  transform: translate(-50%, -50%) !important;
   box-shadow: 0 28px 70px rgba(0, 0, 0, 0.36);
+}
+@keyframes yjCipherReveal {
+  0% { opacity: 0.25; filter: blur(3px); transform: translateY(4px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+.yj-cipher-reveal {
+  animation: yjCipherReveal 0.36s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .jz-desktop .grabber { display: none; }
 .jz-desktop .sh-head { padding-top: 14px; cursor: default; }
@@ -967,4 +975,208 @@ button { font-family: inherit; color: inherit; }
 @media (max-width: 640px) {
   .manual-foot span { display: none; }
   .manual-foot button { width: 100%; }
+}
+
+
+/* =========================================================
+   Hyper-Tactile Symphony Visual FX Styles
+   ========================================================= */
+.yj-fx-stage {
+  position: fixed;
+  inset: 0;
+  pointer-events: none !important;
+  z-index: 9999;
+  overflow: hidden;
+}
+
+.yj-fx-ripple {
+  position: fixed;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid var(--mark);
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.yj-fx-orb {
+  position: fixed;
+  left: 0;
+  top: 0;
+  padding: 3px 9px;
+  border-radius: 99px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.yj-fx-trail {
+  position: fixed;
+  left: 0;
+  top: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+.yj-fx-spark {
+  position: fixed;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+
+/* Laser Shimmer Beam across Optimized Cockpit */
+.yj-shimmer-host {
+  position: relative;
+  overflow: hidden;
+}
+.yj-shimmer-active::after {
+  content: "";
+  position: absolute;
+  inset: -20% -60%;
+  background: linear-gradient(
+    112deg,
+    transparent 36%,
+    rgba(255, 255, 255, 0.48) 49%,
+    rgba(56, 189, 248, 0.25) 53%,
+    transparent 64%
+  );
+  pointer-events: none;
+  animation: yjShimmerSweep 0.72s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+@keyframes yjShimmerSweep {
+  from { transform: translateX(-65%); }
+  to { transform: translateX(65%); }
+}
+
+/* Live Spring Payout Equalizer Chart */
+.eq-chart {
+  position: relative;
+  margin-top: 10px;
+  padding: 18px 8px 4px;
+  border-radius: calc(var(--key-r) + 2px);
+  background: var(--tile);
+  box-shadow: var(--tile-sh);
+}
+.eq-bars {
+  position: relative;
+  height: 78px;
+  display: grid;
+  gap: 6px;
+  align-items: end;
+}
+.eq-col {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.eq-track {
+  width: 100%;
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  position: relative;
+}
+.eq-bar-fill {
+  width: 100%;
+  max-width: 32px;
+  border-radius: 6px 6px 3px 3px;
+  position: relative;
+  transition: background 0.24s ease;
+  will-change: height;
+}
+.eq-bar-fill.win {
+  background: linear-gradient(180deg, var(--good), rgba(16, 185, 129, 0.65));
+  box-shadow: 0 4px 10px -3px rgba(16, 185, 129, 0.35);
+}
+.eq-bar-fill.loss {
+  background: linear-gradient(180deg, var(--live), rgba(229, 72, 77, 0.65));
+  box-shadow: 0 4px 10px -3px rgba(229, 72, 77, 0.38);
+}
+.eq-val {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+.eq-lbl {
+  font-size: 9px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.eq-cost-line {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  border-top: 1.5px dashed var(--live);
+  z-index: 3;
+  pointer-events: none;
+  margin-bottom: 16px;
+}
+.eq-cost-line span {
+  position: absolute;
+  right: 2px;
+  top: -14px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--live);
+  background: var(--card);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+/* 3D Holographic Specular Glare on Ticket Poster */
+.poster {
+  position: relative;
+  overflow: hidden;
+  --glare-x: 50%;
+  --glare-y: 35%;
+  --glare-o: 0.14;
+}
+.poster::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    circle 210px at var(--glare-x) var(--glare-y),
+    rgba(255, 255, 255, var(--glare-o)),
+    rgba(96, 165, 250, 0.08) 42%,
+    transparent 75%
+  );
+  mix-blend-mode: screen;
+}
+
+/* Sonar Radar Pulse during XiaoGao Live Diagnosis */
+.sonar-card {
+  position: relative;
+  overflow: hidden;
+}
+.sonar-card.scanning::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.14), transparent);
+  animation: yjSonarScan 1.15s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes yjSonarScan {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }

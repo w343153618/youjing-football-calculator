@@ -78,7 +78,7 @@ export function ComparisonStage({ onExitStage }: { onExitStage?: () => void }) {
                 onClick={onExitStage}
                 style={pillStyle(true, '#0284c7')}
               >
-                ← 返回优竞体育电脑工作台
+                ← 返回优竞体育内部专用工作台
               </button>
             )}
             <button
@@ -86,7 +86,7 @@ export function ComparisonStage({ onExitStage }: { onExitStage?: () => void }) {
               onClick={() => setViewMode('all8')}
               style={pillStyle(viewMode === 'all8')}
             >
-              优竞体育 · 8 套手机皮肤墙
+              优竞体育内部专用 · 8 套手机皮肤墙
             </button>
             <span
               style={{

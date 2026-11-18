@@ -57,6 +57,7 @@ export interface SelectedPick {
 export interface ComboRow {
   id: string;
   desc: string;
+  legs?: SelectedPick[]; // 构成该注的完整串关腿明细（供多场奖金优化与打票单溯源）
   prob: number;
   unitPayout: number; // 单注2元经四舍六入五成双后的奖金
   totalPayout: number; // 乘倍数且经封顶截断后的实得奖金
@@ -99,15 +100,68 @@ export interface TruthReport {
   warnings: RadarWarning[];
 }
 
-/** 中国体彩法定计奖舍入：单注2元奖金小数点后第3位「四舍六入五成双」保留到分 */
+function expandPrecisionDecimal(num: number): { intPart: string; decPart: string } {
+  const sci = num.toPrecision(15);
+  const [mantissa, expRaw] = sci.split(/e/i);
+  const exp = expRaw ? parseInt(expRaw, 10) : 0;
+  const dotIdx = mantissa.indexOf('.');
+  const digits = mantissa.replace('.', '');
+  const intLen = (dotIdx === -1 ? mantissa.length : dotIdx) + exp;
+
+  if (intLen <= 0) {
+    return { intPart: '0', decPart: '0'.repeat(-intLen) + digits };
+  }
+  if (intLen >= digits.length) {
+    return { intPart: digits + '0'.repeat(intLen - digits.length), decPart: '' };
+  }
+  return { intPart: digits.slice(0, intLen), decPart: digits.slice(intLen) };
+}
+
+/** 中国体彩法定计奖舍入（严格遵循 GB/T 8170）：单注2元奖金保留到分，「四舍六入五成双，五后非零则进一」 */
 export function bankerRoundCents(rawYuan: number): number {
-  const scaled = rawYuan * 100;
-  const eps = 1e-9;
-  const floorVal = Math.floor(scaled + eps);
-  const diff = scaled - floorVal;
-  if (diff < 0.5 - 1e-7) return floorVal / 100;
-  if (diff > 0.5 + 1e-7) return (floorVal + 1) / 100;
-  return (floorVal % 2 === 0 ? floorVal : floorVal + 1) / 100;
+  if (!Number.isFinite(rawYuan) || rawYuan <= 0) return 0;
+  // 直接解析 15 位有效十进制字符串，绝不二次回转 Number().toFixed()，确保 10000.015 ~ 100000.015 零精度损失！
+  const { intPart, decPart } = expandPrecisionDecimal(rawYuan);
+  const padded = decPart.padEnd(16, '0');
+  const centsInt = BigInt(intPart) * 100n + BigInt(padded.slice(0, 2));
+  const thirdDigit = Number(padded[2]);
+  const tailAfterThird = BigInt(padded.slice(3) || '0');
+
+  if (thirdDigit < 5) {
+    return Number(centsInt) / 100;
+  }
+  if (thirdDigit > 5 || tailAfterThird > 0n) {
+    return Number(centsInt + 1n) / 100;
+  }
+  // 恰好等于 5 且五后皆零：前一位为偶数舍去，为奇数进一
+  return Number(centsInt % 2n === 0n ? centsInt : centsInt + 1n) / 100;
+}
+
+/** 多场串关精确十进制连乘计奖（以分为单位 BigInt 运算，彻底杜绝 5~8 串 1 浮点漂移） */
+export function bankerRoundParlayUnitPayout(oddsList: number[]): number {
+  if (oddsList.length === 0) return 0;
+  if (oddsList.some((o) => !Number.isFinite(o) || o <= 0)) return 0;
+  let num = 200n;
+  let scale = 1n;
+  for (const o of oddsList) {
+    const scaledOdds = BigInt(Math.round(o * 10000));
+    num *= scaledOdds;
+    scale *= 10000n;
+  }
+  const quotient = num / scale;
+  const remainder = num % scale;
+  const twiceRem = remainder * 2n;
+  if (twiceRem < scale) return Number(quotient) / 100;
+  if (twiceRem > scale) return Number(quotient + 1n) / 100;
+  return Number(quotient % 2n === 0n ? quotient : quotient + 1n) / 100;
+}
+
+/** 中国体彩法定单注最高封顶赔付红线（单关10万、2/3关20万、4/5关50万、6~8关100万） */
+export function statutorySingleBetCap(matchCount: number): number {
+  if (matchCount <= 1) return 100_000;
+  if (matchCount <= 3) return 200_000;
+  if (matchCount <= 5) return 500_000;
+  return 1_000_000;
 }
 
 function buildPool(
@@ -389,10 +443,13 @@ export async function syncOfficialMatches(): Promise<{
   source: 'official-live' | 'fallback';
   syncNote: string;
 }> {
-  const base = import.meta.env.BASE_URL || '/';
+  const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string; DEV?: boolean } }).env;
+  const base = metaEnv?.BASE_URL || '/';
   const urls = [
     'https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry?channel=c',
-    `${base}api/sporttery/gateway/uniform/football/getMatchCalculatorV1.qry?channel=c`,
+    ...(metaEnv?.DEV
+      ? [`${base}api/sporttery/gateway/uniform/football/getMatchCalculatorV1.qry?channel=c`]
+      : []),
     `${base}api/sporttery/snapshot`,
   ];
 
@@ -619,13 +676,11 @@ export function computeTruthReport(
   const totalCost = comboCount * 2 * multiple;
 
   // 体彩法定单注封顶上限
-  const singleBetCap =
-    matchCount <= 1 ? 100_000 : matchCount <= 3 ? 200_000 : matchCount <= 5 ? 500_000 : 1_000_000;
+  const singleBetCap = statutorySingleBetCap(matchCount);
 
   const combos: ComboRow[] = cartesian.map((items, idx) => {
-    const rawProduct = items.reduce((acc, it) => acc * it.odds, 1);
     const prob = items.reduce((acc, it) => acc * it.fairProb, 1);
-    const unitBeforeCap = bankerRoundCents(rawProduct * 2);
+    const unitBeforeCap = bankerRoundParlayUnitPayout(items.map((it) => it.odds));
     const unitCapped = Math.min(unitBeforeCap, singleBetCap);
     const cappedClipped = Math.max(0, (unitBeforeCap - unitCapped) * multiple);
     const totalPayout = Number((unitCapped * multiple).toFixed(2));
@@ -633,6 +688,7 @@ export function computeTruthReport(
     return {
       id: `c-${idx}`,
       desc: items.map((i) => `${i.matchNumStr}[${i.optionLabel}@${i.odds.toFixed(2)}]`).join(' × '),
+      legs: items,
       prob,
       unitPayout: unitCapped,
       totalPayout,
@@ -653,13 +709,18 @@ export function computeTruthReport(
   const likelyMin = Math.min(...topHalf.map((c) => c.totalPayout));
   const likelyMax = Math.max(...topHalf.map((c) => c.totalPayout));
 
-  const anyWinProb = hasSameMatchCrossPoolConflict
-    ? Math.min(0.95, combos.reduce((acc, c) => acc + c.prob, 0) * 0.65)
-    : Math.min(0.99, combos.reduce((acc, c) => acc + c.prob, 0));
+  const conflictDiscount = hasSameMatchCrossPoolConflict ? 0.65 : 1;
+  const anyWinProb = Math.min(
+    hasSameMatchCrossPoolConflict ? 0.95 : 0.99,
+    combos.reduce((acc, c) => acc + c.prob, 0) * conflictDiscount
+  );
 
-  const realProfitProb = combos
-    .filter((c) => !c.isUnderwater)
-    .reduce((acc, c) => acc + c.prob, 0);
+  const realProfitProb = Math.min(
+    anyWinProb,
+    combos
+      .filter((c) => !c.isUnderwater)
+      .reduce((acc, c) => acc + c.prob, 0) * conflictDiscount
+  );
 
   const underwaterCount = combos.filter((c) => c.isUnderwater).length;
   const underwaterShareOfWins =
@@ -783,18 +844,6 @@ export function computeTruthReport(
     });
   }
 
-  for (const grp of matchGroups) {
-    const m = matches.find((x) => x.id === grp[0].matchId);
-    if (m?.aiAlert) {
-      warnings.push({
-        id: `ai-${m.id}`,
-        severity: m.aiAlert.level === 'high' ? 'warn' : 'tip',
-        title: `扫地僧小高靶向排雷 [${m.matchNumStr} ${m.home}vs${m.away}]：${m.aiAlert.tag}`,
-        detail: `${m.aiAlert.summary}（${m.aiAlert.priceInStatus}）`,
-      });
-    }
-  }
-
   const consolidatedTickets = Math.max(1, Math.min(6, Math.ceil(comboCount / 3) * Math.ceil(multiple / 99)));
 
   return {
@@ -823,50 +872,4 @@ export function computeTruthReport(
     combos,
     warnings,
   };
-}
-
-/** 呼叫后端「扫地僧小高」实时诊盘接口（主模型 deepseek-v4.1-flash，故障自动切 glm-5.3-flash，恢复自动回切） */
-export async function requestXiaoGaoDiagnosis(
-  m: MatchItem,
-  xgText: string,
-  oneGoalSharePct: number,
-  userNote?: string
-): Promise<NonNullable<MatchItem['aiAlert']>> {
-  const hadOdds = m.pools.HAD.options
-    .map((o) => `${o.label}@${o.odds.toFixed(2)}(真率${(o.fairProb * 100).toFixed(0)}%)`)
-    .join(' / ');
-  const hhadOdds = m.pools.HHAD.options
-    .map((o) => `${o.label}@${o.odds.toFixed(2)}(真率${(o.fairProb * 100).toFixed(0)}%)`)
-    .join(' / ');
-  const vigSummary = `胜平负抽水${(m.pools.HAD.vig * 100).toFixed(1)}%，半全场抽水${(m.pools.HAFU.vig * 100).toFixed(1)}%`;
-  const droppingTrends = [
-    ...m.pools.HAD.options.filter((o) => o.trend === -1).map((o) => `胜平负${o.label}降水`),
-    ...m.pools.HHAD.options.filter((o) => o.trend === -1).map((o) => `${o.label}降水`),
-  ].join('、');
-
-  const base = import.meta.env.BASE_URL || '/';
-  const res = await fetch(`${base}api/xiaogao/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      matchNumStr: m.matchNumStr,
-      league: m.league,
-      kickoff: m.kickoff,
-      home: m.home,
-      away: m.away,
-      hadOdds,
-      hhadOdds,
-      vigSummary,
-      xgSummary: xgText,
-      oneGoalSharePct,
-      droppingTrends,
-      userNote,
-    }),
-  });
-
-  const json = await res.json();
-  if (!res.ok || !json?.ok || !json?.alert) {
-    throw new Error(json?.error || '扫地僧小高诊盘请求失败');
-  }
-  return json.alert as NonNullable<MatchItem['aiAlert']>;
 }
