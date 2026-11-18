@@ -546,11 +546,11 @@ export function UserManualModal({
 
                   {/* Bottom Concrete Math Walkthrough */}
                   <rect x="36" y="134" width="688" height="52" rx="10" fill="#0f172a" />
-                  <text x="54" y="155" fill="#f8fafc" fontSize="11.5" fontWeight="700">
-                    💡 算账实例：某场主胜赔率 1.85（体彩客观去水真率 48%）。默认 0% 时，因体彩抽水 11%，右上角【期望 EV = -11.2%】（长期必亏）。
+                  <text x="50" y="155" fill="#f8fafc" fontSize="10.6" fontWeight="700">
+                    💡 算账实例：某场主胜赔率 1.85（客观去水真率 48%）。默认 0% 时因体彩抽水 11%，右上角【期望 EV = -11.2%】（长期必亏）。
                   </text>
-                  <text x="54" y="175" fill="#6ee7b7" fontSize="11.5" fontWeight="600">
-                    👉 若你看到客队门将赛前热身拉伤且赔率尚未下调，把滑块往右拉到 +15%（胜率变为 48%×1.15 = 55.2%），【期望 EV 跳成 +2.1% 绿色】——说明值得出手！
+                  <text x="50" y="175" fill="#6ee7b7" fontSize="10.6" fontWeight="600">
+                    👉 若得知对手门将热身拉伤且赔率未降，往右拉到 +15%（胜率变 55.2%），【期望 EV 跳成 +2.1% 绿色】——值得出手！
                   </text>
                 </svg>
               </div>
