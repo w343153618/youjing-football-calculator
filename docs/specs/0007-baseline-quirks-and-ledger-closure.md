@@ -1,6 +1,6 @@
 # Spec 0007: 基线六大遗留局限清零与跨端双轨止损账本闭环（Baseline Quirks Resolution & Encrypted Dual-Track Ledger）
 
-Status: `ready-for-agent`
+Status: `completed`
 Baseline Anchor: `docs/specs/0000-baseline-spec.md` (`v2.2.0`)
 Related ADRs: `ADR-0001`, `ADR-0002`, `ADR-0003`, `ADR-0005`, `ADR-0007`, `ADR-0008`
 
