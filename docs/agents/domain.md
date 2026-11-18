@@ -5,8 +5,9 @@ How the engineering skills consume this repo's domain documentation when explori
 ## Before exploring, read these
 
 - **`GLOSSARY.md`** at the repo root (single-context layout).
-- **`docs/adr/`**: read ADRs (`0001` through `0005`+) that touch the area you are about to work in.
-- **`docs/specs/`**: read the originating specification (`0001`, `0002`, `0003`, ...) before implementing or reviewing changes.
+- **`docs/specs/0000-baseline-spec.md`**: the full-system `v2.2.0` baseline specification (existing features, data contracts, Sporttery statutory rules, quant formulas, and known quirks).
+- **`docs/adr/`**: read ADRs (`0001` through `0008`+) that touch the area you are about to work in.
+- **`docs/specs/NNNN-*.md`**: read the originating incremental specification when reviewing or extending a specific feature.
 
 ## Use the glossary's vocabulary
 
