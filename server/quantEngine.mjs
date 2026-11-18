@@ -177,6 +177,41 @@ function buildPool(code, name, single, rawOptions, updateTime = '17:45:21', goal
   };
 }
 
+const CRS_HOME_WIN_LABELS = new Set([
+  '1:0',
+  '2:0',
+  '2:1',
+  '3:0',
+  '3:1',
+  '3:2',
+  '4:0',
+  '4:1',
+  '4:2',
+  '5:0',
+  '5:1',
+  '5:2',
+  '胜其它',
+  's1sh',
+]);
+const CRS_HOME_ONE_GOAL_LABELS = new Set(['1:0', '2:1', '3:2']);
+const CRS_AWAY_WIN_LABELS = new Set([
+  '0:1',
+  '0:2',
+  '1:2',
+  '0:3',
+  '1:3',
+  '2:3',
+  '0:4',
+  '1:4',
+  '2:4',
+  '0:5',
+  '1:5',
+  '2:5',
+  '负其它',
+  's1sa',
+]);
+const CRS_AWAY_ONE_GOAL_LABELS = new Set(['0:1', '1:2', '2:3']);
+
 /** 1. 单场精算师底牌反推（服务端黑盒：xG + 一球卡盘率 + 同义省钱比价 + 变盘信号） */
 export function analyzeMatchMicroQuant(m) {
   const ttgOpts = m.pools.TTG.options;
@@ -193,12 +228,70 @@ export function analyzeMatchMicroQuant(m) {
   const homeXG = Number((totalXG * (0.18 + 0.64 * strengthShare)).toFixed(2));
   const awayXG = Number(Math.max(0.25, totalXG - homeXG).toFixed(2));
 
-  const goalLine = m.pools.HHAD.goalLine ?? '-1';
-  const hdProb = m.pools.HHAD.options.find((o) => o.key === 'hd')?.fairProb ?? 0.28;
-  const favWinProb = goalLine.includes('+') ? aProb : hProb;
-  const favTeam = goalLine.includes('+') ? m.away : m.home;
-  const oneGoalProb = hdProb;
-  const oneGoalShareOfWins = favWinProb > 0 ? Math.min(0.85, oneGoalProb / favWinProb) : 0.5;
+  const goalLine = m.pools.HHAD?.goalLine ?? '-1';
+  const goalLineNum = Number(goalLine);
+  const hhadSelling =
+    m.pools.HHAD?.selling !== false &&
+    Array.isArray(m.pools.HHAD?.options) &&
+    m.pools.HHAD.options.length > 0;
+  const hdOpt = hhadSelling ? m.pools.HHAD.options.find((o) => o.key === 'hd') : undefined;
+  const isAwayFav = hhadSelling
+    ? String(goalLine).includes('+') || goalLineNum > 0
+    : String(goalLine).includes('+') || goalLineNum > 0
+      ? true
+      : goalLineNum < -1
+        ? false
+        : aProb > hProb;
+  const favTeam = isAwayFav ? m.away : m.home;
+  const hadSelling =
+    m.pools.HAD?.selling !== false &&
+    Array.isArray(m.pools.HAD?.options) &&
+    m.pools.HAD.options.length > 0;
+
+  let oneGoalProb = 0.28;
+  let oneGoalShareOfWins = 0.5;
+
+  if (hhadSelling && Math.abs(goalLineNum) === 1 && hdOpt) {
+    const favWinProb = isAwayFav ? aProb : hProb;
+    oneGoalProb = hdOpt.fairProb;
+    oneGoalShareOfWins = favWinProb > 0 ? Math.min(0.85, oneGoalProb / favWinProb) : 0.5;
+  } else {
+    const crsSelling =
+      m.pools.CRS?.selling !== false &&
+      Array.isArray(m.pools.CRS?.options) &&
+      m.pools.CRS.options.length > 0;
+    const winSet = isAwayFav ? CRS_AWAY_WIN_LABELS : CRS_HOME_WIN_LABELS;
+    const oneGoalSet = isAwayFav ? CRS_AWAY_ONE_GOAL_LABELS : CRS_HOME_ONE_GOAL_LABELS;
+    let crsFavWinProb = 0;
+    let crsFavOneGoalProb = 0;
+    if (crsSelling) {
+      for (const o of m.pools.CRS.options) {
+        const lbl = o.label || o.key;
+        if (winSet.has(lbl) || winSet.has(o.key)) {
+          crsFavWinProb += o.fairProb;
+        }
+        if (oneGoalSet.has(lbl) || oneGoalSet.has(o.key)) {
+          crsFavOneGoalProb += o.fairProb;
+        }
+      }
+    }
+    const favWinProb = hadSelling
+      ? isAwayFav
+        ? aProb
+        : hProb
+      : crsFavWinProb > 0
+        ? crsFavWinProb
+        : isAwayFav
+          ? aProb
+          : hProb;
+    if (crsFavWinProb > 0) {
+      oneGoalShareOfWins = Math.min(0.85, crsFavOneGoalProb / crsFavWinProb);
+      oneGoalProb = favWinProb * oneGoalShareOfWins;
+    } else {
+      oneGoalShareOfWins = 0.45;
+      oneGoalProb = favWinProb * oneGoalShareOfWins;
+    }
+  }
 
   const cardPanTip =
     oneGoalShareOfWins >= 0.5
@@ -342,10 +435,10 @@ export function analyzeMatchMicroQuant(m) {
     { text: `xG ${homeXG}:${awayXG}`, tone: 'sky' },
     {
       text:
-        oneGoalShareOfWins >= 0.52
+        oneGoalShareOfWins >= 0.5
           ? `防赢1球卡盘 ${(oneGoalShareOfWins * 100).toFixed(0)}%`
           : `穿盘率 ${(100 - oneGoalShareOfWins * 100).toFixed(0)}%`,
-      tone: oneGoalShareOfWins >= 0.52 ? 'amber' : 'emerald',
+      tone: oneGoalShareOfWins >= 0.5 ? 'amber' : 'emerald',
     },
   ];
   if (arbitrages[0]) {
@@ -906,7 +999,6 @@ export function parseSportteryRawJson(json) {
       const hafuRaw = m.hafu ?? {};
       const ttgRaw = m.ttg ?? {};
       const crsRaw = m.crs ?? {};
-      const fallbackMatch = RAW_FALLBACK_MATCHES.find((fm) => fm.matchNumStr === m.matchNumStr);
 
       parsed.push({
         id: String(m.matchId),
@@ -918,7 +1010,7 @@ export function parseSportteryRawJson(json) {
         homeRank: String(m.homeRank || '').replace(/\D+/g, '') || undefined,
         awayRank: String(m.awayRank || '').replace(/\D+/g, '') || undefined,
         isHot: Number(m.isHot) === 1,
-        aiAlert: fallbackMatch?.aiAlert,
+        aiAlert: undefined,
         pools: {
           HAD: buildPool(
             'HAD',
@@ -1066,7 +1158,7 @@ export async function fetchOfficialMatchesServer(snapshotFilePath) {
   return {
     matches: FALLBACK_MATCHES,
     source: 'fallback',
-    syncNote: '使用内置实盘快照（周二竞彩 4 场焦点战）',
+    syncNote: `使用内置实盘快照（共 ${FALLBACK_MATCHES.length} 场精选赛事）`,
   };
 }
 
@@ -2793,6 +2885,188 @@ function parseKickoffMinutes(hhmm) {
   return normalizedH * 60 + min;
 }
 
+function parseMatchDatePrefixMinutes(matchId) {
+  const m = /^(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?:[-_]\d+|\d{3})?$/.exec(
+    String(matchId || '')
+  );
+  if (!m) return null;
+  const yr = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const dy = Number(m[3]);
+  const ts = Date.UTC(yr, mo, dy);
+  return Number.isFinite(ts) ? Math.round(ts / 60_000) : null;
+}
+
+function getSellingPoolOption(pool, key) {
+  if (!pool || pool.selling === false || !Array.isArray(pool.options)) return null;
+  const found = pool.options.find((o) => o.key === key && Number(o.odds) > 0);
+  return found ?? null;
+}
+
+function resolveComplementaryLateHedge(late, latePicks) {
+  if (!Array.isArray(latePicks) || latePicks.length === 0) {
+    return {
+      ok: false,
+      reason: `末场 ${late.matchNumStr || ''} 未包含有效选号，无法构建互补反向对冲`,
+    };
+  }
+
+  const latePools = Array.from(new Set(latePicks.map((p) => p.poolCode)));
+  const nonCompPool = latePools.find((c) => c === 'TTG' || c === 'CRS' || c === 'HAFU');
+  if (nonCompPool) {
+    const poolTitle =
+      nonCompPool === 'TTG' ? '总进球' : nonCompPool === 'CRS' ? '比分' : '半全场';
+    return {
+      ok: false,
+      reason: `末场 ${late.matchNumStr} 所选为【${poolTitle}】玩法，属局部赛果分支，无法通过胜平负或让球盘构成 100% 无死角互补对冲`,
+    };
+  }
+
+  if (latePools.length !== 1 || (latePools[0] !== 'HAD' && latePools[0] !== 'HHAD')) {
+    return {
+      ok: false,
+      reason: `末场 ${late.matchNumStr} 含跨玩法混合选项，无法构建 100% 无死角互补反向盘`,
+    };
+  }
+
+  const poolCode = latePools[0];
+  const pickedKeys = new Set(latePicks.map((p) => p.optionKey));
+  const hadPool = late.pools?.HAD;
+  const hhadPool = late.pools?.HHAD;
+  const goalLineNum = Number(hhadPool?.goalLine ?? '-1');
+  const goalLineStr =
+    hhadPool?.goalLine ?? (goalLineNum > 0 ? `+${goalLineNum}` : String(goalLineNum));
+
+  const pickBest = (candidates) => {
+    const valid = candidates.filter((c) => c && Number.isFinite(c.odds) && c.odds > 0);
+    if (valid.length === 0) return null;
+    valid.sort((a, b) => b.odds - a.odds || Number(a.isPair) - Number(b.isPair));
+    return valid[0];
+  };
+
+  const makeSingleCand = (opt, poolTag) =>
+    opt
+      ? {
+          label: `${late.home} 反向【${poolTag}·${opt.label}】`,
+          odds: opt.odds,
+          isPair: false,
+        }
+      : null;
+
+  const makePairCand = (opt1, opt2, poolTag) =>
+    opt1 && opt2
+      ? {
+          label: `${late.home} 反向【${poolTag}·${opt1.label}+${opt2.label}配平】`,
+          odds: 1 / (1 / opt1.odds + 1 / opt2.odds),
+          isPair: true,
+        }
+      : null;
+
+  if (poolCode === 'HAD') {
+    const validHadKeys = ['h', 'd', 'a'].filter((k) => pickedKeys.has(k));
+    if (validHadKeys.length !== pickedKeys.size || validHadKeys.length === 0) {
+      return {
+        ok: false,
+        reason: `末场 ${late.matchNumStr} 胜平负选项异常，无法构成完备互补对冲`,
+      };
+    }
+    if (validHadKeys.length >= 3) {
+      return {
+        ok: false,
+        reason: `末场 ${late.matchNumStr} 已全包胜平负全部赛果，无需额外补买反向对冲`,
+      };
+    }
+    if (validHadKeys.length === 2) {
+      const remKey = ['h', 'd', 'a'].find((k) => !pickedKeys.has(k));
+      const remOpt = getSellingPoolOption(hadPool, remKey);
+      const best = makeSingleCand(remOpt, '胜平负');
+      return best
+        ? { ok: true, candidate: best }
+        : {
+            ok: false,
+            reason: `末场 ${late.matchNumStr} 缺少在售的胜平负互补第 3 项，无法无死角锁利`,
+          };
+    }
+
+    const singleKey = validHadKeys[0];
+    const hadH = getSellingPoolOption(hadPool, 'h');
+    const hadD = getSellingPoolOption(hadPool, 'd');
+    const hadA = getSellingPoolOption(hadPool, 'a');
+    let best = null;
+    if (singleKey === 'h') {
+      const hhadHa = goalLineNum === -1 ? getSellingPoolOption(hhadPool, 'ha') : null;
+      best = pickBest([
+        makeSingleCand(hhadHa, '让球(-1)'),
+        makePairCand(hadD, hadA, '胜平负'),
+      ]);
+    } else if (singleKey === 'a') {
+      const hhadHh = goalLineNum === 1 ? getSellingPoolOption(hhadPool, 'hh') : null;
+      best = pickBest([
+        makeSingleCand(hhadHh, '让球(+1)'),
+        makePairCand(hadH, hadD, '胜平负'),
+      ]);
+    } else if (singleKey === 'd') {
+      best = makePairCand(hadH, hadA, '胜平负');
+    }
+
+    return best
+      ? { ok: true, candidate: best }
+      : {
+          ok: false,
+          reason: `末场 ${late.matchNumStr} 缺少在售的 100% 互补反向盘口，无法无死角对冲`,
+        };
+  }
+
+  const validHhadKeys = ['hh', 'hd', 'ha'].filter((k) => pickedKeys.has(k));
+  if (
+    !Number.isFinite(goalLineNum) ||
+    goalLineNum === 0 ||
+    validHhadKeys.length !== pickedKeys.size ||
+    validHhadKeys.length === 0
+  ) {
+    return {
+      ok: false,
+      reason: `末场 ${late.matchNumStr} 让球盘选项异常，无法构成完备互补对冲`,
+    };
+  }
+  if (validHhadKeys.length >= 3) {
+    return {
+      ok: false,
+      reason: `末场 ${late.matchNumStr} 已全包让球胜平负全部赛果，无需额外补买反向对冲`,
+    };
+  }
+  const poolTag = `让球(${goalLineStr})`;
+  if (validHhadKeys.length === 2) {
+    const remKey = ['hh', 'hd', 'ha'].find((k) => !pickedKeys.has(k));
+    const remOpt = getSellingPoolOption(hhadPool, remKey);
+    const best = makeSingleCand(remOpt, poolTag);
+    return best
+      ? { ok: true, candidate: best }
+      : {
+          ok: false,
+          reason: `末场 ${late.matchNumStr} 缺少在售的${poolTag}互补第 3 项，无法无死角锁利`,
+        };
+  }
+
+  const singleKey = validHhadKeys[0];
+  const otherKeys = ['hh', 'hd', 'ha'].filter((k) => k !== singleKey);
+  const opt1 = getSellingPoolOption(hhadPool, otherKeys[0]);
+  const opt2 = getSellingPoolOption(hhadPool, otherKeys[1]);
+  let crossSingle = null;
+  if (goalLineNum === -1 && singleKey === 'ha') {
+    crossSingle = makeSingleCand(getSellingPoolOption(hadPool, 'h'), '胜平负');
+  } else if (goalLineNum === 1 && singleKey === 'hh') {
+    crossSingle = makeSingleCand(getSellingPoolOption(hadPool, 'a'), '胜平负');
+  }
+  const best = pickBest([crossSingle, makePairCand(opt1, opt2, poolTag)]);
+  return best
+    ? { ok: true, candidate: best }
+    : {
+        ok: false,
+        reason: `末场 ${late.matchNumStr} 缺少在售的 100% 互补反向盘口，无法无死角对冲`,
+      };
+}
+
 /** 3. 审单细节小 Tips：早晚场时间差对冲锁利 + 串关拖油瓶体检 + 同义省钱替换 + 连黑预警 */
 export function computeProOrderInsights(picks, report, matches) {
   const matchIds = Array.from(new Set(picks.map((p) => p.matchId)));
@@ -2816,43 +3090,113 @@ export function computeProOrderInsights(picks, report, matches) {
   };
 
   if (pickedMatches.length >= 2) {
-    const sortedByTime = [...pickedMatches].sort(
-      (a, b) => parseKickoffMinutes(a.kickoff) - parseKickoffMinutes(b.kickoff)
-    );
-    const early = sortedByTime[0];
-    const late = sortedByTime[sortedByTime.length - 1];
-    const gap = parseKickoffMinutes(late.kickoff) - parseKickoffMinutes(early.kickoff);
+    const isPureSinglePass =
+      !Array.isArray(report?.activePassSizes) ||
+      report.activePassSizes.length === 0 ||
+      report.activePassSizes.every((s) => s === 1);
 
-    if (gap >= 110) {
+    if (report?.canCheckout !== true) {
+      hedge.reason =
+        report?.ruleBlockReason || '当前选单不满足合法出票条件，暂无法启用早晚场时间差对冲锁利';
+    } else if (isPureSinglePass) {
+      hedge.reason = '当前为纯单关独立计奖模式，各场互不串连，无需早晚场补单对冲锁利';
+    } else {
+      const useDatePrefix = pickedMatches.every(
+        (m) => parseMatchDatePrefixMinutes(m.id) !== null
+      );
+      const timeMinutesOf = (m) =>
+        (useDatePrefix ? parseMatchDatePrefixMinutes(m.id) ?? 0 : 0) +
+        parseKickoffMinutes(m.kickoff);
+
+      const sortedByTime = [...pickedMatches].sort(
+        (a, b) => timeMinutesOf(a) - timeMinutesOf(b)
+      );
+      const penultimate = sortedByTime[sortedByTime.length - 2];
+      const late = sortedByTime[sortedByTime.length - 1];
+      const gap = Math.max(0, timeMinutesOf(late) - timeMinutesOf(penultimate));
       const hrs = Math.floor(gap / 60);
       const mins = gap % 60;
-      const latePick = picks.find((p) => p.matchId === late.id);
-      const isPickingHome = latePick?.optionKey === 'h' || latePick?.optionKey === 'hh';
-      const oppOpt = isPickingHome
-        ? late.pools.HHAD.options.find((o) => o.key === 'ha') ?? late.pools.HAD.options[2]
-        : late.pools.HHAD.options.find((o) => o.key === 'hh') ?? late.pools.HAD.options[0];
-      const oppOdds = oppOpt?.odds ?? 1.85;
-      const targetReturn = Math.max(report.minPayout, report.likelyRange[0]);
-      const rawHedgeMoney = targetReturn / oppOdds;
-      const hedgeCost = Math.max(2, Math.round(rawHedgeMoney / 2) * 2);
-      const lockedNetProfit = Number(
-        (Math.min(targetReturn, hedgeCost * oppOdds) - report.totalCost - hedgeCost).toFixed(2)
-      );
+      const gapText =
+        gap <= 0
+          ? '同时间段开球'
+          : hrs > 0
+            ? `${hrs}小时${mins > 0 ? `${mins}分` : ''}`
+            : `${mins}分`;
+      const earlyMatchTitle = `${penultimate.matchNumStr} ${penultimate.home}vs${penultimate.away}`;
+      const lateMatchTitle = `${late.matchNumStr} ${late.home}vs${late.away}`;
 
-      hedge = {
-        available: true,
-        gapMinutes: gap,
-        gapText: `${hrs}小时${mins > 0 ? `${mins}分` : ''}`,
-        earlyMatchTitle: `${early.matchNumStr} ${early.home}vs${early.away}`,
-        lateMatchTitle: `${late.matchNumStr} ${late.home}vs${late.away}`,
-        earlyKickoff: early.kickoff,
-        lateKickoff: late.kickoff,
-        oppositeLabel: `${late.home} 反向【${oppOpt?.label ?? '让负'}】`,
-        oppositeOdds: oppOdds,
-        hedgeCost,
-        lockedNetProfit,
-        reason: `早场(${early.kickoff})完场后距晚场(${late.kickoff})仍有充裕时间！若第一关顺利红单，补买 ¥${hedgeCost} 反向即可无视凌晨结果提前锁利！`,
-      };
+      if (gap < 110) {
+        hedge = {
+          ...hedge,
+          available: false,
+          gapMinutes: gap,
+          gapText,
+          earlyMatchTitle,
+          lateMatchTitle,
+          earlyKickoff: penultimate.kickoff,
+          lateKickoff: late.kickoff,
+          reason:
+            sortedByTime.length >= 3
+              ? `前序最晚场次 ${penultimate.matchNumStr}(${penultimate.kickoff}) 与末场 ${late.matchNumStr}(${late.kickoff}) 开球仅差 ${gap} 分钟（需 ≥ 110 分钟），前序场次未在末场开球前完场，无法单场无风险锁利`
+              : `两场开球仅间隔 ${gap} 分钟（需 ≥ 110 分钟），前场尚未完场，暂无法执行早晚场补单锁利`,
+        };
+      } else {
+        const latePicks = picks.filter((p) => p.matchId === late.id);
+        const resolved = resolveComplementaryLateHedge(late, latePicks);
+        if (!resolved.ok) {
+          hedge = {
+            ...hedge,
+            available: false,
+            gapMinutes: gap,
+            gapText,
+            earlyMatchTitle,
+            lateMatchTitle,
+            earlyKickoff: penultimate.kickoff,
+            lateKickoff: late.kickoff,
+            reason: resolved.reason,
+          };
+        } else {
+          const bestCand = resolved.candidate;
+          const oppOdds = bestCand.odds;
+          const allHitCombos = Array.isArray(report.combos)
+            ? report.combos.filter(
+                (c) => Array.isArray(c.legs) && c.legs.length === pickedMatches.length
+              )
+            : [];
+          const minAllHitPayout =
+            allHitCombos.length > 0
+              ? Math.min(...allHitCombos.map((c) => c.totalPayout))
+              : 0;
+          const targetReturn =
+            minAllHitPayout > 0
+              ? minAllHitPayout
+              : Math.max(report.minPayout, report.likelyRange?.[0] ?? 0);
+          const rawHedgeMoney = targetReturn / oppOdds;
+          const minStake = bestCand.isPair ? 4 : 2;
+          const hedgeCost = Math.max(minStake, Math.round(rawHedgeMoney / 2) * 2);
+          const lockedNetProfit = Number(
+            (Math.min(targetReturn, hedgeCost * oppOdds) - report.totalCost - hedgeCost).toFixed(2)
+          );
+
+          hedge = {
+            available: true,
+            gapMinutes: gap,
+            gapText,
+            earlyMatchTitle,
+            lateMatchTitle,
+            earlyKickoff: penultimate.kickoff,
+            lateKickoff: late.kickoff,
+            oppositeLabel: bestCand.label,
+            oppositeOdds: oppOdds,
+            hedgeCost,
+            lockedNetProfit,
+            reason:
+              sortedByTime.length >= 3
+                ? `前 ${sortedByTime.length - 1} 场最晚(${penultimate.kickoff})完场后距末场(${late.kickoff})仍有 ${gapText} 窗口！若前序 ${sortedByTime.length - 1} 关全红，补买 ¥${hedgeCost} 互补反向盘即可 100% 无死角提前锁利！`
+                : `早场(${penultimate.kickoff})完场后距晚场(${late.kickoff})间隔 ${gapText}！若第一关顺利红单，补买 ¥${hedgeCost} 互补反向盘即可 100% 无死角提前锁利！`,
+          };
+        }
+      }
     }
   }
 
