@@ -10,7 +10,12 @@
 
 import { fxOf, getGlobalTimeScale } from './engine';
 
-export type HapticIntensity = 'mute' | 'soft' | 'standard' | 'hyper';
+import {
+  dispatchAndroidOrWebVibration,
+  type NativeHapticLevel,
+} from './nativeHapticBridge';
+
+export type HapticIntensity = NativeHapticLevel;
 
 export type TactileCueKind =
   | 'press'
@@ -233,17 +238,13 @@ function scalePattern(pattern: number[]): number[] {
 }
 
 export function vibratePattern(pattern: number[]) {
-  if (runtime.intensity === 'mute' || typeof navigator === 'undefined') return;
+  if (runtime.intensity === 'mute') return;
   const scaled = scalePattern(pattern);
   if (scaled.length === 0) return;
-  try {
-    if (typeof navigator.vibrate === 'function') {
-      navigator.vibrate(scaled);
-    }
-  } catch {
-    // ignore
+  const handledByAndroid = dispatchAndroidOrWebVibration(scaled, runtime.intensity);
+  if (!handledByAndroid) {
+    fireIosSafariTaptic();
   }
-  fireIosSafariTaptic();
 }
 
 /* ---------- Channel 3: Zero-Latency WebAudio Physical Micro-Acoustics ---------- */

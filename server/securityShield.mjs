@@ -223,7 +223,10 @@ export function isAiReaderOrScraperRequest(req) {
   const accept = String(req.headers['accept'] || '');
   const acceptLang = String(req.headers['accept-language'] || '');
   const secFetchMode = String(req.headers['sec-fetch-mode'] || '');
-  if (!acceptLang && !secFetchMode && accept === '*/*') {
+  const xReqWith = String(req.headers['x-requested-with'] || '');
+  const isOfficialAndroidShell =
+    xReqWith === 'io.yjty.jisuanqi' && /Android.*AppleWebKit.*YouJingAndroid\//i.test(ua);
+  if (!isOfficialAndroidShell && !acceptLang && !secFetchMode && accept === '*/*') {
     return true;
   }
 
