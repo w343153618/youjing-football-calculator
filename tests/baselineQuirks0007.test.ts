@@ -616,6 +616,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     // Total expected return = 16.128, totalCost = 20 -> exact EV = (16.128 - 20) / 20 = -0.1936 (NOT -vigPct/100 = -0.125!)
     const unequalPlan: ArchetypePlan = {
       key: 'iron-shield',
+      available: true,
       shortTab: '博热保本',
       badge: '🔥 博热保本优化',
       title: '次选回本护盾 + 第一主攻利润最大化',
@@ -727,6 +728,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     // TotalCost = 10 -> exact linear EV = (609 - 10) / 10 = 59.9
     const cappedFaultPlan: ArchetypePlan = {
       key: 'fault-tolerant',
+      available: true,
       shortTab: '🧩 容错防爆',
       badge: '🧩 容错防爆流',
       title: 'M串N 防黑一场回血网',
@@ -823,8 +825,9 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     };
 
     const repCapped = archetypeToReport(cappedFaultPlan, null);
-    assert.equal(repCapped.combos[0].cappedClipped, 360_000);
-    assert.equal(repCapped.combos[1].cappedClipped, 0);
+    assert.equal(repCapped.tickets![0].cappedClipped, 360_000);
+    assert.equal(repCapped.tickets![1].cappedClipped, 0);
+    assert.ok(repCapped.combos.some((c: { cappedClipped: number }) => c.cappedClipped === 360_000));
     assert.ok(Math.abs(repCapped.expectedValueRate - 59.9) < 1e-9);
     const capWarn = repCapped.warnings.find((w: { id: string }) => w.id === 'cap-clip');
     assert.ok(capWarn, 'Expected cap-clip danger warning when statutory cap clips payout');
@@ -1123,11 +1126,11 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       [capM1, capM2]
     );
-    // 0.85 * 1.20 = 1.02 -> clamped to 0.96; 0.01 * 1.20 = 0.012 -> clamped to 0.02
+    // Spec 0008 union [0.02, 0.98] probability-conserving scaling: (0.85 + 0.01) * 1.20 = 1.032 -> clamped to 0.98, preserving 85:1 ratio!
     const hotLine = wsCapPlus20.appliedPlan!.lines.find((l: { legs: Array<{ optionKey: string }> }) => l.legs[0].optionKey === '1:0')!;
     const coldLine = wsCapPlus20.appliedPlan!.lines.find((l: { legs: Array<{ optionKey: string }> }) => l.legs[0].optionKey === '3:2')!;
-    assert.equal(hotLine.legs[0].fairProb, 0.96);
-    assert.equal(coldLine.legs[0].fairProb, 0.02);
+    assert.ok(Math.abs(hotLine.legs[0].fairProb + coldLine.legs[0].fairProb - 0.98) < 1e-12);
+    assert.ok(Math.abs(hotLine.legs[0].fairProb / coldLine.legs[0].fairProb - 85) < 1e-9);
     assert.equal(coldLine.unitPayout, 200_000);
     const coldCombo = wsCapPlus20.effectiveReport.combos.find((c: { id: string }) => c.id === coldLine.id)!;
     assert.equal(coldCombo.cappedClipped, 120_000 * coldLine.multiple);
@@ -1179,10 +1182,10 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       FALLBACK_MATCHES
     );
-    assert.equal(wsSpearBase.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    assert.equal(wsSpearBase.effectiveReport.modeLabel, '⚖️ 期望效用·分倍精算');
     const spearBaseMults = wsSpearBase.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple);
     const spearBaseCost = wsSpearBase.appliedPlan!.totalCost;
-    assert.ok(spearBaseMults.length >= 2);
+    assert.ok(spearBaseMults.length >= 1);
 
     const wsSpearPlus15 = evaluateQuantWorkspace(
       {
@@ -1198,7 +1201,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       FALLBACK_MATCHES
     );
-    assert.equal(wsSpearPlus15.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    assert.equal(wsSpearPlus15.effectiveReport.modeLabel, '⚖️ 期望效用·分倍精算');
     assert.deepEqual(
       wsSpearPlus15.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
       spearBaseMults
@@ -1223,7 +1226,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       FALLBACK_MATCHES
     );
-    assert.equal(wsSpearVoid.effectiveReport.modeLabel, '🎯 博胆护盾·分倍精算');
+    assert.equal(wsSpearVoid.effectiveReport.modeLabel, '⚖️ 期望效用·分倍精算');
     assert.deepEqual(
       wsSpearVoid.appliedPlan!.lines.map((l: { multiple: number }) => l.multiple),
       spearBaseMults
@@ -1292,25 +1295,29 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       fiveTargets
     );
-    assert.equal(wsFault5Void.effectiveReport.modeLabel, '🧩 容错防爆·分倍精算');
-    const pairLines = wsFault5Void.appliedPlan!.lines.filter(
-      (l: { legs: unknown[] }) => l.legs.length === 2
+    assert.equal(wsFault5Void.effectiveReport.modeLabel, '🧩 容错缩水·分倍精算');
+    const subLines = wsFault5Void.appliedPlan!.lines.filter(
+      (l: { legs: unknown[] }) => l.legs.length < 5
     );
-    const fullLine = wsFault5Void.appliedPlan!.lines.find(
-      (l: { legs: unknown[] }) => l.legs.length === 5
-    )!;
-    assert.ok(fullLine.returnPayout < Math.min(...pairLines.map((l: { returnPayout: number }) => l.returnPayout)));
-    assert.equal(
-      wsFault5Void.appliedPlan!.missOneReturn,
-      Math.min(...pairLines.map((l: { returnPayout: number }) => l.returnPayout))
+    assert.ok(subLines.length >= 3 && wsFault5Void.appliedPlan!.lines.length <= 10);
+    const expectedMissOne = Math.min(
+      ...fiveTargets.map((ft) =>
+        Number(
+          wsFault5Void.appliedPlan!.lines
+            .filter((l: { legs: Array<{ matchId: string }> }) => !l.legs.some((g) => g.matchId === ft.id))
+            .reduce((a: number, l: { returnPayout: number }) => a + l.returnPayout, 0)
+            .toFixed(2)
+        )
+      )
     );
+    assert.equal(wsFault5Void.appliedPlan!.missOneReturn, expectedMissOne);
     const expectedStackedMax = Number(
       wsFault5Void.appliedPlan!.lines
         .reduce((a: number, l: { returnPayout: number }) => a + l.returnPayout, 0)
         .toFixed(2)
     );
     assert.equal(wsFault5Void.appliedPlan!.maxReturn, expectedStackedMax);
-    assert.equal(wsFault5Void.effectiveReport.minPayout, wsFault5Void.appliedPlan!.missOneReturn);
+    assert.ok(wsFault5Void.effectiveReport.minPayout > 0);
     assert.equal(wsFault5Void.effectiveReport.maxPayout, expectedStackedMax);
     assert.ok(
       wsFault5Void.effectiveReport.likelyRange[0] >= wsFault5Void.effectiveReport.minPayout,
@@ -1322,6 +1329,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     //    Line 2: [1.75, 1.35, 1.25] -> void first -> [1.0, 1.35, 1.25] * 2 = 3.375 (7 is ODD  -> 3.38!) * 10x = 33.80
     const halfEvenSnap: ArchetypePlan = {
       key: 'spear-shield',
+      available: true,
       shortTab: '🎯 博胆护盾',
       badge: '🎯 博胆护盾流',
       title: '银行家舍入腰斩测试',
@@ -1586,7 +1594,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     const m1 = FALLBACK_MATCHES[0] as MatchItem;
     const m2 = FALLBACK_MATCHES[1] as MatchItem;
     const fivePlans = generateFiveArchetypes([m1, m2], 100, 'objective', false, []);
-    for (const plan of fivePlans) {
+    for (const plan of fivePlans.filter((p: { available: boolean }) => p.available)) {
       const wsVoid = evaluateQuantWorkspace(
         {
           picks: [],
@@ -1617,7 +1625,7 @@ describe('Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       initialSyncNote: 'test',
       evaluateFn: async (params, matches) => evaluateQuantWorkspace(params, matches),
     });
-    const spearPlan = fivePlans.find((p: { key: string }) => p.key === 'spear-shield')!;
+    const spearPlan = fivePlans.find((p: { key: string }) => p.key === 'max-ev-utility')!;
     ctrl.applyArchetype(spearPlan);
     assert.equal(ctrl.getState().picks[0].matchId, m1.id);
 

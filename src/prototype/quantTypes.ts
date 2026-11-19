@@ -1,11 +1,17 @@
 export type PoolCode = 'HAD' | 'HHAD' | 'HAFU' | 'TTG' | 'CRS';
 export type UserStance = 'objective' | 'home-lean' | 'upset-watch';
-export type ArchetypeKey =
+export type PortfolioKey =
+  | 'max-profit-prob'
+  | 'max-ev-utility'
+  | 'max-cvar-wheel'
+  | 'alpha-radar';
+export type LegacyArchetypeKey =
   | 'iron-shield'
   | 'spear-shield'
   | 'fault-tolerant'
   | 'goal-structure'
   | 'value-assassin';
+export type ArchetypeKey = PortfolioKey | LegacyArchetypeKey;
 export type BonusOptMode = 'equal' | 'hot-first' | 'cold-first';
 
 export interface OddsOption {
@@ -216,6 +222,9 @@ export interface PlanTicketLine {
 
 export interface ArchetypePlan {
   key: ArchetypeKey;
+  available: boolean;
+  alphaKind?: 'positive-ev' | 'relative-alpha' | 'none';
+  emptyReason?: string | null;
   shortTab: string;
   badge: string;
   title: string;
@@ -288,6 +297,7 @@ export interface QuantWorkspaceResponse {
   effectiveReport: TruthReport;
   appliedPlan: ArchetypePlan | null;
   insights: ProOrderInsights;
+  portfolioPlans: ArchetypePlan[];
   fivePlans: ArchetypePlan[];
   subjectiveEVPct: number;
   allWarnings: RadarWarning[];
@@ -355,6 +365,7 @@ export const EMPTY_WORKSPACE_RESPONSE: QuantWorkspaceResponse = {
   effectiveReport: EMPTY_TRUTH_REPORT,
   appliedPlan: null,
   insights: EMPTY_INSIGHTS,
+  portfolioPlans: [],
   fivePlans: [],
   subjectiveEVPct: 0,
   allWarnings: [],

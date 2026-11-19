@@ -575,24 +575,32 @@ describe('Spec 0003: Auth Gate, Hidden Admin 2(b), First-Login Timer, Progressiv
         },
         eightMatches
       );
-      assert.equal(ws.fivePlans.length, 5, `Should generate all 5 archetypes for ${count} matches`);
-      for (const plan of ws.fivePlans) {
+      assert.equal(ws.portfolioPlans.length, 4, `Should generate 3+1 Pareto portfolio slots for ${count} matches`);
+      assert.equal(ws.fivePlans.length, 4);
+      for (const plan of ws.portfolioPlans.slice(0, 3)) {
+        assert.equal(plan.available, true);
         assert.ok(plan.lines.length >= 1, `${plan.key} has lines for ${count} matches`);
         assert.ok(plan.totalCost > 0, `${plan.key} has positive cost for ${count} matches`);
       }
+      const alphaSlot = ws.portfolioPlans[3];
+      assert.equal(alphaSlot.key, 'alpha-radar');
+      if (!alphaSlot.available) {
+        assert.equal(alphaSlot.totalCost, 0);
+        assert.equal(alphaSlot.savedCash, 100);
+      }
       if (count >= 5) {
-        const iron = ws.fivePlans.find((p) => p.key === 'iron-shield')!;
-        assert.equal(iron.lines[0].legs.length, count, `Iron shield covers all ${count} selected matches`);
-        const fault = ws.fivePlans.find((p) => p.key === 'fault-tolerant')!;
+        const iron = ws.portfolioPlans.find((p) => p.key === 'max-profit-prob')!;
+        assert.equal(iron.lines[0].legs.length, count, `max-profit-prob covers all ${count} selected matches`);
+        const fault = ws.portfolioPlans.find((p) => p.key === 'max-cvar-wheel')!;
         assert.ok(fault.missOneReturn !== null && fault.missOneReturn > 0);
-        // Every single selected match must appear in the 2串1 fault-tolerant pair tickets (zero dropped matches!)
-        const pairCoveredIds = new Set(
+        // Every single selected match must appear in the covering-wheel sub-parlay blocks (zero dropped matches!)
+        const wheelCoveredIds = new Set(
           fault.lines
-            .slice(0, -1)
+            .filter((l) => l.legs.length < count)
             .flatMap((l) => l.legs.map((lg) => lg.matchId))
         );
         for (const tid of targetIds) {
-          assert.equal(pairCoveredIds.has(tid), true, `Match ${tid} must be covered in 2串1 fault-tolerant pairs`);
+          assert.equal(wheelCoveredIds.has(tid), true, `Match ${tid} must be covered in covering-wheel blocks`);
         }
       }
     }
