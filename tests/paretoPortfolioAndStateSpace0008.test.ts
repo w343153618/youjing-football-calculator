@@ -907,6 +907,17 @@ describe('Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
           OFFICIAL_CRS_PAIRS.map(([rawK, lbl]: [string, string]) => [rawK, String(toOdds(crsMap[lbl], 0.75, 0.08))])
         ),
       };
+      // Align equivalent 0:0 & -1 handicap synthetic on baseline tight matches (< 3.0% arb) unless explicitly lagged
+      raw.crs.s00s00 = raw.ttg.s0;
+      const synDa = 1 / (1 / Number(raw.had.d) + 1 / Number(raw.had.a));
+      const invHa = 1 / synDa;
+      const remInv = Math.max(0.12, 1 / 0.88 - invHa);
+      const rawInvHh = 1 / Number(raw.hhad.h);
+      const rawInvHd = 1 / Number(raw.hhad.d);
+      const scaleHd = remInv / (rawInvHh + rawInvHd);
+      raw.hhad.a = synDa.toFixed(2);
+      raw.hhad.h = Math.max(1.06, 1 / (rawInvHh * scaleHd)).toFixed(2);
+      raw.hhad.d = Math.max(1.06, 1 / (rawInvHd * scaleHd)).toFixed(2);
       if (opts?.lag) {
         if (opts.lag.poolCode === 'TTG') {
           raw.ttg[opts.lag.key] = String(Number((Number(raw.ttg[opts.lag.key]) * opts.lag.mult).toFixed(2)));

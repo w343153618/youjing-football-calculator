@@ -93,6 +93,40 @@ const MODE_OPTS: Array<[MatchMode, string]> = [
   ['single', '单关'],
 ];
 
+function splitTerminalPosterSlips(
+  id: string,
+  left: string,
+  modeLabel: string,
+  rawMultiple: number,
+  singleSlipCost?: number
+): Array<{ key: string; left: string; right: string }> {
+  const totalMult = Math.max(1, rawMultiple);
+  if (totalMult <= 99) {
+    return [
+      {
+        key: id,
+        left,
+        right: `${modeLabel} · ${totalMult}倍 (¥${singleSlipCost ?? totalMult * 2})`,
+      },
+    ];
+  }
+  const slips: Array<{ key: string; left: string; right: string }> = [];
+  let rem = totalMult;
+  let idx = 1;
+  const slipCount = Math.ceil(totalMult / 99);
+  while (rem > 0) {
+    const chunk = Math.min(99, rem);
+    slips.push({
+      key: `${id}-p${idx}`,
+      left: `${left} [第${idx}/${slipCount}张]`,
+      right: `${modeLabel} · ${chunk}倍 (¥${chunk * 2})`,
+    });
+    rem -= chunk;
+    idx += 1;
+  }
+  return slips;
+}
+
 interface LedgerDraftPayload {
   title: string;
   modeLabel: string;
@@ -3128,31 +3162,7 @@ export function SkinPhoneApp({
                     const left = l.legs
                       .map((g) => `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`)
                       .join('×');
-                    const totalMult = Math.max(1, l.multiple);
-                    if (totalMult <= 99) {
-                      return [
-                        {
-                          key: l.id,
-                          left,
-                          right: `${l.modeLabel} · ${totalMult}倍 (¥${l.cost})`,
-                        },
-                      ];
-                    }
-                    const slips: Array<{ key: string; left: string; right: string }> = [];
-                    let rem = totalMult;
-                    let idx = 1;
-                    const slipCount = Math.ceil(totalMult / 99);
-                    while (rem > 0) {
-                      const chunk = Math.min(99, rem);
-                      slips.push({
-                        key: `${l.id}-p${idx}`,
-                        left: `${left} [第${idx}/${slipCount}张]`,
-                        right: `${l.modeLabel} · ${chunk}倍 (¥${chunk * 2})`,
-                      });
-                      rem -= chunk;
-                      idx += 1;
-                    }
-                    return slips;
+                    return splitTerminalPosterSlips(l.id, left, l.modeLabel, l.multiple, l.cost);
                   })
                 : effectiveReport.tickets && effectiveReport.tickets.length > 0
                   ? effectiveReport.tickets.flatMap((tk) => {
@@ -3161,31 +3171,7 @@ export function SkinPhoneApp({
                         .join('×');
                       const passTxt =
                         (tk.legs?.length ?? 1) === 1 ? '单关' : `${tk.legs?.length}串1`;
-                      const totalMult = Math.max(1, multiple);
-                      if (totalMult <= 99) {
-                        return [
-                          {
-                            key: tk.id,
-                            left,
-                            right: `${passTxt} · ${totalMult}倍 (¥${totalMult * 2})`,
-                          },
-                        ];
-                      }
-                      const slips: Array<{ key: string; left: string; right: string }> = [];
-                      let rem = totalMult;
-                      let idx = 1;
-                      const slipCount = Math.ceil(totalMult / 99);
-                      while (rem > 0) {
-                        const chunk = Math.min(99, rem);
-                        slips.push({
-                          key: `${tk.id}-p${idx}`,
-                          left: `${left} [第${idx}/${slipCount}张]`,
-                          right: `${passTxt} · ${chunk}倍 (¥${chunk * 2})`,
-                        });
-                        rem -= chunk;
-                        idx += 1;
-                      }
-                      return slips;
+                      return splitTerminalPosterSlips(tk.id, left, passTxt, multiple);
                     })
                   : picks.map((p) => ({
                       key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,

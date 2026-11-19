@@ -1746,12 +1746,18 @@ export function runLayer4LedgerAblationBenchmark(opts = {}) {
           emptyAlphaSavedCash += pl.savedCash ?? sl.budget;
           continue;
         }
-        const rep = archetypeToReport(pl, null, sl.matches);
-        const routeHighDangerToPaper =
-          (pl.key === 'alpha-radar' && pl.alphaKind !== 'positive-ev') || rep.dangerScore >= 58;
 
-        let entryRes;
-        if (routeHighDangerToPaper) {
+        let entryRes = upgradedLedger.mutateUserLedger('bench_upgraded', {
+          action: 'add-entry',
+          kind: 'live',
+          cost: pl.totalCost,
+          betCount: pl.lines.length,
+          modeLabel: pl.shortTab,
+          minPayout: pl.minReturn,
+          maxPayout: pl.maxReturn,
+        });
+        if (!entryRes.ok && entryRes.code === 'STOP_LOSS_EXCEEDED') {
+          stopLossInterceptedCount += 1;
           entryRes = upgradedLedger.mutateUserLedger('bench_upgraded', {
             action: 'add-entry',
             kind: 'paper',
@@ -1761,30 +1767,6 @@ export function runLayer4LedgerAblationBenchmark(opts = {}) {
             minPayout: pl.minReturn,
             maxPayout: pl.maxReturn,
           });
-        } else {
-          const tryLive = upgradedLedger.mutateUserLedger('bench_upgraded', {
-            action: 'add-entry',
-            kind: 'live',
-            cost: pl.totalCost,
-            betCount: pl.lines.length,
-            modeLabel: pl.shortTab,
-            minPayout: pl.minReturn,
-            maxPayout: pl.maxReturn,
-          });
-          if (!tryLive.ok && tryLive.code === 'STOP_LOSS_EXCEEDED') {
-            stopLossInterceptedCount += 1;
-            entryRes = upgradedLedger.mutateUserLedger('bench_upgraded', {
-              action: 'add-entry',
-              kind: 'paper',
-              paperRefCost: pl.totalCost,
-              betCount: pl.lines.length,
-              modeLabel: pl.shortTab,
-              minPayout: pl.minReturn,
-              maxPayout: pl.maxReturn,
-            });
-          } else {
-            entryRes = tryLive;
-          }
         }
 
         const actualReturn = settlePortfolioLines(pl.lines, rawById);

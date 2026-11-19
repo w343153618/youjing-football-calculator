@@ -513,6 +513,7 @@ const SCRATCH_J0 = new Float64Array(64);
 const SCRATCH_J1 = new Float64Array(64);
 const SCRATCH_J2 = new Float64Array(64);
 const SCRATCH_ATOMIC = new Float64Array(256);
+const SCRATCH_HT3 = new Float64Array(3);
 
 function evalDixonColesGrid(lamH, lamA, rho, outGrid) {
   SCRATCH_PX[0] = Math.exp(-lamH);
@@ -559,6 +560,71 @@ function fillBinomPmfTable(theta, outB) {
   }
 }
 
+function computeCellHtSplitProbs(x, y, pXY, binomBuf, out3) {
+  if (x === 0 && y === 0) {
+    out3[0] = 0;
+    out3[1] = pXY;
+    out3[2] = 0;
+    return;
+  }
+  if (x === 0) {
+    const pD = pXY * binomBuf[y * DC_DIM];
+    out3[0] = 0;
+    out3[1] = pD;
+    out3[2] = Math.max(0, pXY - pD);
+    return;
+  }
+  if (y === 0) {
+    const pD = pXY * binomBuf[x * DC_DIM];
+    out3[0] = Math.max(0, pXY - pD);
+    out3[1] = pD;
+    out3[2] = 0;
+    return;
+  }
+
+  const rowX = x * DC_DIM;
+  const rowY = y * DC_DIM;
+  let rawH = 0;
+  let rawD = 0;
+  let rawA = 0;
+  for (let x1 = 0; x1 <= x; x1++) {
+    const bx = binomBuf[rowX + x1];
+    for (let y1 = 0; y1 <= y; y1++) {
+      const p = bx * binomBuf[rowY + y1];
+      if (x1 > y1) rawH += p;
+      else if (x1 === y1) rawD += p;
+      else rawA += p;
+    }
+  }
+  const tot = rawH + rawD + rawA;
+  const pH = pXY * (rawH / tot);
+  const pD = pXY * (rawD / tot);
+  out3[0] = pH;
+  out3[1] = pD;
+  out3[2] = Math.max(0, pXY - pH - pD);
+}
+
+function expandScoreGridToAtomicProbs(scoreGrid, theta, binomBuf, outAtomic) {
+  fillBinomPmfTable(theta, binomBuf);
+  const atomicLen = ATOMIC_TEMPLATES.length;
+  for (let i = 0; i < atomicLen; i++) outAtomic[i] = 0;
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    const rowX = x * DC_DIM;
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      const cell = rowX + y;
+      const baseMap = cell * 3;
+      computeCellHtSplitProbs(x, y, scoreGrid[cell], binomBuf, SCRATCH_HT3);
+      if (SCRATCH_HT3[0] > 0) outAtomic[GRID_HT_TO_ATOMIC[baseMap]] += SCRATCH_HT3[0];
+      if (SCRATCH_HT3[1] > 0) outAtomic[GRID_HT_TO_ATOMIC[baseMap + 1]] += SCRATCH_HT3[1];
+      if (SCRATCH_HT3[2] > 0) outAtomic[GRID_HT_TO_ATOMIC[baseMap + 2]] += SCRATCH_HT3[2];
+    }
+  }
+  let atomicSum = 0;
+  for (let i = 0; i < atomicLen; i++) atomicSum += outAtomic[i];
+  const invAtomicSum = 1 / atomicSum;
+  for (let i = 0; i < atomicLen; i++) outAtomic[i] *= invAtomicSum;
+}
+
 function projectHafuFromGrid(scoreGrid, theta, binomBuf, outHafu) {
   fillBinomPmfTable(theta, binomBuf);
   outHafu.fill(0);
@@ -567,45 +633,10 @@ function projectHafuFromGrid(scoreGrid, theta, binomBuf, outHafu) {
     for (let y = 0; y <= DC_MAX_GOALS; y++) {
       const pXY = scoreGrid[rowX + y];
       const ftCode = x > y ? 0 : x === y ? 1 : 2;
-      if (x === 0 && y === 0) {
-        outHafu[3 + ftCode] += pXY;
-        continue;
-      }
-      if (x === 0) {
-        const wD = binomBuf[y * DC_DIM];
-        const pD = pXY * wD;
-        outHafu[3 + ftCode] += pD;
-        outHafu[6 + ftCode] += pXY - pD;
-        continue;
-      }
-      if (y === 0) {
-        const wD = binomBuf[rowX];
-        const pD = pXY * wD;
-        outHafu[3 + ftCode] += pD;
-        outHafu[ftCode] += pXY - pD;
-        continue;
-      }
-
-      const rowY = y * DC_DIM;
-      let rawH = 0;
-      let rawD = 0;
-      let rawA = 0;
-      for (let x1 = 0; x1 <= x; x1++) {
-        const bx = binomBuf[rowX + x1];
-        for (let y1 = 0; y1 <= y; y1++) {
-          const p = bx * binomBuf[rowY + y1];
-          if (x1 > y1) rawH += p;
-          else if (x1 === y1) rawD += p;
-          else rawA += p;
-        }
-      }
-      const tot = rawH + rawD + rawA;
-      const pH = pXY * (rawH / tot);
-      const pD = pXY * (rawD / tot);
-      const pA = Math.max(0, pXY - pH - pD);
-      outHafu[ftCode] += pH;
-      outHafu[3 + ftCode] += pD;
-      outHafu[6 + ftCode] += pA;
+      computeCellHtSplitProbs(x, y, pXY, binomBuf, SCRATCH_HT3);
+      if (SCRATCH_HT3[0] > 0) outHafu[ftCode] += SCRATCH_HT3[0];
+      if (SCRATCH_HT3[1] > 0) outHafu[3 + ftCode] += SCRATCH_HT3[1];
+      if (SCRATCH_HT3[2] > 0) outHafu[6 + ftCode] += SCRATCH_HT3[2];
     }
   }
 }
@@ -970,62 +1001,9 @@ export function calibrateMatchCoherentModel(match) {
   }
 
   // Exact Binomial Thinning expansion into physically compatible atomicStates
-  fillBinomPmfTable(theta, binomBuf);
   const atomicLen = ATOMIC_TEMPLATES.length;
   const atomicProbs = SCRATCH_ATOMIC;
-  for (let i = 0; i < atomicLen; i++) atomicProbs[i] = 0;
-  for (let x = 0; x <= DC_MAX_GOALS; x++) {
-    const rowX = x * DC_DIM;
-    for (let y = 0; y <= DC_MAX_GOALS; y++) {
-      const cell = rowX + y;
-      const pXY = scoreGrid[cell];
-      const baseMap = cell * 3;
-      if (x === 0 && y === 0) {
-        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pXY;
-        continue;
-      }
-      if (x === 0) {
-        const wD = binomBuf[y * DC_DIM];
-        const pD = pXY * wD;
-        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 2]] += Math.max(0, pXY - pD);
-        continue;
-      }
-      if (y === 0) {
-        const wD = binomBuf[rowX];
-        const pD = pXY * wD;
-        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-        atomicProbs[GRID_HT_TO_ATOMIC[baseMap]] += Math.max(0, pXY - pD);
-        continue;
-      }
-
-      const rowY = y * DC_DIM;
-      let rawH = 0;
-      let rawD = 0;
-      let rawA = 0;
-      for (let x1 = 0; x1 <= x; x1++) {
-        const bx = binomBuf[rowX + x1];
-        for (let y1 = 0; y1 <= y; y1++) {
-          const p = bx * binomBuf[rowY + y1];
-          if (x1 > y1) rawH += p;
-          else if (x1 === y1) rawD += p;
-          else rawA += p;
-        }
-      }
-      const tot = rawH + rawD + rawA;
-      const pH = pXY * (rawH / tot);
-      const pD = pXY * (rawD / tot);
-      const pA = Math.max(0, pXY - pH - pD);
-      atomicProbs[GRID_HT_TO_ATOMIC[baseMap]] += pH;
-      atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-      atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 2]] += pA;
-    }
-  }
-
-  let atomicSum = 0;
-  for (let i = 0; i < atomicLen; i++) atomicSum += atomicProbs[i];
-  const invAtomicSum = 1 / atomicSum;
-  for (let i = 0; i < atomicLen; i++) atomicProbs[i] *= invAtomicSum;
+  expandScoreGridToAtomicProbs(scoreGrid, theta, binomBuf, atomicProbs);
 
   const hadArr = new Float64Array(3);
   const hhadArr = new Float64Array(3);
@@ -1159,56 +1137,8 @@ const NEUTRAL_ATOMIC_PROBS = (() => {
   const grid = new Float64Array(DC_GRID_LEN);
   const binom = new Float64Array(DC_GRID_LEN);
   evalDixonColesGrid(1.38, 1.14, 0, grid);
-  fillBinomPmfTable(DEFAULT_HT_GOAL_SHARE, binom);
-  const atomicLen = ATOMIC_TEMPLATES.length;
-  const out = new Float64Array(atomicLen);
-  for (let x = 0; x <= DC_MAX_GOALS; x++) {
-    const rowX = x * DC_DIM;
-    for (let y = 0; y <= DC_MAX_GOALS; y++) {
-      const cell = rowX + y;
-      const pXY = grid[cell];
-      const baseMap = cell * 3;
-      if (x === 0 && y === 0) {
-        out[GRID_HT_TO_ATOMIC[baseMap + 1]] += pXY;
-        continue;
-      }
-      if (x === 0) {
-        const pD = pXY * binom[y * DC_DIM];
-        out[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-        out[GRID_HT_TO_ATOMIC[baseMap + 2]] += Math.max(0, pXY - pD);
-        continue;
-      }
-      if (y === 0) {
-        const pD = pXY * binom[rowX];
-        out[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-        out[GRID_HT_TO_ATOMIC[baseMap]] += Math.max(0, pXY - pD);
-        continue;
-      }
-      const rowY = y * DC_DIM;
-      let rawH = 0;
-      let rawD = 0;
-      let rawA = 0;
-      for (let x1 = 0; x1 <= x; x1++) {
-        const bx = binom[rowX + x1];
-        for (let y1 = 0; y1 <= y; y1++) {
-          const p = bx * binom[rowY + y1];
-          if (x1 > y1) rawH += p;
-          else if (x1 === y1) rawD += p;
-          else rawA += p;
-        }
-      }
-      const tot = rawH + rawD + rawA;
-      const pH = pXY * (rawH / tot);
-      const pD = pXY * (rawD / tot);
-      const pA = Math.max(0, pXY - pH - pD);
-      out[GRID_HT_TO_ATOMIC[baseMap]] += pH;
-      out[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
-      out[GRID_HT_TO_ATOMIC[baseMap + 2]] += pA;
-    }
-  }
-  let s = 0;
-  for (let i = 0; i < atomicLen; i++) s += out[i];
-  for (let i = 0; i < atomicLen; i++) out[i] /= s;
+  const out = new Float64Array(ATOMIC_TEMPLATES.length);
+  expandScoreGridToAtomicProbs(grid, DEFAULT_HT_GOAL_SHARE, binom, out);
   return out;
 })();
 
@@ -1387,6 +1317,47 @@ function alignMatchlessAtomicToLegs(legsOnMatch, gl) {
     }
   }
   return probs;
+}
+
+function alignMultiPoolAtomicToTiltedLegs(baseProbs, mLegs, gl) {
+  if (!Array.isArray(mLegs) || mLegs.length === 0) return baseProbs;
+  const refLeg = mLegs[0];
+  const baseRefP = sumOptionProbOnAtomic(
+    baseProbs,
+    refLeg.poolCode,
+    refLeg.optionKey,
+    refLeg.optionLabel,
+    gl
+  );
+  if (!(baseRefP > 1e-6 && Math.abs(baseRefP - Number(refLeg.fairProb)) > 1e-5)) {
+    return baseProbs;
+  }
+  const atomicLen = ATOMIC_TEMPLATES.length;
+  const hitMask = new Uint8Array(atomicLen);
+  let baseUnion = 0;
+  for (let i = 0; i < atomicLen; i++) {
+    const tpl = ATOMIC_TEMPLATES[i];
+    for (const g of mLegs) {
+      if (doesOptionHitAtomicTemplate(g.poolCode, g.optionKey, g.optionLabel, gl, tpl)) {
+        hitMask[i] = 1;
+        baseUnion += baseProbs[i];
+        break;
+      }
+    }
+  }
+  const scaleRatio = Number(refLeg.fairProb) / baseRefP;
+  const targetUnion = Math.min(0.999, Math.max(0.001, baseUnion * scaleRatio));
+  if (!(baseUnion > 0 && baseUnion < 0.999)) return baseProbs;
+  const hitScale = targetUnion / baseUnion;
+  const missScale = (1 - targetUnion) / (1 - baseUnion);
+  const shifted = new Float64Array(atomicLen);
+  let s = 0;
+  for (let i = 0; i < atomicLen; i++) {
+    shifted[i] = baseProbs[i] * (hitMask[i] ? hitScale : missScale);
+    s += shifted[i];
+  }
+  if (s > 0) for (let i = 0; i < atomicLen; i++) shifted[i] /= s;
+  return shifted;
 }
 
 function computeCapitalWeightedVig(lines, matches) {
@@ -1575,8 +1546,21 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
     if (prodSize > 1_000_000) break;
   }
 
-  // Case B: 9~15 pure single-pass matches -> O(M) exact probability & expectation + 1D DP for realProfitProb
+  // Case B: 9~15 pure single-pass matches -> Exact integer-cent 1D DP + mutually-exclusive payout-tier combos
   if (M > 8 && isAllSingleTickets) {
+    const gcdInt = (a, b) => {
+      let x = Math.abs(Math.trunc(a));
+      let y = Math.abs(Math.trunc(b));
+      while (y !== 0) {
+        const t = x % y;
+        x = y;
+        y = t;
+      }
+      return x;
+    };
+    const totalCostCents = Math.max(0, Math.round(totalCost * 100));
+    let stepGcd = totalCostCents;
+
     const perMatchDist = quotientByMatch.map((qStates, m) => {
       const mTickets = [];
       for (let k = 0; k < K; k++) {
@@ -1590,11 +1574,15 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
         if (hits.length === 0) {
           missProb += qs.prob;
         } else {
+          const totalPay = hits.reduce((a, w) => a + w.totalPayout, 0);
+          const payCents = Math.max(0, Math.round(totalPay * 100));
+          if (payCents > 0) stepGcd = gcdInt(stepGcd, payCents);
           winOutcomes.push({
             prob: qs.prob,
-            tickets: hits,
+            legs: hits.flatMap((w) => w.legs || []),
+            payCents,
             unitPayout: hits.reduce((a, w) => a + w.unitPayout, 0),
-            totalPayout: hits.reduce((a, w) => a + w.totalPayout, 0),
+            totalPayout: payCents / 100,
             cappedClipped: hits.reduce((a, w) => a + w.cappedClipped, 0),
           });
         }
@@ -1602,90 +1590,289 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
       return { missProb, winOutcomes };
     });
 
-    const overallMissProb = perMatchDist.reduce((acc, d) => acc * d.missProb, 1);
-    const anyWinProb = Math.max(0, Math.min(1, 1 - overallMissProb));
-    const expectedReturn = perMatchDist.reduce(
-      (acc, d) => acc + d.winOutcomes.reduce((s, o) => s + o.prob * o.totalPayout, 0),
-      0
-    );
+    const unitDiv = Math.max(1, stepGcd);
+    const costUnits = Math.round(totalCostCents / unitDiv);
 
-    // 1D convolution DP over 0.1-yuan buckets for exact realProfitProb
-    let dp = new Map([[0, 1]]);
+    const mergeDpBucket = (
+      map,
+      key,
+      prob,
+      expPay,
+      expUnit,
+      expClip,
+      minCents,
+      maxCents,
+      minHits,
+      maxHits,
+      legs
+    ) => {
+      if (!(prob > 0)) return;
+      const cur = map.get(key);
+      if (!cur) {
+        map.set(key, {
+          prob,
+          expPay,
+          expUnit,
+          expClip,
+          minCents,
+          maxCents,
+          minHits,
+          maxHits,
+          legs,
+          bestProb: prob,
+        });
+      } else {
+        if (prob > cur.bestProb) {
+          cur.bestProb = prob;
+          cur.legs = legs;
+        }
+        cur.prob += prob;
+        cur.expPay += expPay;
+        cur.expUnit += expUnit;
+        cur.expClip += expClip;
+        if (minCents < cur.minCents) cur.minCents = minCents;
+        if (maxCents > cur.maxCents) cur.maxCents = maxCents;
+        if (minHits < cur.minHits) cur.minHits = minHits;
+        if (maxHits > cur.maxHits) cur.maxHits = maxHits;
+      }
+    };
+
+    const keyForState = (minCents, maxCents) => {
+      if (maxCents === 0) return 0;
+      if (maxCents < totalCostCents) {
+        if (minCents === maxCents && costUnits <= 8192) {
+          return Math.round(minCents / unitDiv);
+        }
+        const u = Math.floor(maxCents / Math.max(1, unitDiv));
+        const safeCap = Math.max(1, costUnits - 1);
+        return -1 - Math.min(2047, Math.floor(((safeCap - Math.min(safeCap, u)) / safeCap) * 2048));
+      }
+      if (minCents === maxCents && costUnits <= 8192 && minCents <= totalCostCents * 4) {
+        return Math.round(minCents / unitDiv);
+      }
+      const excessUnits = Math.max(0, (minCents - totalCostCents) / Math.max(1, unitDiv));
+      const tier = Math.min(95, Math.floor(Math.log1p(excessUnits) * 10));
+      return costUnits + 1_000_000 + tier;
+    };
+
+    let dp = new Map([
+      [
+        0,
+        {
+          prob: 1,
+          expPay: 0,
+          expUnit: 0,
+          expClip: 0,
+          minCents: 0,
+          maxCents: 0,
+          minHits: 0,
+          maxHits: 0,
+          legs: [],
+          bestProb: 1,
+        },
+      ],
+    ]);
+
     for (const d of perMatchDist) {
       const nextDp = new Map();
-      const addMass = (amt, p) => {
-        if (p <= 0) return;
-        const key = amt >= totalCost ? Math.max(totalCost, Math.round(amt * 2) / 2) : Math.round(amt * 10) / 10;
-        nextDp.set(key, (nextDp.get(key) ?? 0) + p);
-      };
-      for (const [prevAmt, prevP] of dp.entries()) {
-        if (d.missProb > 0) addMass(prevAmt, prevP * d.missProb);
+      for (const prev of dp.values()) {
+        if (d.missProb > 0) {
+          const pMiss = prev.prob * d.missProb;
+          const kMiss = keyForState(prev.minCents, prev.maxCents);
+          mergeDpBucket(
+            nextDp,
+            kMiss,
+            pMiss,
+            prev.expPay * d.missProb,
+            prev.expUnit * d.missProb,
+            prev.expClip * d.missProb,
+            prev.minCents,
+            prev.maxCents,
+            prev.minHits,
+            prev.maxHits,
+            prev.legs
+          );
+        }
         for (const wo of d.winOutcomes) {
-          addMass(prevAmt + wo.totalPayout, prevP * wo.prob);
+          const pHit = prev.prob * wo.prob;
+          if (!(pHit > 0)) continue;
+          const newMinCents = prev.minCents + wo.payCents;
+          const newMaxCents = prev.maxCents + wo.payCents;
+          const kHit = keyForState(newMinCents, newMaxCents);
+          const mergedLegs =
+            prev.legs.length === 0
+              ? wo.legs
+              : prev.legs.length < 16
+                ? [...prev.legs, ...wo.legs]
+                : prev.legs;
+          mergeDpBucket(
+            nextDp,
+            kHit,
+            pHit,
+            prev.expPay * wo.prob + pHit * wo.totalPayout,
+            prev.expUnit * wo.prob + pHit * wo.unitPayout,
+            prev.expClip * wo.prob + pHit * wo.cappedClipped,
+            newMinCents,
+            newMaxCents,
+            prev.minHits + 1,
+            prev.maxHits + 1,
+            mergedLegs
+          );
         }
       }
-      dp = nextDp;
+
+      // Keep profitable upper-set [totalCostCents, inf) compact while preserving exact maxCents singleton
+      if (nextDp.size > 512) {
+        const compactDp = new Map();
+        let globalMaxProfCents = -1;
+        for (const b of nextDp.values()) {
+          if (b.minCents >= totalCostCents && b.maxCents > globalMaxProfCents) {
+            globalMaxProfCents = b.maxCents;
+          }
+        }
+        for (const [k, b] of nextDp.entries()) {
+          if (b.maxCents < totalCostCents || (b.minCents === b.maxCents && b.maxCents === globalMaxProfCents)) {
+            mergeDpBucket(
+              compactDp,
+              k,
+              b.prob,
+              b.expPay,
+              b.expUnit,
+              b.expClip,
+              b.minCents,
+              b.maxCents,
+              b.minHits,
+              b.maxHits,
+              b.legs
+            );
+          } else {
+            const excessUnits = Math.max(0, (b.minCents - totalCostCents) / Math.max(1, unitDiv));
+            const tier = Math.min(63, Math.floor(Math.log1p(excessUnits) * 8));
+            mergeDpBucket(
+              compactDp,
+              costUnits + 2_000_000 + tier,
+              b.prob,
+              b.expPay,
+              b.expUnit,
+              b.expClip,
+              b.minCents,
+              b.maxCents,
+              b.minHits,
+              b.maxHits,
+              b.legs
+            );
+          }
+        }
+        dp = compactDp;
+      } else {
+        dp = nextDp;
+      }
     }
 
-    let realProfitProb = 0;
-    for (const [amt, p] of dp.entries()) {
-      if (amt >= totalCost - 1e-9) realProfitProb += p;
+    // Partition final winning DP buckets into <= 64 mutually-exclusive combos strictly separated at totalCostCents
+    const rawWinBuckets = Array.from(dp.values()).filter((b) => b.maxCents > 0 && b.prob > 0);
+    let finalBuckets = rawWinBuckets;
+    if (rawWinBuckets.length > 64) {
+      let minWinCents = Infinity;
+      let maxWinCents = 0;
+      for (const b of rawWinBuckets) {
+        if (b.minCents < minWinCents) minWinCents = b.minCents;
+        if (b.maxCents > maxWinCents) maxWinCents = b.maxCents;
+      }
+      const folded = new Map();
+      for (const b of rawWinBuckets) {
+        let fKey;
+        if (b.minCents === minWinCents && b.maxCents === minWinCents) {
+          fKey = 'MIN';
+        } else if (b.minCents === maxWinCents && b.maxCents === maxWinCents) {
+          fKey = 'MAX';
+        } else if (b.maxCents < totalCostCents) {
+          const span = Math.max(1, totalCostCents - minWinCents);
+          const t = Math.min(23, Math.floor(((b.minCents - minWinCents) / span) * 24));
+          fKey = `U${t}`;
+        } else {
+          const span = Math.max(1, maxWinCents - totalCostCents);
+          const t = Math.min(37, Math.floor((Math.log1p(b.minCents - totalCostCents) / Math.log1p(span)) * 38));
+          fKey = `P${t}`;
+        }
+        mergeDpBucket(
+          folded,
+          fKey,
+          b.prob,
+          b.expPay,
+          b.expUnit,
+          b.expClip,
+          b.minCents,
+          b.maxCents,
+          b.minHits,
+          b.maxHits,
+          b.legs
+        );
+      }
+      finalBuckets = Array.from(folded.values());
     }
-    realProfitProb = Math.min(anyWinProb, Math.max(0, realProfitProb));
 
-    const allBestTickets = perMatchDist
-      .map((d) => [...d.winOutcomes].sort((a, b) => b.totalPayout - a.totalPayout)[0])
-      .filter(Boolean)
-      .flatMap((o) => o.tickets);
-    const allHitProb = perMatchDist.reduce(
-      (acc, d) => acc * Math.max(0, 1 - d.missProb),
-      1
-    );
-    const remProb = Math.max(0, anyWinProb - allHitProb);
-    const soloWeight = remProb / Math.max(1, M);
-
-    const combos = [];
-    let scIdx = 0;
-    perMatchDist.forEach((d) => {
-      const worst = [...d.winOutcomes].sort((a, b) => a.totalPayout - b.totalPayout)[0];
-      if (!worst) return;
-      const netProfit = Number((worst.totalPayout - totalCost).toFixed(2));
-      const hitLegs = worst.tickets.flatMap((w) => w.legs || []);
-      combos.push({
-        id: `c-sgl-${scIdx++}`,
-        desc: `单关仅中1场 · ${hitLegs.map((i) => `${i.matchNumStr}[${i.optionLabel}@${Number(i.odds).toFixed(2)}]`).join('+')}`,
-        legs: hitLegs,
-        prob: soloWeight,
-        unitPayout: Number(worst.unitPayout.toFixed(2)),
-        totalPayout: Number(worst.totalPayout.toFixed(2)),
-        cappedClipped: Number(worst.cappedClipped.toFixed(2)),
-        netProfit,
-        isUnderwater: netProfit < 0,
-      });
-    });
-    if (allBestTickets.length > 0) {
-      const unitPayout = Number(allBestTickets.reduce((a, w) => a + w.unitPayout, 0).toFixed(2));
-      const totalPayout = Number(allBestTickets.reduce((a, w) => a + w.totalPayout, 0).toFixed(2));
-      const cappedClipped = Number(allBestTickets.reduce((a, w) => a + w.cappedClipped, 0).toFixed(2));
-      const netProfit = Number((totalPayout - totalCost).toFixed(2));
-      const hitLegs = allBestTickets.flatMap((w) => w.legs || []);
-      combos.push({
-        id: `c-sgl-all`,
-        desc: `单关${M}场全红(${allBestTickets.length}注齐中)`,
-        legs: hitLegs,
-        prob: allHitProb,
+    finalBuckets.sort((a, b) => a.expPay / a.prob - b.expPay / b.prob);
+    const combos = finalBuckets.map((b, idx) => {
+      const isSingleton = b.minCents === b.maxCents;
+      const totalPayout = isSingleton ? b.minCents / 100 : b.expPay / b.prob;
+      const unitPayout = b.expUnit / b.prob;
+      const cappedClipped = b.expClip / b.prob;
+      const isUnderwater = b.maxCents < totalCostCents;
+      const netProfit = totalPayout - totalCost;
+      const hitDesc =
+        b.minHits === M && b.maxHits === M
+          ? `单关${M}场全红(${b.legs.length}注齐中)`
+          : b.minHits === 1 && b.maxHits === 1 && isSingleton
+            ? `单关仅中1场 · ${b.legs
+                .slice(0, 4)
+                .map((i) => `${i.matchNumStr}[${i.optionLabel}@${Number(i.odds).toFixed(2)}]`)
+                .join('+')}`
+            : b.minHits === b.maxHits
+              ? `单关命中${b.minHits}场 · 派奖${isSingleton ? `¥${totalPayout.toFixed(2)}` : `区间 ¥${(b.minCents / 100).toFixed(2)}~¥${(b.maxCents / 100).toFixed(2)}`}`
+              : `单关命中${b.minHits}~${b.maxHits}场 · 派奖区间 ¥${(b.minCents / 100).toFixed(2)}~¥${(b.maxCents / 100).toFixed(2)}`;
+      return {
+        id: `c-sgl-${idx}`,
+        desc: hitDesc,
+        legs: b.legs,
+        prob: b.prob,
         unitPayout,
         totalPayout,
         cappedClipped,
         netProfit,
-        isUnderwater: netProfit < 0,
-      });
-    }
-    combos.sort((a, b) => a.totalPayout - b.totalPayout);
-    const minPayout = combos[0]?.totalPayout ?? 0;
-    const maxPayout = combos[combos.length - 1]?.totalPayout ?? 0;
+        isUnderwater,
+      };
+    });
+
+    const anyWinProb = Math.min(
+      1,
+      Math.max(0, combos.reduce((acc, c) => acc + c.prob, 0))
+    );
+    const realProfitProb = Math.min(
+      anyWinProb,
+      Math.max(
+        0,
+        combos.filter((c) => !c.isUnderwater).reduce((acc, c) => acc + c.prob, 0)
+      )
+    );
+    const minPayout = combos.length > 0 ? Math.min(...finalBuckets.map((b) => b.minCents)) / 100 : 0;
+    const maxPayout = combos.length > 0 ? Math.max(...finalBuckets.map((b) => b.maxCents)) / 100 : 0;
+    const expectedReturn = combos.reduce((acc, c) => acc + c.prob * c.totalPayout, 0);
+    const expectedValueRate = totalCost > 0 ? (expectedReturn - totalCost) / totalCost : 0;
     const underwaterCount = combos.filter((c) => c.isUnderwater).length;
-    const underwaterShareOfWins = anyWinProb > 0 ? Math.max(0, (anyWinProb - realProfitProb) / anyWinProb) : 0;
+    const underwaterProbSum = combos
+      .filter((c) => c.isUnderwater)
+      .reduce((acc, c) => acc + c.prob, 0);
+    const underwaterShareOfWins =
+      anyWinProb > 0 ? Math.min(1, Math.max(0, underwaterProbSum / anyWinProb)) : 0;
+
+    const byProbDesc = [...combos].sort((a, b) => b.prob - a.prob);
+    const topHalf = byProbDesc.slice(0, Math.max(1, Math.ceil(byProbDesc.length * 0.6)));
+    const rawLikelyMin = topHalf.length ? Math.min(...topHalf.map((c) => c.totalPayout)) : 0;
+    const rawLikelyMax = topHalf.length ? Math.max(...topHalf.map((c) => c.totalPayout)) : 0;
+    const likelyMin = combos.length ? Math.max(minPayout, rawLikelyMin) : 0;
+    const likelyMax = combos.length ? Math.min(maxPayout, Math.max(likelyMin, rawLikelyMax)) : 0;
+
     return {
       combos,
       anyWinProb,
@@ -1693,16 +1880,16 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
       minPayout,
       maxPayout,
       expectedReturn,
-      expectedValueRate: totalCost > 0 ? (expectedReturn - totalCost) / totalCost : 0,
+      expectedValueRate,
       underwaterCount,
       underwaterShareOfWins,
-      likelyRange: [minPayout, maxPayout],
+      likelyRange: [likelyMin, likelyMax],
     };
   }
 
-  // Compress per-match quotient states ONLY if ultra-wide multi-select exceeds 16,384 joint states
+  // Compress per-match quotient states if ultra-wide multi-select or M > 8 non-single exceeds 16,384 joint states
   let evalQuotient = quotientByMatch;
-  if (prodSize > 16_384) {
+  if (prodSize > 16_384 || (M > 8 && !isAllSingleTickets)) {
     evalQuotient = quotientByMatch.map((qStates, m) => {
       const missStates = qStates.filter((q) => q.hitSet.size === 0);
       const winStates = qStates.filter((q) => q.hitSet.size > 0);
@@ -1728,6 +1915,41 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
       ];
       return compressed;
     });
+
+    const calcEvalProd = (arr) => {
+      let p = 1;
+      for (let i = 0; i < arr.length; i++) {
+        p *= arr[i].length;
+        if (p > 1_000_000) return p;
+      }
+      return p;
+    };
+    let curProd = calcEvalProd(evalQuotient);
+    for (let m = M - 1; m >= 0 && curProd > 16_384; m--) {
+      const qs = evalQuotient[m];
+      const missProb = qs.filter((q) => q.hitSet.size === 0).reduce((a, q) => a + q.prob, 0);
+      const wins = qs.filter((q) => q.hitSet.size > 0);
+      if (wins.length >= 2) {
+        const winProbSum = wins.reduce((a, q) => a + q.prob, 0);
+        const repWin = [...wins].sort((a, b) => b.prob - a.prob)[0];
+        evalQuotient[m] =
+          missProb > 0
+            ? [
+                { prob: missProb, hitSet: new Set() },
+                { prob: winProbSum, hitSet: repWin.hitSet },
+              ]
+            : [{ prob: 1, hitSet: repWin.hitSet }];
+        curProd = calcEvalProd(evalQuotient);
+      }
+    }
+    for (let m = M - 1; m >= 0 && curProd > 16_384; m--) {
+      const qs = evalQuotient[m];
+      if (qs.length > 1) {
+        const rep = [...qs].sort((a, b) => b.prob - a.prob)[0];
+        evalQuotient[m] = [{ prob: 1, hitSet: rep.hitSet }];
+        curProd = calcEvalProd(evalQuotient);
+      }
+    }
   }
 
   const formatBucketCombo = (winningTickets, prob, idx) => {
@@ -1803,8 +2025,13 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
       return arr;
     });
 
+    const MAX_DFS_NODES = 65_536;
+    const MAX_WIN_BUCKETS = 4_096;
+    let visitedNodes = 0;
+    let overflowMask = null;
     const winBuckets = new Map();
     const walk32 = (m, curProb, aliveMask) => {
+      if (++visitedNodes > MAX_DFS_NODES) return;
       const qStates = evalQuotient[m];
       const cArr = compatMask[m];
       const isLast = m === M - 1;
@@ -1814,7 +2041,14 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
         const nextProb = curProb * qStates[s].prob;
         if (isLast) {
           const uMask = nextMask >>> 0;
-          winBuckets.set(uMask, (winBuckets.get(uMask) ?? 0) + nextProb);
+          if (winBuckets.has(uMask)) {
+            winBuckets.set(uMask, winBuckets.get(uMask) + nextProb);
+          } else if (winBuckets.size < MAX_WIN_BUCKETS) {
+            winBuckets.set(uMask, nextProb);
+            if (overflowMask === null) overflowMask = uMask;
+          } else if (overflowMask !== null) {
+            winBuckets.set(overflowMask, (winBuckets.get(overflowMask) ?? 0) + nextProb);
+          }
         } else {
           walk32(m + 1, nextProb, nextMask);
         }
@@ -1852,8 +2086,13 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
       depthBufs[0][k >>> 5] |= 1 << (k & 31);
     }
 
+    const MAX_DFS_NODES = 65_536;
+    const MAX_WIN_BUCKETS = 4_096;
+    let visitedNodes = 0;
+    let overflowKey = null;
     const winBuckets = new Map();
     const walkWords = (m, curProb) => {
+      if (++visitedNodes > MAX_DFS_NODES) return;
       const prevWords = depthBufs[m];
       const nextWords = depthBufs[m + 1];
       const qStates = evalQuotient[m];
@@ -1875,8 +2114,14 @@ function evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches, matchAto
             key += w === 0 ? nextWords[w].toString(36) : `_${nextWords[w].toString(36)}`;
           }
           const prev = winBuckets.get(key);
-          if (prev) prev.prob += nextProb;
-          else winBuckets.set(key, { words: new Uint32Array(nextWords), prob: nextProb });
+          if (prev) {
+            prev.prob += nextProb;
+          } else if (winBuckets.size < MAX_WIN_BUCKETS) {
+            winBuckets.set(key, { words: new Uint32Array(nextWords), prob: nextProb });
+            if (overflowKey === null) overflowKey = key;
+          } else if (overflowKey !== null) {
+            winBuckets.get(overflowKey).prob += nextProb;
+          }
         } else {
           walkWords(m + 1, nextProb);
         }
@@ -2028,20 +2273,188 @@ function tiltAtomicProbsBySubjectiveDelta(baseProbs, legsOnMatch, goalLineNum, s
   return out;
 }
 
-function computeShrunkSubPoolScan(calPools, coherent, sellingPoolCount) {
-  if (!coherent || sellingPoolCount < 2) {
-    return '单池独立开售：已启用非线性去水校准，暂无跨盘比价基准';
+function computeEquivalentArbitrages(m) {
+  const arbitrages = [];
+  if (!m?.pools) return arbitrages;
+
+  const ttgSelling =
+    m.pools.TTG?.selling !== false &&
+    Array.isArray(m.pools.TTG?.options) &&
+    m.pools.TTG.options.length > 0;
+  const crsSelling =
+    m.pools.CRS?.selling !== false &&
+    Array.isArray(m.pools.CRS?.options) &&
+    m.pools.CRS.options.length > 0;
+  if (ttgSelling && crsSelling) {
+    const ttg0 = m.pools.TTG.options.find((o) => o.key === 's0');
+    const crs00 = m.pools.CRS.options.find((o) => o.key === '0:0' || o.label === '0:0');
+    if (ttg0 && crs00 && ttg0.odds > 0 && crs00.odds > 0 && Math.abs(ttg0.odds - crs00.odds) >= 0.15) {
+      const ttgBetter = ttg0.odds > crs00.odds;
+      const hi = ttgBetter ? ttg0.odds : crs00.odds;
+      const lo = ttgBetter ? crs00.odds : ttg0.odds;
+      const edge = ((hi - lo) / lo) * 100;
+      const betterPicks = [
+        ttgBetter ? { poolCode: 'TTG', optionKey: 's0' } : { poolCode: 'CRS', optionKey: '0:0' },
+      ];
+      const worsePicks = [
+        ttgBetter ? { poolCode: 'CRS', optionKey: '0:0' } : { poolCode: 'TTG', optionKey: 's0' },
+      ];
+      arbitrages.push({
+        matchId: m.id,
+        title: '0:0 闷平同义差价',
+        betterChoice: ttgBetter ? `总进球·0球(@${hi.toFixed(2)})` : `比分·0:0(@${hi.toFixed(2)})`,
+        worseChoice: ttgBetter ? `比分·0:0(@${lo.toFixed(2)})` : `总进球·0球(@${lo.toFixed(2)})`,
+        edgePct: Number(edge.toFixed(1)),
+        detail: `两者100%同义！选【${ttgBetter ? '总进球0球' : '比分0:0'}】白多赚 +${edge.toFixed(1)}% 奖金`,
+        betterPicks,
+        worsePicks,
+        poolCode: betterPicks[0].poolCode,
+        optionKey: betterPicks[0].optionKey,
+      });
+    }
+  }
+
+  const hadSelling =
+    m.pools.HAD?.selling !== false &&
+    Array.isArray(m.pools.HAD?.options) &&
+    m.pools.HAD.options.length > 0;
+  const hhadSelling =
+    m.pools.HHAD?.selling !== false &&
+    Array.isArray(m.pools.HHAD?.options) &&
+    m.pools.HHAD.options.length > 0;
+  if (hadSelling && hhadSelling) {
+    const goalLine = String(m.pools.HHAD?.goalLine ?? '-1');
+    const hadH = m.pools.HAD.options.find((o) => o.key === 'h');
+    const hadD = m.pools.HAD.options.find((o) => o.key === 'd');
+    const hadA = m.pools.HAD.options.find((o) => o.key === 'a');
+    if ((goalLine === '-1' || Number(goalLine) === -1) && hadD?.odds > 0 && hadA?.odds > 0) {
+      const hhadAway = m.pools.HHAD.options.find((o) => o.key === 'ha');
+      const synDouble = 1 / (1 / hadD.odds + 1 / hadA.odds);
+      if (hhadAway?.odds > 0 && Math.abs(hhadAway.odds - synDouble) >= 0.02) {
+        const hhadBetter = hhadAway.odds >= synDouble;
+        const hi = Math.max(hhadAway.odds, synDouble);
+        const lo = Math.min(hhadAway.odds, synDouble);
+        const edge = ((hi - lo) / lo) * 100;
+        const betterPicks = hhadBetter
+          ? [{ poolCode: 'HHAD', optionKey: 'ha' }]
+          : [
+              { poolCode: 'HAD', optionKey: 'd' },
+              { poolCode: 'HAD', optionKey: 'a' },
+            ];
+        const worsePicks = hhadBetter
+          ? [
+              { poolCode: 'HAD', optionKey: 'd' },
+              { poolCode: 'HAD', optionKey: 'a' },
+            ]
+          : [{ poolCode: 'HHAD', optionKey: 'ha' }];
+        arbitrages.push({
+          matchId: m.id,
+          title: `${m.away}受让不败同义比价`,
+          betterChoice: hhadBetter
+            ? `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})`
+            : `胜平负[平+客胜]配平(@${synDouble.toFixed(2)})`,
+          worseChoice: hhadBetter
+            ? `胜平负[平+客胜]双选(@${synDouble.toFixed(2)})`
+            : `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})`,
+          edgePct: Number(edge.toFixed(1)),
+          detail: hhadBetter
+            ? `直接买单选「让负@${hhadAway.odds.toFixed(2)}」比双选「平+负(合成等效水位@${synDouble.toFixed(2)})」多赚 +${edge.toFixed(1)}% 且免凑整损耗！`
+            : `配平「平+客胜(合成等效水位@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%！`,
+          betterPicks,
+          worsePicks,
+          poolCode: betterPicks[0].poolCode,
+          optionKey: betterPicks[0].optionKey,
+        });
+      }
+    } else if ((goalLine === '+1' || Number(goalLine) === 1) && hadH?.odds > 0 && hadD?.odds > 0) {
+      const hhadHome = m.pools.HHAD.options.find((o) => o.key === 'hh');
+      const synDouble = 1 / (1 / hadH.odds + 1 / hadD.odds);
+      if (hhadHome?.odds > 0 && Math.abs(hhadHome.odds - synDouble) >= 0.02) {
+        const hhadBetter = hhadHome.odds >= synDouble;
+        const hi = Math.max(hhadHome.odds, synDouble);
+        const lo = Math.min(hhadHome.odds, synDouble);
+        const edge = ((hi - lo) / lo) * 100;
+        const betterPicks = hhadBetter
+          ? [{ poolCode: 'HHAD', optionKey: 'hh' }]
+          : [
+              { poolCode: 'HAD', optionKey: 'h' },
+              { poolCode: 'HAD', optionKey: 'd' },
+            ];
+        const worsePicks = hhadBetter
+          ? [
+              { poolCode: 'HAD', optionKey: 'h' },
+              { poolCode: 'HAD', optionKey: 'd' },
+            ]
+          : [{ poolCode: 'HHAD', optionKey: 'hh' }];
+        arbitrages.push({
+          matchId: m.id,
+          title: `${m.home}不败同义比价`,
+          betterChoice: hhadBetter
+            ? `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})`
+            : `胜平负[胜+平]配平(@${synDouble.toFixed(2)})`,
+          worseChoice: hhadBetter
+            ? `胜平负[胜+平]双选(@${synDouble.toFixed(2)})`
+            : `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})`,
+          edgePct: Number(edge.toFixed(1)),
+          detail: hhadBetter
+            ? `单选「让胜@${hhadHome.odds.toFixed(2)}」比双选「主胜+平(合成等效水位@${synDouble.toFixed(2)})」高 +${edge.toFixed(1)}% 且仅需1注！`
+            : `配平「主胜+平」合成等效水位高出 +${edge.toFixed(1)}%！`,
+          betterPicks,
+          worsePicks,
+          poolCode: betterPicks[0].poolCode,
+          optionKey: betterPicks[0].optionKey,
+        });
+      }
+    }
+  }
+
+  return arbitrages;
+}
+
+function computeOptionShrunkAlpha(odds, dcProb, shinProb) {
+  const cleanOdds = Number(odds);
+  if (!(cleanOdds > 1.01 && dcProb > 0)) {
+    return { pShrunk: 0, expectedReturn: 0 };
+  }
+  const baseShin = typeof shinProb === 'number' && shinProb > 0 ? shinProb : dcProb;
+  const excessOdds = Math.max(0, cleanOdds - 1.5);
+  const wShrink = 0.25 + 0.5 * (excessOdds / (excessOdds + 6.0));
+  const pRaw = (1 - wShrink) * dcProb + wShrink * baseShin;
+  const maxRatio = cleanOdds > 25 ? 1.08 : cleanOdds > 12 ? 1.2 : 1.38;
+  const pShrunk = Math.min(pRaw, baseShin * maxRatio);
+  return {
+    wShrink,
+    pShrunk,
+    expectedReturn: cleanOdds * pShrunk,
+  };
+}
+
+/**
+ * 统一单场跨盘错价洼地扫描器（同时驱动 analyzeMatchMicroQuant.alphaScanSummary 与 Slot ④ alpha-radar）：
+ * 1. 对细分玩法（HAFU / TTG / CRS）执行向单池 Shin 的经验贝叶斯收缩，对比同场最低抽水主盘基准 R_main(m)（绝不让 HAD/HHAD 自收缩刷伪差值）；
+ * 2. 显式纳入同义错价替换（arbitrages 中 edgePct >= 3.0% 的单选或胜平负双选配平入口），受限于出票合法性与雷达锚定方向一致性。
+ */
+function scanMatchAlphaCandidates(match, anchorList = null, precomputedCal = null) {
+  const cal = precomputedCal ?? getCachedMatchCalibration(match);
+  if (!cal) {
+    return {
+      coherent: false,
+      sellingPoolCount: 0,
+      mainPayoutRatio: 0.88,
+      maxDelta: -Infinity,
+      candidates: [],
+    };
   }
 
   let mainPayoutRatio = 0;
   for (const mainCode of ['HAD', 'HHAD']) {
-    const p = calPools[mainCode];
+    const p = cal.pools[mainCode];
     if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
       if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
     }
   }
   if (mainPayoutRatio <= 0) {
-    for (const p of Object.values(calPools)) {
+    for (const p of Object.values(cal.pools)) {
       if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
         if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
       }
@@ -2049,48 +2462,241 @@ function computeShrunkSubPoolScan(calPools, coherent, sellingPoolCount) {
   }
   if (mainPayoutRatio <= 0) mainPayoutRatio = 0.88;
 
-  let bestHit = null;
-  let bestDelta = -Infinity;
-  for (const subCode of ['HAFU', 'TTG', 'CRS']) {
-    const pool = calPools[subCode];
-    if (!pool || pool.selling === false || !Array.isArray(pool.options)) continue;
-    for (const opt of pool.options) {
-      if (!(Number.isFinite(opt.odds) && opt.odds > 0 && opt.fairProb > 0)) continue;
-      const shinP = typeof opt.shinProb === 'number' && opt.shinProb > 0 ? opt.shinProb : opt.fairProb;
-      const wDc = 6.0 / (6.0 + Math.max(0, opt.odds - 2.0));
-      const pBlend = wDc * opt.fairProb + (1 - wDc) * shinP;
-      const returnCap =
-        opt.odds > 28
-          ? mainPayoutRatio + 0.025
-          : opt.odds > 14
-            ? Math.min(1.05, mainPayoutRatio + 0.075)
-            : 1.18;
-      const shrunkReturn = Math.min(returnCap, opt.odds * pBlend);
-      const delta = shrunkReturn - mainPayoutRatio;
-      if (delta > bestDelta) {
-        bestDelta = delta;
-        bestHit = {
-          poolName: pool.name || subCode,
-          label: opt.label || opt.key,
-          odds: opt.odds,
-          shrunkReturn,
-          delta,
-        };
+  if (!cal.coherent || cal.sellingPoolCount < 2) {
+    return {
+      coherent: cal.coherent,
+      sellingPoolCount: cal.sellingPoolCount,
+      mainPayoutRatio,
+      maxDelta: -Infinity,
+      candidates: [],
+    };
+  }
+
+  const atomicLen = ATOMIC_TEMPLATES.length;
+  const calAtomic = new Float64Array(atomicLen);
+  for (let i = 0; i < atomicLen; i++) calAtomic[i] = cal.atomicStates[i].prob;
+  const gl = resolveGoalLineNum(match);
+
+  let ancMask = null;
+  let ancMass = 0;
+  if (Array.isArray(anchorList) && anchorList.length > 0) {
+    ancMask = new Uint8Array(atomicLen);
+    for (let i = 0; i < atomicLen; i++) {
+      const tpl = ATOMIC_TEMPLATES[i];
+      for (const a of anchorList) {
+        if (doesOptionHitAtomicTemplate(a.poolCode, a.optionKey, a.optionLabel, gl, tpl)) {
+          ancMask[i] = 1;
+          ancMass += calAtomic[i];
+          break;
+        }
       }
     }
   }
 
-  if (bestHit && (bestHit.delta >= 0.03 || bestHit.shrunkReturn > 1.0)) {
-    if (bestHit.shrunkReturn > 1.0) {
-      return `检出跨盘绝对正期望洼地：【${bestHit.poolName}·${bestHit.label}@${bestHit.odds.toFixed(2)}】收缩期望返还 ${(bestHit.shrunkReturn * 100).toFixed(1)}%（跑赢主盘 +${(bestHit.delta * 100).toFixed(1)}%）`;
+  const bySig = new Map();
+  let maxDelta = -Infinity;
+
+  // 1. Empirical-Bayes shrinkage scan strictly across sub-pools (HAFU, TTG, CRS) vs R_main(m)
+  for (const subCode of ['HAFU', 'TTG', 'CRS']) {
+    const pool = cal.pools[subCode];
+    if (!pool || pool.selling === false || !Array.isArray(pool.options) || pool.options.length === 0) {
+      continue;
     }
-    return `检出跨盘错价洼地：【${bestHit.poolName}·${bestHit.label}@${bestHit.odds.toFixed(2)}】收缩期望返还 ${(bestHit.shrunkReturn * 100).toFixed(1)}%（较主盘少亏 +${(bestHit.delta * 100).toFixed(1)}%）`;
+    for (const opt of pool.options) {
+      if (!(Number.isFinite(opt.odds) && opt.odds > 1.01)) continue;
+      if (ancMask) {
+        let optMass = 0;
+        let overlapMass = 0;
+        for (let i = 0; i < atomicLen; i++) {
+          if (doesOptionHitAtomicTemplate(subCode, opt.key, opt.label, gl, ATOMIC_TEMPLATES[i])) {
+            optMass += calAtomic[i];
+            if (ancMask[i]) overlapMass += calAtomic[i];
+          }
+        }
+        if (!(optMass > 0 && overlapMass / optMass >= 0.5)) continue;
+      }
+
+      const dcProb = sumOptionProbOnAtomic(calAtomic, subCode, opt.key, opt.label, gl);
+      const shinProb = opt.shinProb ?? dcProb;
+      const { pShrunk, expectedReturn } = computeOptionShrunkAlpha(opt.odds, dcProb, shinProb);
+      const delta = expectedReturn - mainPayoutRatio;
+      if (delta > maxDelta) maxDelta = delta;
+
+      if (delta >= 0.03 || expectedReturn > 1.0) {
+        const sig = `${subCode}:${opt.key}`;
+        bySig.set(sig, {
+          kind: 'sub-pool',
+          sig,
+          matchId: match.id,
+          match,
+          poolCode: subCode,
+          poolName: pool.name || subCode,
+          singleAllowed: Boolean(pool.single),
+          optionKey: opt.key,
+          optionLabel: opt.label || opt.key,
+          odds: opt.odds,
+          betterPicks: [{ poolCode: subCode, optionKey: opt.key }],
+          pShrunk,
+          expectedReturn,
+          mainExcess: delta,
+          arbEdgePct: 0,
+          arbBetterChoice: null,
+          arbWorseChoice: null,
+          delta,
+          isPositiveEv: expectedReturn > 1.0,
+        });
+      }
+    }
   }
 
-  const maxDeltaText = Number.isFinite(bestDelta)
-    ? `${bestDelta >= 0 ? '+' : ''}${(bestDelta * 100).toFixed(1)}%`
+  // 2. Equivalent Bet Arbitrage (同义错价替换) scan: include arbitrages with edgePct >= 3.0%
+  const arbitrages = computeEquivalentArbitrages(match);
+  for (const arb of arbitrages) {
+    if (!Array.isArray(arb.betterPicks) || arb.betterPicks.length === 0) continue;
+    let unionMass = 0;
+    let overlapMass = 0;
+    for (let i = 0; i < atomicLen; i++) {
+      const tpl = ATOMIC_TEMPLATES[i];
+      let hitsArb = false;
+      for (const bp of arb.betterPicks) {
+        if (doesOptionHitAtomicTemplate(bp.poolCode, bp.optionKey, bp.optionKey, gl, tpl)) {
+          hitsArb = true;
+          break;
+        }
+      }
+      if (hitsArb) {
+        unionMass += calAtomic[i];
+        if (ancMask && ancMask[i]) overlapMass += calAtomic[i];
+      }
+    }
+    if (ancMask) {
+      const isSubsetCompatible = unionMass > 0 && overlapMass / unionMass >= 0.5;
+      const isSupersetWithoutOppositeWin = ancMass > 0 && overlapMass / ancMass >= 0.999;
+      if (!isSubsetCompatible && !isSupersetWithoutOppositeWin) continue;
+    }
+
+    const arbEdge = arb.edgePct / 100;
+    if (arbEdge > maxDelta) maxDelta = arbEdge;
+    if (arb.edgePct < 3.0) continue;
+
+    if (arb.betterPicks.length === 1) {
+      const bp = arb.betterPicks[0];
+      const pool = cal.pools[bp.poolCode];
+      const opt = pool?.options?.find((o) => o.key === bp.optionKey || o.label === bp.optionKey);
+      if (!pool || pool.selling === false || !opt || !(opt.odds > 1.01)) continue;
+      const dcProb = sumOptionProbOnAtomic(calAtomic, bp.poolCode, opt.key, opt.label, gl);
+      const isMain = bp.poolCode === 'HAD' || bp.poolCode === 'HHAD';
+      const pEval = isMain
+        ? dcProb
+        : computeOptionShrunkAlpha(opt.odds, dcProb, opt.shinProb ?? dcProb).pShrunk;
+      const expectedReturn = opt.odds * pEval;
+      const mainExcess = expectedReturn - mainPayoutRatio;
+      const sig = `${bp.poolCode}:${opt.key}`;
+      const existing = bySig.get(sig);
+      if (existing) {
+        existing.arbEdgePct = Math.max(existing.arbEdgePct, arb.edgePct);
+        existing.arbBetterChoice = arb.betterChoice;
+        existing.arbWorseChoice = arb.worseChoice;
+        existing.delta = Math.max(existing.delta, arbEdge);
+      } else {
+        bySig.set(sig, {
+          kind: 'equivalent-arb',
+          sig,
+          matchId: match.id,
+          match,
+          poolCode: bp.poolCode,
+          poolName: pool.name || bp.poolCode,
+          singleAllowed: Boolean(pool.single),
+          optionKey: opt.key,
+          optionLabel: opt.label || opt.key,
+          odds: opt.odds,
+          betterPicks: [{ poolCode: bp.poolCode, optionKey: opt.key }],
+          pShrunk: pEval,
+          expectedReturn,
+          mainExcess,
+          arbEdgePct: arb.edgePct,
+          arbBetterChoice: arb.betterChoice,
+          arbWorseChoice: arb.worseChoice,
+          delta: Math.max(mainExcess, arbEdge),
+          isPositiveEv: expectedReturn > 1.0,
+        });
+      }
+    } else if (arb.betterPicks.length === 2) {
+      const pool = cal.pools[arb.betterPicks[0].poolCode];
+      const opt0 = pool?.options?.find((o) => o.key === arb.betterPicks[0].optionKey);
+      const opt1 = pool?.options?.find((o) => o.key === arb.betterPicks[1].optionKey);
+      if (
+        !pool ||
+        pool.selling === false ||
+        !opt0 ||
+        !opt1 ||
+        !(opt0.odds > 1.01 && opt1.odds > 1.01)
+      ) {
+        continue;
+      }
+      const synOdds = 1 / (1 / opt0.odds + 1 / opt1.odds);
+      const expectedReturn = synOdds * unionMass;
+      const mainExcess = expectedReturn - mainPayoutRatio;
+      const sig = arb.betterPicks.map((bp) => `${bp.poolCode}:${bp.optionKey}`).join('+');
+      bySig.set(sig, {
+        kind: 'equivalent-arb',
+        sig,
+        matchId: match.id,
+        match,
+        poolCode: arb.betterPicks[0].poolCode,
+        poolName: pool.name || arb.betterPicks[0].poolCode,
+        singleAllowed: Boolean(pool.single),
+        optionKey: opt0.key,
+        optionLabel: `${opt0.label}+${opt1.label}配平`,
+        odds: synOdds,
+        betterPicks: arb.betterPicks.map((bp) => ({ ...bp })),
+        pShrunk: unionMass,
+        expectedReturn,
+        mainExcess,
+        arbEdgePct: arb.edgePct,
+        arbBetterChoice: arb.betterChoice,
+        arbWorseChoice: arb.worseChoice,
+        delta: Math.max(mainExcess, arbEdge),
+        isPositiveEv: expectedReturn > 1.0,
+      });
+    }
+  }
+
+  const candidates = Array.from(bySig.values());
+  candidates.sort(
+    (a, b) =>
+      Number(b.isPositiveEv) - Number(a.isPositiveEv) ||
+      Number(b.mainExcess >= 0.03) - Number(a.mainExcess >= 0.03) ||
+      b.expectedReturn - a.expectedReturn ||
+      b.delta - a.delta
+  );
+  return {
+    coherent: cal.coherent,
+    sellingPoolCount: cal.sellingPoolCount,
+    mainPayoutRatio,
+    maxDelta,
+    candidates,
+  };
+}
+
+function formatMatchAlphaScanSummary(scan) {
+  if (!scan.coherent || scan.sellingPoolCount < 2) {
+    return '单池独立开售：已启用非线性去水校准，暂无跨盘比价基准';
+  }
+  if (scan.candidates.length > 0) {
+    const best = scan.candidates[0];
+    if (best.isPositiveEv) {
+      return `检出跨盘绝对正期望洼地：【${best.poolName}·${best.optionLabel}@${best.odds.toFixed(2)}】收缩期望返还 ${(best.expectedReturn * 100).toFixed(1)}%（跑赢主盘 +${(best.delta * 100).toFixed(1)}%）`;
+    }
+    if (best.kind === 'equivalent-arb' && !(best.mainExcess >= 0.03)) {
+      return `检出跨盘同义错价洼地：【${best.arbBetterChoice || `${best.poolName}·${best.optionLabel}@${best.odds.toFixed(2)}`}】较同义入口多赚 +${best.arbEdgePct.toFixed(1)}%（≥ +3.0% 省钱差价）`;
+    }
+    return `检出跨盘错价洼地：【${best.poolName}·${best.optionLabel}@${best.odds.toFixed(2)}】收缩期望返还 ${(best.expectedReturn * 100).toFixed(1)}%（较主盘少亏 +${(best.mainExcess * 100).toFixed(1)}%）`;
+  }
+  const maxDeltaText = Number.isFinite(scan.maxDelta)
+    ? `${scan.maxDelta >= 0 ? '+' : ''}${(scan.maxDelta * 100).toFixed(1)}%`
     : '0.0%';
-  return `五池定价严密：各细分玩法经收缩校准后均未跑赢主盘基准（最高偏离 ${maxDeltaText} < +3.0%），无跨盘错价洼地`;
+  return `五池定价严密：各细分玩法与同义盘口经收缩校准后均未达 +3.0% 门禁（最高偏离 ${maxDeltaText} < +3.0%），无跨盘错价洼地`;
 }
 
 /** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + 比赛节奏相关性 + 跨盘错价扫描） */
@@ -2160,121 +2766,11 @@ export function analyzeMatchMicroQuant(m, precomputedCal) {
   const halfDrawProb =
     cal.poolProbs.HAFU.dh + cal.poolProbs.HAFU.dd + cal.poolProbs.HAFU.da;
 
-  const arbitrages = [];
-
-  const ttg0 = m.pools.TTG.options.find((o) => o.key === 's0');
-  const crs00 = m.pools.CRS.options.find((o) => o.key === '0:0');
-  if (ttg0 && crs00 && Math.abs(ttg0.odds - crs00.odds) >= 0.15) {
-    const ttgBetter = ttg0.odds > crs00.odds;
-    const hi = ttgBetter ? ttg0.odds : crs00.odds;
-    const lo = ttgBetter ? crs00.odds : ttg0.odds;
-    const edge = ((hi - lo) / lo) * 100;
-    const betterPicks = [
-      ttgBetter ? { poolCode: 'TTG', optionKey: 's0' } : { poolCode: 'CRS', optionKey: '0:0' },
-    ];
-    const worsePicks = [
-      ttgBetter ? { poolCode: 'CRS', optionKey: '0:0' } : { poolCode: 'TTG', optionKey: 's0' },
-    ];
-    arbitrages.push({
-      matchId: m.id,
-      title: '0:0 闷平同义差价',
-      betterChoice: ttgBetter ? `总进球·0球(@${hi.toFixed(2)})` : `比分·0:0(@${hi.toFixed(2)})`,
-      worseChoice: ttgBetter ? `比分·0:0(@${lo.toFixed(2)})` : `总进球·0球(@${lo.toFixed(2)})`,
-      edgePct: Number(edge.toFixed(1)),
-      detail: `两者100%同义！选【${ttgBetter ? '总进球0球' : '比分0:0'}】白多赚 +${edge.toFixed(1)}% 奖金`,
-      betterPicks,
-      worsePicks,
-      poolCode: betterPicks[0].poolCode,
-      optionKey: betterPicks[0].optionKey,
-    });
-  }
-
-  const hadH = m.pools.HAD.options.find((o) => o.key === 'h');
-  const hadD = m.pools.HAD.options.find((o) => o.key === 'd');
-  const hadA = m.pools.HAD.options.find((o) => o.key === 'a');
-  if (goalLine === '-1' && hadD && hadA) {
-    const hhadAway = m.pools.HHAD.options.find((o) => o.key === 'ha');
-    const synDouble = 1 / (1 / hadD.odds + 1 / hadA.odds);
-    if (hhadAway && Math.abs(hhadAway.odds - synDouble) >= 0.02) {
-      const hhadBetter = hhadAway.odds >= synDouble;
-      const hi = Math.max(hhadAway.odds, synDouble);
-      const lo = Math.min(hhadAway.odds, synDouble);
-      const edge = ((hi - lo) / lo) * 100;
-      const betterPicks = hhadBetter
-        ? [{ poolCode: 'HHAD', optionKey: 'ha' }]
-        : [
-            { poolCode: 'HAD', optionKey: 'd' },
-            { poolCode: 'HAD', optionKey: 'a' },
-          ];
-      const worsePicks = hhadBetter
-        ? [
-            { poolCode: 'HAD', optionKey: 'd' },
-            { poolCode: 'HAD', optionKey: 'a' },
-          ]
-        : [{ poolCode: 'HHAD', optionKey: 'ha' }];
-      arbitrages.push({
-        matchId: m.id,
-        title: `${m.away}受让不败同义比价`,
-        betterChoice: hhadBetter
-          ? `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})`
-          : `胜平负[平+客胜]配平(@${synDouble.toFixed(2)})`,
-        worseChoice: hhadBetter
-          ? `胜平负[平+客胜]双选(@${synDouble.toFixed(2)})`
-          : `让球(-1)·让负(@${hhadAway.odds.toFixed(2)})`,
-        edgePct: Number(edge.toFixed(1)),
-        detail: hhadBetter
-          ? `直接买单选「让负@${hhadAway.odds.toFixed(2)}」比双选「平+负(合成等效水位@${synDouble.toFixed(2)})」多赚 +${edge.toFixed(1)}% 且免凑整损耗！`
-          : `配平「平+客胜(合成等效水位@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%！`,
-        betterPicks,
-        worsePicks,
-        poolCode: betterPicks[0].poolCode,
-        optionKey: betterPicks[0].optionKey,
-      });
-    }
-  } else if (goalLine === '+1' && hadH && hadD) {
-    const hhadHome = m.pools.HHAD.options.find((o) => o.key === 'hh');
-    const synDouble = 1 / (1 / hadH.odds + 1 / hadD.odds);
-    if (hhadHome && Math.abs(hhadHome.odds - synDouble) >= 0.02) {
-      const hhadBetter = hhadHome.odds >= synDouble;
-      const hi = Math.max(hhadHome.odds, synDouble);
-      const lo = Math.min(hhadHome.odds, synDouble);
-      const edge = ((hi - lo) / lo) * 100;
-      const betterPicks = hhadBetter
-        ? [{ poolCode: 'HHAD', optionKey: 'hh' }]
-        : [
-            { poolCode: 'HAD', optionKey: 'h' },
-            { poolCode: 'HAD', optionKey: 'd' },
-          ];
-      const worsePicks = hhadBetter
-        ? [
-            { poolCode: 'HAD', optionKey: 'h' },
-            { poolCode: 'HAD', optionKey: 'd' },
-          ]
-        : [{ poolCode: 'HHAD', optionKey: 'hh' }];
-      arbitrages.push({
-        matchId: m.id,
-        title: `${m.home}不败同义比价`,
-        betterChoice: hhadBetter
-          ? `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})`
-          : `胜平负[胜+平]配平(@${synDouble.toFixed(2)})`,
-        worseChoice: hhadBetter
-          ? `胜平负[胜+平]双选(@${synDouble.toFixed(2)})`
-          : `让球(+1)·让胜(@${hhadHome.odds.toFixed(2)})`,
-        edgePct: Number(edge.toFixed(1)),
-        detail: hhadBetter
-          ? `单选「让胜@${hhadHome.odds.toFixed(2)}」比双选「主胜+平(合成等效水位@${synDouble.toFixed(2)})」高 +${edge.toFixed(1)}% 且仅需1注！`
-          : `配平「主胜+平」合成等效水位高出 +${edge.toFixed(1)}%！`,
-        betterPicks,
-        worsePicks,
-        poolCode: betterPicks[0].poolCode,
-        optionKey: betterPicks[0].optionKey,
-      });
-    }
-  }
+  const arbitrages = computeEquivalentArbitrages(m);
 
   const droppingOpts = [
-    ...m.pools.HAD.options.filter((o) => o.trend === -1).map((o) => `主盘${o.label}`),
-    ...m.pools.HHAD.options.filter((o) => o.trend === -1).map((o) => o.label),
+    ...(m.pools.HAD?.options ?? []).filter((o) => o.trend === -1).map((o) => `主盘${o.label}`),
+    ...(m.pools.HHAD?.options ?? []).filter((o) => o.trend === -1).map((o) => o.label),
   ];
   const steamSignal =
     droppingOpts.length > 0
@@ -2305,11 +2801,8 @@ export function analyzeMatchMicroQuant(m, precomputedCal) {
       : paceCorrelation >= 0.05
         ? '开放对攻'
         : '均衡节奏';
-  const alphaScanSummary = computeShrunkSubPoolScan(
-    cal.pools,
-    cal.coherent,
-    cal.sellingPoolCount
-  );
+  const alphaScan = scanMatchAlphaCandidates(m, null, cal);
+  const alphaScanSummary = formatMatchAlphaScanSummary(alphaScan);
 
   return {
     homeXG,
@@ -3165,7 +3658,13 @@ function buildBlockedTruthReport({
 }
 
 /** 计算五维真相看板、体彩法定过关矩阵与 6 大防坑雷达（纯数学黑盒，遵循 ADR-0002 & ADR-0007） */
-export function computeTruthReport(rawPicksInput, rawMultiple, matches, passSpec) {
+export function computeTruthReport(
+  rawPicksInput,
+  rawMultiple,
+  matches,
+  passSpec,
+  matchAtomicMap = null
+) {
   const multiple = Math.max(1, Math.min(999, Math.round(Number(rawMultiple) || 1)));
   const picks = (Array.isArray(rawPicksInput) ? rawPicksInput : [])
     .filter(
@@ -3541,7 +4040,12 @@ export function computeTruthReport(rawPicksInput, rawMultiple, matches, passSpec
     };
   });
 
-  const jointEval = evaluateTicketsOnQuotientSpace(ticketRows, totalCost, matches);
+  const jointEval = evaluateTicketsOnQuotientSpace(
+    ticketRows,
+    totalCost,
+    matches,
+    matchAtomicMap
+  );
   const {
     combos,
     anyWinProb,
@@ -3754,20 +4258,13 @@ function repairUnderwaterMultiples(initialMults, unitPayouts, shouldRepair) {
   return mults;
 }
 
+// Genuine C(v, k, t) covering-wheel designs strictly satisfying blocks.length < C(v, k);
+// full C(v, k) combinations (e.g. 3串3, 3串4, 4串4, 4串5, 4串6, 5串5, 5串6, 5串10, 6串6, 6串7, 7串7, 7串8, 8串8, 8串9)
+// are enumerated directly from OFFICIAL_COMBO_PASS_TABLE with baseBets <= 10 and labeled by their official M串N name.
 const COVERING_WHEEL_DESIGNS = {
-  3: [{ name: 'C(3,2,2)', maxK: 2, blocks: [[0, 1], [0, 2], [1, 2]] }],
-  4: [
-    { name: 'C(4,3,3)', maxK: 3, blocks: [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] },
-    { name: 'C(4,2,2)', maxK: 2, blocks: [[0, 1], [0, 2], [0, 3], [1, 2], [1, 3], [2, 3]] },
-  ],
   5: [
     { name: 'C(5,3,4)', maxK: 3, blocks: [[0, 1, 2], [1, 2, 3], [2, 3, 4], [0, 3, 4], [0, 1, 4]] },
     { name: 'C(5,2,3)', maxK: 2, blocks: [[0, 1], [2, 3], [2, 4], [3, 4]] },
-    {
-      name: 'C(5,4,4)',
-      maxK: 4,
-      blocks: [[0, 1, 2, 3], [0, 1, 2, 4], [0, 1, 3, 4], [0, 2, 3, 4], [1, 2, 3, 4]],
-    },
   ],
   6: [
     {
@@ -3780,37 +4277,12 @@ const COVERING_WHEEL_DESIGNS = {
       maxK: 2,
       blocks: [[0, 1], [0, 2], [1, 2], [3, 4], [3, 5], [4, 5]],
     },
-    {
-      name: 'C(6,5,5)',
-      maxK: 5,
-      blocks: [
-        [0, 1, 2, 3, 4],
-        [0, 1, 2, 3, 5],
-        [0, 1, 2, 4, 5],
-        [0, 1, 3, 4, 5],
-        [0, 2, 3, 4, 5],
-        [1, 2, 3, 4, 5],
-      ],
-    },
   ],
   7: [
     {
       name: 'C(7,3,5)',
       maxK: 3,
       blocks: [[0, 1, 3], [1, 2, 4], [2, 3, 5], [3, 4, 6], [0, 4, 5], [1, 5, 6], [0, 2, 6]],
-    },
-    {
-      name: 'C(7,6,6)',
-      maxK: 6,
-      blocks: [
-        [0, 1, 2, 3, 4, 5],
-        [0, 1, 2, 3, 4, 6],
-        [0, 1, 2, 3, 5, 6],
-        [0, 1, 2, 4, 5, 6],
-        [0, 1, 3, 4, 5, 6],
-        [0, 2, 3, 4, 5, 6],
-        [1, 2, 3, 4, 5, 6],
-      ],
     },
   ],
   8: [
@@ -3839,20 +4311,6 @@ const COVERING_WHEEL_DESIGNS = {
         [6, 7, 1],
         [7, 0, 2],
       ].map((b) => [...b].sort((x, y) => x - y)),
-    },
-    {
-      name: 'C(8,7,7)',
-      maxK: 7,
-      blocks: [
-        [0, 1, 2, 3, 4, 5, 6],
-        [0, 1, 2, 3, 4, 5, 7],
-        [0, 1, 2, 3, 4, 6, 7],
-        [0, 1, 2, 3, 5, 6, 7],
-        [0, 1, 2, 4, 5, 6, 7],
-        [0, 1, 3, 4, 5, 6, 7],
-        [0, 2, 3, 4, 5, 6, 7],
-        [1, 2, 3, 4, 5, 6, 7],
-      ],
     },
   ],
 };
@@ -4038,132 +4496,6 @@ function allocateWheelMeanCvar(
   return { lines, missOneReturn };
 }
 
-function computeOptionShrunkAlpha(odds, dcProb, shinProb) {
-  const cleanOdds = Number(odds);
-  if (!(cleanOdds > 1.01 && dcProb > 0)) {
-    return { pShrunk: 0, expectedReturn: 0 };
-  }
-  const baseShin = typeof shinProb === 'number' && shinProb > 0 ? shinProb : dcProb;
-  const excessOdds = Math.max(0, cleanOdds - 1.5);
-  const wShrink = 0.25 + 0.5 * (excessOdds / (excessOdds + 6.0));
-  const pRaw = (1 - wShrink) * dcProb + wShrink * baseShin;
-  const maxRatio = cleanOdds > 25 ? 1.08 : cleanOdds > 12 ? 1.2 : 1.38;
-  const pShrunk = Math.min(pRaw, baseShin * maxRatio);
-  return {
-    wShrink,
-    pShrunk,
-    expectedReturn: cleanOdds * pShrunk,
-  };
-}
-
-function scanMatchAlphaCandidates(match, anchorList = null) {
-  const cal = getCachedMatchCalibration(match);
-  if (!cal) return { mainPayoutRatio: 0.88, candidates: [] };
-
-  let mainPayoutRatio = 0;
-  for (const mainCode of ['HAD', 'HHAD']) {
-    const p = cal.pools[mainCode];
-    if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
-      if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
-    }
-  }
-  if (mainPayoutRatio <= 0) {
-    for (const p of Object.values(cal.pools)) {
-      if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
-        if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
-      }
-    }
-  }
-  if (mainPayoutRatio <= 0) mainPayoutRatio = 0.88;
-
-  const atomicLen = ATOMIC_TEMPLATES.length;
-  const calAtomic = new Float64Array(atomicLen);
-  for (let i = 0; i < atomicLen; i++) calAtomic[i] = cal.atomicStates[i].prob;
-  const gl = resolveGoalLineNum(match);
-
-  let ancMask = null;
-  if (Array.isArray(anchorList) && anchorList.length > 0) {
-    ancMask = new Uint8Array(atomicLen);
-    for (let i = 0; i < atomicLen; i++) {
-      const tpl = ATOMIC_TEMPLATES[i];
-      for (const a of anchorList) {
-        if (doesOptionHitAtomicTemplate(a.poolCode, a.optionKey, a.optionLabel, gl, tpl)) {
-          ancMask[i] = 1;
-          break;
-        }
-      }
-    }
-  }
-
-  const candidates = [];
-  for (const code of ['HAD', 'HHAD', 'HAFU', 'TTG', 'CRS']) {
-    const pool = cal.pools[code];
-    if (!pool || pool.selling === false || !Array.isArray(pool.options) || pool.options.length === 0) {
-      continue;
-    }
-    const isMainPool = code === 'HAD' || code === 'HHAD';
-    for (const opt of pool.options) {
-      if (!(Number.isFinite(opt.odds) && opt.odds > 1.01)) continue;
-      if (ancMask) {
-        let optMass = 0;
-        let overlapMass = 0;
-        for (let i = 0; i < atomicLen; i++) {
-          if (doesOptionHitAtomicTemplate(code, opt.key, opt.label, gl, ATOMIC_TEMPLATES[i])) {
-            optMass += calAtomic[i];
-            if (ancMask[i]) overlapMass += calAtomic[i];
-          }
-        }
-        if (!(optMass > 0 && overlapMass / optMass >= 0.5)) continue;
-      }
-
-      const dcProb = cal.coherent
-        ? sumOptionProbOnAtomic(calAtomic, code, opt.key, opt.label, gl)
-        : opt.shinProb ?? opt.fairProb;
-      const shinProb = opt.shinProb ?? dcProb;
-      const { pShrunk, expectedReturn } = computeOptionShrunkAlpha(opt.odds, dcProb, shinProb);
-      const ownPoolReturn = opt.odds * shinProb;
-      const crossPoolDivergence = expectedReturn - ownPoolReturn;
-      const otherMainCode = code === 'HAD' ? 'HHAD' : 'HAD';
-      const otherMainPool = cal.pools[otherMainCode];
-      const otherMainRatio =
-        isMainPool &&
-        otherMainPool &&
-        otherMainPool.selling !== false &&
-        otherMainPool.payoutRatio > 0
-          ? otherMainPool.payoutRatio
-          : mainPayoutRatio;
-      const delta =
-        !isMainPool && cal.coherent && cal.sellingPoolCount >= 2
-          ? expectedReturn - mainPayoutRatio
-          : isMainPool && cal.coherent && cal.sellingPoolCount >= 2 && crossPoolDivergence >= 0.015
-            ? expectedReturn - otherMainRatio
-            : expectedReturn > 1.0
-              ? expectedReturn - mainPayoutRatio
-              : -1;
-
-      if (delta >= 0.03 || expectedReturn > 1.0) {
-        candidates.push({
-          matchId: match.id,
-          match,
-          poolCode: code,
-          poolName: pool.name || code,
-          singleAllowed: Boolean(pool.single),
-          optionKey: opt.key,
-          optionLabel: opt.label || opt.key,
-          odds: opt.odds,
-          pShrunk,
-          expectedReturn,
-          delta,
-          isPositiveEv: expectedReturn > 1.0,
-        });
-      }
-    }
-  }
-
-  candidates.sort((a, b) => b.delta - a.delta || b.expectedReturn - a.expectedReturn);
-  return { mainPayoutRatio, candidates };
-}
-
 function materializePlanLines(specs, mults) {
   const actualCost = mults.reduce((a, m) => a + m * 2, 0);
   return specs.map((sp, idx) => {
@@ -4298,8 +4630,13 @@ function solveZeroUnderwaterDutching(rawSpecs, targetBudgetYuan) {
   return [];
 }
 
-function allocateSpearAndExactShield(spearSpecs, shieldSpec, targetBudgetYuan) {
-  const cleanSpears = spearSpecs
+function allocateSpearAndExactShield(
+  spearSpecs,
+  shieldSpec,
+  targetBudgetYuan,
+  { lockPrimarySpear = false } = {}
+) {
+  const mappedSpears = spearSpecs
     .map((r) => {
       const legs = (r?.legs ?? []).filter(Boolean);
       if (legs.length === 0) return null;
@@ -4308,13 +4645,22 @@ function allocateSpearAndExactShield(spearSpecs, shieldSpec, targetBudgetYuan) {
       const prob = legs.reduce((a, g) => a * g.fairProb, 1);
       return { ...r, legs, rawUnit, unitPayout, prob };
     })
-    .filter((x) => x && x.unitPayout >= 2.0)
-    .sort((a, b) => b.prob * b.unitPayout - a.prob * a.unitPayout);
+    .filter((x) => x && x.unitPayout >= 2.0);
+
+  const cleanSpears = lockPrimarySpear
+    ? mappedSpears.length > 1
+      ? [
+          mappedSpears[0],
+          ...mappedSpears.slice(1).sort((a, b) => b.prob * b.unitPayout - a.prob * a.unitPayout),
+        ]
+      : mappedSpears
+    : mappedSpears.sort((a, b) => b.prob * b.unitPayout - a.prob * a.unitPayout);
 
   if (cleanSpears.length === 0) return [];
 
   let effectiveShieldSpec = shieldSpec;
   if (
+    !lockPrimarySpear &&
     cleanSpears.length === 1 &&
     shieldSpec &&
     Array.isArray(shieldSpec.legs) &&
@@ -4558,6 +4904,39 @@ export function generateParetoPortfolio(
     return cands[0];
   };
 
+  const inferMatchDirection = (m) => {
+    const anc = anchorsByMatch.get(m.id);
+    if (anc && anc.length > 0) {
+      const topAnc = [...anc].sort((a, b) => b.fairProb - a.fairProb)[0];
+      const k = topAnc.optionKey;
+      const lbl = topAnc.optionLabel || k;
+      if (topAnc.poolCode === 'HAD') return k === 'a' ? 'away' : k === 'd' ? 'draw' : 'home';
+      if (topAnc.poolCode === 'HHAD') {
+        const gl = resolveGoalLineNum(m, topAnc.poolName);
+        if (k === 'hh') return 'home';
+        if (k === 'ha') return 'away';
+        return gl < 0 ? 'home' : 'away';
+      }
+      if (topAnc.poolCode === 'HAFU') {
+        return k.endsWith('a') ? 'away' : k.endsWith('d') ? 'draw' : 'home';
+      }
+      if (topAnc.poolCode === 'TTG') {
+        if (k === 's0') return 'draw';
+      }
+      if (topAnc.poolCode === 'CRS') {
+        if (lbl === '负其它' || k === 's1sa') return 'away';
+        if (lbl === '平其它' || k === 's1sd') return 'draw';
+        if (lbl === '胜其它' || k === 's1sh') return 'home';
+        const [hs, as] = lbl.split(':').map(Number);
+        if (Number.isFinite(hs) && Number.isFinite(as)) {
+          return hs < as ? 'away' : hs === as ? 'draw' : 'home';
+        }
+      }
+    }
+    const top = preferredPrimaryLeg(m);
+    return top?.optionKey === 'a' || top?.optionKey === 'ha' ? 'away' : 'home';
+  };
+
   const secondaryDisjointLegInPool = (m, primaryLeg) => {
     if (!primaryLeg) return null;
     const anc = anchorsByMatch.get(m.id);
@@ -4575,6 +4954,42 @@ export function generateParetoPortfolio(
       .map((o) => legOf(m, primaryLeg.poolCode, o.key))
       .filter(Boolean)
       .sort((a, b) => b.fairProb - a.fairProb);
+
+    if (anc && anc.length === 1) {
+      const dir = inferMatchDirection(m);
+      if (dir === 'draw') {
+        if (primaryLeg.poolCode === 'HAD' || primaryLeg.poolCode === 'HHAD') return null;
+        if (primaryLeg.poolCode === 'HAFU') {
+          return others.find((o) => ['dd', 'hd', 'ad'].includes(o.optionKey)) ?? null;
+        }
+        if (primaryLeg.poolCode === 'CRS') {
+          return (
+            others.find((o) => {
+              const lbl = o.optionLabel || o.optionKey;
+              if (lbl === '平其它' || o.optionKey === 's1sd') return true;
+              const [hs, as] = lbl.split(':').map(Number);
+              return Number.isFinite(hs) && Number.isFinite(as) && hs === as;
+            }) ?? null
+          );
+        }
+        if (primaryLeg.poolCode === 'TTG') {
+          return others.find((o) => o.optionKey === 's0' || o.optionKey === 's2') ?? null;
+        }
+      }
+      if (primaryLeg.poolCode === 'HHAD') {
+        const gl = resolveGoalLineNum(m, primaryLeg.poolName);
+        if (primaryLeg.optionKey === 'hh') {
+          return gl < 0 ? others.find((o) => o.optionKey === 'hd') ?? null : null;
+        }
+        if (primaryLeg.optionKey === 'ha') {
+          return gl > 0 ? others.find((o) => o.optionKey === 'hd') ?? null : null;
+        }
+        if (primaryLeg.optionKey === 'hd') {
+          return others.find((o) => o.optionKey === (dir === 'away' ? 'ha' : 'hh')) ?? null;
+        }
+      }
+    }
+
     return (
       others.find((o) => o.optionKey === 'd' || o.optionKey === 'hd' || o.optionKey === 'dd') ??
       others[0] ??
@@ -4582,34 +4997,50 @@ export function generateParetoPortfolio(
     );
   };
 
-  const inferMatchDirection = (m) => {
-    const anc = anchorsByMatch.get(m.id);
-    if (anc && anc.length > 0) {
-      const topAnc = [...anc].sort((a, b) => b.fairProb - a.fairProb)[0];
-      const k = topAnc.optionKey;
-      const lbl = topAnc.optionLabel || k;
-      if (topAnc.poolCode === 'HAD') return k === 'a' ? 'away' : k === 'd' ? 'draw' : 'home';
-      if (topAnc.poolCode === 'HHAD') {
-        const gl = resolveGoalLineNum(m, topAnc.poolName);
-        if (k === 'hh') return 'home';
-        if (k === 'ha') return 'away';
-        return gl < 0 ? 'home' : 'away';
-      }
-      if (topAnc.poolCode === 'HAFU') {
-        return k.endsWith('a') ? 'away' : k.endsWith('d') ? 'draw' : 'home';
-      }
-      if (topAnc.poolCode === 'CRS') {
-        if (lbl === '负其它' || k === 's1sa') return 'away';
-        if (lbl === '平其它' || k === 's1sd') return 'draw';
-        if (lbl === '胜其它' || k === 's1sh') return 'home';
-        const [hs, as] = lbl.split(':').map(Number);
-        if (Number.isFinite(hs) && Number.isFinite(as)) {
-          return hs < as ? 'away' : hs === as ? 'draw' : 'home';
-        }
-      }
+  const resolveDirectionSingleBundles = (m) => {
+    const dir = inferMatchDirection(m);
+    const hadDrawLeg =
+      dir === 'draw' && m.pools.HAD?.selling !== false && m.pools.HAD?.single
+        ? legOf(m, 'HAD', 'd')
+        : null;
+
+    let hhadCompatLegs = [];
+    if (dir !== 'draw' && m.pools.HHAD?.selling !== false && m.pools.HHAD?.single) {
+      const gl = resolveGoalLineNum(m, m.pools.HHAD?.name);
+      const compatKeys =
+        dir === 'home' ? (gl < 0 ? ['hh', 'hd'] : ['hh']) : gl > 0 ? ['ha', 'hd'] : ['ha'];
+      hhadCompatLegs = compatKeys.map((k) => legOf(m, 'HHAD', k)).filter(Boolean);
     }
-    const top = preferredPrimaryLeg(m);
-    return top?.optionKey === 'a' || top?.optionKey === 'ha' ? 'away' : 'home';
+
+    let hafuCompatLegs = [];
+    if (m.pools.HAFU?.selling !== false && m.pools.HAFU?.single) {
+      const keys = dir === 'draw' ? ['dd', 'hd', 'ad'] : dir === 'away' ? ['aa', 'da'] : ['hh', 'dh'];
+      hafuCompatLegs = keys.map((k) => legOf(m, 'HAFU', k)).filter(Boolean);
+    }
+
+    let crsCompatLegs = [];
+    if (m.pools.CRS?.selling !== false && m.pools.CRS?.single) {
+      crsCompatLegs = (m.pools.CRS.options ?? [])
+        .filter((o) => {
+          const lbl = o.label || o.key;
+          if (lbl === '胜其它' || o.key === 's1sh') return dir === 'home';
+          if (lbl === '平其它' || o.key === 's1sd') return dir === 'draw';
+          if (lbl === '负其它' || o.key === 's1sa') return dir === 'away';
+          const [hs, as] = lbl.split(':').map(Number);
+          if (!Number.isFinite(hs) || !Number.isFinite(as)) return false;
+          return dir === 'draw' ? hs === as : dir === 'away' ? hs < as : hs > as;
+        })
+        .map((o) => legOf(m, 'CRS', o.label || o.key))
+        .filter(Boolean)
+        .sort((a, b) => b.fairProb - a.fairProb);
+    }
+
+    let ttgDrawLegs = [];
+    if (dir === 'draw' && m.pools.TTG?.selling !== false && m.pools.TTG?.single) {
+      ttgDrawLegs = ['s0', 's2'].map((k) => legOf(m, 'TTG', k)).filter(Boolean);
+    }
+
+    return { dir, hadDrawLeg, hhadCompatLegs, hafuCompatLegs, crsCompatLegs, ttgDrawLegs };
   };
 
   const anchorBadgeNote = hasUserAnchors
@@ -4855,6 +5286,71 @@ export function generateParetoPortfolio(
             { id: 'mp-2', roleLabel: '同盘防平保本盾', legs: [cov] },
           ]);
         }
+      }
+    } else if (anc.length > 0) {
+      const { dir, hadDrawLeg, hhadCompatLegs, hafuCompatLegs, crsCompatLegs, ttgDrawLegs } =
+        resolveDirectionSingleBundles(m1);
+      if (hadDrawLeg) {
+        candidateSets.push([{ id: 'mp-had-d', roleLabel: '雷达锚定平局主干', legs: [hadDrawLeg] }]);
+      }
+      if (hhadCompatLegs.length >= 2) {
+        candidateSets.push(
+          hhadCompatLegs.map((lg, idx) => ({
+            id: `mp-hhad2-${idx + 1}`,
+            roleLabel: idx === 0 ? '顺向让球主干' : '一球卡盘保本盾',
+            legs: [lg],
+          }))
+        );
+      }
+      if (hhadCompatLegs.length >= 1) {
+        candidateSets.push([
+          { id: 'mp-hhad1-1', roleLabel: '顺向让球独赢主干', legs: [hhadCompatLegs[0]] },
+        ]);
+      }
+      if (hafuCompatLegs.length >= 2) {
+        if (hhadCompatLegs.length === 0 && !hadDrawLeg) slot1SyntheticUsed = true;
+        candidateSets.push(
+          hafuCompatLegs.map((lg, idx) => ({
+            id: `mp-hafu-${idx + 1}`,
+            roleLabel: idx === 0 ? '合成单关·主干' : `合成单关·护盾#${idx}`,
+            legs: [lg],
+          }))
+        );
+        const ddLeg = legOf(m1, 'HAFU', 'dd');
+        if (dir !== 'draw' && ddLeg && !hafuCompatLegs.some((g) => g.optionKey === 'dd')) {
+          candidateSets.push([
+            ...hafuCompatLegs.map((lg, idx) => ({
+              id: `mp-hafu3-${idx + 1}`,
+              roleLabel: idx === 0 ? '合成单关·主干' : '合成单关·次干',
+              legs: [lg],
+            })),
+            { id: 'mp-hafu3-3', roleLabel: '合成单关·闷平盾', legs: [ddLeg] },
+          ]);
+        }
+      }
+      if (crsCompatLegs.length >= 2) {
+        if (hhadCompatLegs.length === 0 && !hadDrawLeg) slot1SyntheticUsed = true;
+        for (const take of [2, 3]) {
+          if (crsCompatLegs.length >= take) {
+            candidateSets.push(
+              crsCompatLegs.slice(0, take).map((lg, idx) => ({
+                id: `mp-crs${take}-${idx + 1}`,
+                roleLabel: `合成单关·比分#${idx + 1}`,
+                legs: [lg],
+              }))
+            );
+          }
+        }
+      }
+      if (ttgDrawLegs.length >= 2) {
+        if (hhadCompatLegs.length === 0 && !hadDrawLeg) slot1SyntheticUsed = true;
+        candidateSets.push(
+          ttgDrawLegs.map((lg, idx) => ({
+            id: `mp-ttgd-${idx + 1}`,
+            roleLabel: `合成单关·平局进球#${idx + 1}`,
+            legs: [lg],
+          }))
+        );
       }
     } else {
       for (const mainCode of ['HAD', 'HHAD']) {
@@ -5199,22 +5695,128 @@ export function generateParetoPortfolio(
   if (evActiveMatches.length === 1) {
     const em = evActiveMatches[0];
     const anc = anchorsByMatch.get(em.id) ?? [];
-    if (anc.length > 0 && anc.every((a) => em.pools[a.poolCode]?.single)) {
+    if (anc.length > 0 && anc.every((a) => em.pools[a.poolCode]?.selling !== false && em.pools[a.poolCode]?.single)) {
       const ancLegs = anc
         .map((a) => legOf(em, a.poolCode, a.optionKey))
         .filter(Boolean)
         .sort((a, b) => b.odds * b.fairProb - a.odds * a.fairProb);
+      const secCov = ancLegs.length < 2 ? secondaryDisjointLegInPool(em, ancLegs[0]) : null;
       const shield =
         ancLegs.length >= 2
           ? { id: 'ev-sh', roleLabel: '最小整数倍保本盾', legs: [ancLegs[1]] }
-          : secondaryDisjointLegInPool(em, ancLegs[0])
-            ? { id: 'ev-sh', roleLabel: '最小整数倍保本盾', legs: [secondaryDisjointLegInPool(em, ancLegs[0])] }
+          : secCov
+            ? { id: 'ev-sh', roleLabel: '最小整数倍保本盾', legs: [secCov] }
             : null;
       slot2Lines = allocateSpearAndExactShield(
         [{ id: 'ev-sp1', roleLabel: '主攻高性价比箭', legs: [ancLegs[0]] }],
         shield,
-        cleanBudget
+        cleanBudget,
+        { lockPrimarySpear: true }
       );
+    } else if (anc.length > 0) {
+      const { dir, hadDrawLeg, hhadCompatLegs, hafuCompatLegs, crsCompatLegs, ttgDrawLegs } =
+        resolveDirectionSingleBundles(em);
+      const s2Cands = [];
+      const pushS2 = (lines) => {
+        if (Array.isArray(lines) && lines.length > 0) {
+          s2Cands.push({
+            lines,
+            hasShield: lines.some((l) => String(l.roleLabel).includes('盾')),
+            obj: evalLines4DObj(lines, true),
+          });
+        }
+      };
+      if (hadDrawLeg) {
+        pushS2(
+          allocateSpearAndExactShield(
+            [{ id: 'ev-sp1', roleLabel: '主攻平局独赢箭', legs: [hadDrawLeg] }],
+            null,
+            cleanBudget,
+            { lockPrimarySpear: true }
+          )
+        );
+      }
+      if (hhadCompatLegs.length >= 2) {
+        pushS2(
+          allocateSpearAndExactShield(
+            [{ id: 'ev-sp1', roleLabel: '主攻顺向让球箭', legs: [hhadCompatLegs[0]] }],
+            { id: 'ev-sh', roleLabel: '最小整数倍卡盘盾', legs: [hhadCompatLegs[1]] },
+            cleanBudget
+          )
+        );
+      } else if (hhadCompatLegs.length === 1) {
+        pushS2(
+          allocateSpearAndExactShield(
+            [{ id: 'ev-sp1', roleLabel: '主攻顺向让球箭', legs: [hhadCompatLegs[0]] }],
+            null,
+            cleanBudget,
+            { lockPrimarySpear: true }
+          )
+        );
+      }
+      if (hafuCompatLegs.length >= 2) {
+        if (dir === 'draw') {
+          const dd = hafuCompatLegs.find((g) => g.optionKey === 'dd') ?? hafuCompatLegs[0];
+          const nonDd = hafuCompatLegs.filter((g) => g.optionKey !== dd.optionKey);
+          pushS2(
+            allocateSpearAndExactShield(
+              nonDd.length > 0
+                ? nonDd.map((g, i) => ({ id: `ev-sp${i + 1}`, roleLabel: i === 0 ? '主攻半分全平箭' : '次路全平辅助箭', legs: [g] }))
+                : [{ id: 'ev-sp1', roleLabel: '主攻闷平箭', legs: [dd] }],
+              nonDd.length > 0 ? { id: 'ev-sh', roleLabel: '最小整数倍闷平盾', legs: [dd] } : null,
+              cleanBudget
+            )
+          );
+        } else {
+          const spA = legOf(em, 'HAFU', dir === 'away' ? 'da' : 'dh');
+          const spB = legOf(em, 'HAFU', dir === 'away' ? 'aa' : 'hh');
+          const sh = legOf(em, 'HAFU', 'dd');
+          pushS2(
+            allocateSpearAndExactShield(
+              [
+                { id: 'ev-sp1', roleLabel: '主攻半平绝杀箭', legs: [spA] },
+                { id: 'ev-sp2', roleLabel: '顺向连赢辅助箭', legs: [spB] },
+              ],
+              sh ? { id: 'ev-sh', roleLabel: '最小整数倍闷平盾', legs: [sh] } : null,
+              cleanBudget
+            )
+          );
+        }
+      }
+      if (crsCompatLegs.length >= 2) {
+        pushS2(
+          allocateSpearAndExactShield(
+            [
+              { id: 'ev-sp1', roleLabel: '主攻比分箭#1', legs: [crsCompatLegs[0]] },
+              { id: 'ev-sp2', roleLabel: '顺向比分箭#2', legs: [crsCompatLegs[1]] },
+            ],
+            crsCompatLegs[2]
+              ? { id: 'ev-sh', roleLabel: '最小整数倍比分盾', legs: [crsCompatLegs[2]] }
+              : null,
+            cleanBudget
+          )
+        );
+      }
+      if (ttgDrawLegs.length >= 2) {
+        const sortedTtgD = [...ttgDrawLegs].sort((a, b) => b.odds * b.fairProb - a.odds * a.fairProb);
+        pushS2(
+          allocateSpearAndExactShield(
+            [{ id: 'ev-sp1', roleLabel: '主攻平局进球箭', legs: [sortedTtgD[0]] }],
+            { id: 'ev-sh', roleLabel: '最小整数倍闷平进球盾', legs: [sortedTtgD[1]] },
+            cleanBudget
+          )
+        );
+      }
+      const nonDomS2 = filterNonDominatedCandidates(s2Cands);
+      const poolS2 = nonDomS2.length > 0 ? nonDomS2 : s2Cands;
+      poolS2.sort(
+        (a, b) =>
+          b.obj.evRate +
+          0.18 * b.obj.profitProb +
+          (b.hasShield ? 0.012 : 0) -
+          (a.obj.evRate + 0.18 * a.obj.profitProb + (a.hasShield ? 0.012 : 0))
+      );
+      slot2Lines = poolS2[0]?.lines ?? [];
     } else if (canSingleMainPool(em)) {
       const mainCode =
         em.pools.HAD?.selling !== false && em.pools.HAD?.single ? 'HAD' : 'HHAD';
@@ -5226,18 +5828,31 @@ export function generateParetoPortfolio(
         cleanBudget
       );
     } else {
-      const dir = inferMatchDirection(em);
-      const spA = legOf(em, 'HAFU', dir === 'away' ? 'da' : 'dh');
-      const spB = legOf(em, 'HAFU', dir === 'away' ? 'aa' : 'hh');
-      const sh = legOf(em, 'HAFU', 'dd');
-      slot2Lines = allocateSpearAndExactShield(
-        [
-          { id: 'ev-sp1', roleLabel: '主攻半平绝杀箭', legs: [spA] },
-          { id: 'ev-sp2', roleLabel: '顺向连赢辅助箭', legs: [spB] },
-        ],
-        sh ? { id: 'ev-sh', roleLabel: '最小整数倍闷平盾', legs: [sh] } : null,
-        cleanBudget
-      );
+      const { dir, hafuCompatLegs, crsCompatLegs } = resolveDirectionSingleBundles(em);
+      if (hafuCompatLegs.length >= 2) {
+        const spA = legOf(em, 'HAFU', dir === 'away' ? 'da' : dir === 'draw' ? 'hd' : 'dh');
+        const spB = legOf(em, 'HAFU', dir === 'away' ? 'aa' : dir === 'draw' ? 'ad' : 'hh');
+        const sh = legOf(em, 'HAFU', 'dd');
+        slot2Lines = allocateSpearAndExactShield(
+          [
+            { id: 'ev-sp1', roleLabel: '主攻半平绝杀箭', legs: [spA] },
+            { id: 'ev-sp2', roleLabel: '顺向连赢辅助箭', legs: [spB] },
+          ],
+          sh ? { id: 'ev-sh', roleLabel: '最小整数倍闷平盾', legs: [sh] } : null,
+          cleanBudget
+        );
+      } else if (crsCompatLegs.length >= 2) {
+        slot2Lines = allocateSpearAndExactShield(
+          [
+            { id: 'ev-sp1', roleLabel: '主攻比分箭#1', legs: [crsCompatLegs[0]] },
+            { id: 'ev-sp2', roleLabel: '顺向比分箭#2', legs: [crsCompatLegs[1]] },
+          ],
+          crsCompatLegs[2]
+            ? { id: 'ev-sh', roleLabel: '最小整数倍比分盾', legs: [crsCompatLegs[2]] }
+            : null,
+          cleanBudget
+        );
+      }
     }
   } else {
     const activePrims = evActiveMatches.map(evPrimaryLegOf).filter(Boolean);
@@ -5383,7 +5998,8 @@ export function generateParetoPortfolio(
           const shLines = allocateSpearAndExactShield(
             [{ id: 'ev-sp1', roleLabel: '高性价比主攻箭', legs: bLegs }],
             { id: 'ev-sh', roleLabel: '最小整数倍回本盾', legs: fc.legs },
-            cleanBudget
+            cleanBudget,
+            { lockPrimarySpear: hasUserAnchors }
           );
           if (shLines.length > 0) {
             slot2Candidates.push({
@@ -5448,6 +6064,7 @@ export function generateParetoPortfolio(
   let slot3Lines = [];
   let slot3MissOneReturn = 0;
   let slot3DesignLabel = '单场防冷缓冲网';
+  let slot3IsCoveringWheel = false;
 
   const singleCushionLegOf = (m) => {
     const anc = anchorsByMatch.get(m.id) ?? [];
@@ -5455,6 +6072,16 @@ export function generateParetoPortfolio(
       .filter((a) => m.pools[a.poolCode]?.selling !== false && m.pools[a.poolCode]?.single)
       .sort((a, b) => b.fairProb - a.fairProb)[0];
     if (singleAnc) return legOf(m, singleAnc.poolCode, singleAnc.optionKey);
+
+    if (anc.length > 0) {
+      const { hadDrawLeg, hhadCompatLegs, hafuCompatLegs, crsCompatLegs, ttgDrawLegs } =
+        resolveDirectionSingleBundles(m);
+      if (hadDrawLeg) return hadDrawLeg;
+      if (hhadCompatLegs[0]) return hhadCompatLegs[0];
+      if (hafuCompatLegs[0]) return hafuCompatLegs[0];
+      if (crsCompatLegs[0]) return crsCompatLegs[0];
+      if (ttgDrawLegs[0]) return ttgDrawLegs[0];
+    }
 
     for (const mainCode of ['HAD', 'HHAD']) {
       const pool = m.pools[mainCode];
@@ -5487,8 +6114,52 @@ export function generateParetoPortfolio(
 
   if (selected.length === 1) {
     const m1 = selected[0];
+    const anc = anchorsByMatch.get(m1.id) ?? [];
+    const ancSinglePool =
+      anc.length > 0 &&
+      anc.every((a) => m1.pools[a.poolCode]?.selling !== false && m1.pools[a.poolCode]?.single && a.poolCode === anc[0].poolCode)
+        ? anc[0].poolCode
+        : null;
     const cushionSpecs = [];
-    if (m1.pools.HAD?.selling !== false && m1.pools.HAD?.single) {
+
+    if (ancSinglePool) {
+      const ancLegs = anc.map((a) => legOf(m1, a.poolCode, a.optionKey)).filter(Boolean);
+      const cov = ancLegs.length === 1 ? secondaryDisjointLegInPool(m1, ancLegs[0]) : null;
+      const chosenLegs = cov ? [ancLegs[0], cov] : ancLegs;
+      chosenLegs.forEach((lg, idx) =>
+        cushionSpecs.push({
+          id: `cw-1-${idx + 1}`,
+          roleLabel: idx === 0 ? '雷达主选防冷主垫' : '顺向防平缓冲垫',
+          legs: [lg],
+        })
+      );
+    } else if (anc.length > 0) {
+      const { dir, hadDrawLeg, hhadCompatLegs, hafuCompatLegs, crsCompatLegs, ttgDrawLegs } =
+        resolveDirectionSingleBundles(m1);
+      let chosenLegs = [];
+      if (hadDrawLeg) {
+        chosenLegs = [hadDrawLeg];
+      } else if (hhadCompatLegs.length > 0) {
+        chosenLegs = hhadCompatLegs;
+      } else if (hafuCompatLegs.length > 0) {
+        const ddLeg = legOf(m1, 'HAFU', 'dd');
+        chosenLegs =
+          dir !== 'draw' && ddLeg && !hafuCompatLegs.some((g) => g.optionKey === 'dd')
+            ? [...hafuCompatLegs, ddLeg]
+            : hafuCompatLegs;
+      } else if (crsCompatLegs.length > 0) {
+        chosenLegs = crsCompatLegs.slice(0, 3);
+      } else if (ttgDrawLegs.length > 0) {
+        chosenLegs = ttgDrawLegs;
+      }
+      chosenLegs.forEach((lg, idx) =>
+        cushionSpecs.push({
+          id: `cw-1-${idx + 1}`,
+          roleLabel: idx === 0 ? '顺向单关主垫' : `顺向缓冲垫#${idx}`,
+          legs: [lg],
+        })
+      );
+    } else if (m1.pools.HAD?.selling !== false && m1.pools.HAD?.single) {
       const top2 = m1.pools.HAD.options
         .map((o) => legOf(m1, 'HAD', o.key))
         .filter(Boolean)
@@ -5515,25 +6186,38 @@ export function generateParetoPortfolio(
         })
       );
     } else {
-      const dir = inferMatchDirection(m1);
-      const keys = dir === 'away' ? ['aa', 'da', 'dd'] : ['hh', 'dh', 'dd'];
-      keys.forEach((k, idx) => {
-        const lg = legOf(m1, 'HAFU', k);
-        if (lg) {
+      const { dir, hafuCompatLegs, crsCompatLegs } = resolveDirectionSingleBundles(m1);
+      if (hafuCompatLegs.length > 0) {
+        const ddLeg = legOf(m1, 'HAFU', 'dd');
+        const legsToUse =
+          dir !== 'draw' && ddLeg && !hafuCompatLegs.some((g) => g.optionKey === 'dd')
+            ? [...hafuCompatLegs, ddLeg]
+            : hafuCompatLegs;
+        legsToUse.forEach((lg, idx) => {
           cushionSpecs.push({
             id: `cw-1-${idx + 1}`,
             roleLabel: idx === 0 ? '上半领先赢' : idx === 1 ? '半平绝杀垫' : '全场闷平兜底',
             legs: [lg],
           });
-        }
-      });
+        });
+      } else if (crsCompatLegs.length > 0) {
+        crsCompatLegs.slice(0, 3).forEach((lg, idx) => {
+          cushionSpecs.push({
+            id: `cw-1-${idx + 1}`,
+            roleLabel: `比分缓冲垫#${idx + 1}`,
+            legs: [lg],
+          });
+        });
+      }
     }
     slot3Lines = solveZeroUnderwaterDutching(cushionSpecs, cleanBudget);
-    if (slot3Lines.length === 0) {
-      slot3Lines = materializePlanLines(cushionSpecs.slice(0, 2), [
-        Math.max(1, Math.floor(cleanBudget / 4)),
-        Math.max(1, Math.floor(cleanBudget / 4)),
-      ]);
+    if (slot3Lines.length === 0 && cushionSpecs.length > 0) {
+      const takeSpecs = cushionSpecs.slice(0, 2);
+      const fallbackMults =
+        takeSpecs.length === 1
+          ? [Math.max(1, Math.floor(cleanBudget / 2))]
+          : [Math.max(1, Math.floor(cleanBudget / 4)), Math.max(1, Math.floor(cleanBudget / 4))];
+      slot3Lines = materializePlanLines(takeSpecs, fallbackMults);
     }
     slot3MissOneReturn = slot3Lines.length
       ? Math.min(...slot3Lines.map((l) => l.returnPayout))
@@ -5653,10 +6337,65 @@ export function generateParetoPortfolio(
       const legGivenHit = condPairs.map((p) => p[0]);
       const legGivenMiss = condPairs.map((p) => p[1]);
       const poolCap = Math.min(...wheelLegs.map((g) => POOL_MAX_PASS[g.poolCode] ?? 8));
+      const fullVUnclipped =
+        v <= poolCap &&
+        bankerRoundParlayUnitPayout(wheelLegs.map((g) => g.odds)) <= statutorySingleBetCap(v);
+
+      // 1. Official M串N combo topologies from OFFICIAL_COMBO_PASS_TABLE[v] with baseBets <= 10 (including 5串10!)
+      const officialTopologies = (OFFICIAL_COMBO_PASS_TABLE[v] ?? []).filter(
+        (pr) => pr.baseBets <= 10 && pr.sizes.every((s) => s <= poolCap)
+      );
+      for (const pr of officialTopologies) {
+        const hasFullV = pr.sizes.includes(v);
+        if (hasFullV && !fullVUnclipped) continue;
+        const subSizes = pr.sizes.filter((s) => s < v);
+        const subBlocks = subSizes.flatMap((k) => combinationsOfIndices(v, k));
+        if (subBlocks.length === 0) continue;
+
+        const blockSpecs = subBlocks.map((idxs, bIdx) => ({
+          id: `cw-${bIdx + 1}`,
+          roleLabel: `${pr.label}·子串#${bIdx + 1} (${idxs.map((i) => `第${i + 1}场`).join('×')})`,
+          legs: idxs.map((i) => wheelLegs[i]),
+        }));
+        const condMissWeights = subBlocks.map((idxs) =>
+          matchIds.map((_, x) =>
+            idxs.reduce((acc, i) => acc * (i === x ? legGivenMiss[i] : legGivenHit[i]), 1)
+          )
+        );
+        const kicker = hasFullV
+          ? { id: 'cw-all', roleLabel: `${pr.label}·${v}关全红主串`, legs: wheelLegs }
+          : null;
+
+        const cand = allocateWheelMeanCvar(
+          blockSpecs,
+          kicker,
+          matchIds,
+          cleanBudget,
+          false,
+          condMissWeights
+        );
+        const totalC = cand.lines.reduce((a, l) => a + l.cost, 0);
+        if (totalC <= 0) continue;
+        const obj = evalLines4DObj(cand.lines);
+        const score =
+          0.55 * obj.missOneCvarRatio +
+          0.2 * (cand.missOneReturn / totalC) +
+          0.15 * obj.profitProb +
+          0.1 * obj.evRate;
+        wheelCands.push({
+          lines: cand.lines,
+          missOneReturn: cand.missOneReturn,
+          designLabel: `官方${pr.label}多串容错 (${cand.lines.length}张实票)`,
+          isCoveringWheel: false,
+          obj,
+          score,
+        });
+      }
+
+      // 2. Genuine C(v, k, t) covering-wheel designs (blocks.length < C(v, k))
       const designs = (COVERING_WHEEL_DESIGNS[v] ?? []).filter(
         (d) => d.maxK <= poolCap && d.blocks.length <= 10
       );
-
       for (const d of designs) {
         const blockSpecs = d.blocks.map((idxs, bIdx) => ({
           id: `cw-${bIdx + 1}`,
@@ -5669,10 +6408,7 @@ export function generateParetoPortfolio(
           )
         );
 
-        const canAddKicker =
-          v <= poolCap &&
-          d.blocks.length + 1 <= 10 &&
-          bankerRoundParlayUnitPayout(wheelLegs.map((g) => g.odds)) <= statutorySingleBetCap(v);
+        const canAddKicker = fullVUnclipped && d.blocks.length + 1 <= 10;
         const kickerCandidates = canAddKicker
           ? [null, { id: 'cw-all', roleLabel: `${v}场全红冲顶串`, legs: wheelLegs }]
           : [null];
@@ -5697,7 +6433,8 @@ export function generateParetoPortfolio(
           wheelCands.push({
             lines: cand.lines,
             missOneReturn: cand.missOneReturn,
-            designLabel: `${d.name} 旋转矩阵缩水 (${cand.lines.length}张实票)`,
+            designLabel: `${d.name}${kicker ? `+${v}串1` : ''} 旋转矩阵缩水 (${cand.lines.length}张实票)`,
+            isCoveringWheel: true,
             obj,
             score,
           });
@@ -5713,6 +6450,7 @@ export function generateParetoPortfolio(
       slot3Lines = bestWheel.lines;
       slot3MissOneReturn = bestWheel.missOneReturn;
       slot3DesignLabel = bestWheel.designLabel;
+      slot3IsCoveringWheel = Boolean(bestWheel.isCoveringWheel);
     }
   }
 
@@ -5726,7 +6464,9 @@ export function generateParetoPortfolio(
     missOneReturn: slot3MissOneReturn,
     reasons: [
       selected.length >= 3
-        ? `采用组合覆盖设计 ${slot3DesignLabel}（严控 ≤ 10 张独立实票），省去冗余全包注数并 100% 锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
+        ? slot3IsCoveringWheel
+          ? `采用组合覆盖设计 ${slot3DesignLabel}（严控 ≤ 10 张独立实票），省去冗余全包注数并 100% 锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
+          : `采用中国体彩${slot3DesignLabel}标准容错结构（严控 ≤ 10 张独立实票），100% 锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
         : '配置低抽水缓冲回血垫，最大化逆境尾部条件保底回报（Mean-CVaR）',
       '全中时多张覆盖子票叠加派奖，兼顾防黑韧性与满贯上限',
     ],
@@ -5739,7 +6479,7 @@ export function generateParetoPortfolio(
   }
 
   // =========================================================================
-  // Slot ④: alpha-radar (⚡ 错价雷达 · 经验贝叶斯收缩 + 宁缺毋滥空仓纪律)
+  // Slot ④: alpha-radar (⚡ 错价雷达 · 经验贝叶斯收缩 + 同义错价替换 + 宁缺毋滥空仓纪律)
   // =========================================================================
   const rawAlphaPool = [];
   for (const m of selected) {
@@ -5748,11 +6488,64 @@ export function generateParetoPortfolio(
       rawAlphaPool.push(c);
     }
   }
-  rawAlphaPool.sort((a, b) => b.delta - a.delta || b.expectedReturn - a.expectedReturn);
+  rawAlphaPool.sort(
+    (a, b) =>
+      Number(b.isPositiveEv) - Number(a.isPositiveEv) ||
+      Number(b.mainExcess >= 0.03) - Number(a.mainExcess >= 0.03) ||
+      b.expectedReturn - a.expectedReturn ||
+      b.delta - a.delta
+  );
 
   const aggBudget = unlockFullAgg
     ? cleanBudget
     : Math.min(cleanBudget, Math.max(16, Math.round((cleanBudget * 0.36) / 4) * 4));
+
+  const appendSingleAlphaSpecs = (cand, idPrefix) => {
+    const baseWeight = Math.max(0.02, cand.delta + (cand.isPositiveEv ? 0.06 : 0.01));
+    if (Array.isArray(cand.betterPicks) && cand.betterPicks.length === 2) {
+      const leg0 = legOf(cand.match, cand.betterPicks[0].poolCode, cand.betterPicks[0].optionKey);
+      const leg1 = legOf(cand.match, cand.betterPicks[1].poolCode, cand.betterPicks[1].optionKey);
+      if (!leg0 || !leg1) return false;
+      const inv0 = 1 / Math.max(1.01, leg0.odds);
+      const inv1 = 1 / Math.max(1.01, leg1.odds);
+      const invSum = inv0 + inv1;
+      alphaSpecs.push(
+        {
+          id: `${idPrefix}-${alphaSpecs.length + 1}`,
+          roleLabel: '同义错价配平①',
+          legs: [leg0],
+          weight: baseWeight * (inv0 / invSum),
+        },
+        {
+          id: `${idPrefix}-${alphaSpecs.length + 2}`,
+          roleLabel: '同义错价配平②',
+          legs: [leg1],
+          weight: baseWeight * (inv1 / invSum),
+        }
+      );
+      return true;
+    }
+    const singleLeg = legOf(cand.match, cand.poolCode, cand.optionKey);
+    if (!singleLeg) return false;
+    alphaSpecs.push({
+      id: `${idPrefix}-${alphaSpecs.length + 1}`,
+      roleLabel: cand.isPositiveEv
+        ? '跨盘+EV单关直击'
+        : cand.kind === 'equivalent-arb' && !(cand.mainExcess >= 0.03)
+          ? '同义错价单关直击'
+          : '跨盘错价单关洼地',
+      legs: [singleLeg],
+      weight: baseWeight,
+    });
+    return true;
+  };
+
+  const sortLegsBySelectedOrder = (legs) =>
+    [...legs].sort(
+      (a, b) =>
+        selected.findIndex((m) => m.id === a.matchId) -
+        selected.findIndex((m) => m.id === b.matchId)
+    );
 
   let alphaSpecs = [];
   let selectedAlphaCands = [];
@@ -5761,15 +6554,17 @@ export function generateParetoPortfolio(
     // Single-match checkout legality gate: ONLY single-capable options can check out alone at a Sporttery shop!
     const legalSingles = rawAlphaPool.filter((c) => c.singleAllowed);
     if (legalSingles.length > 0) {
-      // Pick top 1~2 disjoint options in the best pool or top 2 distinct single options
-      const chosen = legalSingles.slice(0, 2);
-      selectedAlphaCands = chosen;
-      alphaSpecs = chosen.map((c, idx) => ({
-        id: `ar-${idx + 1}`,
-        roleLabel: c.isPositiveEv ? `正期望洼地单狙#${idx + 1}` : `跨盘低水差洼地#${idx + 1}`,
-        legs: [legOf(c.match, c.poolCode, c.optionKey)],
-        weight: Math.max(0.01, c.delta + (c.isPositiveEv ? 0.05 : 0)),
-      }));
+      const top0 = legalSingles[0];
+      if (top0.betterPicks?.length === 2) {
+        if (appendSingleAlphaSpecs(top0, 'ar')) {
+          selectedAlphaCands = [top0];
+        }
+      } else {
+        const chosen = legalSingles.filter((c) => c.betterPicks?.length !== 2).slice(0, 2);
+        for (const c of chosen) {
+          if (appendSingleAlphaSpecs(c, 'ar')) selectedAlphaCands.push(c);
+        }
+      }
     }
   } else if (rawAlphaPool.length > 0) {
     // Group best alpha candidate per match
@@ -5785,13 +6580,10 @@ export function generateParetoPortfolio(
     // 1. Add top 1~2 single-capable alpha tickets directly (zero parlay vig compound loss!)
     const topSingles = rawAlphaPool.filter((c) => c.singleAllowed).slice(0, 2);
     for (const c of topSingles) {
-      alphaSpecs.push({
-        id: `ar-sgl-${alphaSpecs.length + 1}`,
-        roleLabel: c.isPositiveEv ? '跨盘+EV单关直击' : '跨盘错价单关洼地',
-        legs: [legOf(c.match, c.poolCode, c.optionKey)],
-        weight: Math.max(0.02, c.delta + (c.isPositiveEv ? 0.06 : 0.01)),
-      });
-      selectedAlphaCands.push(c);
+      if (alphaSpecs.length + (c.betterPicks?.length ?? 1) > 4) break;
+      if (appendSingleAlphaSpecs(c, 'ar-sgl')) {
+        selectedAlphaCands.push(c);
+      }
     }
 
     // 2. If >= 2 matches have alpha candidates, or if top alpha candidate is non-single (needs 2串1 partner!), build 2~4 leg alpha parlay
@@ -5802,31 +6594,53 @@ export function generateParetoPortfolio(
       );
       if (cap >= 2) {
         const comboCands = bestAlphaByMatch.slice(0, Math.min(3, cap));
-        const comboLegs = comboCands
-          .map((c) => legOf(c.match, c.poolCode, c.optionKey))
-          .filter(Boolean);
-        // Keep selected match order
-        comboLegs.sort(
-          (a, b) =>
-            selected.findIndex((m) => m.id === a.matchId) -
-            selected.findIndex((m) => m.id === b.matchId)
-        );
-        if (
-          comboLegs.length >= 2 &&
-          bankerRoundParlayUnitPayout(comboLegs.map((g) => g.odds)) <=
-            statutorySingleBetCap(comboLegs.length)
-        ) {
-          alphaSpecs.push({
-            id: `ar-par-${alphaSpecs.length + 1}`,
-            roleLabel: `${comboLegs.length}场跨盘错价共振串`,
-            legs: comboLegs,
-            weight: Math.max(0.015, comboCands.reduce((a, c) => a + c.delta, 0) * 0.5),
-          });
+        const baseParlayWeight = Math.max(0.015, comboCands.reduce((a, c) => a + c.delta, 0) * 0.5);
+        let parlayTuples = [{ legs: [], weightMul: 1 }];
+        let expandedPairOnce = false;
+        for (const c of comboCands) {
+          if (Array.isArray(c.betterPicks) && c.betterPicks.length === 2 && !expandedPairOnce) {
+            const l0 = legOf(c.match, c.betterPicks[0].poolCode, c.betterPicks[0].optionKey);
+            const l1 = legOf(c.match, c.betterPicks[1].poolCode, c.betterPicks[1].optionKey);
+            if (l0 && l1) {
+              expandedPairOnce = true;
+              const inv0 = 1 / Math.max(1.01, l0.odds);
+              const inv1 = 1 / Math.max(1.01, l1.odds);
+              const invS = inv0 + inv1;
+              parlayTuples = parlayTuples.flatMap((pt) => [
+                { legs: [...pt.legs, l0], weightMul: pt.weightMul * (inv0 / invS) },
+                { legs: [...pt.legs, l1], weightMul: pt.weightMul * (inv1 / invS) },
+              ]);
+              continue;
+            }
+          }
+          const lg = legOf(c.match, c.poolCode, c.optionKey);
+          if (lg) {
+            parlayTuples = parlayTuples.map((pt) => ({ ...pt, legs: [...pt.legs, lg] }));
+          }
+        }
+        let addedAnyCombo = false;
+        for (const pt of parlayTuples) {
+          const ordered = sortLegsBySelectedOrder(pt.legs);
+          if (
+            ordered.length >= 2 &&
+            bankerRoundParlayUnitPayout(ordered.map((g) => g.odds)) <=
+              statutorySingleBetCap(ordered.length)
+          ) {
+            alphaSpecs.push({
+              id: `ar-par-${alphaSpecs.length + 1}`,
+              roleLabel: `${ordered.length}场跨盘错价共振串`,
+              legs: ordered,
+              weight: baseParlayWeight * pt.weightMul,
+            });
+            addedAnyCombo = true;
+          }
+        }
+        if (addedAnyCombo) {
           selectedAlphaCands.push(...comboCands);
         }
       }
     } else if (alphaSpecs.length === 0 && bestAlphaByMatch.length === 1 && !bestAlphaByMatch[0].singleAllowed) {
-      // Non-single alpha option paired with highest-efficiency anchor leg on another selected match
+      // Non-single alpha option (1-pick or 2-pick HAD synthetic) paired with highest-efficiency anchor leg on another selected match
       const alphaC = bestAlphaByMatch[0];
       const partnerMatches = selected
         .filter((m) => m.id !== alphaC.matchId)
@@ -5834,21 +6648,43 @@ export function generateParetoPortfolio(
         .filter((x) => x.leg)
         .sort((a, b) => b.leg.odds * b.leg.fairProb - a.leg.odds * a.leg.fairProb);
       if (partnerMatches[0]) {
-        const pairLegs = [
-          legOf(alphaC.match, alphaC.poolCode, alphaC.optionKey),
-          partnerMatches[0].leg,
-        ].sort(
-          (a, b) =>
-            selected.findIndex((m) => m.id === a.matchId) -
-            selected.findIndex((m) => m.id === b.matchId)
-        );
-        alphaSpecs.push({
-          id: 'ar-par-1',
-          roleLabel: '跨盘洼地配胆·2串1',
-          legs: pairLegs,
-          weight: Math.max(0.02, alphaC.delta),
-        });
-        selectedAlphaCands.push(alphaC);
+        if (Array.isArray(alphaC.betterPicks) && alphaC.betterPicks.length === 2) {
+          const l0 = legOf(alphaC.match, alphaC.betterPicks[0].poolCode, alphaC.betterPicks[0].optionKey);
+          const l1 = legOf(alphaC.match, alphaC.betterPicks[1].poolCode, alphaC.betterPicks[1].optionKey);
+          if (l0 && l1) {
+            const inv0 = 1 / Math.max(1.01, l0.odds);
+            const inv1 = 1 / Math.max(1.01, l1.odds);
+            const invS = inv0 + inv1;
+            const baseW = Math.max(0.02, alphaC.delta);
+            alphaSpecs.push(
+              {
+                id: 'ar-par-1',
+                roleLabel: '同义错价配胆·2串1①',
+                legs: sortLegsBySelectedOrder([l0, partnerMatches[0].leg]),
+                weight: baseW * (inv0 / invS),
+              },
+              {
+                id: 'ar-par-2',
+                roleLabel: '同义错价配胆·2串1②',
+                legs: sortLegsBySelectedOrder([l1, partnerMatches[0].leg]),
+                weight: baseW * (inv1 / invS),
+              }
+            );
+            selectedAlphaCands.push(alphaC);
+          }
+        } else {
+          const pairLegs = sortLegsBySelectedOrder([
+            legOf(alphaC.match, alphaC.poolCode, alphaC.optionKey),
+            partnerMatches[0].leg,
+          ]);
+          alphaSpecs.push({
+            id: 'ar-par-1',
+            roleLabel: '跨盘洼地配胆·2串1',
+            legs: pairLegs,
+            weight: Math.max(0.02, alphaC.delta),
+          });
+          selectedAlphaCands.push(alphaC);
+        }
       }
     }
   }
@@ -5869,7 +6705,7 @@ export function generateParetoPortfolio(
       savedCash: cleanBudget,
       reasons: [
         emptyMsg,
-        '细分玩法经经验贝叶斯收缩校准后均未跑赢同场最低抽水主盘 ≥ +3.0%，严守宁缺毋滥客观纪律',
+        '细分玩法经经验贝叶斯收缩校准及同义错价扫描后均未达 +3.0% 门禁，严守宁缺毋滥客观纪律',
       ],
     });
   } else {
@@ -5893,6 +6729,11 @@ export function generateParetoPortfolio(
     const hasPosEv = selectedAlphaCands.some((c) => c.isPositiveEv);
     const bestCand = selectedAlphaCands[0];
     const alphaKind = hasPosEv ? 'positive-ev' : 'relative-alpha';
+    const isPureEquivArb =
+      !hasPosEv && bestCand.kind === 'equivalent-arb' && !(bestCand.mainExcess >= 0.03);
+    const displayEdgePct = isPureEquivArb
+      ? bestCand.arbEdgePct.toFixed(1)
+      : ((bestCand.isPositiveEv ? bestCand.delta : bestCand.mainExcess) * 100).toFixed(1);
 
     slot4Plan = packSlot({
       key: 'alpha-radar',
@@ -5901,10 +6742,14 @@ export function generateParetoPortfolio(
       shortTab: '⚡ 错价雷达',
       badge: hasPosEv
         ? '🔥 跨盘绝对正期望 (+EV)'
-        : `💎 跨盘低抽水洼地 (较主盘少亏 ${(bestCand.delta * 100).toFixed(1)}%)`,
+        : isPureEquivArb
+          ? `💎 跨盘低抽水洼地 (同义省钱差价 +${displayEdgePct}%)`
+          : `💎 跨盘低抽水洼地 (较主盘少亏 ${displayEdgePct}%)`,
       title: hasPosEv
-        ? '跨盘调水滞后 · 绝对正期望 (+EV) 狙击'
-        : `跨盘低抽水洼地 (较主盘少亏 +${(bestCand.delta * 100).toFixed(1)}%)`,
+        ? `跨盘调水滞后 · 绝对正期望 (+${displayEdgePct}% +EV) 狙击`
+        : isPureEquivArb
+          ? `同义错价替换洼地 (较同义入口多赚 +${displayEdgePct}%)`
+          : `跨盘低抽水洼地 (较主盘少亏 +${displayEdgePct}%)`,
       tagline: unlockFullAgg
         ? `已解锁全额仓位 ¥${actualSpent} 狙击真实跨盘正偏离`
         : `36% 轻仓护本垫：仅动用 ¥${actualSpent} 狙击真洼地（立省 ¥${savedCash} 护本）`,
@@ -5913,7 +6758,9 @@ export function generateParetoPortfolio(
       reasons: [
         hasPosEv
           ? `检出【${bestCand.match.matchNumStr} ${bestCand.poolName}·${bestCand.optionLabel}@${bestCand.odds.toFixed(2)}】收缩校准期望返还 ${(bestCand.expectedReturn * 100).toFixed(1)}% (> 100% 绝对正期望)`
-          : `检出【${bestCand.match.matchNumStr} ${bestCand.poolName}·${bestCand.optionLabel}@${bestCand.odds.toFixed(2)}】跑赢同场主盘基准 +${(bestCand.delta * 100).toFixed(1)}%（≥ +3.0% 激活门禁）`,
+          : isPureEquivArb
+            ? `检出【${bestCand.match.matchNumStr} ${bestCand.arbBetterChoice}】较同义入口【${bestCand.arbWorseChoice}】多赚 +${displayEdgePct}%（≥ +3.0% 同义错价门禁）`
+            : `检出【${bestCand.match.matchNumStr} ${bestCand.poolName}·${bestCand.optionLabel}@${bestCand.odds.toFixed(2)}】跑赢同场主盘基准 +${displayEdgePct}%（≥ +3.0% 激活门禁）`,
         unlockFullAgg
           ? '已手动解锁全额仓位，请严格配合每日止损护栏控制波动'
           : `默认开启 36% 轻仓护栏，保住 ¥${savedCash} 现金储备抵御高赔方差`,
@@ -6609,22 +7456,47 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
 }
 
 function isValidPlanObject(plan) {
-  return (
-    Boolean(plan) &&
-    typeof plan === 'object' &&
-    Array.isArray(plan.lines) &&
-    plan.lines.length > 0 &&
-    plan.lines.every(
-      (l) =>
-        l &&
-        typeof l === 'object' &&
-        Array.isArray(l.legs) &&
-        l.legs.length >= 1 &&
-        l.legs.length <= Math.min(...l.legs.map((g) => POOL_MAX_PASS[g?.poolCode] ?? 8)) &&
-        Number.isFinite(Number(l.multiple)) &&
-        Number.isFinite(Number(l.unitPayout))
-    )
-  );
+  if (
+    !plan ||
+    typeof plan !== 'object' ||
+    !Array.isArray(plan.lines) ||
+    plan.lines.length < 1 ||
+    plan.lines.length > 64
+  ) {
+    return false;
+  }
+
+  const allDistinctMatches = new Set();
+  let hasParlayLine = false;
+
+  for (const l of plan.lines) {
+    if (
+      !l ||
+      typeof l !== 'object' ||
+      !Array.isArray(l.legs) ||
+      l.legs.length < 1 ||
+      !Number.isFinite(Number(l.multiple)) ||
+      !Number.isFinite(Number(l.unitPayout))
+    ) {
+      return false;
+    }
+    const maxPass = Math.min(...l.legs.map((g) => POOL_MAX_PASS[g?.poolCode] ?? 8));
+    if (l.legs.length > maxPass) return false;
+    if (l.legs.length >= 2) hasParlayLine = true;
+
+    const lineMatches = new Set();
+    for (const g of l.legs) {
+      if (typeof g?.matchId !== 'string' || g.matchId.trim().length === 0) {
+        return false;
+      }
+      if (lineMatches.has(g.matchId)) return false;
+      lineMatches.add(g.matchId);
+      allDistinctMatches.add(g.matchId);
+    }
+  }
+
+  const maxDistinctMatches = hasParlayLine ? 8 : 15;
+  return allDistinctMatches.size >= 1 && allDistinctMatches.size <= maxDistinctMatches;
 }
 
 function scaleArchetypePlan(plan, rawScale) {
@@ -6677,7 +7549,7 @@ function scaleArchetypePlan(plan, rawScale) {
   };
 }
 
-function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjectiveDeltaPct) {
+function buildSandboxAdjustedBundle(picks, matches, simVoidFirstMatch, subjectiveDeltaPct) {
   const firstMid = picks[0]?.matchId;
   const byMatch = new Map();
   for (const pk of picks) {
@@ -6687,6 +7559,7 @@ function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjective
   }
 
   const shiftedAtomicByMatch = new Map();
+  const atomicMap = new Map();
   for (const [mid, mPicks] of byMatch.entries()) {
     const fm = Array.isArray(matches) ? matches.find((x) => x.id === mid) : null;
     const gl = resolveGoalLineNum(fm, mPicks[0]?.poolName);
@@ -6704,9 +7577,10 @@ function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjective
     }
     const shifted = tiltAtomicProbsBySubjectiveDelta(baseAtomic, mPicks, gl, subjectiveDeltaPct);
     shiftedAtomicByMatch.set(mid, { shifted, gl, fm });
+    atomicMap.set(mid, shifted);
   }
 
-  return picks.map((pk) => {
+  const adjustedPicks = picks.map((pk) => {
     const ctx = shiftedAtomicByMatch.get(pk.matchId);
     const fm = ctx?.fm ?? null;
     const pool = fm?.pools?.[pk.poolCode];
@@ -6732,6 +7606,12 @@ function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjective
       fairProb: prob > 0 ? prob : Number(pk.fairProb) || 0.02,
     };
   });
+
+  return { picks: adjustedPicks, atomicMap };
+}
+
+function buildSandboxAdjustedPicks(picks, matches, simVoidFirstMatch, subjectiveDeltaPct) {
+  return buildSandboxAdjustedBundle(picks, matches, simVoidFirstMatch, subjectiveDeltaPct).picks;
 }
 
 function computeLineStatutoryPayout(legOdds, multiple) {
@@ -6827,7 +7707,9 @@ function applySandboxToPlan(
           ? 0
           : authOpt
             ? authOpt.odds
-            : Number(lg.odds) || 1.0;
+            : fm
+              ? 0
+              : Number(lg.odds) || 1.0;
       const odds = simVoidFirstMatch && lg.matchId === firstMid && baseOdds > 0 ? 1.0 : baseOdds;
       const fairProb = ctx
         ? sumOptionProbOnAtomic(ctx.shifted, lg.poolCode, lg.optionKey, lg.optionLabel, ctx.gl)
@@ -6996,46 +7878,10 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
       }));
       atomicMap.set(mid, alignAtomicProbsToPoolOptions(base, poolCodes[0], pseudoOpts, gl));
     } else {
-      // Multi-pool on same match: start from coherent distribution and apply union ratio if legs were sandbox-tilted
-      let base = getMatchBaseAtomicProbs(fm, poolCodes);
-      const refLeg = mLegs[0];
-      const baseRefP = sumOptionProbOnAtomic(
-        base,
-        refLeg.poolCode,
-        refLeg.optionKey,
-        refLeg.optionLabel,
-        gl
+      atomicMap.set(
+        mid,
+        alignMultiPoolAtomicToTiltedLegs(getMatchBaseAtomicProbs(fm, poolCodes), mLegs, gl)
       );
-      if (baseRefP > 1e-6 && Math.abs(baseRefP - Number(refLeg.fairProb)) > 1e-5) {
-        const atomicLen = ATOMIC_TEMPLATES.length;
-        const hitMask = new Uint8Array(atomicLen);
-        let baseUnion = 0;
-        for (let i = 0; i < atomicLen; i++) {
-          const tpl = ATOMIC_TEMPLATES[i];
-          for (const g of mLegs) {
-            if (doesOptionHitAtomicTemplate(g.poolCode, g.optionKey, g.optionLabel, gl, tpl)) {
-              hitMask[i] = 1;
-              baseUnion += base[i];
-              break;
-            }
-          }
-        }
-        const scaleRatio = Number(refLeg.fairProb) / baseRefP;
-        const targetUnion = Math.min(0.999, Math.max(0.001, baseUnion * scaleRatio));
-        if (baseUnion > 0 && baseUnion < 0.999) {
-          const hitScale = targetUnion / baseUnion;
-          const missScale = (1 - targetUnion) / (1 - baseUnion);
-          const shifted = new Float64Array(atomicLen);
-          let s = 0;
-          for (let i = 0; i < atomicLen; i++) {
-            shifted[i] = base[i] * (hitMask[i] ? hitScale : missScale);
-            s += shifted[i];
-          }
-          if (s > 0) for (let i = 0; i < atomicLen; i++) shifted[i] /= s;
-          base = shifted;
-        }
-      }
-      atomicMap.set(mid, base);
     }
   }
 
@@ -7081,7 +7927,16 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
           : '终端机单张实票最高 99 倍，已按 99 倍上限自动核算店面拆票张数。',
     });
   }
+  const hasInvalidOdds = plan.lines.some((l) => l.legs.some((g) => !(Number(g.odds) > 0)));
   const over20k = plan.totalCost > 20_000;
+  if (hasInvalidOdds) {
+    planWarnings.push({
+      id: 'invalid-odds',
+      severity: 'danger',
+      title: '选单包含未开售或无效赔率选项，已拦截出票',
+      detail: '部分实票选项在当前官方盘面未开售或不存在，请还原等倍后重新选号。',
+    });
+  }
   if (over20k) {
     planWarnings.push({
       id: 'order-limit-20k',
@@ -7119,10 +7974,12 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
     multiple: 1,
     modeLabel: `${plan.shortTab}·分倍精算`,
     canSingle: matchSet.size === 1,
-    canCheckout: plan.lines.length > 0 && !over20k,
-    ruleBlockReason: over20k
-      ? `单次订单金额 ¥${plan.totalCost} 超出体彩 ¥20,000 硬上限，请调低仓位或分单`
-      : null,
+    canCheckout: plan.lines.length > 0 && !over20k && !hasInvalidOdds,
+    ruleBlockReason: hasInvalidOdds
+      ? '选单包含未开售或无效赔率选项'
+      : over20k
+        ? `单次订单金额 ¥${plan.totalCost} 超出体彩 ¥20,000 硬上限，请调低仓位或分单`
+        : null,
     poolCap: fallbackManual?.poolCap ?? 8,
     activePassSizes: activeSizes,
     activeComboCode: null,
@@ -7195,7 +8052,7 @@ export function buildXiaoGaoWarnings(picks, matches) {
 }
 
 /**
- * 统一服务端黑盒精算调度器（单次密文往返完成全部五维审单、三模分倍、五流派配单与对冲计算）
+ * 统一服务端黑盒精算调度器（单次密文往返完成全部五维审单、三模分倍、精算配单与对冲计算）
  */
 export function evaluateQuantWorkspace(params, matchesInput) {
   const baseMatches = matchesInput && matchesInput.length > 0 ? matchesInput : FALLBACK_MATCHES;
@@ -7228,18 +8085,26 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       : 'objective';
   const unlockFullAgg = Boolean(params?.unlockFullAgg);
 
-  const sandboxAdjustedPicks = buildSandboxAdjustedPicks(
+  const sandboxBundle = buildSandboxAdjustedBundle(
     picks,
     matches,
     simVoidFirstMatch,
     subjectiveDeltaPct
   );
+  const sandboxAdjustedPicks = sandboxBundle.picks;
   const hasSandboxShift = simVoidFirstMatch || subjectiveDeltaPct !== 0;
-  const baselinePicks = hasSandboxShift
-    ? buildSandboxAdjustedPicks(picks, matches, false, 0)
-    : sandboxAdjustedPicks;
+  const baselineBundle = hasSandboxShift
+    ? buildSandboxAdjustedBundle(picks, matches, false, 0)
+    : sandboxBundle;
+  const baselinePicks = baselineBundle.picks;
 
-  const manualReport = computeTruthReport(sandboxAdjustedPicks, multiple, matches, passSpec);
+  const manualReport = computeTruthReport(
+    sandboxAdjustedPicks,
+    multiple,
+    matches,
+    passSpec,
+    sandboxBundle.atomicMap
+  );
 
   const foundTargets = matches.filter((m) => targetIds.includes(m.id));
   const resolvedTargets = foundTargets.length > 0 ? foundTargets : matches.slice(0, 2);
@@ -7259,7 +8124,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         ? planSpec.optMode
         : 'equal';
     const baselineManualForOpt = hasSandboxShift
-      ? computeTruthReport(baselinePicks, multiple, matches, passSpec)
+      ? computeTruthReport(baselinePicks, multiple, matches, passSpec, baselineBundle.atomicMap)
       : manualReport;
     const baseAppliedPlan = scaleArchetypePlan(
       optimizeBonusPlan(baselineManualForOpt, matches, mode),
@@ -7300,7 +8165,15 @@ export function evaluateQuantWorkspace(params, matchesInput) {
           const fm = matches.find((m) => m.id === lg.matchId);
           if (!fm) continue;
           const scan = scanMatchAlphaCandidates(fm, null);
-          if (scan.candidates.some((c) => c.poolCode === lg.poolCode && c.optionKey === lg.optionKey)) {
+          if (
+            scan.candidates.some((c) =>
+              Array.isArray(c.betterPicks)
+                ? c.betterPicks.some(
+                    (bp) => bp.poolCode === lg.poolCode && bp.optionKey === lg.optionKey
+                  )
+                : c.poolCode === lg.poolCode && c.optionKey === lg.optionKey
+            )
+          ) {
             anySnapLegStillAlpha = true;
             break;
           }
@@ -7332,11 +8205,8 @@ export function evaluateQuantWorkspace(params, matchesInput) {
 
   const insights = computeProOrderInsights(sandboxAdjustedPicks, effectiveReport, matches, appliedPlan);
 
-  let subjectiveEVPct = 0;
-  if (effectiveReport.totalCost > 0) {
-    const expRet = effectiveReport.combos.reduce((a, c) => a + c.prob * c.totalPayout, 0);
-    subjectiveEVPct = ((expRet - effectiveReport.totalCost) / effectiveReport.totalCost) * 100;
-  }
+  const subjectiveEVPct =
+    effectiveReport.totalCost > 0 ? effectiveReport.expectedValueRate * 100 : 0;
 
   const allWarnings = [...effectiveReport.warnings, ...buildXiaoGaoWarnings(picks, matches)];
 
