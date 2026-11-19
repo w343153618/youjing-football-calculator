@@ -1,3 +1,5 @@
+# Stored at docs/ops/github-ci.yml because local HTTPS OAuth token lacks `workflow` scope to push .github/workflows/*.yml directly.
+# Upload via GitHub Web UI or SSH/PAT with `workflow` scope if enabling GitHub Actions.
 name: CI
 on:
   push:
@@ -5,7 +7,7 @@ on:
   pull_request:
     branches: [main]
 jobs:
-  typecheck-and-build:
+  guardrails-test-and-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,7 +16,9 @@ jobs:
           version: 10
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: 'pnpm'
       - run: pnpm install --no-frozen-lockfile
+      - run: pnpm run check:guardrails
+      - run: pnpm test
       - run: pnpm run build

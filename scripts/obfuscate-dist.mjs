@@ -65,6 +65,39 @@ async function main() {
   } catch {
     // ignore if no skins dir
   }
+
+  // Deterministic post-build gate: 0 .map files anywhere in dist/, 0 plaintext Chinese chars in dist/assets/*.js
+  async function walkDist(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const files = [];
+    for (const ent of entries) {
+      const fullPath = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        files.push(...(await walkDist(fullPath)));
+      } else {
+        files.push(fullPath);
+      }
+    }
+    return files;
+  }
+
+  const allDistFiles = await walkDist(DIST_DIR);
+  const leftoverMaps = allDistFiles.filter((f) => f.endsWith('.map'));
+  if (leftoverMaps.length > 0) {
+    throw new Error(`Post-build gate failed: leftover source maps found: ${leftoverMaps.join(', ')}`);
+  }
+
+  const postAssets = (await fs.readdir(ASSETS_DIR)).filter((f) => f.endsWith('.js'));
+  let plainZhCount = 0;
+  for (const jf of postAssets) {
+    const content = await fs.readFile(path.join(ASSETS_DIR, jf), 'utf8');
+    const matches = content.match(/[\u4e00-\u9fff]/g);
+    if (matches) plainZhCount += matches.length;
+  }
+  if (plainZhCount > 0) {
+    throw new Error(`Post-build gate failed: ${plainZhCount} plaintext Chinese character(s) leaked in dist/assets/*.js`);
+  }
+  console.log('[obfuscate] Gate passed: 0 .map files, 0 plaintext Chinese chars in dist/assets/*.js.');
 }
 
 main().catch((err) => {
