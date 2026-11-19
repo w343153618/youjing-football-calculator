@@ -6,7 +6,7 @@ const STAGE_ACTIONS: Array<{ id: string; label: string; cmd: string; value: stri
   { id: 'match', label: '赛事', cmd: 'setTab', value: 'match' },
   { id: 'more', label: '全玩法', cmd: 'openMore', value: null },
   { id: 'intel', label: '卡盘底牌', cmd: 'openIntel', value: null },
-  { id: 'archetypes', label: '五流派', cmd: 'setTab', value: 'archetypes' },
+  { id: 'archetypes', label: '精算配单', cmd: 'setTab', value: 'archetypes' },
   { id: 'audit', label: '审单锁利', cmd: 'setTab', value: 'audit' },
   { id: 'poster', label: '打票海报', cmd: 'openPoster', value: null },
   { id: 'ledger', label: '账本皮肤', cmd: 'setTab', value: 'ledger' },
