@@ -5,10 +5,10 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 导出公开单场闭合校准接缝（如 `calibrateMatchCoherentModel` 及非线性去水算子），支持 `Shin` 双精度二分求解与极端边界 `Power` / 等比回退，确保 3 选、8 选、9 选、31 选盘口输出概率恒属于 `(0, 1)` 且单池总和误差 `< 1e-12`，同时保留原始盘面 `payoutRatio` 与 `vig` 展示不变。
-- [ ] 当单场在售奖池数 `>= 2` 时，按奖池返还率反方差赋权超定反演 $(\hat{\lambda}_H, \hat{\lambda}_A, \hat{\rho}, \hat{\theta})$（`HAFU` 停售时固定 $\hat{\theta} = 0.43$），将导出的五池闭合概率统一赋给各玩法选项的 `fairProb`（内部同步保留单池 `shinProb`）；单场仅 1 个奖池开售时自动回退该池 `Shin / Power` 去水值。
-- [ ] 同场五池满足机器精度闭合公理：`胜胜 + 平胜 + 负胜` 与 `主胜` 误差 `< 1e-12`，`总进球·0球` 与 `比分·0:0` 误差 `< 1e-12`，`28 项显式比分 + 胜其它 + 平其它 + 负其它` 总和为 `1.0`，单场耗时 `< 0.5ms`。
-- [ ] 单场微观精算同源升级：`homeXG + awayXG === totalXG`，全让球线（`-1 / +1 / -2 / +2` 及 `HHAD` 停售）下的 `oneGoalProb` 与 `oneGoalShareOfWins` 统一由闭合比分分布精确导出（正式替代 `Spec 0007` 分段比值规则，保持 `>= 50%` 警示阈值），并输出比赛节奏相关性（`paceCorrelation`、`paceLabel`）与单场跨盘扫描摘要（`alphaScanSummary`）。
-- [ ] 内置离线真实完场竞彩五池水位与赛果基准夹具，按 TDD 红绿循环通过 `RPS`、`Brier Score`、`Log-Loss` 与 `ECE` 断言校准度显著优于旧等比例去水基线，且全仓既有测试同步平滑更新并 100% 通过。
+- [x] 导出公开单场闭合校准接缝（如 `calibrateMatchCoherentModel` 及非线性去水算子），支持 `Shin` 双精度二分求解与极端边界 `Power` / 等比回退，确保 3 选、8 选、9 选、31 选盘口输出概率恒属于 `(0, 1)` 且单池总和误差 `< 1e-12`，同时保留原始盘面 `payoutRatio` 与 `vig` 展示不变。
+- [x] 当单场在售奖池数 `>= 2` 时，按奖池返还率反方差赋权超定反演 $(\hat{\lambda}_H, \hat{\lambda}_A, \hat{\rho}, \hat{\theta})$（`HAFU` 停售时固定 $\hat{\theta} = 0.43$），将导出的五池闭合概率统一赋给各玩法选项的 `fairProb`（内部同步保留单池 `shinProb`）；单场仅 1 个奖池开售时自动回退该池 `Shin / Power` 去水值。
+- [x] 同场五池满足机器精度闭合公理：`胜胜 + 平胜 + 负胜` 与 `主胜` 误差 `< 1e-12`，`总进球·0球` 与 `比分·0:0` 误差 `< 1e-12`，`28 项显式比分 + 胜其它 + 平其它 + 负其它` 总和为 `1.0`，单场耗时 `< 0.5ms`。
+- [x] 单场微观精算同源升级：`homeXG + awayXG === totalXG`，全让球线（`-1 / +1 / -2 / +2` 及 `HHAD` 停售）下的 `oneGoalProb` 与 `oneGoalShareOfWins` 统一由闭合比分分布精确导出（正式替代 `Spec 0007` 分段比值规则，保持 `>= 50%` 警示阈值），并输出比赛节奏相关性（`paceCorrelation`、`paceLabel`）与单场跨盘扫描摘要（`alphaScanSummary`）。
+- [x] 内置离线真实完场竞彩五池水位与赛果基准夹具，按 TDD 红绿循环通过 `RPS`、`Brier Score`、`Log-Loss` 与 `ECE` 断言校准度显著优于旧等比例去水基线，且全仓既有测试同步平滑更新并 100% 通过。
