@@ -255,12 +255,33 @@ describe('Seam 2: Bonus Optimizer, Five Archetypes, Equivalent Arbitrage & Stagg
     );
   });
 
-  it('enforces 36% light-position guardrail on value-assassin archetype by default', () => {
+  it('enforces 36% light-position guardrail (or honest ¥0 empty state) on alpha-radar slot by default', () => {
     const plans = generateFiveArchetypes(FALLBACK_MATCHES.slice(0, 2), 100, 'objective', false);
-    assert.equal(plans.length, 5);
-    const assassin = plans.find((p) => p.key === 'value-assassin')!;
-    assert.ok(assassin.totalCost <= 44);
-    assert.ok(assassin.savedCash >= 56);
+    assert.equal(plans.length, 4);
+    const alphaRadar = plans.find((p) => p.key === 'alpha-radar')!;
+    assert.ok(alphaRadar);
+    assert.ok(alphaRadar.totalCost <= 44);
+    assert.ok(alphaRadar.savedCash >= 56);
+
+    // Also verify 36% guardrail when alpha-radar is actively triggered on a lagged sub-pool match
+    const laggedMatch: MatchItem = {
+      ...FALLBACK_MATCHES[0],
+      id: 'seam2-lag-alpha',
+      pools: {
+        ...FALLBACK_MATCHES[0].pools,
+        TTG: {
+          ...FALLBACK_MATCHES[0].pools.TTG,
+          options: FALLBACK_MATCHES[0].pools.TTG.options.map((o) =>
+            o.key === 's2' ? { ...o, odds: 3.95 } : o
+          ),
+        },
+      },
+    };
+    const activePlans = generateFiveArchetypes([laggedMatch, FALLBACK_MATCHES[1]], 100, 'objective', false);
+    const activeAlpha = activePlans.find((p) => p.key === 'alpha-radar')!;
+    assert.equal(activeAlpha.available, true);
+    assert.ok(activeAlpha.totalCost > 0 && activeAlpha.totalCost <= 44);
+    assert.ok(activeAlpha.savedCash >= 56);
   });
 
   it('computes staggered kickoff hedge lock-in and match-exact activeSwapTip (including HAD synthetic better than HHAD)', () => {

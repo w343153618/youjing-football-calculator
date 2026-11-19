@@ -359,15 +359,15 @@ describe('Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
       FALLBACK_MATCHES
     );
 
-    const iron = wsAnchored.fivePlans.find((p) => p.key === 'iron-shield')!;
+    const iron = wsAnchored.portfolioPlans.find((p) => p.key === 'max-profit-prob')!;
     const mainLine = iron.lines[0];
     assert.ok(
       mainLine.legs.some((lg) => lg.matchId === m0.id && lg.optionKey === 'a'),
-      'Iron shield primary line must honor user-selected 巴林 客胜'
+      'max-profit-prob primary line must honor user-selected 巴林 客胜'
     );
     assert.ok(
       mainLine.legs.some((lg) => lg.matchId === m3.id && lg.optionKey === 'h'),
-      'Iron shield primary line must honor user-selected 威尔士 主胜'
+      'max-profit-prob primary line must honor user-selected 威尔士 主胜'
     );
   });
 
