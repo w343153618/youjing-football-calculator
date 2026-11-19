@@ -1662,8 +1662,8 @@ export function SkinPhoneApp({
                             `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash} 或采用前 3 档主方案`}
                         </div>
                       </div>
-                      <span className="chip num">
-                        ¥0（已替你省下 ¥{currentArch.savedCash}）
+                      <span className="chip num" style={{ flexShrink: 0 }}>
+                        ¥0<i>省¥{currentArch.savedCash}</i>
                       </span>
                     </div>
                     <div className="note-box" style={{ marginTop: 8 }}>
@@ -1672,9 +1672,11 @@ export function SkinPhoneApp({
                         {currentArch.emptyReason ||
                           `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash}，绝不硬凑高抽水废单。`}
                       </div>
-                      {currentArch.reasons.map((r, idx) => (
-                        <div key={idx}>· {r}</div>
-                      ))}
+                      {currentArch.reasons
+                        .filter((r) => r !== currentArch.emptyReason)
+                        .map((r, idx) => (
+                          <div key={idx}>· {r}</div>
+                        ))}
                     </div>
                   </div>
 
@@ -3783,19 +3785,35 @@ export function SkinPhoneApp({
         className={`m-bet-pill ${
           !effectiveReport.canCheckout && effectiveReport.matchCount > 0 ? 'warn' : 'hi'
         }`}
+        style={{ maxWidth: 132, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
         onClick={() => setBarPopover((p) => (p === 'pass' ? null : 'pass'))}
       >
         {effectiveReport.matchCount}场 ·{' '}
-        {effectiveReport.matchCount === 0 ? '过关选择' : effectiveReport.modeLabel} ▴
+        {effectiveReport.matchCount === 0
+          ? '过关选择'
+          : appliedPlan
+            ? '智能分倍'
+            : effectiveReport.modeLabel}{' '}
+        ▴
       </button>
 
       {appliedPlan ? (
-        <div className="m-mul-grp">
-          <button type="button" className="m-mul-val" onClick={() => scaleAppliedPlanBy(2)}>
-            ×2倍扩仓
+        <div className="m-mul-grp" style={{ flexShrink: 0 }}>
+          <button
+            type="button"
+            className="m-mul-val"
+            title="×2倍扩仓"
+            onClick={() => scaleAppliedPlanBy(2)}
+          >
+            ×2倍
           </button>
-          <button type="button" className="m-bet-pill" onClick={restoreEqualMultiple}>
-            还原等倍
+          <button
+            type="button"
+            className="m-bet-pill"
+            title="还原等倍"
+            onClick={restoreEqualMultiple}
+          >
+            等倍
           </button>
         </div>
       ) : (
@@ -3813,7 +3831,7 @@ export function SkinPhoneApp({
 
       <div
         className="m-bet-sum"
-        style={{ cursor: 'pointer' }}
+        style={{ cursor: 'pointer', minWidth: 0 }}
         onClick={() => {
           if (appliedPlan) {
             setBarPopover((p) => (p === 'pass' ? null : 'pass'));
@@ -3823,16 +3841,13 @@ export function SkinPhoneApp({
           }
         }}
       >
-        <b ref={slipAmtRef}>
-          {appliedPlan
-            ? `⚖️智能分倍中 (总¥${effectiveReport.totalCost})`
-            : `¥${effectiveReport.totalCost}`}
-        </b>
+        <b ref={slipAmtRef}>¥{effectiveReport.totalCost}</b>
       </div>
 
       <button
         type="button"
         className="m-bet-go"
+        style={{ flexShrink: 0 }}
         onClick={() => {
           setBarPopover(null);
           setTab(effectiveReport.matchCount === 0 ? 'match' : 'audit');
@@ -4410,11 +4425,11 @@ export function SkinPhoneApp({
           {tab === 'archetypes' && (
             <>
               <div className="title-row">
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <span className="h1">优竞体育内部专用</span>
                   <span className="sub num">五池闭合校准 · 3+1 帕累托精算配单</span>
                 </div>
-                <div className="hdr-acts">
+                <div className="hdr-acts" style={{ flexShrink: 0 }}>
                   <button
                     type="button"
                     className="key mini"
@@ -4440,6 +4455,21 @@ export function SkinPhoneApp({
                       👑总控
                     </button>
                   )}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  marginBottom: 8,
+                }}
+              >
+                <span className="small" style={{ margin: 0 }}>
+                  目标投入预算档位
+                </span>
+                <div style={{ display: 'flex', gap: 5 }}>
                   {[50, 100, 200, 500].map((b) => (
                     <button
                       key={b}

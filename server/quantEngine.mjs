@@ -6748,8 +6748,8 @@ export function generateParetoPortfolio(
       title: hasPosEv
         ? `跨盘调水滞后 · 绝对正期望 (+${displayEdgePct}% +EV) 狙击`
         : isPureEquivArb
-          ? `同义错价替换洼地 (较同义入口多赚 +${displayEdgePct}%)`
-          : `跨盘低抽水洼地 (较主盘少亏 +${displayEdgePct}%)`,
+          ? `同义错价替换洼地 · 零风险多赚 +${displayEdgePct}%`
+          : `经验贝叶斯收缩校准 · 跨盘真错价狙击 (+${displayEdgePct}%)`,
       tagline: unlockFullAgg
         ? `已解锁全额仓位 ¥${actualSpent} 狙击真实跨盘正偏离`
         : `36% 轻仓护本垫：仅动用 ¥${actualSpent} 狙击真洼地（立省 ¥${savedCash} 护本）`,

@@ -1,6 +1,6 @@
 # Spec 0008: 五池闭合精算概率底座与联合状态空间 3+1 帕累托配单重构（Coherent Calibration Core & Joint State-Space 3+1 Pareto Portfolio）
 
-Status: `ready-for-agent`
+Status: `completed`
 Baseline Anchor: `docs/specs/0000-baseline-spec.md` (`v2.2.0`) & `docs/specs/0007-baseline-quirks-and-ledger-closure.md`
 Related ADRs: `ADR-0001`, `ADR-0002`, `ADR-0007`, `ADR-0008`, `ADR-0009`
 Canonical Vocabulary: `GLOSSARY.md`
