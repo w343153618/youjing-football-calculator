@@ -9,6 +9,7 @@ import {
   OFFICIAL_CRS_PAIRS,
   analyzeMatchMicroQuant,
   archetypeToReport,
+  calibrateMatchCoherentModel,
   computeProOrderInsights,
   computeTruthReport,
   evaluateQuantWorkspace,
@@ -97,10 +98,10 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
     }
   });
 
-  it('Slice B: computes exact CRS 1-goal share on non-±1 lines (-2/+2) or suspended HHAD, preserves ±1 HHAD ratio, and unifies 50% amber badge threshold', () => {
+  it('Slice B: computes coherent 1-goal share across ±1, non-±1 lines (-2/+2) & suspended HHAD (Spec 0008 superseding piecewise CRS stitch) and unifies 50% amber badge threshold', () => {
     const base = FALLBACK_MATCHES[0] as MatchItem;
 
-    // 1. goalLine = -1 selling HHAD with 51% share -> keeps HHAD.hd ratio AND triggers amber badge at >= 50%
+    // 1. goalLine = -1 selling HHAD with >= 50% coherent 1-goal share -> matches coherent HHAD.hd / HAD.h AND triggers amber badge
     const minusOne51: MatchItem = {
       ...base,
       id: 'b-minus1-51',
@@ -129,22 +130,26 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
         },
       },
     };
+    const cal51 = calibrateMatchCoherentModel(minusOne51);
     const mq51 = analyzeMatchMicroQuant(minusOne51);
-    assert.ok(Math.abs(mq51.oneGoalProb - 0.255) < 1e-9);
-    assert.ok(Math.abs(mq51.oneGoalShareOfWins - 0.51) < 1e-9);
+    assert.ok(Math.abs(mq51.oneGoalProb - cal51.poolProbs.HHAD.hd) < 1e-12);
+    assert.ok(
+      Math.abs(mq51.oneGoalShareOfWins - Math.min(0.85, cal51.poolProbs.HHAD.hd / cal51.poolProbs.HAD.h)) < 1e-12
+    );
+    assert.ok(mq51.oneGoalShareOfWins >= 0.5, `Expected >= 50% card-pan share, got ${mq51.oneGoalShareOfWins}`);
     assert.equal(mq51.microBadges[1].tone, 'amber');
-    assert.equal(mq51.microBadges[1].text, '防赢1球卡盘 51%');
+    assert.equal(mq51.microBadges[1].text, `防赢1球卡盘 ${(mq51.oneGoalShareOfWins * 100).toFixed(0)}%`);
 
-    // 2. goalLine = -2 deep home favorite -> uses CRS (0.20 / 0.80 = 0.25), NOT HHAD(-2).hd (0.44 / 0.80 = 0.55)
+    // 2. goalLine = -2 deep home favorite (FALLBACK_MATCHES[5] 法国 vs 以色列 style) -> uses coherent P(X-Y=1)/P(X>Y) (< 50%), NOT HHAD(-2).hd!
     const homeMinusTwo: MatchItem = {
-      ...base,
+      ...(FALLBACK_MATCHES[5] as MatchItem),
       id: 'b-home-minus2',
       home: '拜仁',
       away: '波鸿',
       pools: {
-        ...base.pools,
+        ...(FALLBACK_MATCHES[5] as MatchItem).pools,
         HAD: {
-          ...base.pools.HAD,
+          ...(FALLBACK_MATCHES[5] as MatchItem).pools.HAD,
           selling: true,
           options: [
             { key: 'h', label: '主胜', odds: 1.1, trend: 0, fairProb: 0.8 },
@@ -153,17 +158,17 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
           ],
         },
         HHAD: {
-          ...base.pools.HHAD,
+          ...(FALLBACK_MATCHES[5] as MatchItem).pools.HHAD,
           selling: true,
           goalLine: '-2',
           options: [
-            { key: 'hh', label: '让胜', odds: 2.4, trend: 0, fairProb: 0.36 },
-            { key: 'hd', label: '让平', odds: 2.0, trend: 0, fairProb: 0.44 },
-            { key: 'ha', label: '让负', odds: 4.4, trend: 0, fairProb: 0.2 },
+            { key: 'hh', label: '让胜', odds: 2.1, trend: 0, fairProb: 0.42 },
+            { key: 'hd', label: '让平', odds: 3.6, trend: 0, fairProb: 0.24 },
+            { key: 'ha', label: '让负', odds: 2.6, trend: 0, fairProb: 0.34 },
           ],
         },
         CRS: {
-          ...base.pools.CRS,
+          ...(FALLBACK_MATCHES[5] as MatchItem).pools.CRS,
           selling: true,
           options: makeExactCrsOptions({
             '1:0': 0.1,
@@ -201,84 +206,98 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
         },
       },
     };
+    const calMinusTwo = calibrateMatchCoherentModel(homeMinusTwo);
     const mqMinusTwo = analyzeMatchMicroQuant(homeMinusTwo);
-    assert.ok(Math.abs(mqMinusTwo.oneGoalShareOfWins - 0.25) < 1e-9);
-    assert.ok(Math.abs(mqMinusTwo.oneGoalProb - 0.2) < 1e-9);
+    assert.ok(mqMinusTwo.oneGoalShareOfWins < 0.5, `Deep -2 favorite should have <50% 1-goal share, got ${mqMinusTwo.oneGoalShareOfWins}`);
+    assert.ok(Math.abs(mqMinusTwo.oneGoalProb - calMinusTwo.poolProbs.HHAD.hd) > 0.01, 'Must NOT confuse HHAD(-2).hd (2-goal win) with 1-goal win');
     assert.equal(mqMinusTwo.microBadges[1].tone, 'emerald');
-    assert.equal(mqMinusTwo.microBadges[1].text, '穿盘率 75%');
+    assert.equal(mqMinusTwo.microBadges[1].text, `穿盘率 ${(100 - mqMinusTwo.oneGoalShareOfWins * 100).toFixed(0)}%`);
 
-    // 3. goalLine = +2 away favorite & suspended HHAD & suspended CRS zero-div safety
+    // 3. goalLine = +2 defensive away favorite & suspended HHAD (default '-1' trap) & suspended CRS zero-div safety
     const awayCrsOptions = makeExactCrsOptions({
-      '0:1': 0.24,
-      '1:2': 0.15,
-      '2:3': 0.06,
-      '0:2': 0.12,
-      '0:3': 0.06,
-      '1:3': 0.04,
-      '0:4': 0.02,
-      '1:4': 0.01,
-      '2:4': 0.01,
-      '0:5': 0.01,
-      '1:5': 0.01,
-      '2:5': 0.005,
-      '负其它': 0.015,
-      '0:0': 0.06,
-      '1:1': 0.06,
+      '0:1': 0.28,
+      '1:2': 0.14,
+      '2:3': 0.03,
+      '0:2': 0.08,
+      '0:3': 0.02,
+      '1:3': 0.015,
+      '0:4': 0.005,
+      '1:4': 0.004,
+      '2:4': 0.003,
+      '0:5': 0.002,
+      '1:5': 0.002,
+      '2:5': 0.002,
+      '负其它': 0.002,
+      '0:0': 0.14,
+      '1:1': 0.11,
       '2:2': 0.02,
-      '3:3': 0.005,
-      '平其它': 0.005,
-      '1:0': 0.04,
+      '3:3': 0.003,
+      '平其它': 0.002,
+      '1:0': 0.07,
       '2:1': 0.03,
-      '2:0': 0.01,
+      '2:0': 0.012,
       '3:2': 0.004,
-      '3:0': 0.002,
-      '3:1': 0.002,
+      '3:0': 0.003,
+      '3:1': 0.003,
       '4:0': 0.002,
       '4:1': 0.002,
       '4:2': 0.002,
       '5:0': 0.002,
-      '5:1': 0.001,
-      '5:2': 0.001,
+      '5:1': 0.002,
+      '5:2': 0.002,
       '胜其它': 0.002,
     });
     const awayPlusTwo: MatchItem = {
-      ...base,
+      ...(FALLBACK_MATCHES[7] as MatchItem),
       id: 'b-away-plus2',
       home: '弱旅',
       away: '皇马',
       pools: {
-        ...base.pools,
+        ...(FALLBACK_MATCHES[7] as MatchItem).pools,
         HAD: {
-          ...base.pools.HAD,
+          ...(FALLBACK_MATCHES[7] as MatchItem).pools.HAD,
           selling: true,
           options: [
-            { key: 'h', label: '主胜', odds: 8.8, trend: 0, fairProb: 0.1 },
-            { key: 'd', label: '平', odds: 5.87, trend: 0, fairProb: 0.15 },
-            { key: 'a', label: '客胜', odds: 1.17, trend: 0, fairProb: 0.75 },
+            { key: 'h', label: '主胜', odds: 5.4, trend: 0, fairProb: 0.16 },
+            { key: 'd', label: '平', odds: 3.35, trend: 0, fairProb: 0.26 },
+            { key: 'a', label: '客胜', odds: 1.54, trend: 0, fairProb: 0.58 },
           ],
         },
         HHAD: {
-          ...base.pools.HHAD,
+          ...(FALLBACK_MATCHES[7] as MatchItem).pools.HHAD,
           selling: true,
           goalLine: '+2',
           options: [
-            { key: 'hh', label: '让胜', odds: 2.2, trend: 0, fairProb: 0.4 },
-            { key: 'hd', label: '让平', odds: 4.4, trend: 0, fairProb: 0.2 },
-            { key: 'ha', label: '让负', odds: 2.2, trend: 0, fairProb: 0.4 },
+            { key: 'hh', label: '让胜', odds: 1.18, trend: 0, fairProb: 0.74 },
+            { key: 'hd', label: '让平', odds: 4.5, trend: 0, fairProb: 0.19 },
+            { key: 'ha', label: '让负', odds: 11.5, trend: 0, fairProb: 0.07 },
+          ],
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[7] as MatchItem).pools.TTG,
+          selling: true,
+          options: [
+            { key: 's0', label: '0球', odds: 4.8, trend: 0, fairProb: 0.18 },
+            { key: 's1', label: '1球', odds: 2.85, trend: 0, fairProb: 0.3 },
+            { key: 's2', label: '2球', odds: 3.2, trend: 0, fairProb: 0.27 },
+            { key: 's3', label: '3球', odds: 5.2, trend: 0, fairProb: 0.15 },
+            { key: 's4', label: '4球', odds: 11.5, trend: 0, fairProb: 0.06 },
+            { key: 's5', label: '5球', odds: 25.0, trend: 0, fairProb: 0.024 },
+            { key: 's6', label: '6球', odds: 50.0, trend: 0, fairProb: 0.01 },
+            { key: 's7', label: '7+球', odds: 80.0, trend: 0, fairProb: 0.006 },
           ],
         },
         CRS: {
-          ...base.pools.CRS,
+          ...(FALLBACK_MATCHES[7] as MatchItem).pools.CRS,
           selling: true,
           options: awayCrsOptions,
         },
       },
     };
     const mqPlusTwo = analyzeMatchMicroQuant(awayPlusTwo);
-    assert.ok(Math.abs(mqPlusTwo.oneGoalShareOfWins - 0.6) < 1e-9);
-    assert.ok(Math.abs(mqPlusTwo.oneGoalProb - 0.45) < 1e-9);
+    assert.ok(mqPlusTwo.oneGoalShareOfWins >= 0.5, `Expected defensive away favorite on +2 to trigger >=50% card-pan, got ${mqPlusTwo.oneGoalShareOfWins}`);
     assert.equal(mqPlusTwo.microBadges[1].tone, 'amber');
-    assert.equal(mqPlusTwo.microBadges[1].text, '防赢1球卡盘 60%');
+    assert.ok(mqPlusTwo.cardPanTip.includes('皇马'));
 
     const hhadSuspended: MatchItem = {
       ...awayPlusTwo,
@@ -289,8 +308,8 @@ describe('Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
       },
     };
     const mqHhadSusp = analyzeMatchMicroQuant(hhadSuspended);
-    assert.ok(Math.abs(mqHhadSusp.oneGoalShareOfWins - 0.6) < 1e-9);
-    assert.ok(Math.abs(mqHhadSusp.oneGoalProb - 0.45) < 1e-9);
+    assert.ok(mqHhadSusp.oneGoalShareOfWins >= 0.5);
+    assert.ok(mqHhadSusp.cardPanTip.includes('皇马'), 'Must still identify away favorite 皇马 when HHAD is suspended with default -1 goalLine');
 
     const bothSuspended: MatchItem = {
       ...hhadSuspended,
