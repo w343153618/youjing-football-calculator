@@ -1,3 +1,4 @@
+pnpm exec lint-staged
 pnpm run check:guardrails
 pnpm run typecheck
 pnpm run test
