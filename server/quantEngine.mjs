@@ -152,12 +152,217 @@ export const OFFICIAL_CRS_PAIRS = [
   ['s1sa', '负其它'],
 ];
 
+/**
+ * 单池非线性去水求解器（Seam A）：
+ * - 默认优先采用 Shin (1993) 知情交易博弈二分法（z ∈ (1e-9, 1 - 1e-9)，容差 <= 1e-12）剥离冷门长尾保护性暗扣；
+ * - 当 V <= 1 + 1e-6 或极端畸形水位导致 Shin 越界时，平滑回退 Power 幂次法（q_i^k）；
+ * - 当 n < 2 或存在 <= 1.0 超界水位时兜底回退 Multiplicative 等比归一化，确保输出概率恒属于 (0, 1] 且总和误差 < 1e-12。
+ */
+export function devigPoolProbabilities(rawInputs, method = 'shin') {
+  if (!Array.isArray(rawInputs) || rawInputs.length === 0) {
+    return {
+      probs: [],
+      methodUsed: 'multiplicative',
+      overround: 0,
+      payoutRatio: 0.88,
+      vig: 0.12,
+      param: 1,
+    };
+  }
+
+  const odds = rawInputs.map((item) =>
+    typeof item === 'object' && item !== null ? Number(item.odds) : Number(item)
+  );
+  const n = odds.length;
+
+  if (odds.some((o) => !Number.isFinite(o) || o <= 0)) {
+    const validInv = odds.map((o) => (Number.isFinite(o) && o > 0 ? 1 / o : 0));
+    const invSum = validInv.reduce((a, b) => a + b, 0);
+    const probs =
+      invSum > 0 ? validInv.map((q) => q / invSum) : odds.map(() => 1 / n);
+    const payoutRatio = invSum > 0 ? 1 / invSum : 0.88;
+    return {
+      probs,
+      methodUsed: 'multiplicative',
+      overround: invSum,
+      payoutRatio,
+      vig: Math.max(0, 1 - payoutRatio),
+      param: 1,
+    };
+  }
+
+  if (n === 1) {
+    const overround = 1 / odds[0];
+    const payoutRatio = odds[0];
+    return {
+      probs: [1],
+      methodUsed: 'multiplicative',
+      overround,
+      payoutRatio,
+      vig: Math.max(0, 1 - payoutRatio),
+      param: 1,
+    };
+  }
+
+  const q = new Float64Array(n);
+  let V = 0;
+  let allSubUnitQ = true;
+  for (let i = 0; i < n; i++) {
+    const qi = 1 / odds[i];
+    q[i] = qi;
+    V += qi;
+    if (!(qi > 0 && qi < 1)) allSubUnitQ = false;
+  }
+  const payoutRatio = 1 / V;
+  const vig = Math.max(0, 1 - payoutRatio);
+
+  const solveMultiplicative = () => {
+    const raw = new Array(n);
+    let s = 0;
+    for (let i = 0; i < n; i++) {
+      const pi = q[i] / V;
+      raw[i] = pi;
+      s += pi;
+    }
+    const probs = s > 0 ? raw.map((p) => p / s) : raw;
+    return {
+      probs,
+      methodUsed: 'multiplicative',
+      overround: V,
+      payoutRatio,
+      vig,
+      param: 1,
+    };
+  };
+
+  const solvePower = () => {
+    if (!allSubUnitQ) return null;
+    if (Math.abs(V - 1) <= 1e-13) {
+      const probs = Array.from(q, (qi) => qi / V);
+      return {
+        probs,
+        methodUsed: 'power',
+        overround: V,
+        payoutRatio,
+        vig,
+        param: 1,
+      };
+    }
+
+    const logQ = new Float64Array(n);
+    for (let i = 0; i < n; i++) logQ[i] = Math.log(q[i]);
+    const evalSum = (k) => {
+      let s = 0;
+      for (let i = 0; i < n; i++) s += Math.exp(k * logQ[i]);
+      return s;
+    };
+
+    let kLo = 1e-6;
+    let kHi = 8.0;
+    while (evalSum(kHi) > 1 && kHi < 4096) {
+      kLo = kHi;
+      kHi *= 2;
+    }
+    while (evalSum(kLo) < 1 && kLo > 1e-12) {
+      kHi = kLo;
+      kLo *= 0.1;
+    }
+    if (!(evalSum(kLo) >= 1 && evalSum(kHi) <= 1)) return null;
+
+    let kMid = 1;
+    for (let iter = 0; iter < 64; iter++) {
+      kMid = 0.5 * (kLo + kHi);
+      const s = evalSum(kMid);
+      if (Math.abs(s - 1) <= 1e-14 || kHi - kLo <= 1e-14) break;
+      if (s > 1) kLo = kMid;
+      else kHi = kMid;
+    }
+
+    const raw = new Array(n);
+    let sumP = 0;
+    for (let i = 0; i < n; i++) {
+      const pi = Math.exp(kMid * logQ[i]);
+      if (!(pi > 0 && pi < 1 && Number.isFinite(pi))) return null;
+      raw[i] = pi;
+      sumP += pi;
+    }
+    if (!(sumP > 0 && Number.isFinite(sumP))) return null;
+    return {
+      probs: raw.map((p) => p / sumP),
+      methodUsed: 'power',
+      overround: V,
+      payoutRatio,
+      vig,
+      param: kMid,
+    };
+  };
+
+  const solveShin = () => {
+    if (!(V > 1 + 1e-6 && allSubUnitQ)) return null;
+    const twoQSqOverV = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      twoQSqOverV[i] = (2 * q[i] * q[i]) / V;
+    }
+    const evalSum = (z) => {
+      const zSq = z * z;
+      const twoMinusTwoZ = 2 * (1 - z);
+      let s = 0;
+      for (let i = 0; i < n; i++) {
+        const c = twoQSqOverV[i];
+        s += c / (Math.sqrt(zSq + twoMinusTwoZ * c) + z);
+      }
+      return s;
+    };
+
+    let zLo = 1e-9;
+    let zHi = 1 - 1e-9;
+    const sLo = evalSum(zLo);
+    const sHi = evalSum(zHi);
+    if (!(sLo > 1 + 1e-13 && sHi < 1 - 1e-13)) return null;
+
+    let zMid = 0.05;
+    for (let iter = 0; iter < 64; iter++) {
+      zMid = 0.5 * (zLo + zHi);
+      const s = evalSum(zMid);
+      if (Math.abs(s - 1) <= 1e-14 || zHi - zLo <= 1e-14) break;
+      if (s > 1) zLo = zMid;
+      else zHi = zMid;
+    }
+
+    const raw = new Array(n);
+    const zSq = zMid * zMid;
+    const twoMinusTwoZ = 2 * (1 - zMid);
+    let sumP = 0;
+    for (let i = 0; i < n; i++) {
+      const c = twoQSqOverV[i];
+      const pi = c / (Math.sqrt(zSq + twoMinusTwoZ * c) + zMid);
+      if (!(pi > 0 && pi < 1 && Number.isFinite(pi))) return null;
+      raw[i] = pi;
+      sumP += pi;
+    }
+    if (!(sumP > 0 && Number.isFinite(sumP))) return null;
+    return {
+      probs: raw.map((p) => p / sumP),
+      methodUsed: 'shin',
+      overround: V,
+      payoutRatio,
+      vig,
+      param: zMid,
+    };
+  };
+
+  if (method === 'multiplicative') return solveMultiplicative();
+  if (method === 'power') return solvePower() ?? solveMultiplicative();
+  return solveShin() ?? solvePower() ?? solveMultiplicative();
+}
+
 function buildPool(code, name, single, rawOptions, updateTime = '17:45:21', goalLine, selling = true) {
   const valid = selling ? rawOptions.filter((o) => o.odds > 0) : [];
   const isSelling = Boolean(selling && valid.length > 0);
   const invSum = valid.reduce((acc, o) => acc + 1 / o.odds, 0);
   const payoutRatio = invSum > 0 ? 1 / invSum : 0.88;
   const vig = Math.max(0, 1 - payoutRatio);
+  const devigged = isSelling ? devigPoolProbabilities(valid, 'shin') : null;
   return {
     code,
     name,
@@ -167,66 +372,842 @@ function buildPool(code, name, single, rawOptions, updateTime = '17:45:21', goal
     payoutRatio,
     vig,
     updateTime,
-    options: valid.map((o) => ({
+    options: valid.map((o, idx) => ({
       key: o.key,
       label: o.label,
       odds: o.odds,
       trend: o.trend ?? 0,
-      fairProb: invSum > 0 ? 1 / o.odds / invSum : 0,
+      shinProb: devigged ? devigged.probs[idx] : 0,
+      fairProb: devigged ? devigged.probs[idx] : 0,
     })),
   };
 }
 
-const CRS_HOME_WIN_LABELS = new Set([
-  '1:0',
-  '2:0',
-  '2:1',
-  '3:0',
-  '3:1',
-  '3:2',
-  '4:0',
-  '4:1',
-  '4:2',
-  '5:0',
-  '5:1',
-  '5:2',
-  '胜其它',
-  's1sh',
-]);
-const CRS_HOME_ONE_GOAL_LABELS = new Set(['1:0', '2:1', '3:2']);
-const CRS_AWAY_WIN_LABELS = new Set([
-  '0:1',
-  '0:2',
-  '1:2',
-  '0:3',
-  '1:3',
-  '2:3',
-  '0:4',
-  '1:4',
-  '2:4',
-  '0:5',
-  '1:5',
-  '2:5',
-  '负其它',
-  's1sa',
-]);
-const CRS_AWAY_ONE_GOAL_LABELS = new Set(['0:1', '1:2', '2:3']);
+const DC_MAX_GOALS = 10;
+const DC_DIM = DC_MAX_GOALS + 1;
+const DC_GRID_LEN = DC_DIM * DC_DIM;
+const DEFAULT_HT_GOAL_SHARE = 0.43;
 
-/** 1. 单场精算师底牌反推（服务端黑盒：xG + 一球卡盘率 + 同义省钱比价 + 变盘信号） */
-export function analyzeMatchMicroQuant(m) {
-  const ttgOpts = m.pools.TTG.options;
-  const totalXG =
-    ttgOpts.length >= 6
-      ? ttgOpts.reduce((acc, o, idx) => acc + (idx === 7 ? 7.3 : idx) * o.fairProb, 0)
-      : 2.45;
+const BINOM_TABLE = (() => {
+  const tbl = Array.from({ length: DC_DIM }, () => new Float64Array(DC_DIM));
+  for (let n = 0; n <= DC_MAX_GOALS; n++) {
+    tbl[n][0] = 1;
+    tbl[n][n] = 1;
+    for (let k = 1; k < n; k++) {
+      tbl[n][k] = tbl[n - 1][k - 1] + tbl[n - 1][k];
+    }
+  }
+  return tbl;
+})();
 
-  const hProb = m.pools.HAD.options.find((o) => o.key === 'h')?.fairProb ?? 0.45;
-  const dProb = m.pools.HAD.options.find((o) => o.key === 'd')?.fairProb ?? 0.27;
-  const aProb = m.pools.HAD.options.find((o) => o.key === 'a')?.fairProb ?? 0.28;
+const HAD_KEY_ORDER = ['h', 'd', 'a'];
+const HHAD_KEY_ORDER = ['hh', 'hd', 'ha'];
+const TTG_KEY_ORDER = ['s0', 's1', 's2', 's3', 's4', 's5', 's6', 's7'];
+const HAFU_KEY_ORDER = ['hh', 'hd', 'ha', 'dh', 'dd', 'da', 'ah', 'ad', 'aa'];
+const CRS_LABEL_ORDER = OFFICIAL_CRS_PAIRS.map(([, lbl]) => lbl);
+const CRS_INDEX_BY_KEY = (() => {
+  const m = new Map();
+  OFFICIAL_CRS_PAIRS.forEach(([rawKey, lbl], idx) => {
+    m.set(lbl, idx);
+    m.set(rawKey, idx);
+  });
+  return m;
+})();
 
-  const strengthShare = (hProb + 0.5 * dProb) / Math.max(0.01, hProb + dProb + aProb);
-  const homeXG = Number((totalXG * (0.18 + 0.64 * strengthShare)).toFixed(2));
-  const awayXG = Number(Math.max(0.25, totalXG - homeXG).toFixed(2));
+const {
+  GRID_CRS_IDX,
+  GRID_TTG_IDX,
+  GRID_DIFF,
+  ATOMIC_TEMPLATES,
+  GRID_HT_TO_ATOMIC,
+} = (() => {
+  const gridCrs = new Int8Array(DC_GRID_LEN);
+  const gridTtg = new Int8Array(DC_GRID_LEN);
+  const gridDiff = new Int8Array(DC_GRID_LEN);
+  const gridHtToAtomic = new Int16Array(DC_GRID_LEN * 3).fill(-1);
+  const templates = [];
+  const tplIndexBySig = new Map();
+  const htChars = ['h', 'd', 'a'];
+
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      const cell = x * DC_DIM + y;
+      const diff = x - y;
+      const ttgIdx = Math.min(7, x + y);
+      const exactLbl = `${x}:${y}`;
+      const crsIdx = CRS_INDEX_BY_KEY.has(exactLbl)
+        ? CRS_INDEX_BY_KEY.get(exactLbl)
+        : diff > 0
+          ? 12
+          : diff === 0
+            ? 17
+            : 30;
+      gridCrs[cell] = crsIdx;
+      gridTtg[cell] = ttgIdx;
+      gridDiff[cell] = diff;
+
+      const ftCode = diff > 0 ? 0 : diff === 0 ? 1 : 2;
+      const ftChar = htChars[ftCode];
+      for (let htCode = 0; htCode < 3; htCode++) {
+        if (htCode === 0 && x === 0) continue;
+        if (htCode === 2 && y === 0) continue;
+        const htChar = htChars[htCode];
+        const sig = `${htCode}|${crsIdx}|${ttgIdx}|${diff}`;
+        let aIdx = tplIndexBySig.get(sig);
+        if (aIdx === undefined) {
+          aIdx = templates.length;
+          tplIndexBySig.set(sig, aIdx);
+          templates.push({
+            ht: htChar,
+            ft: ftChar,
+            ftCode,
+            homeGoals: x,
+            awayGoals: y,
+            goalDiff: diff,
+            totalGoals: x + y,
+            ttgIdx,
+            ttgKey: TTG_KEY_ORDER[ttgIdx],
+            hafuIdx: htCode * 3 + ftCode,
+            hafuKey: `${htChar}${ftChar}`,
+            crsIdx,
+            crsKey: CRS_LABEL_ORDER[crsIdx],
+          });
+        }
+        gridHtToAtomic[cell * 3 + htCode] = aIdx;
+      }
+    }
+  }
+
+  return {
+    GRID_CRS_IDX: gridCrs,
+    GRID_TTG_IDX: gridTtg,
+    GRID_DIFF: gridDiff,
+    ATOMIC_TEMPLATES: templates,
+    GRID_HT_TO_ATOMIC: gridHtToAtomic,
+  };
+})();
+
+function clampLambda(v) {
+  return v < 0.12 ? 0.12 : v > 5.5 ? 5.5 : v;
+}
+
+function clampDcRho(rho, lamH, lamA) {
+  const lo = Math.max(-0.45, Math.max(-1 / lamH, -1 / lamA) + 1e-4);
+  const hi = Math.min(0.45, Math.min(1, 1 / (lamH * lamA)) - 1e-4);
+  return rho < lo ? lo : rho > hi ? hi : rho;
+}
+
+const SCRATCH_PX = new Float64Array(DC_DIM);
+const SCRATCH_PY = new Float64Array(DC_DIM);
+const SCRATCH_POW_T = new Float64Array(DC_DIM);
+const SCRATCH_POW_Q = new Float64Array(DC_DIM);
+const SCRATCH_GRID = new Float64Array(DC_GRID_LEN);
+const SCRATCH_BINOM = new Float64Array(DC_GRID_LEN);
+const SCRATCH_CRS = new Float64Array(31);
+const SCRATCH_TTG = new Float64Array(8);
+const SCRATCH_HAFU = new Float64Array(9);
+const SCRATCH_R0 = new Float64Array(64);
+const SCRATCH_RP = new Float64Array(64);
+const SCRATCH_RCAND = new Float64Array(64);
+const SCRATCH_J0 = new Float64Array(64);
+const SCRATCH_J1 = new Float64Array(64);
+const SCRATCH_J2 = new Float64Array(64);
+const SCRATCH_ATOMIC = new Float64Array(256);
+
+function evalDixonColesGrid(lamH, lamA, rho, outGrid) {
+  SCRATCH_PX[0] = Math.exp(-lamH);
+  SCRATCH_PY[0] = Math.exp(-lamA);
+  for (let i = 1; i <= DC_MAX_GOALS; i++) {
+    SCRATCH_PX[i] = (SCRATCH_PX[i - 1] * lamH) / i;
+    SCRATCH_PY[i] = (SCRATCH_PY[i - 1] * lamA) / i;
+  }
+
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    const px = SCRATCH_PX[x];
+    const row = x * DC_DIM;
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      outGrid[row + y] = px * SCRATCH_PY[y];
+    }
+  }
+
+  const r = clampDcRho(rho, lamH, lamA);
+  outGrid[0] *= 1 - lamH * lamA * r;
+  outGrid[1] *= 1 + lamH * r;
+  outGrid[DC_DIM] *= 1 + lamA * r;
+  outGrid[DC_DIM + 1] *= 1 - r;
+
+  let sum = 0;
+  for (let i = 0; i < DC_GRID_LEN; i++) sum += outGrid[i];
+  const inv = 1 / sum;
+  for (let i = 0; i < DC_GRID_LEN; i++) outGrid[i] *= inv;
+}
+
+function fillBinomPmfTable(theta, outB) {
+  const q = 1 - theta;
+  SCRATCH_POW_T[0] = 1;
+  SCRATCH_POW_Q[0] = 1;
+  for (let i = 1; i <= DC_MAX_GOALS; i++) {
+    SCRATCH_POW_T[i] = SCRATCH_POW_T[i - 1] * theta;
+    SCRATCH_POW_Q[i] = SCRATCH_POW_Q[i - 1] * q;
+  }
+  for (let n = 0; n <= DC_MAX_GOALS; n++) {
+    const rowC = BINOM_TABLE[n];
+    const rowOut = n * DC_DIM;
+    for (let k = 0; k <= n; k++) {
+      outB[rowOut + k] = rowC[k] * SCRATCH_POW_T[k] * SCRATCH_POW_Q[n - k];
+    }
+  }
+}
+
+function projectHafuFromGrid(scoreGrid, theta, binomBuf, outHafu) {
+  fillBinomPmfTable(theta, binomBuf);
+  outHafu.fill(0);
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    const rowX = x * DC_DIM;
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      const pXY = scoreGrid[rowX + y];
+      const ftCode = x > y ? 0 : x === y ? 1 : 2;
+      if (x === 0 && y === 0) {
+        outHafu[3 + ftCode] += pXY;
+        continue;
+      }
+      if (x === 0) {
+        const wD = binomBuf[y * DC_DIM];
+        const pD = pXY * wD;
+        outHafu[3 + ftCode] += pD;
+        outHafu[6 + ftCode] += pXY - pD;
+        continue;
+      }
+      if (y === 0) {
+        const wD = binomBuf[rowX];
+        const pD = pXY * wD;
+        outHafu[3 + ftCode] += pD;
+        outHafu[ftCode] += pXY - pD;
+        continue;
+      }
+
+      const rowY = y * DC_DIM;
+      let rawH = 0;
+      let rawD = 0;
+      let rawA = 0;
+      for (let x1 = 0; x1 <= x; x1++) {
+        const bx = binomBuf[rowX + x1];
+        for (let y1 = 0; y1 <= y; y1++) {
+          const p = bx * binomBuf[rowY + y1];
+          if (x1 > y1) rawH += p;
+          else if (x1 === y1) rawD += p;
+          else rawA += p;
+        }
+      }
+      const tot = rawH + rawD + rawA;
+      const pH = pXY * (rawH / tot);
+      const pD = pXY * (rawD / tot);
+      const pA = Math.max(0, pXY - pH - pD);
+      outHafu[ftCode] += pH;
+      outHafu[3 + ftCode] += pD;
+      outHafu[6 + ftCode] += pA;
+    }
+  }
+}
+
+function solveSymmetric3x3(a00, a01, a02, a11, a12, a22, b0, b1, b2) {
+  const c00 = a11 * a22 - a12 * a12;
+  const c01 = a02 * a12 - a01 * a22;
+  const c02 = a01 * a12 - a02 * a11;
+  const det = a00 * c00 + a01 * c01 + a02 * c02;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-18) return null;
+  const c11 = a00 * a22 - a02 * a02;
+  const c12 = a01 * a02 - a00 * a12;
+  const c22 = a00 * a11 - a01 * a01;
+  const invDet = 1 / det;
+  return [
+    (c00 * b0 + c01 * b1 + c02 * b2) * invDet,
+    (c01 * b0 + c11 * b1 + c12 * b2) * invDet,
+    (c02 * b0 + c12 * b1 + c22 * b2) * invDet,
+  ];
+}
+
+function extractCanonicalPoolTarget(pool, expectedKeys, mapByLabel = false) {
+  if (!pool || pool.selling === false || !Array.isArray(pool.options)) return null;
+  if (pool.options.length !== expectedKeys.length) return null;
+  if (pool.options.some((o) => !Number.isFinite(o.odds) || o.odds <= 0)) return null;
+
+  const byKey = new Map();
+  for (const o of pool.options) {
+    byKey.set(mapByLabel ? o.label || o.key : o.key, o);
+    if (!mapByLabel && o.label) byKey.set(o.label, o);
+  }
+  const ordered = [];
+  for (const k of expectedKeys) {
+    const hit = byKey.get(k);
+    if (!hit) return null;
+    ordered.push(hit);
+  }
+  const devig = devigPoolProbabilities(ordered, 'shin');
+  return {
+    probs: devig.probs,
+    payoutRatio: devig.payoutRatio,
+    vig: devig.vig,
+  };
+}
+
+/**
+ * 零历史库四参数 Dixon-Coles + 二项半场稀疏拆分跨盘闭合校准器（Seam A）
+ * - 输入单场赛事快照（不原地篡改入参），输出 11x11 全场比分分布、物理相容半全场×全场原子态及五池闭合概率。
+ * - 当在售锚点奖池 >= 2 时执行反抽水方差加权超定反演（耗时 < 0.5ms）；< 2 时无感回退单池 Shin/Power 去水值。
+ */
+export function calibrateMatchCoherentModel(match) {
+  const rawPools = match?.pools ?? {};
+  const hadTarget = extractCanonicalPoolTarget(rawPools.HAD, HAD_KEY_ORDER);
+  const rawGoalLine = Number(rawPools.HHAD?.goalLine ?? -1);
+  const goalLine =
+    Number.isFinite(rawGoalLine) && Math.trunc(rawGoalLine) !== 0
+      ? Math.trunc(rawGoalLine)
+      : -1;
+  const hhadTarget =
+    Number.isFinite(rawGoalLine) && Number.isInteger(rawGoalLine) && rawGoalLine !== 0
+      ? extractCanonicalPoolTarget(rawPools.HHAD, HHAD_KEY_ORDER)
+      : null;
+  const ttgTarget = extractCanonicalPoolTarget(rawPools.TTG, TTG_KEY_ORDER);
+  const hafuTarget = extractCanonicalPoolTarget(rawPools.HAFU, HAFU_KEY_ORDER);
+  const crsTarget = extractCanonicalPoolTarget(rawPools.CRS, CRS_LABEL_ORDER, true);
+
+  const sellingTargets = [hadTarget, hhadTarget, ttgTarget, hafuTarget, crsTarget].filter(Boolean);
+  const sellingPoolCount = sellingTargets.length;
+  const coherent = sellingPoolCount >= 2;
+
+  // Analytical initialization of (lambdaHome, lambdaAway, rho)
+  let initTotalGoals = 2.55;
+  if (ttgTarget) {
+    let mu = 0;
+    for (let k = 0; k < 8; k++) mu += (k === 7 ? 7.35 : k) * ttgTarget.probs[k];
+    initTotalGoals = Math.max(0.6, Math.min(7.5, mu));
+  } else if (crsTarget) {
+    let mu = 0;
+    for (let i = 0; i < 31; i++) {
+      const lbl = CRS_LABEL_ORDER[i];
+      if (lbl.includes(':')) {
+        const [hx, ay] = lbl.split(':').map(Number);
+        mu += (hx + ay) * crsTarget.probs[i];
+      } else {
+        mu += (lbl === '平其它' ? 8.0 : 6.5) * crsTarget.probs[i];
+      }
+    }
+    initTotalGoals = Math.max(0.6, Math.min(7.5, mu));
+  }
+
+  let initPH = 0.44;
+  let initPD = 0.27;
+  let initPA = 0.29;
+  if (hadTarget) {
+    [initPH, initPD, initPA] = hadTarget.probs;
+  } else if (hafuTarget) {
+    initPH = hafuTarget.probs[0] + hafuTarget.probs[3] + hafuTarget.probs[6];
+    initPD = hafuTarget.probs[1] + hafuTarget.probs[4] + hafuTarget.probs[7];
+    initPA = hafuTarget.probs[2] + hafuTarget.probs[5] + hafuTarget.probs[8];
+  } else if (crsTarget) {
+    initPH = 0;
+    initPD = 0;
+    initPA = 0;
+    for (let i = 0; i < 13; i++) initPH += crsTarget.probs[i];
+    for (let i = 13; i < 18; i++) initPD += crsTarget.probs[i];
+    for (let i = 18; i < 31; i++) initPA += crsTarget.probs[i];
+  } else if (hhadTarget) {
+    const share = Math.max(
+      0.08,
+      Math.min(0.92, hhadTarget.probs[0] + 0.5 * hhadTarget.probs[1] - 0.18 * goalLine)
+    );
+    initPD = 0.24;
+    initPH = share * (1 - initPD);
+    initPA = (1 - share) * (1 - initPD);
+  }
+
+  const logRatio = Math.log(
+    Math.max(0.02, initPH + 0.25 * initPD) / Math.max(0.02, initPA + 0.25 * initPD)
+  );
+  const initDiff = initTotalGoals * Math.tanh(0.42 * logRatio);
+  let lamH = clampLambda(0.5 * (initTotalGoals + initDiff));
+  let lamA = clampLambda(0.5 * (initTotalGoals - initDiff));
+  let rho = 0;
+
+  // Build weighted residual specification for Stage 1
+  const invVigPrecision = (t) =>
+    Math.pow(t.payoutRatio / Math.max(0.045, t.vig), 2);
+  const rawWHad = hadTarget ? invVigPrecision(hadTarget) * 1.0 : 0;
+  const rawWHhad = hhadTarget ? invVigPrecision(hhadTarget) * 1.0 : 0;
+  const rawWTtg = ttgTarget ? invVigPrecision(ttgTarget) * 1.5 : 0;
+  const rawWHafuFt = hafuTarget
+    ? invVigPrecision(hafuTarget) * (hadTarget ? 0.15 : 1.0)
+    : 0;
+  const hasCoreAnchors = Boolean(ttgTarget && (hadTarget || hhadTarget));
+  const rawWCrs = crsTarget
+    ? invVigPrecision(crsTarget) * (hasCoreAnchors ? 0.15 : 1.0)
+    : 0;
+
+  const maxRawW = Math.max(1, rawWHad, rawWHhad, rawWTtg, rawWHafuFt, rawWCrs);
+  const sHad = Math.sqrt(rawWHad / maxRawW);
+  const sHhad = Math.sqrt(rawWHhad / maxRawW);
+  const sTtg = Math.sqrt(rawWTtg / maxRawW);
+  const sHafuFt = Math.sqrt(rawWHafuFt / maxRawW);
+  const sCrs = Math.sqrt(rawWCrs / maxRawW);
+
+  const hasScalePool = Boolean(ttgTarget || crsTarget || hhadTarget);
+  const sRhoPrior = Math.sqrt(hasScalePool && sellingPoolCount >= 2 ? 0.0015 : 0.03);
+  const sTotPrior = !hasScalePool ? Math.sqrt(0.025) : 0;
+
+  const hafuFtObs = hafuTarget
+    ? [
+        hafuTarget.probs[0] + hafuTarget.probs[3] + hafuTarget.probs[6],
+        hafuTarget.probs[1] + hafuTarget.probs[4] + hafuTarget.probs[7],
+        hafuTarget.probs[2] + hafuTarget.probs[5] + hafuTarget.probs[8],
+      ]
+    : null;
+
+  const residualCount =
+    (hadTarget ? 3 : 0) +
+    (hhadTarget ? 3 : 0) +
+    (ttgTarget ? 8 : 0) +
+    (hafuFtObs ? 3 : 0) +
+    (crsTarget ? 31 : 0) +
+    1 +
+    (sTotPrior > 0 ? 1 : 0);
+
+  const gridWork = SCRATCH_GRID;
+  const crsWork = SCRATCH_CRS;
+  const ttgWork = SCRATCH_TTG;
+
+  const evalResiduals = (lh, la, rVal, outRes) => {
+    const rClamped = clampDcRho(rVal, lh, la);
+    evalDixonColesGrid(lh, la, rClamped, gridWork);
+    let pH = 0;
+    let pD = 0;
+    let pA = 0;
+    let pHH = 0;
+    let pHD = 0;
+    let pHA = 0;
+    if (ttgTarget) ttgWork.fill(0);
+    if (crsTarget) crsWork.fill(0);
+
+    for (let i = 0; i < DC_GRID_LEN; i++) {
+      const p = gridWork[i];
+      const d = GRID_DIFF[i];
+      if (d > 0) pH += p;
+      else if (d === 0) pD += p;
+      else pA += p;
+
+      if (hhadTarget) {
+        const adj = d + goalLine;
+        if (adj > 0) pHH += p;
+        else if (adj === 0) pHD += p;
+        else pHA += p;
+      }
+      if (ttgTarget) ttgWork[GRID_TTG_IDX[i]] += p;
+      if (crsTarget) crsWork[GRID_CRS_IDX[i]] += p;
+    }
+
+    let k = 0;
+    if (hadTarget) {
+      outRes[k++] = sHad * (pH - hadTarget.probs[0]);
+      outRes[k++] = sHad * (pD - hadTarget.probs[1]);
+      outRes[k++] = sHad * (pA - hadTarget.probs[2]);
+    }
+    if (hhadTarget) {
+      outRes[k++] = sHhad * (pHH - hhadTarget.probs[0]);
+      outRes[k++] = sHhad * (pHD - hhadTarget.probs[1]);
+      outRes[k++] = sHhad * (pHA - hhadTarget.probs[2]);
+    }
+    if (ttgTarget) {
+      for (let j = 0; j < 8; j++) {
+        outRes[k++] = sTtg * (ttgWork[j] - ttgTarget.probs[j]);
+      }
+    }
+    if (hafuFtObs) {
+      outRes[k++] = sHafuFt * (pH - hafuFtObs[0]);
+      outRes[k++] = sHafuFt * (pD - hafuFtObs[1]);
+      outRes[k++] = sHafuFt * (pA - hafuFtObs[2]);
+    }
+    if (crsTarget) {
+      for (let j = 0; j < 31; j++) {
+        outRes[k++] = sCrs * (crsWork[j] - crsTarget.probs[j]);
+      }
+    }
+    outRes[k++] = sRhoPrior * rClamped;
+    if (sTotPrior > 0) {
+      outRes[k++] = sTotPrior * (lh + la - 2.55);
+    }
+
+    let loss = 0;
+    for (let i = 0; i < k; i++) loss += outRes[i] * outRes[i];
+    return loss;
+  };
+
+  if (sellingPoolCount >= 1) {
+    const r0 = SCRATCH_R0;
+    const rP = SCRATCH_RP;
+    const rCand = SCRATCH_RCAND;
+    const j0 = SCRATCH_J0;
+    const j1 = SCRATCH_J1;
+    const j2 = SCRATCH_J2;
+
+    let loss = evalResiduals(lamH, lamA, rho, r0);
+    let damping = 1e-3;
+
+    for (let iter = 0; iter < 10; iter++) {
+      const epsH = lamH > 5.49 ? -1e-5 : 1e-5;
+      evalResiduals(clampLambda(lamH + epsH), lamA, rho, rP);
+      const invEpsH = 1 / (clampLambda(lamH + epsH) - lamH);
+      for (let i = 0; i < residualCount; i++) j0[i] = (rP[i] - r0[i]) * invEpsH;
+
+      const epsA = lamA > 5.49 ? -1e-5 : 1e-5;
+      evalResiduals(lamH, clampLambda(lamA + epsA), rho, rP);
+      const invEpsA = 1 / (clampLambda(lamA + epsA) - lamA);
+      for (let i = 0; i < residualCount; i++) j1[i] = (rP[i] - r0[i]) * invEpsA;
+
+      const rhoHi = Math.min(0.45, Math.min(1, 1 / (lamH * lamA)) - 1e-4);
+      const epsR = rho + 1e-5 <= rhoHi ? 1e-5 : -1e-5;
+      const pertR = clampDcRho(rho + epsR, lamH, lamA);
+      const dR = pertR - rho;
+      if (Math.abs(dR) > 1e-12) {
+        evalResiduals(lamH, lamA, pertR, rP);
+        const invDR = 1 / dR;
+        for (let i = 0; i < residualCount; i++) j2[i] = (rP[i] - r0[i]) * invDR;
+      } else {
+        j2.fill(0);
+      }
+
+      let a00 = damping;
+      let a01 = 0;
+      let a02 = 0;
+      let a11 = damping;
+      let a12 = 0;
+      let a22 = damping;
+      let b0 = 0;
+      let b1 = 0;
+      let b2 = 0;
+      for (let i = 0; i < residualCount; i++) {
+        const g0 = j0[i];
+        const g1 = j1[i];
+        const g2 = j2[i];
+        const ri = r0[i];
+        a00 += g0 * g0;
+        a01 += g0 * g1;
+        a02 += g0 * g2;
+        a11 += g1 * g1;
+        a12 += g1 * g2;
+        a22 += g2 * g2;
+        b0 -= g0 * ri;
+        b1 -= g1 * ri;
+        b2 -= g2 * ri;
+      }
+
+      const step = solveSymmetric3x3(a00, a01, a02, a11, a12, a22, b0, b1, b2);
+      if (!step) break;
+
+      const candLamH = clampLambda(lamH + step[0]);
+      const candLamA = clampLambda(lamA + step[1]);
+      const candRho = clampDcRho(rho + step[2], candLamH, candLamA);
+      const candLoss = evalResiduals(candLamH, candLamA, candRho, rCand);
+
+      if (candLoss < loss) {
+        const paramMove = Math.hypot(candLamH - lamH, candLamA - lamA, candRho - rho);
+        const lossDrop = loss - candLoss;
+        lamH = candLamH;
+        lamA = candLamA;
+        rho = candRho;
+        loss = candLoss;
+        for (let t = 0; t < residualCount; t++) r0[t] = rCand[t];
+        damping = Math.max(1e-7, damping * 0.35);
+        if (lossDrop < 1e-10 && paramMove < 2e-6) break;
+      } else {
+        damping *= 4.0;
+        if (damping > 1e4) break;
+      }
+    }
+  }
+
+  rho = clampDcRho(rho, lamH, lamA);
+  const scoreGrid = new Float64Array(DC_GRID_LEN);
+  evalDixonColesGrid(lamH, lamA, rho, scoreGrid);
+
+  // Stage 2: Fit half-time goal share theta in [0.38, 0.46] when HAFU is selling, else fixed 0.43
+  let theta = DEFAULT_HT_GOAL_SHARE;
+  const binomBuf = SCRATCH_BINOM;
+  if (coherent && hafuTarget) {
+    const hafuWork = SCRATCH_HAFU;
+    const evalThetaLoss = (th) => {
+      projectHafuFromGrid(scoreGrid, th, binomBuf, hafuWork);
+      let l = 0.06 * (th - DEFAULT_HT_GOAL_SHARE) * (th - DEFAULT_HT_GOAL_SHARE);
+      for (let i = 0; i < 9; i++) {
+        const d = hafuWork[i] - hafuTarget.probs[i];
+        l += d * d;
+      }
+      return l;
+    };
+
+    const invPhi = (Math.sqrt(5) - 1) / 2;
+    let a = 0.38;
+    let b = 0.46;
+    let c = b - invPhi * (b - a);
+    let d = a + invPhi * (b - a);
+    let fc = evalThetaLoss(c);
+    let fd = evalThetaLoss(d);
+    for (let iter = 0; iter < 12; iter++) {
+      if (fc < fd) {
+        b = d;
+        d = c;
+        fd = fc;
+        c = b - invPhi * (b - a);
+        fc = evalThetaLoss(c);
+      } else {
+        a = c;
+        c = d;
+        fc = fd;
+        d = a + invPhi * (b - a);
+        fd = evalThetaLoss(d);
+      }
+    }
+    theta = 0.5 * (a + b);
+  }
+
+  // Exact Binomial Thinning expansion into physically compatible atomicStates
+  fillBinomPmfTable(theta, binomBuf);
+  const atomicLen = ATOMIC_TEMPLATES.length;
+  const atomicProbs = SCRATCH_ATOMIC;
+  for (let i = 0; i < atomicLen; i++) atomicProbs[i] = 0;
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    const rowX = x * DC_DIM;
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      const cell = rowX + y;
+      const pXY = scoreGrid[cell];
+      const baseMap = cell * 3;
+      if (x === 0 && y === 0) {
+        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pXY;
+        continue;
+      }
+      if (x === 0) {
+        const wD = binomBuf[y * DC_DIM];
+        const pD = pXY * wD;
+        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
+        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 2]] += Math.max(0, pXY - pD);
+        continue;
+      }
+      if (y === 0) {
+        const wD = binomBuf[rowX];
+        const pD = pXY * wD;
+        atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
+        atomicProbs[GRID_HT_TO_ATOMIC[baseMap]] += Math.max(0, pXY - pD);
+        continue;
+      }
+
+      const rowY = y * DC_DIM;
+      let rawH = 0;
+      let rawD = 0;
+      let rawA = 0;
+      for (let x1 = 0; x1 <= x; x1++) {
+        const bx = binomBuf[rowX + x1];
+        for (let y1 = 0; y1 <= y; y1++) {
+          const p = bx * binomBuf[rowY + y1];
+          if (x1 > y1) rawH += p;
+          else if (x1 === y1) rawD += p;
+          else rawA += p;
+        }
+      }
+      const tot = rawH + rawD + rawA;
+      const pH = pXY * (rawH / tot);
+      const pD = pXY * (rawD / tot);
+      const pA = Math.max(0, pXY - pH - pD);
+      atomicProbs[GRID_HT_TO_ATOMIC[baseMap]] += pH;
+      atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 1]] += pD;
+      atomicProbs[GRID_HT_TO_ATOMIC[baseMap + 2]] += pA;
+    }
+  }
+
+  let atomicSum = 0;
+  for (let i = 0; i < atomicLen; i++) atomicSum += atomicProbs[i];
+  const invAtomicSum = 1 / atomicSum;
+  for (let i = 0; i < atomicLen; i++) atomicProbs[i] *= invAtomicSum;
+
+  const hadArr = new Float64Array(3);
+  const hhadArr = new Float64Array(3);
+  const ttgArr = new Float64Array(8);
+  const hafuArr = new Float64Array(9);
+  const crsArr = new Float64Array(31);
+  const atomicStates = new Array(atomicLen);
+
+  for (let i = 0; i < atomicLen; i++) {
+    const tpl = ATOMIC_TEMPLATES[i];
+    const prob = atomicProbs[i];
+    hadArr[tpl.ftCode] += prob;
+    const adj = tpl.goalDiff + goalLine;
+    hhadArr[adj > 0 ? 0 : adj === 0 ? 1 : 2] += prob;
+    ttgArr[tpl.ttgIdx] += prob;
+    hafuArr[tpl.hafuIdx] += prob;
+    crsArr[tpl.crsIdx] += prob;
+    atomicStates[i] = {
+      ht: tpl.ht,
+      ft: tpl.ft,
+      homeGoals: tpl.homeGoals,
+      awayGoals: tpl.awayGoals,
+      goalDiff: tpl.goalDiff,
+      totalGoals: tpl.totalGoals,
+      ttgKey: tpl.ttgKey,
+      hafuKey: tpl.hafuKey,
+      crsKey: tpl.crsKey,
+      prob,
+    };
+  }
+
+  const poolProbs = {
+    HAD: { h: hadArr[0], d: hadArr[1], a: hadArr[2] },
+    HHAD: { hh: hhadArr[0], hd: hhadArr[1], ha: hhadArr[2] },
+    TTG: Object.fromEntries(TTG_KEY_ORDER.map((k, idx) => [k, ttgArr[idx]])),
+    HAFU: Object.fromEntries(HAFU_KEY_ORDER.map((k, idx) => [k, hafuArr[idx]])),
+    CRS: Object.fromEntries(CRS_LABEL_ORDER.map((lbl, idx) => [lbl, crsArr[idx]])),
+  };
+
+  // Build cloned pools with preserved raw payoutRatio & vig, single-pool shinProb, and coherent (or fallback) fairProb
+  const calibratedPools = {};
+  for (const code of ['HAD', 'HHAD', 'HAFU', 'TTG', 'CRS']) {
+    const srcPool = rawPools[code];
+    if (!srcPool) continue;
+    const isPoolValidSelling =
+      srcPool.selling !== false &&
+      Array.isArray(srcPool.options) &&
+      srcPool.options.length > 0 &&
+      srcPool.options.every((o) => Number.isFinite(o.odds) && o.odds > 0);
+
+    if (!isPoolValidSelling) {
+      calibratedPools[code] = {
+        ...srcPool,
+        options: Array.isArray(srcPool.options) ? srcPool.options.map((o) => ({ ...o })) : [],
+      };
+      continue;
+    }
+
+    const devig = devigPoolProbabilities(srcPool.options, 'shin');
+    const coherentMap = poolProbs[code];
+    const canProjectPool =
+      coherent &&
+      ((code === 'HAD' && Boolean(hadTarget)) ||
+        (code === 'HHAD' && Boolean(hhadTarget)) ||
+        (code === 'TTG' && Boolean(ttgTarget)) ||
+        (code === 'HAFU' && Boolean(hafuTarget)) ||
+        (code === 'CRS' && Boolean(crsTarget)));
+
+    calibratedPools[code] = {
+      ...srcPool,
+      options: srcPool.options.map((o, idx) => {
+        const shinProb = devig.probs[idx];
+        const lookupKey = code === 'CRS' ? o.label || o.key : o.key;
+        const projected = canProjectPool ? coherentMap[lookupKey] : undefined;
+        return {
+          ...o,
+          shinProb,
+          fairProb: typeof projected === 'number' ? projected : shinProb,
+        };
+      }),
+    };
+  }
+
+  return {
+    coherent,
+    sellingPoolCount,
+    params: {
+      lambdaHome: lamH,
+      lambdaAway: lamA,
+      rho,
+      theta,
+    },
+    scoreGrid,
+    atomicStates,
+    poolProbs,
+    pools: calibratedPools,
+  };
+}
+
+function computeShrunkSubPoolScan(calPools, coherent, sellingPoolCount) {
+  if (!coherent || sellingPoolCount < 2) {
+    return '单池独立开售：已启用非线性去水校准，暂无跨盘比价基准';
+  }
+
+  let mainPayoutRatio = 0;
+  for (const mainCode of ['HAD', 'HHAD']) {
+    const p = calPools[mainCode];
+    if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
+      if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
+    }
+  }
+  if (mainPayoutRatio <= 0) {
+    for (const p of Object.values(calPools)) {
+      if (p && p.selling !== false && Array.isArray(p.options) && p.options.length > 0) {
+        if (p.payoutRatio > mainPayoutRatio) mainPayoutRatio = p.payoutRatio;
+      }
+    }
+  }
+  if (mainPayoutRatio <= 0) mainPayoutRatio = 0.88;
+
+  let bestHit = null;
+  let bestDelta = -Infinity;
+  for (const subCode of ['HAFU', 'TTG', 'CRS']) {
+    const pool = calPools[subCode];
+    if (!pool || pool.selling === false || !Array.isArray(pool.options)) continue;
+    for (const opt of pool.options) {
+      if (!(Number.isFinite(opt.odds) && opt.odds > 0 && opt.fairProb > 0)) continue;
+      const shinP = typeof opt.shinProb === 'number' && opt.shinProb > 0 ? opt.shinProb : opt.fairProb;
+      const wDc = 6.0 / (6.0 + Math.max(0, opt.odds - 2.0));
+      const pBlend = wDc * opt.fairProb + (1 - wDc) * shinP;
+      const returnCap =
+        opt.odds > 28
+          ? mainPayoutRatio + 0.025
+          : opt.odds > 14
+            ? Math.min(1.05, mainPayoutRatio + 0.075)
+            : 1.18;
+      const shrunkReturn = Math.min(returnCap, opt.odds * pBlend);
+      const delta = shrunkReturn - mainPayoutRatio;
+      if (delta > bestDelta) {
+        bestDelta = delta;
+        bestHit = {
+          poolName: pool.name || subCode,
+          label: opt.label || opt.key,
+          odds: opt.odds,
+          shrunkReturn,
+          delta,
+        };
+      }
+    }
+  }
+
+  if (bestHit && (bestHit.delta >= 0.03 || bestHit.shrunkReturn > 1.0)) {
+    if (bestHit.shrunkReturn > 1.0) {
+      return `检出跨盘绝对正期望洼地：【${bestHit.poolName}·${bestHit.label}@${bestHit.odds.toFixed(2)}】收缩期望返还 ${(bestHit.shrunkReturn * 100).toFixed(1)}%（跑赢主盘 +${(bestHit.delta * 100).toFixed(1)}%）`;
+    }
+    return `检出跨盘错价洼地：【${bestHit.poolName}·${bestHit.label}@${bestHit.odds.toFixed(2)}】收缩期望返还 ${(bestHit.shrunkReturn * 100).toFixed(1)}%（较主盘少亏 +${(bestHit.delta * 100).toFixed(1)}%）`;
+  }
+
+  const maxDeltaText = Number.isFinite(bestDelta)
+    ? `${bestDelta >= 0 ? '+' : ''}${(bestDelta * 100).toFixed(1)}%`
+    : '0.0%';
+  return `五池定价严密：各细分玩法经收缩校准后均未跑赢主盘基准（最高偏离 ${maxDeltaText} < +3.0%），无跨盘错价洼地`;
+}
+
+/** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + 比赛节奏相关性 + 跨盘错价扫描） */
+export function analyzeMatchMicroQuant(m, precomputedCal) {
+  const cal = precomputedCal ?? calibrateMatchCoherentModel(m);
+  const scoreGrid = cal.scoreGrid;
+
+  let rawHomeXG = 0;
+  let rawAwayXG = 0;
+  for (let x = 0; x <= DC_MAX_GOALS; x++) {
+    const rowX = x * DC_DIM;
+    for (let y = 0; y <= DC_MAX_GOALS; y++) {
+      const p = scoreGrid[rowX + y];
+      rawHomeXG += x * p;
+      rawAwayXG += y * p;
+    }
+  }
+  const homeXG = Number(rawHomeXG.toFixed(2));
+  const awayXG = Number(rawAwayXG.toFixed(2));
+  const totalXG = Number((homeXG + awayXG).toFixed(2));
 
   const goalLine = m.pools.HHAD?.goalLine ?? '-1';
   const goalLineNum = Number(goalLine);
@@ -234,81 +1215,47 @@ export function analyzeMatchMicroQuant(m) {
     m.pools.HHAD?.selling !== false &&
     Array.isArray(m.pools.HHAD?.options) &&
     m.pools.HHAD.options.length > 0;
-  const hdOpt = hhadSelling ? m.pools.HHAD.options.find((o) => o.key === 'hd') : undefined;
+
+  const cohHomeWinProb = cal.poolProbs.HAD.h;
+  const cohAwayWinProb = cal.poolProbs.HAD.a;
   const isAwayFav = hhadSelling
     ? String(goalLine).includes('+') || goalLineNum > 0
-    : String(goalLine).includes('+') || goalLineNum > 0
-      ? true
-      : goalLineNum < -1
-        ? false
-        : aProb > hProb;
+    : Math.abs(cohAwayWinProb - cohHomeWinProb) > 1e-6
+      ? cohAwayWinProb > cohHomeWinProb
+      : String(goalLine).includes('+') || goalLineNum > 0;
   const favTeam = isAwayFav ? m.away : m.home;
-  const hadSelling =
-    m.pools.HAD?.selling !== false &&
-    Array.isArray(m.pools.HAD?.options) &&
-    m.pools.HAD.options.length > 0;
 
-  let oneGoalProb = 0.28;
-  let oneGoalShareOfWins = 0.5;
-
-  if (hhadSelling && Math.abs(goalLineNum) === 1 && hdOpt) {
-    const favWinProb = isAwayFav ? aProb : hProb;
-    oneGoalProb = hdOpt.fairProb;
-    oneGoalShareOfWins = favWinProb > 0 ? Math.min(0.85, oneGoalProb / favWinProb) : 0.5;
-  } else {
-    const crsSelling =
-      m.pools.CRS?.selling !== false &&
-      Array.isArray(m.pools.CRS?.options) &&
-      m.pools.CRS.options.length > 0;
-    const winSet = isAwayFav ? CRS_AWAY_WIN_LABELS : CRS_HOME_WIN_LABELS;
-    const oneGoalSet = isAwayFav ? CRS_AWAY_ONE_GOAL_LABELS : CRS_HOME_ONE_GOAL_LABELS;
-    let crsFavWinProb = 0;
-    let crsFavOneGoalProb = 0;
-    if (crsSelling) {
-      for (const o of m.pools.CRS.options) {
-        const lbl = o.label || o.key;
-        if (winSet.has(lbl) || winSet.has(o.key)) {
-          crsFavWinProb += o.fairProb;
-        }
-        if (oneGoalSet.has(lbl) || oneGoalSet.has(o.key)) {
-          crsFavOneGoalProb += o.fairProb;
-        }
-      }
-    }
-    const favWinProb = hadSelling
-      ? isAwayFav
-        ? aProb
-        : hProb
-      : crsFavWinProb > 0
-        ? crsFavWinProb
-        : isAwayFav
-          ? aProb
-          : hProb;
-    if (crsFavWinProb > 0) {
-      oneGoalShareOfWins = Math.min(0.85, crsFavOneGoalProb / crsFavWinProb);
-      oneGoalProb = favWinProb * oneGoalShareOfWins;
-    } else {
-      oneGoalShareOfWins = 0.45;
-      oneGoalProb = favWinProb * oneGoalShareOfWins;
+  let favWinProb = 0;
+  let favOneGoalProb = 0;
+  const targetDiff = isAwayFav ? -1 : 1;
+  for (let i = 0; i < DC_GRID_LEN; i++) {
+    const d = GRID_DIFF[i];
+    if (isAwayFav ? d < 0 : d > 0) {
+      favWinProb += scoreGrid[i];
+      if (d === targetDiff) favOneGoalProb += scoreGrid[i];
     }
   }
+  const oneGoalProb = favOneGoalProb;
+  const oneGoalShareOfWins =
+    favWinProb > 0 ? Math.min(0.85, oneGoalProb / favWinProb) : 0.5;
 
   const cardPanTip =
     oneGoalShareOfWins >= 0.5
       ? `${favTeam}若赢球，高达 ${(oneGoalShareOfWins * 100).toFixed(0)}% 概率仅净胜 1 球！慎追让胜穿盘，防「让平」性价比极高。`
       : `${favTeam}穿盘动能充足（净胜2+球占比 ${(100 - oneGoalShareOfWins * 100).toFixed(0)}%），可博让球正路。`;
 
-  let bestGoalPair = ['s2', 's3', 0.48];
-  for (let i = 0; i < ttgOpts.length - 1; i++) {
-    const sumP = ttgOpts[i].fairProb + ttgOpts[i + 1].fairProb;
+  let bestGoalPair = ['s2', 's3', 0];
+  for (let i = 0; i < TTG_KEY_ORDER.length - 1; i++) {
+    const k0 = TTG_KEY_ORDER[i];
+    const k1 = TTG_KEY_ORDER[i + 1];
+    const sumP = cal.poolProbs.TTG[k0] + cal.poolProbs.TTG[k1];
     if (sumP > bestGoalPair[2]) {
-      bestGoalPair = [ttgOpts[i].key, ttgOpts[i + 1].key, sumP];
+      bestGoalPair = [k0, k1, sumP];
     }
   }
 
-  const halfDrawProb = m.pools.HAFU.options
-    .filter((o) => o.key.startsWith('d'))
-    .reduce((a, o) => a + o.fairProb, 0);
+  const halfDrawProb =
+    cal.poolProbs.HAFU.dh + cal.poolProbs.HAFU.dd + cal.poolProbs.HAFU.da;
 
   const arbitrages = [];
 
@@ -448,10 +1395,23 @@ export function analyzeMatchMicroQuant(m) {
     microBadges.push({ text: `🔻${droppingOpts[0]}降水`, tone: 'purple' });
   }
 
+  const paceCorrelation = Number(cal.params.rho.toFixed(4));
+  const paceLabel =
+    paceCorrelation <= -0.05
+      ? '防守死锁'
+      : paceCorrelation >= 0.05
+        ? '开放对攻'
+        : '均衡节奏';
+  const alphaScanSummary = computeShrunkSubPoolScan(
+    cal.pools,
+    cal.coherent,
+    cal.sellingPoolCount
+  );
+
   return {
     homeXG,
     awayXG,
-    totalXG: Number(totalXG.toFixed(2)),
+    totalXG,
     oneGoalProb,
     oneGoalShareOfWins,
     cardPanTip,
@@ -460,14 +1420,24 @@ export function analyzeMatchMicroQuant(m) {
     arbitrages,
     steamSignal,
     microBadges,
+    paceCorrelation,
+    paceLabel,
+    alphaScanSummary,
   };
 }
 
 export function attachMicroQuant(matches) {
-  return matches.map((m) => ({
-    ...m,
-    microQuant: analyzeMatchMicroQuant(m),
-  }));
+  return matches.map((m) => {
+    const cal = calibrateMatchCoherentModel(m);
+    const calibratedMatch = {
+      ...m,
+      pools: cal.pools,
+    };
+    return {
+      ...calibratedMatch,
+      microQuant: analyzeMatchMicroQuant(calibratedMatch, cal),
+    };
+  });
 }
 
 const DEFAULT_CRS_ODDS_BY_LABEL = {

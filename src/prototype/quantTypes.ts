@@ -14,6 +14,7 @@ export interface OddsOption {
   odds: number;
   trend: -1 | 0 | 1;
   fairProb: number;
+  shinProb?: number;
 }
 
 export interface MatchPool {
@@ -63,6 +64,9 @@ export interface MatchMicroQuant {
   arbitrages: EquivalentArbItem[];
   steamSignal: string;
   microBadges: MicroBadge[];
+  paceCorrelation: number;
+  paceLabel: '防守死锁' | '均衡节奏' | '开放对攻';
+  alphaScanSummary: string;
 }
 
 export interface MatchItem {
