@@ -107,6 +107,16 @@ function buildCoherentTestMatch(
       ])
     ),
   };
+  raw.crs.s00s00 = raw.ttg.s0;
+  const synDa = 1 / (1 / Number(raw.had.d) + 1 / Number(raw.had.a));
+  const invHa = 1 / synDa;
+  const remInv = Math.max(0.12, 1 / 0.88 - invHa);
+  const rawInvHh = 1 / Number(raw.hhad.h);
+  const rawInvHd = 1 / Number(raw.hhad.d);
+  const scaleHd = remInv / (rawInvHh + rawInvHd);
+  raw.hhad.a = synDa.toFixed(2);
+  raw.hhad.h = Math.max(1.06, 1 / (rawInvHh * scaleHd)).toFixed(2);
+  raw.hhad.d = Math.max(1.06, 1 / (rawInvHd * scaleHd)).toFixed(2);
   if (lag) {
     if (lag.poolCode === 'TTG') {
       raw.ttg[lag.key] = String(Number((Number(raw.ttg[lag.key]) * lag.mult).toFixed(2)));

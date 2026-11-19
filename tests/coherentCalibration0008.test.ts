@@ -391,6 +391,26 @@ describe('Spec 0008 · Seam A: Non-Linear Shin/Power De-Vigging & 4-Parameter Co
           OFFICIAL_CRS_PAIRS.map(([rawK, lbl]: [string, string]) => [rawK, String(toOdds(crsMap[lbl], 0.76, 0.08))])
         ),
       };
+      rawMatch.crs.s00s00 = rawMatch.ttg.s0;
+      if (gNum === -1) {
+        const synDa = 1 / (1 / Number(rawMatch.had.d) + 1 / Number(rawMatch.had.a));
+        const remInv = Math.max(0.12, 1 / 0.88 - 1 / synDa);
+        const rawInvHh = 1 / Number(rawMatch.hhad.h);
+        const rawInvHd = 1 / Number(rawMatch.hhad.d);
+        const sc = remInv / (rawInvHh + rawInvHd);
+        rawMatch.hhad.a = synDa.toFixed(2);
+        rawMatch.hhad.h = Math.max(1.04, 1 / (rawInvHh * sc)).toFixed(2);
+        rawMatch.hhad.d = Math.max(1.04, 1 / (rawInvHd * sc)).toFixed(2);
+      } else if (gNum === 1) {
+        const synHd = 1 / (1 / Number(rawMatch.had.h) + 1 / Number(rawMatch.had.d));
+        const remInv = Math.max(0.12, 1 / 0.88 - 1 / synHd);
+        const rawInvHd = 1 / Number(rawMatch.hhad.d);
+        const rawInvHa = 1 / Number(rawMatch.hhad.a);
+        const sc = remInv / (rawInvHd + rawInvHa);
+        rawMatch.hhad.h = synHd.toFixed(2);
+        rawMatch.hhad.d = Math.max(1.04, 1 / (rawInvHd * sc)).toFixed(2);
+        rawMatch.hhad.a = Math.max(1.04, 1 / (rawInvHa * sc)).toFixed(2);
+      }
 
       if (lagOption) {
         if (lagOption.poolCode === 'TTG') {
