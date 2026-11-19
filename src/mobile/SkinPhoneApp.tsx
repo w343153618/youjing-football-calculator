@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  type ArchetypeKey,
   type ArchetypePlan,
   type BonusOptMode,
   type EquivalentArbItem,
   type MatchItem,
   type PoolCode,
+  type PortfolioKey,
   type UserStance,
 } from '../prototype/quantTypes';
 import {
@@ -110,14 +110,6 @@ interface StopLossInterceptState {
   overBy: number;
 }
 
-const ARCH_OPTS: Array<[ArchetypeKey, string]> = [
-  ['iron-shield', '铁盾'],
-  ['spear-shield', '博胆'],
-  ['fault-tolerant', '容错'],
-  ['goal-structure', '进球'],
-  ['value-assassin', '刺客'],
-];
-
 export function SkinPhoneApp({
   initialSkin,
   embedded,
@@ -146,7 +138,7 @@ export function SkinPhoneApp({
   const [syncing, setSyncing] = useState(false);
   const [syncSummary, setSyncSummary] = useState('正在建立 AES-256-GCM 加密精算会话...');
   const [syncClock, setSyncClock] = useState('21:05');
-  const [archKey, setArchKey] = useState<ArchetypeKey>('spear-shield');
+  const [archKey, setArchKey] = useState<PortfolioKey>('max-ev-utility');
   const [simHedgeHit, setSimHedgeHit] = useState(true);
 
   // Encrypted per-member dual-track stop-loss ledger state (with per-user localStorage offline fallback)
@@ -581,8 +573,23 @@ export function SkinPhoneApp({
   const appliedPlan = planSpec ? workspace.appliedPlan : null;
   const insights = workspace.insights;
   const allWarnings = workspace.allWarnings;
-  const fivePlans = workspace.fivePlans;
-  const currentArch = fivePlans.find((p) => p.key === archKey) ?? fivePlans[0];
+  const portfolioPlans = workspace.portfolioPlans?.length
+    ? workspace.portfolioPlans
+    : workspace.fivePlans;
+  const alphaPlan = portfolioPlans.find(
+    (p) => p.key === 'alpha-radar' || p.key === 'value-assassin'
+  );
+  const archOpts: Array<[PortfolioKey, string]> = [
+    ['max-profit-prob', '稳健保本'],
+    ['max-ev-utility', '期望效用'],
+    ['max-cvar-wheel', '容错缩水'],
+    ['alpha-radar', alphaPlan?.available === false ? '错价雷达·空仓' : '错价雷达'],
+  ];
+  const currentArch = portfolioPlans.find((p) => p.key === archKey) ?? portfolioPlans[0];
+  const fallbackValidArch =
+    currentArch?.available !== false
+      ? currentArch
+      : portfolioPlans.find((p) => p.available !== false) ?? portfolioPlans[0];
   const subjectiveEVPct = workspace.subjectiveEVPct;
 
   // 7. Persistent BetBar Amount Counter Choreography
@@ -681,7 +688,7 @@ export function SkinPhoneApp({
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
-    betCtrl.applyArchetype(plan);
+    if (!betCtrl.applyArchetype(plan)) return;
     playTactileCue('defuse-celebrate');
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(auditCockpitRef.current, 26);
@@ -1467,8 +1474,8 @@ export function SkinPhoneApp({
                 </div>
                 <div className="radar-sync-sub">
                   {isFullySyncedToRadar
-                    ? '当前五大流派已严格围绕你在【赛事雷达】亲手点选的球队/让球方向做精算配单，绝不违背你的看球意向反推对立面。'
-                    : '和小高排雷一样，点击下方按钮即可一键读取你在最左栏【赛事雷达】选过的比赛与球队方向，生成专属五流派方案。'}
+                    ? '当前精算配单（3+1 方案）已严格围绕你在【赛事雷达】亲手点选的球队/让球方向做精算配单，绝不违背你的看球意向反推对立面。'
+                    : '和小高排雷一样，点击下方按钮即可一键读取你在最左栏【赛事雷达】选过的比赛与球队方向，生成专属精算配单（3+1 方案）。'}
                 </div>
                 <div className="radar-sync-acts">
                   <button
@@ -1503,7 +1510,7 @@ export function SkinPhoneApp({
               </div>
 
               {/* 🩺 Restored: 买法不划算纠偏医生实时对比卡 */}
-              {hasSuboptimalManual && (
+              {hasSuboptimalManual && fallbackValidArch && (
                 <div className="card enter" style={{ marginBottom: 10 }}>
                   <div className="note-box alert">
                     <strong>🩺 买法不划算纠偏诊断：</strong>
@@ -1514,8 +1521,8 @@ export function SkinPhoneApp({
                         （真赚率仅 {(manualReport.realProfitProb * 100).toFixed(1)}%）
                       </>
                     )}
-                    ！改用下方【{currentArch.shortTab}】可立消假中奖，真赚率提升至{' '}
-                    <strong>{(currentArch.profitProb * 100).toFixed(1)}%</strong>。
+                    ！改用下方【{fallbackValidArch.shortTab}】可立消假中奖，真赚率提升至{' '}
+                    <strong>{(fallbackValidArch.profitProb * 100).toFixed(1)}%</strong>。
                   </div>
                 </div>
               )}
@@ -1597,7 +1604,7 @@ export function SkinPhoneApp({
                     ))}
                   </div>
                 </div>
-                {currentArch.key === 'value-assassin' && (
+                {(currentArch.key === 'alpha-radar' || currentArch.key === 'value-assassin') && (
                   <div className="row">
                     <span className="lbl">36% 自动轻仓护本垫</span>
                     <SpringSwitch
@@ -1608,89 +1615,144 @@ export function SkinPhoneApp({
                 )}
               </div>
 
-              {/* 4-KPI Detailed Archetype Overview */}
-              <div className="card enter">
-                <div className="co-head">
-                  <div>
-                    <div className="h2">
-                      {currentArch.badge} · {currentArch.title}
+              {currentArch.available === false ? (
+                <>
+                  <div className="card enter">
+                    <div className="co-head">
+                      <div>
+                        <div className="h2">
+                          {currentArch.badge} · {currentArch.title}
+                        </div>
+                        <div className="small">
+                          {currentArch.emptyReason ||
+                            `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash} 或采用前 3 档主方案`}
+                        </div>
+                      </div>
+                      <span className="chip num">
+                        ¥0（已替你省下 ¥{currentArch.savedCash}）
+                      </span>
                     </div>
-                    <div className="small">{currentArch.tagline}</div>
-                  </div>
-                  <span className="chip num">
-                    ¥{currentArch.totalCost}
-                    {currentArch.savedCash > 0 && <i>省¥{currentArch.savedCash}</i>}
-                  </span>
-                </div>
-
-                <div className="tiles num">
-                  <div className="tile">
-                    <span>真正赚钱率</span>
-                    <b>{(currentArch.profitProb * 100).toFixed(1)}%</b>
-                    <em>命中任一注 {(currentArch.winProb * 100).toFixed(1)}%</em>
-                  </div>
-                  <div className="tile">
-                    <span>{currentArch.missOneReturn !== null ? '错1场保命回血' : '命中返奖区间'}</span>
-                    <b>
-                      {currentArch.missOneReturn !== null
-                        ? `¥${currentArch.missOneReturn.toFixed(0)} (全中¥${currentArch.maxReturn.toFixed(0)})`
-                        : `¥${currentArch.minReturn.toFixed(0)}~${currentArch.maxReturn.toFixed(0)}`}
-                    </b>
-                    <em>0 假中奖倒贴</em>
-                  </div>
-                  <div className="tile">
-                    <span>综合暗扣抽水</span>
-                    <b>-{currentArch.vigPct}%</b>
-                    <em>返还率 {(100 - currentArch.vigPct).toFixed(1)}%</em>
-                  </div>
-                  <div className="tile">
-                    <span>店面合票张数</span>
-                    <b>{currentArch.lines.length} 张实票</b>
-                    <em>已做整数倍配平</em>
-                  </div>
-                </div>
-              </div>
-
-              {/* Detailed Per-Ticket Breakdown with Odds & Probability */}
-              {currentArch.lines.map((line) => (
-                <div key={line.id} className="card opt-row enter">
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <b>
-                      {line.legs
-                        .map((g) => `${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`)
-                        .join(' × ')}
-                    </b>
-                    <div className="s num">
-                      {line.roleLabel} · {line.modeLabel} · 真率{(line.prob * 100).toFixed(1)}% ·{' '}
-                      {line.multiple}倍(¥{line.cost})
+                    <div className="note-box" style={{ marginTop: 8 }}>
+                      <strong>🛡️ 宁缺毋滥 · 诚实空仓省钱纪律：</strong>
+                      <div>
+                        {currentArch.emptyReason ||
+                          `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash}，绝不硬凑高抽水废单。`}
+                      </div>
+                      {currentArch.reasons.map((r, idx) => (
+                        <div key={idx}>· {r}</div>
+                      ))}
                     </div>
                   </div>
-                  <div className="r num">
-                    ¥{line.returnPayout.toFixed(2)}
-                    <small style={{ color: line.netProfit >= 0 ? 'var(--good)' : 'var(--text-3)' }}>
-                      {line.netProfit >= 0
-                        ? `全单净赚 +¥${line.netProfit.toFixed(1)}`
-                        : `保命回血 ¥${line.returnPayout.toFixed(0)}`}
-                    </small>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <button
+                      type="button"
+                      disabled
+                      className="key full enter"
+                      style={{ opacity: 0.55, cursor: 'not-allowed' }}
+                    >
+                      当前无真错价洼地（建议空仓省下 ¥{currentArch.savedCash}）
+                    </button>
+                    <button
+                      type="button"
+                      data-spring="0.94"
+                      className="key dark full enter"
+                      onClick={() => {
+                        haptic(6);
+                        setArchKey('max-profit-prob');
+                      }}
+                    >
+                      👉 切往【① 稳健保本】主方案
+                    </button>
                   </div>
-                </div>
-              ))}
+                </>
+              ) : (
+                <>
+                  {/* 4-KPI Detailed Archetype Overview */}
+                  <div className="card enter">
+                    <div className="co-head">
+                      <div>
+                        <div className="h2">
+                          {currentArch.badge} · {currentArch.title}
+                        </div>
+                        <div className="small">{currentArch.tagline}</div>
+                      </div>
+                      <span className="chip num">
+                        ¥{currentArch.totalCost}
+                        {currentArch.savedCash > 0 && <i>省¥{currentArch.savedCash}</i>}
+                      </span>
+                    </div>
 
-              <div className="note-box enter" style={{ marginBottom: 8 }}>
-                <strong>精算师推导依据：</strong>
-                {currentArch.reasons.map((r, idx) => (
-                  <div key={idx}>· {r}</div>
-                ))}
-              </div>
+                    <div className="tiles num">
+                      <div className="tile">
+                        <span>真正赚钱率</span>
+                        <b>{(currentArch.profitProb * 100).toFixed(1)}%</b>
+                        <em>命中任一注 {(currentArch.winProb * 100).toFixed(1)}%</em>
+                      </div>
+                      <div className="tile">
+                        <span>{currentArch.missOneReturn !== null ? '错1场保命回血' : '命中返奖区间'}</span>
+                        <b>
+                          {currentArch.missOneReturn !== null
+                            ? `¥${currentArch.missOneReturn.toFixed(0)} (全中¥${currentArch.maxReturn.toFixed(0)})`
+                            : `¥${currentArch.minReturn.toFixed(0)}~${currentArch.maxReturn.toFixed(0)}`}
+                        </b>
+                        <em>0 假中奖倒贴</em>
+                      </div>
+                      <div className="tile">
+                        <span>综合暗扣抽水</span>
+                        <b>-{currentArch.vigPct}%</b>
+                        <em>返还率 {(100 - currentArch.vigPct).toFixed(1)}%</em>
+                      </div>
+                      <div className="tile">
+                        <span>店面合票张数</span>
+                        <b>{currentArch.lines.length} 张实票</b>
+                        <em>已做整数倍配平</em>
+                      </div>
+                    </div>
+                  </div>
 
-              <button
-                type="button"
-                data-spring="0.94"
-                className="key dark full enter"
-                onClick={() => applyArchetype(currentArch)}
-              >
-                套用【{currentArch.shortTab}】方案并查看审单台 (¥{currentArch.totalCost})
-              </button>
+                  {/* Detailed Per-Ticket Breakdown with Odds & Probability */}
+                  {currentArch.lines.map((line) => (
+                    <div key={line.id} className="card opt-row enter">
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <b>
+                          {line.legs
+                            .map((g) => `${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`)
+                            .join(' × ')}
+                        </b>
+                        <div className="s num">
+                          {line.roleLabel} · {line.modeLabel} · 真率{(line.prob * 100).toFixed(1)}% ·{' '}
+                          {line.multiple}倍(¥{line.cost})
+                        </div>
+                      </div>
+                      <div className="r num">
+                        ¥{line.returnPayout.toFixed(2)}
+                        <small style={{ color: line.netProfit >= 0 ? 'var(--good)' : 'var(--text-3)' }}>
+                          {line.netProfit >= 0
+                            ? `全单净赚 +¥${line.netProfit.toFixed(1)}`
+                            : `保命回血 ¥${line.returnPayout.toFixed(0)}`}
+                        </small>
+                      </div>
+                    </div>
+                  ))}
+
+                  <div className="note-box enter" style={{ marginBottom: 8 }}>
+                    <strong>精算师推导依据：</strong>
+                    {currentArch.reasons.map((r, idx) => (
+                      <div key={idx}>· {r}</div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    data-spring="0.94"
+                    className="key dark full enter"
+                    onClick={() => applyArchetype(currentArch)}
+                  >
+                    套用【{currentArch.shortTab}】方案并查看审单台 (¥{currentArch.totalCost})
+                  </button>
+                </>
+              )}
     </>
   ) : null;
 
@@ -1714,7 +1776,7 @@ export function SkinPhoneApp({
                       setDkRightTab('archetypes');
                     }}
                   >
-                    去五流派智能配单
+                    去 3+1 精算配单
                   </button>
                 </div>
               ) : (
@@ -2190,7 +2252,7 @@ export function SkinPhoneApp({
                   <div className="card enter">
                     <div className="sec-lbl" style={{ margin: '0 0 6px' }}>
                       <span>全赛果组合盈亏推演明细 (四舍六入五成双)</span>
-                      <span className="num">共 {effectiveReport.combos.length} 组</span>
+                      <span className="num">互斥场景 · 共 {effectiveReport.combos.length} 组</span>
                     </div>
                     <div className="combo-list num">
                       {effectiveReport.combos.map((c) => (
@@ -2221,7 +2283,8 @@ export function SkinPhoneApp({
                     <div>
                       <div className="num big">¥{effectiveReport.totalCost}</div>
                       <div className="num small">
-                        店面合票 {effectiveReport.consolidatedTickets} 张 · 可一键打钩核对
+                        物理实票 {effectiveReport.tickets?.length ?? effectiveReport.betCount} 注 · 合票{' '}
+                        {effectiveReport.consolidatedTickets} 张可核对
                       </div>
                     </div>
                     <div className="acts">
@@ -2978,6 +3041,16 @@ export function SkinPhoneApp({
                       </em>
                     </div>
                     <div className="tile w" style={{ fontFamily: 'var(--font-ui)' }}>
+                      <span>
+                        比赛节奏相关性 · {mq.paceLabel}（ρ=
+                        {mq.paceCorrelation >= 0 ? '+' : ''}
+                        {mq.paceCorrelation.toFixed(2)}）
+                      </span>
+                      <b style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
+                        跨盘定价扫描结论：{mq.alphaScanSummary}
+                      </b>
+                    </div>
+                    <div className="tile w" style={{ fontFamily: 'var(--font-ui)' }}>
                       <span>卡盘建议</span>
                       <b style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.45 }}>
                         {mq.cardPanTip}
@@ -3051,21 +3124,69 @@ export function SkinPhoneApp({
               <div className="p-amt num">合计应付 ¥{effectiveReport.totalCost}</div>
 
               {(appliedPlan
-                ? appliedPlan.lines.map((l) => ({
-                    key: l.id,
-                    left: l.legs
+                ? appliedPlan.lines.flatMap((l) => {
+                    const left = l.legs
                       .map((g) => `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`)
-                      .join('×'),
-                    right: `${l.modeLabel} · ${l.multiple}倍 (¥${l.cost})`,
-                  }))
-                : manualReport.tickets && manualReport.tickets.length > 0
-                  ? manualReport.tickets.map((tk) => ({
-                      key: tk.id,
-                      left: (tk.legs ?? [])
+                      .join('×');
+                    const totalMult = Math.max(1, l.multiple);
+                    if (totalMult <= 99) {
+                      return [
+                        {
+                          key: l.id,
+                          left,
+                          right: `${l.modeLabel} · ${totalMult}倍 (¥${l.cost})`,
+                        },
+                      ];
+                    }
+                    const slips: Array<{ key: string; left: string; right: string }> = [];
+                    let rem = totalMult;
+                    let idx = 1;
+                    const slipCount = Math.ceil(totalMult / 99);
+                    while (rem > 0) {
+                      const chunk = Math.min(99, rem);
+                      slips.push({
+                        key: `${l.id}-p${idx}`,
+                        left: `${left} [第${idx}/${slipCount}张]`,
+                        right: `${l.modeLabel} · ${chunk}倍 (¥${chunk * 2})`,
+                      });
+                      rem -= chunk;
+                      idx += 1;
+                    }
+                    return slips;
+                  })
+                : effectiveReport.tickets && effectiveReport.tickets.length > 0
+                  ? effectiveReport.tickets.flatMap((tk) => {
+                      const left = (tk.legs ?? [])
                         .map((g) => `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`)
-                        .join('×'),
-                      right: `${(tk.legs?.length ?? 1) === 1 ? '单关' : `${tk.legs?.length}串1`} · ${multiple}倍 (¥${multiple * 2})`,
-                    }))
+                        .join('×');
+                      const passTxt =
+                        (tk.legs?.length ?? 1) === 1 ? '单关' : `${tk.legs?.length}串1`;
+                      const totalMult = Math.max(1, multiple);
+                      if (totalMult <= 99) {
+                        return [
+                          {
+                            key: tk.id,
+                            left,
+                            right: `${passTxt} · ${totalMult}倍 (¥${totalMult * 2})`,
+                          },
+                        ];
+                      }
+                      const slips: Array<{ key: string; left: string; right: string }> = [];
+                      let rem = totalMult;
+                      let idx = 1;
+                      const slipCount = Math.ceil(totalMult / 99);
+                      while (rem > 0) {
+                        const chunk = Math.min(99, rem);
+                        slips.push({
+                          key: `${tk.id}-p${idx}`,
+                          left: `${left} [第${idx}/${slipCount}张]`,
+                          right: `${passTxt} · ${chunk}倍 (¥${chunk * 2})`,
+                        });
+                        rem -= chunk;
+                        idx += 1;
+                      }
+                      return slips;
+                    })
                   : picks.map((p) => ({
                       key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,
                       left: `${p.matchNumStr} ${p.home}vs${p.away}`,
@@ -4110,13 +4231,13 @@ export function SkinPhoneApp({
               <div className="dk-col-scroll">{auditContent}</div>
             </section>
 
-            {/* Column 3: 五流派智能配单 & 扫地僧小高排雷账本 */}
+            {/* Column 3: 3+1 精算配单 & 扫地僧小高排雷账本 */}
             <section className="dk-col dk-col-right">
               <div className="dk-col-head">
                 <div className="dk-col-head-row">
                   <SpringSegmented
                     options={[
-                      ['archetypes', '🎯 五流派智能推荐'],
+                      ['archetypes', '🎯 3+1 精算配单'],
                       ['ledger', '🧹 小高排雷与账本'],
                     ]}
                     value={dkRightTab}
@@ -4156,7 +4277,7 @@ export function SkinPhoneApp({
                       </div>
                     </div>
                     <SpringSegmented
-                      options={ARCH_OPTS}
+                      options={archOpts}
                       value={archKey}
                       onChange={setArchKey}
                       skinKey={skin}
@@ -4305,7 +4426,7 @@ export function SkinPhoneApp({
               <div className="title-row">
                 <div>
                   <span className="h1">优竞体育内部专用</span>
-                  <span className="sub num">选队精算 5 大流派战法</span>
+                  <span className="sub num">五池闭合校准 · 3+1 帕累托精算配单</span>
                 </div>
                 <div className="hdr-acts">
                   <button
@@ -4349,7 +4470,7 @@ export function SkinPhoneApp({
                   ))}
                 </div>
               </div>
-              <SpringSegmented options={ARCH_OPTS} value={archKey} onChange={setArchKey} skinKey={skin} />
+              <SpringSegmented options={archOpts} value={archKey} onChange={setArchKey} skinKey={skin} />
             </>
           )}
 
@@ -4470,7 +4591,7 @@ export function SkinPhoneApp({
                 ],
                 [
                   'archetypes',
-                  '五流派',
+                  '精算配单',
                   <svg key="a" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 19 21 12 17 5 21 12 2"/></svg>,
                   false,
                 ],

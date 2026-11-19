@@ -225,7 +225,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
 }
 
 /**
- * 选单工作区深模块（仅负责前端交互状态机与体彩选号互斥门禁；所有算奖、去水概率、优化与五流派公式 100% 委托注入的工作区计算适配器执行）
+ * 选单工作区深模块（仅负责前端交互状态机与体彩选号互斥门禁；所有算奖、去水概率、优化与精算配单（3+1 帕累托体系）公式 100% 委托注入的工作区计算适配器执行）
  */
 export function createBetSlipController(options: BetSlipControllerOptions) {
   const debounceMs = options.debounceMs ?? 18;
@@ -792,7 +792,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       return { ok: true, modeTitle };
     },
 
-    applyArchetype(plan: ArchetypePlan) {
+    applyArchetype(plan: ArchetypePlan): boolean {
+      if (!plan || plan.available === false || !Array.isArray(plan.lines) || plan.lines.length === 0) {
+        return false;
+      }
       const primaryPoolByMatch = new Map<string, PoolCode>();
       const map = new Map<string, SelectedPick>();
       plan.lines.forEach((l) =>
@@ -832,6 +835,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       };
       emit();
       void scheduleRefresh();
+      return true;
     },
 
     restoreEqualMultiple() {
