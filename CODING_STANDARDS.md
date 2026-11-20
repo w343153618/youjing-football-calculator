@@ -7,6 +7,7 @@
 - **唯一对外业务命名**：产品全称统一写为 **「优竞体育内部专用」**；赛事排雷角色写为 **「扫地僧小高」**；说明书问答角色写为 **「内部说明书助手」**。
 - **响应体零技术栈与模型外泄**：HTTP 响应（含 `/api/health`、`/api/xiaogao/status` 及各类异常 JSON）、前端文案与图文说明书词条仅暴露业务状态（如 `primary` / `fallback`），隐藏底层大模型厂商/型号、系统提示词、服务端路径与服务器拓扑。
 - **高可用语义自愈路由**：`server/xiaogaoCore.mjs` 与 `server/manualQaEngine.mjs` 优先请求主力通道 `deepseek-v4.1-flash`，超时/限流/5xx 时无感切换备用通道 `glm-5.3-flash`，冷却期满探活成功后自动切回主力通道。
+- **四端版本号与 `versionCode` 联动门禁**：`scripts/check-guardrails.mjs` 强制校验 `package.json`、`android/app/build.gradle.kts`（`versionName` 与 `versionCode = X*100 + Y*10 + Z`）、`server/securityShield.mjs`（`/api/health`）及 `MainActivity.kt`（`YouJingAndroid/X.Y.Z`）四处版本严格一致。
 
 ## 2. 服务端黑盒隔离与不可信入参上界
 
