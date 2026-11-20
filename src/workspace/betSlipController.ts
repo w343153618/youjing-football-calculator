@@ -1742,7 +1742,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
       state = {
         ...state,
-        planSpec: { kind: "bonus", optMode, scaleMultiple: 1 },
+        planSpec: {
+          kind: "bonus",
+          optMode,
+          scaleMultiple: 1,
+          consolidateTickets: true,
+        },
       };
       emit();
       void scheduleRefresh();
@@ -1801,6 +1806,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           key: plan.key,
           snapshotPlan: plan,
           scaleMultiple: 1,
+          consolidateTickets: true,
         },
         simVoidFirstMatch: false,
         subjectiveDeltaPct: 0,
@@ -1912,16 +1918,28 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         (sum, s) => sum + (s <= maxPassSize ? elemDp[s] : 0),
         0
       );
+      const prevTotalCost =
+        state.workspace.effectiveReport.totalCost > 0
+          ? state.workspace.effectiveReport.totalCost
+          : state.workspace.manualReport.totalCost > 0
+            ? state.workspace.manualReport.totalCost
+            : Math.max(1, Math.floor(estBetCount / 2)) * state.multiple * 2;
+      const isOneToTwoSplit =
+        arb.betterPicks.length >= 2 && arb.worsePicks.length === 1;
+      const nextMultiple =
+        isOneToTwoSplit && state.multiple >= 2
+          ? Math.max(1, Math.ceil(state.multiple / 2))
+          : state.multiple;
       const nextPlanSpec: AppliedPlanSpec =
         arb.betterPicks.length >= 2 && estBetCount > 0 && estBetCount <= 512
-          ? { kind: "bonus", optMode: "equal", scaleMultiple: 1 }
+          ? {
+              kind: "bonus",
+              optMode: "equal",
+              scaleMultiple: 1,
+              consolidateTickets: true,
+              ...(isOneToTwoSplit ? { targetBudgetCost: prevTotalCost } : {}),
+            }
           : null;
-      const nextMultiple =
-        arb.betterPicks.length >= 2 &&
-        arb.worsePicks.length === 1 &&
-        state.multiple >= 2
-          ? Math.max(1, Math.floor(state.multiple / 2))
-          : state.multiple;
       state = {
         ...state,
         multiple: nextMultiple,
@@ -2084,9 +2102,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           optMode,
           scaleMultiple: 1,
           upgradeToBreakeven: true,
-          ...(prevConsolidate !== undefined
-            ? { consolidateTickets: prevConsolidate }
-            : {}),
+          consolidateTickets: prevConsolidate ?? true,
         },
       };
       emit();

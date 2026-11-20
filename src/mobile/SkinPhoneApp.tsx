@@ -1452,7 +1452,7 @@ export function SkinPhoneApp({
           <span className="sec" style={{ margin: 0 }}>
             🌉 过桥配菜搭子寻优（还差 1 场凑合法 2串1）
           </span>
-          <span className="qpill hi">
+          <span className="qpill hi" style={{ flexShrink: 0 }}>
             全盘精选 Top {bridgeCandidates.length}
           </span>
         </div>
@@ -1498,7 +1498,6 @@ export function SkinPhoneApp({
 
   const matchContent = (
     <>
-      {renderBridgeCandidatesBlock(true)}
       {["mix", "spf", "single"].includes(mode) && (
         <div className="mgrid colhead enter">
           <span style={{ textAlign: "left" }}>球队 / 排名</span>
@@ -2007,11 +2006,20 @@ export function SkinPhoneApp({
                 <strong>
                   {manualReport.underwaterCount} 种结果假中奖倒亏钱
                 </strong>
-                （真赚率仅 {(manualReport.realProfitProb * 100).toFixed(1)}%）
+                （严格净赚率仅{" "}
+                {(manualReport.objectiveStrictNetGainProb * 100).toFixed(1)}%）
               </>
             )}
-            ！改用下方【{fallbackValidArch.shortTab}】可立消假中奖，真赚率提升至{" "}
-            <strong>{(fallbackValidArch.profitProb * 100).toFixed(1)}%</strong>
+            ！改用下方【{fallbackValidArch.shortTab}
+            】可立消假中奖，严格净赚率提升至{" "}
+            <strong>
+              {(
+                (fallbackValidArch.objectiveStrictNetGainProb ??
+                  fallbackValidArch.strictNetGainProb ??
+                  fallbackValidArch.profitProb) * 100
+              ).toFixed(1)}
+              %
+            </strong>
             。
           </div>
         </div>
@@ -2347,23 +2355,36 @@ export function SkinPhoneApp({
                       (currentArch.objectiveStrictNetGainProb ??
                         currentArch.strictNetGainProb ??
                         currentArch.profitProb) * 100;
-                    const archBreakEvenPct =
-                      (currentArch.breakEvenProb ?? 0) * 100;
+                    const objProfitPct =
+                      (currentArch.objectiveProfitProb ??
+                        currentArch.profitProb) * 100;
+                    const archObjBreakEvenPct = Math.max(
+                      0,
+                      objProfitPct - objStrictPct
+                    );
                     const archSubjProfitPct =
                       currentArch.subjectiveProjectedProfitProb != null
                         ? currentArch.subjectiveProjectedProfitProb * 100
                         : null;
+                    const subParts: string[] = [];
+                    if (archObjBreakEvenPct >= 0.05) {
+                      subParts.push(
+                        `另含 ${archObjBreakEvenPct.toFixed(1)}% 刚回本`
+                      );
+                    }
+                    if (archSubjProfitPct !== null) {
+                      subParts.push(
+                        `个人推演 ${archSubjProfitPct.toFixed(1)}%`
+                      );
+                    }
+                    subParts.push(
+                      `命中 ${(currentArch.winProb * 100).toFixed(1)}%`
+                    );
                     return (
                       <div className="tile">
                         <span>严格净赚率</span>
                         <b>{objStrictPct.toFixed(1)}%</b>
-                        <em>
-                          {archBreakEvenPct >= 0.05
-                            ? `另含 ${archBreakEvenPct.toFixed(1)}% 刚回本 · 命中 ${(currentArch.winProb * 100).toFixed(1)}%`
-                            : archSubjProfitPct !== null
-                              ? `个人推演 ${archSubjProfitPct.toFixed(1)}% · 命中 ${(currentArch.winProb * 100).toFixed(1)}%`
-                              : `命中任一注 ${(currentArch.winProb * 100).toFixed(1)}%`}
-                        </em>
+                        <em>{subParts.join(" · ")}</em>
                       </div>
                     );
                   })()}
@@ -2645,12 +2666,29 @@ export function SkinPhoneApp({
                         % / {(effectiveReport.anyWinProb * 100).toFixed(1)}%
                       </b>
                       <em>
-                        {effectiveReport.breakEvenProb >= 0.0005
-                          ? `另含 ${(effectiveReport.breakEvenProb * 100).toFixed(1)}% 刚回本`
-                          : effectiveReport.subjectiveProjectedProfitProb !=
-                              null
-                            ? `个人推演不亏 ${(effectiveReport.subjectiveProjectedProfitProb * 100).toFixed(1)}%`
-                            : "客观净利>0 才算真赚"}
+                        {(() => {
+                          const objBePct = Math.max(
+                            0,
+                            (effectiveReport.objectiveProfitProb -
+                              effectiveReport.objectiveStrictNetGainProb) *
+                              100
+                          );
+                          const parts: string[] = [];
+                          if (objBePct >= 0.05) {
+                            parts.push(`另含 ${objBePct.toFixed(1)}% 刚回本`);
+                          }
+                          if (
+                            effectiveReport.subjectiveProjectedProfitProb !=
+                            null
+                          ) {
+                            parts.push(
+                              `个人推演 ${(effectiveReport.subjectiveProjectedProfitProb * 100).toFixed(1)}%`
+                            );
+                          }
+                          return parts.length > 0
+                            ? parts.join(" · ")
+                            : "客观净利>0 才算真赚";
+                        })()}
                       </em>
                     </div>
                     <div
@@ -2886,7 +2924,9 @@ export function SkinPhoneApp({
 
               {effectiveReport.syntheticHint && (
                 <div className="note-box">
-                  <strong>💡 合成单关参谋：</strong>
+                  <strong>
+                    {appliedPlan ? "⚖️ 智能分倍摘要：" : "💡 合成单关参谋："}
+                  </strong>
                   {effectiveReport.syntheticHint}
                   {effectiveReport.matchCount === 1 &&
                     !effectiveReport.canCheckout &&
@@ -3055,7 +3095,7 @@ export function SkinPhoneApp({
                         <TeamCrest name={first.away} size={18} />
                         <b>{first.away}</b>
                       </div>
-                      <div style={{ display: "flex", gap: 5 }}>
+                      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
                         {canToggleBanker && (
                           <button
                             type="button"
@@ -4613,7 +4653,12 @@ export function SkinPhoneApp({
           )}
 
           {(appliedPlan
-            ? appliedPlan.lines.flatMap((l) => {
+            ? (planSpec?.consolidateTickets &&
+              Array.isArray(appliedPlan.consolidatedLines) &&
+              appliedPlan.consolidatedLines.length > 0
+                ? appliedPlan.consolidatedLines
+                : appliedPlan.lines
+              ).flatMap((l) => {
                 const left = l.legs
                   .map(
                     (g) =>
@@ -5270,6 +5315,38 @@ export function SkinPhoneApp({
 
   const desktopBetDockNode = (
     <footer ref={slipRef} className="dk-betdock">
+      {showBridgeFinder && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+            padding: "6px 14px",
+            borderBottom: "0.5px solid var(--line)",
+          }}
+        >
+          <span className="small num" style={{ margin: 0, fontWeight: 600 }}>
+            🌉 过桥配菜搭子精选：
+          </span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {bridgeCandidates.map((cand) => (
+              <button
+                key={`dk-br-${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
+                type="button"
+                data-spring="0.88"
+                className="key mini dark num"
+                onClick={(e) => applyBridgeCandidateUI(cand, e.currentTarget)}
+              >
+                {cand.kind === "lowest-vig" ? "🛡️最低抽水" : "⏰时间差锁利"} ·{" "}
+                {cand.matchNumStr.slice(-3)}
+                {cand.home}[{cand.optionLabel}@{cand.odds.toFixed(2)}] 一键搭上
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="dk-betdock-inner">
         <div className="dk-bet-left">
           <button
@@ -5510,8 +5587,6 @@ export function SkinPhoneApp({
           setBarPopover(null);
           if (effectiveReport.canCheckout) {
             setSheet({ type: "poster" });
-          } else if (showBridgeFinder && bridgeCandidates[0]) {
-            applyBridgeCandidateUI(bridgeCandidates[0]);
           } else if (
             effectiveReport.matchCount === 1 &&
             effectiveReport.syntheticRescuePicks &&
@@ -5520,6 +5595,8 @@ export function SkinPhoneApp({
             void betCtrl.replacePicks(effectiveReport.syntheticRescuePicks);
             playTactileCue("optimize-arpeggio");
             showSpringToast(layerRef.current, "已一键切换为本场半全场合成单关");
+          } else if (showBridgeFinder && bridgeCandidates[0]) {
+            applyBridgeCandidateUI(bridgeCandidates[0]);
           } else {
             setTab("match");
           }
@@ -5527,17 +5604,44 @@ export function SkinPhoneApp({
       >
         {effectiveReport.canCheckout
           ? "打票核对"
-          : showBridgeFinder
-            ? "🌉一键凑2串1"
-            : effectiveReport.matchCount === 1 &&
-                effectiveReport.syntheticRescuePicks &&
-                effectiveReport.syntheticRescuePicks.length > 0
-              ? "一键合成单关"
+          : effectiveReport.matchCount === 1 &&
+              effectiveReport.syntheticRescuePicks &&
+              effectiveReport.syntheticRescuePicks.length > 0
+            ? "一键合成单关"
+            : showBridgeFinder
+              ? "🌉一键凑2串1"
               : "去凑场次"}
       </button>
     </div>
   ) : (
     <div ref={slipRef} className="m-betbar num">
+      {showBridgeFinder && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            overflowX: "auto",
+            paddingBottom: 5,
+            marginBottom: 4,
+            borderBottom: "0.5px solid rgba(255,255,255,0.12)",
+          }}
+        >
+          {bridgeCandidates.map((cand) => (
+            <button
+              key={`mb-br-${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
+              type="button"
+              className="m-bet-pill hi"
+              style={{ flexShrink: 0 }}
+              onClick={(e) => applyBridgeCandidateUI(cand, e.currentTarget)}
+            >
+              {cand.kind === "lowest-vig" ? "🛡️低抽水" : "⏰时间差"}·
+              {cand.matchNumStr.slice(-3)}
+              {cand.home}[{cand.optionLabel}@{cand.odds.toFixed(2)}] 一键搭上
+            </button>
+          ))}
+        </div>
+      )}
       <div className="m-betbar-r1">
         <div
           style={{ display: "flex", alignItems: "center", gap: 5, minWidth: 0 }}
@@ -5667,8 +5771,8 @@ export function SkinPhoneApp({
               : !effectiveReport.canCheckout
                 ? effectiveReport.ruleBlockReason || "未开单关·还差1场凑2串1"
                 : effectiveReport.underwaterCount > 0
-                  ? `⚠️${effectiveReport.underwaterCount}注假中奖 · 建议去②配单消坑`
-                  : `保底¥${effectiveReport.minPayout.toFixed(0)}~${effectiveReport.maxPayout.toFixed(0)} · 真赚${(effectiveReport.realProfitProb * 100).toFixed(0)}%`}
+                  ? `⚠️${effectiveReport.underwaterCount}注局部回血 · 建议去②配单消坑`
+                  : `保底¥${effectiveReport.minPayout.toFixed(0)}~${effectiveReport.maxPayout.toFixed(0)} · 净赚${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(0)}%`}
           </small>
         </div>
 

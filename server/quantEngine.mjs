@@ -43,7 +43,7 @@ export function bankerRoundParlayUnitPayout(oddsList) {
   if (len === 1) {
     const o0 = oddsList[0];
     if (!Number.isFinite(o0) || o0 <= 0) return 0;
-    if (o0 <= 1_000_000) {
+    if (o0 >= 1 && o0 <= 100_000) {
       const num = 200 * Math.round(o0 * 10000);
       const q = Math.trunc(num / 10000);
       const twiceRem = (num - q * 10000) * 2;
@@ -57,7 +57,13 @@ export function bankerRoundParlayUnitPayout(oddsList) {
     if (!Number.isFinite(o0) || o0 <= 0 || !Number.isFinite(o1) || o1 <= 0) {
       return 0;
     }
-    if (o0 * o1 <= 400_000) {
+    if (
+      o0 >= 1 &&
+      o1 >= 1 &&
+      o0 <= 100_000 &&
+      o1 <= 100_000 &&
+      o0 * o1 <= 400_000
+    ) {
       const num = 200 * Math.round(o0 * 10000) * Math.round(o1 * 10000);
       const scale = 100_000_000;
       const q = Math.trunc(num / scale);
@@ -1059,9 +1065,17 @@ function extractCanonicalPoolTarget(
   const powerProbs = needPower
     ? devigPoolProbabilities(ordered, "power").probs
     : shinProbs;
+  const mainProbs = ordered.map(
+    (_, i) => 0.35 * shinProbs[i] + 0.5 * powerProbs[i] + 0.15 * multProbs[i]
+  );
+  const hhadMainProbs = ordered.map(
+    (_, i) => 0.35 * shinProbs[i] + 0.65 * multProbs[i]
+  );
   const payoutRatio = 1 / invSum;
   return {
     probs: shinProbs,
+    mainProbs,
+    hhadMainProbs,
     shinByKey,
     powerProbs,
     multProbs,
@@ -1462,22 +1476,12 @@ export function calibrateMatchCoherentModel(match) {
       qCrs[tpl.crsIdx] += p0;
     }
 
-    let tHad = hadTarget
-      ? Float64Array.from(
-          hadTarget.probs,
-          (v, j) => 0.5 * v + 0.5 * hadTarget.powerProbs[j]
-        )
-      : null;
-    let tHhad = hhadTarget
-      ? Float64Array.from(
-          hhadTarget.probs,
-          (v, j) => 0.35 * v + 0.65 * hhadTarget.multProbs[j]
-        )
-      : null;
+    let tHad = hadTarget ? Float64Array.from(hadTarget.mainProbs) : null;
+    let tHhad = hhadTarget ? Float64Array.from(hhadTarget.hhadMainProbs) : null;
 
     if (tHad && tHhad && Math.abs(goalLine) === 1) {
       const mHhad = hhadTarget.multProbs;
-      const sHhad = hhadTarget.probs;
+      const pHhad = hhadTarget.powerProbs;
       const smoothReconWeight = (gap) => {
         if (gap <= 0.1) return 1;
         if (gap >= 0.16) return 0;
@@ -1485,7 +1489,7 @@ export function calibrateMatchCoherentModel(match) {
       };
       if (goalLine === -1) {
         const splitWin =
-          0.5 * (sHhad[0] + sHhad[1]) + 0.5 * (mHhad[0] + mHhad[1]);
+          0.35 * (pHhad[0] + pHhad[1]) + 0.65 * (mHhad[0] + mHhad[1]);
         const alpha = smoothReconWeight(Math.abs(splitWin - tHad[0]));
         if (alpha > 0) {
           // Symmetric Jensen-cancelling reconciliation with C1 smooth ramp on [0.10, 0.16]
@@ -1515,7 +1519,7 @@ export function calibrateMatchCoherentModel(match) {
         }
       } else {
         const splitAway =
-          0.5 * (sHhad[1] + sHhad[2]) + 0.5 * (mHhad[1] + mHhad[2]);
+          0.35 * (pHhad[1] + pHhad[2]) + 0.65 * (mHhad[1] + mHhad[2]);
         const alpha = smoothReconWeight(Math.abs(splitAway - tHad[2]));
         if (alpha > 0) {
           const pACons = Math.min(
@@ -1548,7 +1552,7 @@ export function calibrateMatchCoherentModel(match) {
       // Preserve market-implied bridge mass P(1 <= |d| < |goalLine|) = P(win) - P(bigWin) whenever valid,
       // and smoothly reconcile ONLY when vig distortion causes subset inversion (P(bigWin) + minBridge > P(win)).
       const mHhad = hhadTarget.multProbs;
-      const sHhad = hhadTarget.probs;
+      const pHhad = hhadTarget.powerProbs;
       const absGl = Math.abs(goalLine);
       let qBridge = 0;
       for (let i = 0; i < atomicLen; i++) {
@@ -1560,7 +1564,7 @@ export function calibrateMatchCoherentModel(match) {
       const minBridgeFloor = Math.max(0.015, 0.25 * qBridge);
       if (goalLine < 0) {
         const splitBigWin =
-          0.5 * (sHhad[0] + sHhad[1]) + 0.5 * (mHhad[0] + mHhad[1]);
+          0.35 * (pHhad[0] + pHhad[1]) + 0.65 * (mHhad[0] + mHhad[1]);
         const excess = splitBigWin + minBridgeFloor - tHad[0];
         if (excess > 0) {
           const alpha = Math.min(1, excess / 0.06);
@@ -1588,7 +1592,7 @@ export function calibrateMatchCoherentModel(match) {
         }
       } else {
         const splitBigAway =
-          0.5 * (sHhad[1] + sHhad[2]) + 0.5 * (mHhad[1] + mHhad[2]);
+          0.35 * (pHhad[1] + pHhad[2]) + 0.65 * (mHhad[1] + mHhad[2]);
         const excess = splitBigAway + minBridgeFloor - tHad[2];
         if (excess > 0) {
           const alpha = Math.min(1, excess / 0.06);
@@ -1632,16 +1636,18 @@ export function calibrateMatchCoherentModel(match) {
         : rawVal;
 
     // Timestamp-verified cross-pool anti-hallucination (Spec 0012 / ADR-0013):
-    // When explicit updateDate + updateTime show CRS is fresher than TTG (>15m) and its exact goal-sum
-    // partition contradicts Poisson prior, cap TTG's reference prior at CRS's exact partition sum.
+    // Only apply upward lag pull toward the cross-pool prior when explicit updateDate + updateTime
+    // prove the sub-pool genuinely lagged behind the main pool by >= 30 minutes without fresher contradiction.
     const normTs = resolveNormalizedMatchPoolTimestamps(rawPools);
     const hasExplicitDate = Boolean(
       rawPools.HAD?.updateDate ||
       rawPools.HHAD?.updateDate ||
       rawPools.TTG?.updateDate ||
+      rawPools.HAFU?.updateDate ||
       rawPools.CRS?.updateDate
     );
     const ttgTs = ttgTarget ? normTs.TTG : null;
+    const hafuTs = hafuTarget ? normTs.HAFU : null;
     const crsTs = crsTarget ? normTs.CRS : null;
     const hadTs = hadTarget ? normTs.HAD : null;
     const hhadTs = hhadTarget ? normTs.HHAD : null;
@@ -1670,42 +1676,47 @@ export function calibrateMatchCoherentModel(match) {
         }
       }
     }
-    const ttgMovedAfterMain =
-      hasExplicitDate &&
-      ttgTs !== null &&
-      mainRefTs !== null &&
-      ttgTs > mainRefTs + 15;
+    const ttgLagValid = hasExplicitDate
+      ? ttgTs !== null &&
+        mainRefTs !== null &&
+        mainRefTs - ttgTs >= 30 &&
+        !(crsExactTtgSum !== null)
+      : true;
+    const hafuLagValid = hasExplicitDate
+      ? hafuTs !== null && mainRefTs !== null && mainRefTs - hafuTs >= 30
+      : true;
+    const crsLagValid = hasExplicitDate
+      ? crsTs !== null && mainRefTs !== null && mainRefTs - crsTs >= 30
+      : true;
 
     const tTtg = ttgTarget
       ? huberNormalize(
           Float64Array.from(ttgTarget.probs, (v, j) => {
             const rawBlended = 0.65 * v + 0.35 * ttgTarget.powerProbs[j];
-            if (ttgMovedAfterMain) {
+            if (!ttgLagValid) {
               return 0.97 * rawBlended + 0.03 * qTtg[j];
             }
-            const refPrior =
-              crsExactTtgSum && j <= 5 && crsExactTtgSum[j] < qTtg[j] - 0.015
-                ? crsExactTtgSum[j]
-                : qTtg[j];
             return (
-              0.97 * huberLagCap(rawBlended, refPrior, 0.032) + 0.03 * qTtg[j]
+              0.97 * huberLagCap(rawBlended, qTtg[j], 0.032) + 0.03 * qTtg[j]
             );
           })
         )
       : null;
     const tHafu = hafuTarget
       ? huberNormalize(
-          Float64Array.from(
-            hafuTarget.powerProbs,
-            (v, j) => 0.85 * huberLagCap(v, qHafu[j], 0.045) + 0.15 * qHafu[j]
+          Float64Array.from(hafuTarget.powerProbs, (v, j) =>
+            hafuLagValid
+              ? 0.85 * huberLagCap(v, qHafu[j], 0.045) + 0.15 * qHafu[j]
+              : 0.85 * v + 0.15 * qHafu[j]
           )
         )
       : null;
     const tCrs = crsTarget
       ? huberNormalize(
-          Float64Array.from(
-            crsTarget.powerProbs,
-            (v, j) => 0.8 * huberLagCap(v, qCrs[j], 0.035) + 0.2 * qCrs[j]
+          Float64Array.from(crsTarget.powerProbs, (v, j) =>
+            crsLagValid
+              ? 0.8 * huberLagCap(v, qCrs[j], 0.035) + 0.2 * qCrs[j]
+              : 0.8 * v + 0.2 * qCrs[j]
           )
         )
       : null;
@@ -5176,16 +5187,35 @@ function computeMinDiscreteSplitNotes(odds1, odds2, singleOdds, maxScan = 99) {
   return null;
 }
 
-function canDiscreteSplitBeatSingleWithinNotes(
+function canDiscreteSplitBeatSingleAtExactNotes(
   odds1,
   odds2,
   singleOdds,
-  availNotes
+  exactNotes
 ) {
-  const maxN = Math.min(999, Math.floor(Number(availNotes) || 0));
-  if (maxN < 2) return false;
-  const minN = computeMinDiscreteSplitNotes(odds1, odds2, singleOdds, maxN);
-  return typeof minN === "number" && minN <= maxN;
+  const n = Math.min(999, Math.floor(Number(exactNotes) || 0));
+  if (n < 2) return false;
+  const u1 = bankerRoundParlayUnitPayout([odds1]);
+  const u2 = bankerRoundParlayUnitPayout([odds2]);
+  const uSingle = bankerRoundParlayUnitPayout([singleOdds]);
+  if (!(u1 > 0 && u2 > 0 && uSingle > 0)) return false;
+  const target = n * uSingle;
+  const m1Ideal = Math.max(
+    1,
+    Math.min(n - 1, Math.round((n * u2) / (u1 + u2)))
+  );
+  for (
+    let m1 = Math.max(1, m1Ideal - 1);
+    m1 <= Math.min(n - 1, m1Ideal + 1);
+    m1++
+  ) {
+    const m2 = n - m1;
+    const worstPay = Math.min(m1 * u1, m2 * u2);
+    if (worstPay > target + 1e-9) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function computeEquivalentArbitrages(m) {
@@ -5530,6 +5560,20 @@ function scanMatchAlphaCandidates(
     }
     const isMainPool = poolCode === "HAD" || poolCode === "HHAD";
     const curPoolTs = poolTsMap[poolCode] ?? null;
+    const hasExplicitScanDate = Boolean(
+      cal.pools?.HAD?.updateDate ||
+      cal.pools?.HHAD?.updateDate ||
+      cal.pools?.TTG?.updateDate ||
+      cal.pools?.HAFU?.updateDate ||
+      cal.pools?.CRS?.updateDate
+    );
+    const isUnverifiedSubPoolLag =
+      !isMainPool &&
+      hasExplicitScanDate &&
+      hasRealTsSpread &&
+      curPoolTs !== null &&
+      mainLatestTs !== null &&
+      mainLatestTs - curPoolTs < 30;
     // Sub-pool updated strictly AFTER main pool (>1 min) moved first in live trading — not a stale lag candidate
     if (
       !isMainPool &&
@@ -5543,6 +5587,18 @@ function scanMatchAlphaCandidates(
 
     for (const opt of pool.options) {
       if (!(Number.isFinite(opt.odds) && opt.odds > 1.01)) continue;
+      if (
+        isUnverifiedSubPoolLag &&
+        !arbitrages.some((arb) =>
+          Array.isArray(arb.betterPicks)
+            ? arb.betterPicks.some(
+                (bp) => bp.poolCode === poolCode && bp.optionKey === opt.key
+              )
+            : arb.poolCode === poolCode && arb.optionKey === opt.key
+        )
+      ) {
+        continue;
+      }
       if (ancMask) {
         let optMass = 0;
         let overlapMass = 0;
@@ -7169,7 +7225,9 @@ export function computeTruthReport(
       minActivePass >= 2 ? Math.min(matchCount - 1, minActivePass - 1) : 0;
     if (maxBankers > 0) {
       const requestedSet = new Set(
-        passSpec.bankerMatchIds.filter((id) => typeof id === "string")
+        passSpec.bankerMatchIds
+          .slice(0, 16)
+          .filter((id) => typeof id === "string")
       );
       bankerMatchIds = matchIdsInOrder
         .filter((id) => requestedSet.has(id))
@@ -7470,12 +7528,13 @@ export function computeTruthReport(
     underwaterCount > 0 &&
     !activeComboCode &&
     activePassSizes.length === 1 &&
-    effectiveOdds > 1.005 &&
+    effectiveOdds > 1.0 &&
     ticketRows.length <= 512
   ) {
-    // Knaster-Tarski monotone fixed-point iteration: finds exact minimum integer N* in <= ~20 steps (<0.05ms for K<=512)
+    // Knaster-Tarski monotone fixed-point iteration: curN strictly increases by >=1 each step until N* <= 10,000 (B* <= ¥20,000)
     let curN = Math.max(betCount, betCount * multiple);
-    for (let step = 0; step < 64 && curN <= 10_000; step++) {
+    let stepIdx = 0;
+    while (curN <= 10_000) {
       const budgetC = curN * 2;
       let needed = 0;
       let infeasible = false;
@@ -7494,10 +7553,11 @@ export function computeTruthReport(
       }
       if (infeasible) break;
       if (needed <= curN) {
-        breakevenUpgradeCost = (step === 0 ? needed : curN) * 2;
+        breakevenUpgradeCost = (stepIdx === 0 ? needed : curN) * 2;
         break;
       }
       curN = needed;
+      stepIdx++;
     }
   }
 
@@ -8244,9 +8304,12 @@ function allocateWheelMeanCvar(
 }
 
 function materializePlanLines(specs, mults) {
-  const actualCost = mults.reduce((a, m) => a + m * 2, 0);
+  const clampedMults = mults.map((m) =>
+    Math.max(1, Math.min(999, Math.round(Number(m) || 1)))
+  );
+  const actualCost = clampedMults.reduce((a, m) => a + m * 2, 0);
   return specs.map((sp, idx) => {
-    const mult = mults[idx];
+    const mult = clampedMults[idx];
     const rawUnit = bankerRoundParlayUnitPayout(sp.legs.map((g) => g.odds));
     const cap = statutorySingleBetCap(sp.legs.length);
     const unitPayout = Math.min(cap, rawUnit);
@@ -10031,7 +10094,7 @@ export function generateParetoPortfolio(
     if (anchorBadgeNote) mergedReasons.push(anchorBadgeNote);
     for (const r of reasons) mergedReasons.push(r);
 
-    return {
+    const slotOut = {
       key,
       available: true,
       ...(alphaKind ? { alphaKind } : {}),
@@ -10068,6 +10131,7 @@ export function generateParetoPortfolio(
       reasons: mergedReasons,
       lines,
     };
+    return attachLazyConsolidatedLines(slotOut, lines);
   };
 
   // Exact 4D unit-stake objective evaluator on coherent joint space Ω̃ for internal Pareto filtering
@@ -10719,7 +10783,7 @@ export function generateParetoPortfolio(
   } else {
     // Radar-anchored mode: keep all selected matches (up to statutory passCap) and solve exact 0-1 knapsack on anchored Cartesian box
     let addedUnanchoredShield = false;
-    const perMatchDisjointOpts = selected.map((m) => {
+    const rawPerMatchAnc = selected.map((m, mPos) => {
       const anc = anchorsByMatch.get(m.id) ?? [];
       if (anc.length > 0) {
         const byPool = new Map();
@@ -10746,23 +10810,57 @@ export function generateParetoPortfolio(
               )
             )
             .filter(Boolean);
+          if (ancLegs.length >= 1) {
+            return { m, mPos, kind: "anc", ancLegs };
+          }
+        }
+      }
+      return { m, mPos, kind: "unanc", ancLegs: [] };
+    });
+
+    // When M >= 5, cap synthetic shield expansion to the 4 most vulnerable single-anchor matches so Cartesian stays <= 16..32
+    const shieldAllowedSet = new Set();
+    if (selected.length <= 4) {
+      for (let i = 0; i < selected.length; i++) shieldAllowedSet.add(i);
+    } else {
+      const singleAncs = rawPerMatchAnc
+        .filter((x) => x.kind === "anc" && x.ancLegs.length === 1)
+        .sort(
+          (a, b) =>
+            (a.ancLegs[0]?.fairProb ?? 1) - (b.ancLegs[0]?.fairProb ?? 1)
+        );
+      for (const item of singleAncs.slice(0, 4)) {
+        shieldAllowedSet.add(item.mPos);
+      }
+      for (const item of rawPerMatchAnc) {
+        if (item.kind === "unanc" && shieldAllowedSet.size < 4) {
+          shieldAllowedSet.add(item.mPos);
+        }
+      }
+    }
+
+    const perMatchDisjointOpts = rawPerMatchAnc.map(
+      ({ m, mPos, kind, ancLegs }) => {
+        if (kind === "anc") {
           if (ancLegs.length >= 2) return ancLegs;
           if (ancLegs.length === 1) {
+            if (!shieldAllowedSet.has(mPos)) return ancLegs;
             const sec = secondaryDisjointLegInPool(m, ancLegs[0]);
             if (sec) addedUnanchoredShield = true;
             return sec ? [ancLegs[0], sec] : ancLegs;
           }
         }
+        const prim = preferredPrimaryLeg(m);
+        if (!shieldAllowedSet.has(mPos)) return prim ? [prim] : [];
+        const pCode = prim?.poolCode ?? primaryPoolOf(m);
+        const others = (m.pools[pCode]?.options ?? [])
+          .filter((o) => o.key !== prim?.optionKey)
+          .map((o) => legOf(m, pCode, o.key))
+          .filter(Boolean);
+        if (others.length > 0) addedUnanchoredShield = true;
+        return prim ? [prim, ...others] : others;
       }
-      const prim = preferredPrimaryLeg(m);
-      const pCode = prim?.poolCode ?? primaryPoolOf(m);
-      const others = (m.pools[pCode]?.options ?? [])
-        .filter((o) => o.key !== prim?.optionKey)
-        .map((o) => legOf(m, pCode, o.key))
-        .filter(Boolean);
-      if (others.length > 0) addedUnanchoredShield = true;
-      return prim ? [prim, ...others] : others;
-    });
+    );
 
     const passCap = Math.min(
       selected.length,
@@ -11886,9 +11984,9 @@ export function generateParetoPortfolio(
           const kickerSet =
             candN >= 10
               ? new Set([
-                  Math.max(2, Math.round(candN * 0.18)),
-                  Math.max(2, Math.round(candN * 0.24)),
-                  Math.max(2, Math.round(candN * 0.3)),
+                  Math.min(999, Math.max(2, Math.round(candN * 0.18))),
+                  Math.min(999, Math.max(2, Math.round(candN * 0.24))),
+                  Math.min(999, Math.max(2, Math.round(candN * 0.3))),
                 ])
               : new Set([1, 2]);
           for (const kNotes of kickerSet) {
@@ -13313,7 +13411,7 @@ export function computeProOrderInsights(
           bp1 &&
           bp2 &&
           wp0 &&
-          !canDiscreteSplitBeatSingleWithinNotes(
+          !canDiscreteSplitBeatSingleAtExactNotes(
             bp1.odds,
             bp2.odds,
             wp0.odds,
@@ -13342,9 +13440,13 @@ export function computeProOrderInsights(
         )
       : [];
 
-  const p = Math.max(0.03, report.realProfitProb);
+  const p = Math.max(
+    0.03,
+    Number(report.objectiveProfitProb ?? report.realProfitProb) || 0.03
+  );
   const fiveLossStreakProb = Math.pow(1 - p, 5);
-  const evRate = Number(report.expectedValueRate) || 0;
+  const evRate =
+    Number(report.objectiveEVRate ?? report.expectedValueRate) || 0;
   // Kelly Criterion discipline (ADR-0010 / Spec 0009): negative-EV bets have optimal Kelly f* = 0%;
   // cap recreational budget exposure strictly at <= 2% so high-hit-rate favorites never induce ruinous 12% stakes.
   const recommendedBankrollPct =
@@ -13428,7 +13530,7 @@ function consolidateCloseMultiples(
           ...sub.map((ii, pos) => candMults[pos] * cappedUnits[ii])
         );
         if (wasZeroUw && newMinPay < totalCost - 1e-9) continue;
-        if (newMinPay < oldMinPay * 0.94 - 1e-9) continue;
+        if (newMinPay < oldMinPay * 0.97 - 1e-9) continue;
 
         const oldDistinct = new Set(sub.map((ii) => out[ii])).size;
         const newDistinct = new Set(candMults).size;
@@ -13442,6 +13544,141 @@ function consolidateCloseMultiples(
       }
       cursor = bestEnd + 1;
     }
+  }
+  return out;
+}
+
+function buildConsolidatedLines(rawLines, alreadySmoothed = false) {
+  if (!Array.isArray(rawLines) || rawLines.length === 0) return [];
+  if (rawLines.length === 1 || rawLines.length > 64) return rawLines;
+  const totalCost = rawLines.reduce((a, l) => a + (Number(l.cost) || 0), 0);
+  const smoothed = alreadySmoothed
+    ? rawLines
+    : (() => {
+        const cMults = consolidateCloseMultiples(
+          rawLines.map((l) =>
+            Math.max(1, Math.min(999, Math.round(Number(l.multiple) || 1)))
+          ),
+          rawLines.map((l) => Math.max(0.5, Number(l.unitPayout) || 2)),
+          rawLines.map((l) => (Number(l.cappedClipped) || 0) > 0),
+          rawLines.map((l) => (l.legs ?? []).length || 1),
+          totalCost
+        );
+        return rawLines.map((l, idx) => {
+          const m = cMults[idx];
+          const cost = m * 2;
+          const ret = Number((Number(l.unitPayout) * m).toFixed(2));
+          return {
+            ...l,
+            multiple: m,
+            cost,
+            returnPayout: ret,
+            netProfit: Number((ret - totalCost).toFixed(2)),
+          };
+        });
+      })();
+
+  // Iteratively merge pairs of same-(modeLabel, multiple) lines that differ on exactly 1 match & same pool (genuine Sporttery compound slip!)
+  const merged = smoothed.map((l) => ({
+    ...l,
+    legs: l.legs.map((g) => ({ ...g })),
+  }));
+  let didMerge = true;
+  while (didMerge) {
+    didMerge = false;
+    for (let i = 0; i < merged.length && !didMerge; i++) {
+      for (let j = i + 1; j < merged.length; j++) {
+        const a = merged[i];
+        const b = merged[j];
+        if (
+          a.multiple !== b.multiple ||
+          a.modeLabel !== b.modeLabel ||
+          a.legs.length !== b.legs.length
+        ) {
+          continue;
+        }
+        let diffPos = -1;
+        let sameOther = true;
+        for (let pos = 0; pos < a.legs.length; pos++) {
+          const ga = a.legs[pos];
+          const gb = b.legs[pos];
+          if (ga.matchId !== gb.matchId || ga.poolCode !== gb.poolCode) {
+            sameOther = false;
+            break;
+          }
+          if (ga.optionLabel !== gb.optionLabel) {
+            if (diffPos >= 0) {
+              sameOther = false;
+              break;
+            }
+            diffPos = pos;
+          }
+        }
+        if (sameOther && diffPos >= 0) {
+          const ga = a.legs[diffPos];
+          const gb = b.legs[diffPos];
+          const combinedLegs = a.legs.map((g, pos) =>
+            pos === diffPos
+              ? {
+                  ...g,
+                  optionLabel: `${ga.optionLabel}+${gb.optionLabel}`,
+                  odds: Math.min(Number(ga.odds) || 1, Number(gb.odds) || 1),
+                  fairProb: Math.min(
+                    1,
+                    (Number(ga.fairProb) || 0) + (Number(gb.fairProb) || 0)
+                  ),
+                }
+              : g
+          );
+          const minUnit = Math.min(a.unitPayout, b.unitPayout);
+          const minRet = Math.min(a.returnPayout, b.returnPayout);
+          merged[i] = {
+            ...a,
+            roleLabel: `${a.roleLabel}·合票`,
+            legs: combinedLegs,
+            cost: a.cost + b.cost,
+            unitPayout: minUnit,
+            returnPayout: minRet,
+            netProfit: Number((minRet - totalCost).toFixed(2)),
+            prob: Math.min(1, (Number(a.prob) || 0) + (Number(b.prob) || 0)),
+          };
+          merged.splice(j, 1);
+          didMerge = true;
+          break;
+        }
+      }
+    }
+  }
+  return merged;
+}
+
+function attachLazyConsolidatedLines(target, lines, alreadySmoothed = false) {
+  let cached;
+  let evaluated = false;
+  Object.defineProperty(target, "consolidatedLines", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      if (!evaluated) {
+        cached = buildConsolidatedLines(lines, alreadySmoothed);
+        evaluated = true;
+      }
+      return cached;
+    },
+    set(v) {
+      cached = v;
+      evaluated = true;
+    },
+  });
+  return target;
+}
+
+function shallowClonePlanWithoutConsolidated(plan) {
+  const out = {};
+  const keys = Object.keys(plan);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (k !== "consolidatedLines") out[k] = plan[k];
   }
   return out;
 }
@@ -13474,7 +13711,12 @@ export function optimizeBonusPlan(
     typeof manualReport.breakevenUpgradeCost === "number" &&
     manualReport.breakevenUpgradeCost > strictBaseCost
       ? Math.min(20_000, manualReport.breakevenUpgradeCost)
-      : strictBaseCost;
+      : typeof options?.targetBudgetCost === "number" &&
+          Number.isFinite(options.targetBudgetCost) &&
+          options.targetBudgetCost >= k * 2 &&
+          options.targetBudgetCost <= strictBaseCost
+        ? Math.max(k * 2, Math.round(options.targetBudgetCost / 2) * 2)
+        : strictBaseCost;
   const totalTickets = Math.max(k, Math.floor(targetBudgetCost / 2));
   const targetStake = totalTickets * 2;
 
@@ -13867,7 +14109,7 @@ export function optimizeBonusPlan(
 
   const ticketRowsForEval = lines.map((l) => ({
     id: l.id,
-    desc: `${l.roleLabel}(${l.multiple}倍) · ${l.legs.map((g) => `${g.home}[${g.optionLabel}@${Number(g.odds).toFixed(2)}]`).join("×")}`,
+    desc: "",
     legs: l.legs,
     multiple: l.multiple,
     cost: l.cost,
@@ -13973,6 +14215,7 @@ export function optimizeBonusPlan(
     reasons: bonusReasons,
     lines,
   };
+  attachLazyConsolidatedLines(outBonusPlan, lines, consolidateTickets);
   TRUSTED_SERVER_BONUS_PLANS.add(outBonusPlan);
   return outBonusPlan;
 }
@@ -14086,7 +14329,7 @@ function scaleArchetypePlan(plan, rawScale) {
       ? Math.max(...returns)
       : 0;
   const scaledOut = {
-    ...plan,
+    ...shallowClonePlanWithoutConsolidated(plan),
     totalCost,
     minReturn,
     maxReturn: Math.max(minReturn, scaledMax),
@@ -14095,6 +14338,11 @@ function scaleArchetypePlan(plan, rawScale) {
       : null,
     lines: scaledLines,
   };
+  attachLazyConsolidatedLines(
+    scaledOut,
+    scaledLines,
+    Boolean(plan.consolidateTickets)
+  );
   if (TRUSTED_SERVER_BONUS_PLANS.has(plan)) {
     TRUSTED_SERVER_BONUS_PLANS.add(scaledOut);
   }
@@ -14236,6 +14484,7 @@ function applySandboxToPlan(
   {
     isArchetype = false,
     hasFrozenSnapshot = false,
+    consolidateTickets = false,
     stance = "objective",
     manualReport = null,
     objectiveHitMatrix = null,
@@ -14335,39 +14584,49 @@ function applySandboxToPlan(
     planAtomicByMatch.set(mid, { shifted, gl, fm });
   }
 
+  const resolvedLegCache = new Map();
   const lines = basePlan.lines.map((l) => {
     const legs = l.legs.map((lg) => {
-      const ctx = planAtomicByMatch.get(lg.matchId);
-      const fm = ctx?.fm ?? null;
-      const pool = fm?.pools?.[lg.poolCode];
-      const authOpt = pool?.options?.find(
-        (o) => o.key === lg.optionKey || o.label === lg.optionLabel
-      );
-      const baseOdds =
-        pool?.selling === false
-          ? 0
-          : authOpt
-            ? authOpt.odds
-            : fm
-              ? 0
-              : Number(lg.odds) || 1.0;
-      const odds =
-        simVoidFirstMatch && lg.matchId === firstMid && baseOdds > 0
-          ? 1.0
-          : baseOdds;
-      const fairProb = ctx
-        ? sumOptionProbOnAtomic(
-            ctx.shifted,
-            lg.poolCode,
-            lg.optionKey,
-            lg.optionLabel,
-            ctx.gl
-          )
-        : Number(lg.fairProb) || 0.25;
+      const cacheKey = `${lg.matchId}:${lg.poolCode}:${lg.optionKey}:${lg.optionLabel}`;
+      let hit = resolvedLegCache.get(cacheKey);
+      if (!hit) {
+        const ctx = planAtomicByMatch.get(lg.matchId);
+        const fm = ctx?.fm ?? null;
+        const pool = fm?.pools?.[lg.poolCode];
+        const authOpt = pool?.options?.find(
+          (o) => o.key === lg.optionKey || o.label === lg.optionLabel
+        );
+        const baseOdds =
+          pool?.selling === false
+            ? 0
+            : authOpt
+              ? authOpt.odds
+              : fm
+                ? 0
+                : Number(lg.odds) || 1.0;
+        const odds =
+          simVoidFirstMatch && lg.matchId === firstMid && baseOdds > 0
+            ? 1.0
+            : baseOdds;
+        const fairProb = ctx
+          ? sumOptionProbOnAtomic(
+              ctx.shifted,
+              lg.poolCode,
+              lg.optionKey,
+              lg.optionLabel,
+              ctx.gl
+            )
+          : Number(lg.fairProb) || 0.25;
+        hit = {
+          odds,
+          fairProb: fairProb > 0 ? fairProb : Number(lg.fairProb) || 0.02,
+        };
+        resolvedLegCache.set(cacheKey, hit);
+      }
       return {
         ...lg,
-        odds,
-        fairProb: fairProb > 0 ? fairProb : Number(lg.fairProb) || 0.02,
+        odds: hit.odds,
+        fairProb: hit.fairProb,
       };
     });
     const prob = legs.reduce((acc, it) => acc * it.fairProb, 1);
@@ -14389,7 +14648,34 @@ function applySandboxToPlan(
     };
   });
 
-  const totalCost = lines.reduce((a, l) => a + l.cost, 0);
+  let totalCost = lines.reduce((a, l) => a + l.cost, 0);
+  if (isArchetype && consolidateTickets && lines.length >= 2) {
+    const cMults = consolidateCloseMultiples(
+      lines.map((l) => l.multiple),
+      lines.map((l) => l.unitPayout),
+      lines.map((l) => (l.cappedClipped ?? 0) > 0),
+      lines.map((l) => (l.legs ?? []).length || 1),
+      totalCost
+    );
+    for (let idx = 0; idx < lines.length; idx++) {
+      const m = cMults[idx];
+      if (m !== lines[idx].multiple) {
+        const st = computeLineStatutoryPayout(
+          lines[idx].legs.map((it) => it.odds),
+          m
+        );
+        lines[idx] = {
+          ...lines[idx],
+          multiple: st.mult,
+          cost: st.cost,
+          unitPayout: st.unitPayout,
+          cappedClipped: st.cappedClipped,
+          returnPayout: st.returnPayout,
+        };
+      }
+    }
+    totalCost = lines.reduce((a, l) => a + l.cost, 0);
+  }
   lines.forEach((l) => {
     l.netProfit = Number((l.returnPayout - totalCost).toFixed(2));
   });
@@ -14463,8 +14749,11 @@ function applySandboxToPlan(
     ? `总投入 ¥${totalCost} · 保底返 ¥${minReturn.toFixed(1)} ~ 最高 ¥${maxReturn.toFixed(1)}`
     : basePlan.tagline;
 
+  const effectiveConsolidate = Boolean(
+    consolidateTickets || basePlan.consolidateTickets
+  );
   const outPlan = {
-    ...basePlan,
+    ...shallowClonePlanWithoutConsolidated(basePlan),
     tagline: nextTagline,
     totalCost,
     minReturn,
@@ -14486,9 +14775,17 @@ function applySandboxToPlan(
     underwaterCount: jointEval.underwaterCount,
     zeroPayoutProb: Math.max(0, 1 - winProb),
     missOneReturn,
+    consolidateTickets: effectiveConsolidate,
     vigPct,
+    reasons: basePlan.reasons,
     lines,
   };
+  attachLazyConsolidatedLines(
+    outPlan,
+    lines,
+    Boolean(isArchetype && consolidateTickets) ||
+      Boolean(basePlan.consolidateTickets)
+  );
   if (TRUSTED_SERVER_BONUS_PLANS.has(basePlan)) {
     TRUSTED_SERVER_BONUS_PLANS.add(outPlan);
   }
@@ -14885,6 +15182,49 @@ export function buildXiaoGaoWarnings(picks, matches) {
   return out;
 }
 
+const WORKSPACE_PARETO_CACHE = new Map();
+
+function getCachedWorkspaceFivePlans(
+  resolvedTargets,
+  budget,
+  stance,
+  unlockFullAgg,
+  anchorPicks
+) {
+  let key = `${budget}|${stance}|${unlockFullAgg ? 1 : 0}|t=${resolvedTargets.length}`;
+  for (let i = 0; i < resolvedTargets.length; i++) {
+    const m = resolvedTargets[i];
+    const fp = computeMatchPoolsFingerprint(m);
+    key += `;${m.id}:${fp.h1.toString(36)}:${fp.h2.toString(36)}:${fp.len}`;
+  }
+  if (Array.isArray(anchorPicks) && anchorPicks.length > 0) {
+    key += `|a=${anchorPicks.length}`;
+    for (let i = 0; i < anchorPicks.length; i++) {
+      const p = anchorPicks[i];
+      key += `;${p.matchId}:${p.poolCode}:${p.optionKey}:${Number(p.odds).toFixed(4)}`;
+    }
+  }
+  const hit = WORKSPACE_PARETO_CACHE.get(key);
+  if (hit) {
+    WORKSPACE_PARETO_CACHE.delete(key);
+    WORKSPACE_PARETO_CACHE.set(key, hit);
+    return hit;
+  }
+  const plans = generateFiveArchetypes(
+    resolvedTargets,
+    budget,
+    stance,
+    unlockFullAgg,
+    anchorPicks
+  );
+  if (WORKSPACE_PARETO_CACHE.size >= 32) {
+    const oldestKey = WORKSPACE_PARETO_CACHE.keys().next().value;
+    if (oldestKey !== undefined) WORKSPACE_PARETO_CACHE.delete(oldestKey);
+  }
+  WORKSPACE_PARETO_CACHE.set(key, plans);
+  return plans;
+}
+
 /**
  * 统一服务端黑盒精算调度器（单次密文往返完成全部五维审单、三模分倍、精算配单与对冲计算）
  */
@@ -14976,7 +15316,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
   const foundTargets = matches.filter((m) => targetIds.includes(m.id));
   const resolvedTargets =
     foundTargets.length > 0 ? foundTargets : matches.slice(0, 2);
-  const fivePlans = generateFiveArchetypes(
+  const fivePlans = getCachedWorkspaceFivePlans(
     resolvedTargets,
     budget,
     stance,
@@ -14996,6 +15336,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       optimizeBonusPlan(baselineManualForOpt, matches, mode, {
         upgradeToBreakeven: Boolean(planSpec.upgradeToBreakeven),
         consolidateTickets: Boolean(planSpec.consolidateTickets),
+        targetBudgetCost: planSpec.targetBudgetCost,
       }),
       planSpec.scaleMultiple
     );
@@ -15007,6 +15348,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       subjectiveDeltaPct,
       {
         isArchetype: false,
+        consolidateTickets: Boolean(planSpec.consolidateTickets),
         stance,
         manualReport,
         objectiveHitMatrix: baselineManualForOpt?._reusableHitMatrix ?? null,
@@ -15027,39 +15369,8 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         : null;
     const basePlan = validSnap ?? usableLive;
     const scaledBasePlan = scaleArchetypePlan(basePlan, planSpec.scaleMultiple);
-    const baseAppliedPlan =
-      scaledBasePlan &&
-      planSpec.consolidateTickets &&
-      scaledBasePlan.lines.length >= 2
-        ? (() => {
-            const cMults = consolidateCloseMultiples(
-              scaledBasePlan.lines.map((l) => Number(l.multiple) || 1),
-              scaledBasePlan.lines.map((l) => Number(l.unitPayout) || 2),
-              scaledBasePlan.lines.map((l) => (l.cappedClipped ?? 0) > 0),
-              scaledBasePlan.lines.map((l) => (l.legs ?? []).length || 1),
-              scaledBasePlan.totalCost
-            );
-            const cLines = scaledBasePlan.lines.map((l, idx) => {
-              const m = cMults[idx];
-              const cost = m * 2;
-              const ret = Number((l.unitPayout * m).toFixed(2));
-              return {
-                ...l,
-                multiple: m,
-                cost,
-                returnPayout: ret,
-                netProfit: Number((ret - scaledBasePlan.totalCost).toFixed(2)),
-              };
-            });
-            return {
-              ...scaledBasePlan,
-              consolidateTickets: true,
-              lines: cLines,
-            };
-          })()
-        : scaledBasePlan;
     appliedPlan = applySandboxToPlan(
-      baseAppliedPlan,
+      scaledBasePlan,
       matches,
       picks,
       simVoidFirstMatch,
@@ -15067,6 +15378,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       {
         isArchetype: true,
         hasFrozenSnapshot: Boolean(validSnap),
+        consolidateTickets: Boolean(planSpec.consolidateTickets),
         stance,
         manualReport,
         targetFirstMid: foundTargets[0]?.id ?? null,

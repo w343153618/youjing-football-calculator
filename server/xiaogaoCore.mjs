@@ -271,6 +271,45 @@ export function buildComboDiagnosisContext({
   const objEvPctStr = hasValidReport
     ? `${objEvRate >= 0 ? "+" : ""}${(objEvRate * 100).toFixed(1)}%`
     : null;
+  const isBridgePair2x1 = (() => {
+    if (
+      sourceMode !== "picked" ||
+      targetMatches.length !== 2 ||
+      !hasValidReport
+    ) {
+      return null;
+    }
+    const perMatchSingle = targetMatches.map((m) => {
+      const mp = safePicks.filter((p) => p && p.matchId === m.id);
+      const anyNonSingle = mp.some(
+        (p) => m.pools?.[p.poolCode]?.single === false
+      );
+      const maxProb = mp.reduce(
+        (mx, p) =>
+          Math.max(
+            mx,
+            Number(
+              m.pools?.[p.poolCode]?.options?.find(
+                (o) => o.key === p.optionKey || o.label === p.optionLabel
+              )?.fairProb ?? p.fairProb
+            ) || 0
+          ),
+        0
+      );
+      return { m, anyNonSingle, maxProb, count: mp.length };
+    });
+    if (
+      perMatchSingle.some((x) => x.anyNonSingle && x.count > 0) &&
+      (perMatchSingle.some((x) => x.maxProb >= 0.48) ||
+        Boolean(insights?.hedge?.available))
+    ) {
+      const steady = [...perMatchSingle].sort(
+        (a, b) => b.maxProb - a.maxProb
+      )[0];
+      return `已构建过桥配菜搭子 2串1 结构（借低耗稳胆/时间差搭子 ${steady.m.matchNumStr || steady.m.home} 协助非单关主看场合法出票）`;
+    }
+    return null;
+  })();
 
   let actuaryContext;
   if (sourceMode === "custom") {
@@ -323,6 +362,9 @@ export function buildComboDiagnosisContext({
       shieldParts.push(
         `已启用胆拖定胆（📌【胆】锁定 ${bankerMatchLabels.join("、")} 必出，剔除无胆冗余组合）`
       );
+    }
+    if (isBridgePair2x1) {
+      shieldParts.push(isBridgePair2x1);
     }
     if (
       typeof appliedPlan.missOneReturn === "number" &&
@@ -385,6 +427,9 @@ export function buildComboDiagnosisContext({
       shieldParts.push(
         `已启用胆拖定胆（📌【胆】锁定 ${bankerMatchLabels.join("、")} 必出）`
       );
+    }
+    if (isBridgePair2x1) {
+      shieldParts.push(isBridgePair2x1);
     }
     if (dualCoveredMatches.length > 0) {
       shieldParts.push(`手动双选覆盖：${dualCoveredMatches.join("、")}`);

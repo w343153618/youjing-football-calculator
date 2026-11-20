@@ -1112,7 +1112,7 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       "Must NOT offer activeSwapTip into non-single HAD[d+a] when current slip is a 1-match single"
     );
 
-    // On a 2-match parlay, HAD[d+a] swap IS legal AND applyEquivalentSwap must auto-enable equal bonus dutching!
+    // On a 2-match parlay at even notes (multiple=6 -> 3+3 notes), HAD[d+a] swap strictly beats single AND auto-enables equal bonus dutching!
     const parlaySwapMatches = [hhadSingleHadNotMatch, baseMatches[1]];
     const parlaySwapPicks = [
       makePick(hhadSingleHadNotMatch, "HHAD", "ha"),
@@ -1124,7 +1124,7 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       workspace: evaluateQuantWorkspace(
         {
           picks: parlaySwapPicks,
-          multiple: 5,
+          multiple: 6,
           subjectiveDeltaPct: 0,
           simVoidFirstMatch: false,
           planSpec: null,

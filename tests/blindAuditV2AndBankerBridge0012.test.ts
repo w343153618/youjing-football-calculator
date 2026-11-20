@@ -677,8 +677,8 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
           ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAD,
           selling: true,
           options: [
-            { key: "h", label: "主胜", odds: 2.2, trend: 0, fairProb: 0.41 },
-            { key: "d", label: "平", odds: 2.32, trend: 0, fairProb: 0.39 },
+            { key: "h", label: "主胜", odds: 2.22, trend: 0, fairProb: 0.41 },
+            { key: "d", label: "平", odds: 2.3, trend: 0, fairProb: 0.39 },
             { key: "a", label: "客胜", odds: 4.9, trend: 0, fairProb: 0.2 },
           ],
         },
@@ -694,7 +694,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
           selling: true,
           options: [
             { key: "h", label: "主胜", odds: 2.25, trend: 0, fairProb: 0.4 },
-            { key: "d", label: "平", odds: 2.36, trend: 0, fairProb: 0.38 },
+            { key: "d", label: "平", odds: 2.32, trend: 0, fairProb: 0.38 },
             { key: "a", label: "客胜", odds: 4.8, trend: 0, fairProb: 0.22 },
           ],
         },
@@ -709,7 +709,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     const wsExact4 = evaluateQuantWorkspace(
       {
         picks: close4Picks,
-        multiple: 15, // 4 bets * 15x = 60 notes = ¥120
+        multiple: 25, // 4 bets * 25x = 100 notes = ¥200 ([26, 25, 25, 24] -> [25, 25, 25, 25], 2.47% <= 3% floor delta!)
         subjectiveDeltaPct: 0,
         simVoidFirstMatch: false,
         planSpec: {
@@ -719,7 +719,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
           consolidateTickets: false,
         } as any,
         targetIds: [closeMultMatchA.id, closeMultMatchB.id],
-        budget: 120,
+        budget: 200,
         stance: "objective",
         unlockFullAgg: false,
       },
@@ -728,7 +728,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     const wsCons4 = evaluateQuantWorkspace(
       {
         picks: close4Picks,
-        multiple: 15,
+        multiple: 25,
         subjectiveDeltaPct: 0,
         simVoidFirstMatch: false,
         planSpec: {
@@ -738,13 +738,13 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
           consolidateTickets: true,
         } as any,
         targetIds: [closeMultMatchA.id, closeMultMatchB.id],
-        budget: 120,
+        budget: 200,
         stance: "objective",
         unlockFullAgg: false,
       },
       [closeMultMatchA, closeMultMatchB]
     );
-    assert.equal(wsCons4.effectiveReport.totalCost, 120);
+    assert.equal(wsCons4.effectiveReport.totalCost, 200);
     assert.equal(wsCons4.effectiveReport.underwaterCount, 0);
     const exactDistinctMults = new Set(
       wsExact4.appliedPlan!.lines.map((l) => l.multiple)
@@ -755,6 +755,16 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     assert.ok(
       consDistinctMults < exactDistinctMults,
       `Expected consolidateTickets: true to merge close multiples into fewer batches (${consDistinctMults} < ${exactDistinctMults})`
+    );
+    assert.ok(
+      wsCons4.effectiveReport.minPayout >=
+        wsExact4.effectiveReport.minPayout * 0.97 - 1e-6,
+      `Consolidated floor (${wsCons4.effectiveReport.minPayout}) must stay within <=3% of exact floor (${wsExact4.effectiveReport.minPayout})`
+    );
+    assert.equal(
+      wsCons4.appliedPlan!.consolidatedLines?.length,
+      1,
+      "Four uniform-multiple 2x2 compound lines must merge into 1 single Sporttery compound slip in consolidatedLines"
     );
     assert.ok(
       wsCons4.effectiveReport.consolidatedTickets <
@@ -1270,15 +1280,31 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       "At ¥10 (5 notes), discrete ¥2 rounding makes HAD[d+a] strictly worse than HHAD ha@1.49 -> must suppress activeSwapTip"
     );
 
-    const repEnough12 = computeTruthReport(trapPicks, 12, [discreteTrapMatch]); // ¥24 (12 notes >= 11 threshold)
-    const insEnough12 = computeProOrderInsights(trapPicks, repEnough12, [
+    const repOdd11 = computeTruthReport(trapPicks, 11, [discreteTrapMatch]); // ¥22 (11 notes: 5+6 -> min(33.00, 34.20) = 33.00 > 32.78!)
+    const insOdd11 = computeProOrderInsights(trapPicks, repOdd11, [
       discreteTrapMatch,
     ]);
     assert.ok(
-      insEnough12.activeSwapTip !== null &&
-        insEnough12.activeSwapTip.betterPicks.length === 2,
-      "At ¥24 (12 notes), integer split (5,6) strictly dominates 11 notes of ha@1.49 -> activeSwapTip unlocks"
+      insOdd11.activeSwapTip !== null &&
+        insOdd11.activeSwapTip.betterPicks.length === 2,
+      "At ¥22 (11 notes), exact integer split (5,6) strictly dominates 11 notes of ha@1.49 -> activeSwapTip unlocks"
     );
+
+    const repParity12 = computeTruthReport(trapPicks, 12, [discreteTrapMatch]); // ¥24 (12 notes: 6+6 -> 34.20 < 35.76 parity loss!)
+    const insParity12 = computeProOrderInsights(trapPicks, repParity12, [
+      discreteTrapMatch,
+    ]);
+    assert.equal(
+      insParity12.activeSwapTip,
+      null,
+      "At ¥24 (12 notes), exact split (6,6) pays ¥34.20 < ¥35.76 -> must suppress parity-loss swap!"
+    );
+
+    const repOdd13 = computeTruthReport(trapPicks, 13, [discreteTrapMatch]); // ¥26 (13 notes: 6+7 -> 39.60 > 38.74!)
+    const insOdd13 = computeProOrderInsights(trapPicks, repOdd13, [
+      discreteTrapMatch,
+    ]);
+    assert.ok(insOdd13.activeSwapTip !== null);
 
     // 4. Headless BetSlipController (Seam 2):
     //    - applyBridgeCandidate turns 1-match blocked slip into legal 2串1
@@ -1380,9 +1406,22 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     assert.equal(ctrl.getState().workspace.effectiveReport.underwaterCount, 0);
     assert.ok(ctrl.getState().workspace.effectiveReport.totalCost > 54);
 
-    const consOn = ctrl.toggleTicketConsolidation();
-    assert.equal(consOn.ok, true);
-    assert.equal(consOn.consolidated, true);
+    // Default consolidateTickets is ON; toggleTicketConsolidation flips OFF -> ON cleanly
+    assert.equal(
+      ctrl.getState().workspace.appliedPlan?.consolidateTickets,
+      true
+    );
+    const consOff = ctrl.toggleTicketConsolidation();
+    assert.equal(consOff.ok, true);
+    assert.equal(consOff.consolidated, false);
+    await ctrl.flush();
+    assert.equal(
+      ctrl.getState().workspace.appliedPlan?.consolidateTickets,
+      false
+    );
+    const consOnAgain = ctrl.toggleTicketConsolidation();
+    assert.equal(consOnAgain.ok, true);
+    assert.equal(consOnAgain.consolidated, true);
     await ctrl.flush();
     assert.equal(
       ctrl.getState().workspace.appliedPlan?.consolidateTickets,
@@ -1517,6 +1556,449 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
         appSrc.includes("智能合票减张") &&
         appSrc.includes("【胆】"),
       "Poster ticket sheet must render 📌【胆】 badge and 🔗 智能合票减张 toggle"
+    );
+  });
+
+  it("Slice 06 · Two-Axis Code-Review Remediation Lock (Axis 1 Standards/Security & Axis 2 Spec Fidelity)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { bankerRoundParlayUnitPayout } =
+      await import("../server/quantEngine.mjs");
+    const { createBetSlipController } =
+      await import("../src/workspace/betSlipController.ts");
+    const { buildComboDiagnosisContext } =
+      await import("../server/xiaogaoCore.mjs");
+
+    // 1. Axis 1 #1 & #4:
+    //    - bankerRoundParlayUnitPayout 2-leg fast path guards o >= 1 && o <= 100_000 (falls back to exact BigInt on [0.00006, 6e9])
+    assert.equal(bankerRoundParlayUnitPayout([0.00006, 6e9]), 1200000);
+
+    //    - Untrusted snapshotPlan + consolidateTickets: true MUST enforce authoritative matches odds,
+    //      statutorySingleBetCap (never consolidating cap-clipped lines!), and [1, 999] multiple clamp!
+    const highOddsMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[0] as MatchItem),
+      id: "s6-cap-m",
+      pools: {
+        ...(FALLBACK_MATCHES[0] as MatchItem).pools,
+        CRS: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.CRS,
+          single: true,
+          selling: true,
+          options: [
+            { key: "5:2", label: "5:2", odds: 250.0, trend: 0, fairProb: 0.01 },
+            { key: "4:3", label: "4:3", odds: 80.0, trend: 0, fairProb: 0.01 },
+          ],
+        },
+      },
+    };
+    // Authoritative 5:2 single has rawUnit = 500 > 100,000? Wait: 250 * 2 = 500, let's use odds 60000 (or 2-leg 350*350 = 122500 -> unit 245,000 > 200,000 cap!)
+    const capLegM1: MatchItem = {
+      ...highOddsMatch,
+      id: "s6-cap-1",
+      pools: {
+        ...highOddsMatch.pools,
+        CRS: {
+          ...highOddsMatch.pools.CRS,
+          options: [
+            { key: "5:2", label: "5:2", odds: 350.0, trend: 0, fairProb: 0.01 },
+          ],
+        },
+      },
+    };
+    const capLegM2: MatchItem = {
+      ...highOddsMatch,
+      id: "s6-cap-2",
+      pools: {
+        ...highOddsMatch.pools,
+        CRS: {
+          ...highOddsMatch.pools.CRS,
+          options: [
+            { key: "5:2", label: "5:2", odds: 350.0, trend: 0, fairProb: 0.01 },
+            { key: "1:0", label: "1:0", odds: 6.5, trend: 0, fairProb: 0.15 },
+          ],
+        },
+      },
+    };
+    // Line 1: 350 * 350 * 2 = ¥245,000 > ¥200,000 2-leg statutory cap! Client spoofs unitPayout=10, cappedClipped=0, multiple=12
+    // Line 2: 350 * 6.5 * 2 = ¥4,550 (unclipped), client spoofs multiple=5000 (>999!)
+    const forgedSnap: any = {
+      key: "max-ev-utility",
+      available: true,
+      shortTab: "期望效用",
+      badge: "测试",
+      title: "测试",
+      tagline: "测试",
+      totalCost: 40,
+      savedCash: 0,
+      minReturn: 100,
+      maxReturn: 200,
+      winProb: 0.1,
+      profitProb: 0.1,
+      expectedValueRate: -0.1,
+      underwaterCount: 0,
+      missOneReturn: null,
+      vigPct: 12,
+      reasons: [],
+      lines: [
+        {
+          id: "f1",
+          roleLabel: "主攻",
+          modeLabel: "2串1",
+          multiple: 12,
+          cost: 24,
+          unitPayout: 10, // forged!
+          cappedClipped: 0, // forged! authoritative is clipped by 200,000 cap!
+          returnPayout: 120,
+          netProfit: 80,
+          prob: 0.0001,
+          legs: [
+            {
+              matchId: "s6-cap-1",
+              matchNumStr: "周六001",
+              home: "甲",
+              away: "乙",
+              kickoff: "20:00",
+              poolCode: "CRS",
+              poolName: "比分",
+              optionKey: "5:2",
+              optionLabel: "5:2",
+              odds: 2.0, // forged!
+              fairProb: 0.01,
+            },
+            {
+              matchId: "s6-cap-2",
+              matchNumStr: "周六002",
+              home: "丙",
+              away: "丁",
+              kickoff: "22:00",
+              poolCode: "CRS",
+              poolName: "比分",
+              optionKey: "5:2",
+              optionLabel: "5:2",
+              odds: 2.5, // forged!
+              fairProb: 0.01,
+            },
+          ],
+        },
+        {
+          id: "f2",
+          roleLabel: "护盾",
+          modeLabel: "2串1",
+          multiple: 5000, // >999!
+          cost: 10000,
+          unitPayout: 10,
+          cappedClipped: 0,
+          returnPayout: 50000,
+          netProfit: 40000,
+          prob: 0.0015,
+          legs: [
+            {
+              matchId: "s6-cap-1",
+              matchNumStr: "周六001",
+              home: "甲",
+              away: "乙",
+              kickoff: "20:00",
+              poolCode: "CRS",
+              poolName: "比分",
+              optionKey: "5:2",
+              optionLabel: "5:2",
+              odds: 2.0,
+              fairProb: 0.01,
+            },
+            {
+              matchId: "s6-cap-2",
+              matchNumStr: "周六002",
+              home: "丙",
+              away: "丁",
+              kickoff: "22:00",
+              poolCode: "CRS",
+              poolName: "比分",
+              optionKey: "1:0",
+              optionLabel: "1:0",
+              odds: 2.5,
+              fairProb: 0.15,
+            },
+          ],
+        },
+      ],
+    };
+    const wsForged = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 1,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-ev-utility",
+          snapshotPlan: forgedSnap,
+          scaleMultiple: 1,
+          consolidateTickets: true,
+        },
+        targetIds: ["s6-cap-1", "s6-cap-2"],
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [capLegM1, capLegM2]
+    );
+    assert.equal(
+      wsForged.appliedPlan!.lines[0].multiple,
+      12,
+      "Cap-clipped line 1 MUST NOT be altered by consolidateTickets even if client spoofed cappedClipped=0"
+    );
+    assert.equal(
+      wsForged.appliedPlan!.lines[1].multiple,
+      999,
+      "Over-999 multiple in untrusted snapshotPlan must be clamped to 999"
+    );
+
+    // 2. Axis 2 (c).3: breakevenUpgradeCost solves >64-step 27-bet 3串1 ([2.97, 3.01, 3.06] -> B* = ¥1,608)
+    const tight27Matches: MatchItem[] = [0, 1, 2].map((idx) => ({
+      ...(FALLBACK_MATCHES[idx] as MatchItem),
+      id: `s6-tight27-${idx}`,
+      pools: {
+        ...(FALLBACK_MATCHES[idx] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[idx] as MatchItem).pools.HAD,
+          selling: true,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: 2.97, trend: 0, fairProb: 0.34 },
+            { key: "d", label: "平", odds: 3.01, trend: 0, fairProb: 0.33 },
+            { key: "a", label: "客胜", odds: 3.06, trend: 0, fairProb: 0.33 },
+          ],
+        },
+      },
+    }));
+    const tight27Picks = tight27Matches.flatMap((m) =>
+      m.pools.HAD.options.map((o) => makePick(m, "HAD", o.key))
+    );
+    const repTight27 = computeTruthReport(tight27Picks, 1, tight27Matches, {
+      mode: "free",
+      passSizes: [3],
+    });
+    assert.ok(
+      typeof repTight27.breakevenUpgradeCost === "number" &&
+        repTight27.breakevenUpgradeCost >= 1500 &&
+        repTight27.breakevenUpgradeCost <= 1700,
+      `Expected exact breakevenUpgradeCost (~¥1608) on tight 27-bet 3串1 without 64-step abort, got ${repTight27.breakevenUpgradeCost}`
+    );
+
+    // 3. Axis 2 (c).5 & (a).2:
+    //    - Slot ③ (max-cvar-wheel) on M=2 at ¥20,000 clamps all line multiples <= 999 and closes totalCost + savedCash === 20,000
+    //    - consolidatedLines view is populated on ArchetypePlan
+    //    - recommendedBankrollPct stays anchored to objectiveEVRate even under +15% subjective slider
+    const twoWheel = (FALLBACK_MATCHES as MatchItem[]).slice(0, 2);
+    const plans20k = generateParetoPortfolio(
+      twoWheel,
+      20_000,
+      "objective",
+      false
+    );
+    for (const pl of plans20k.filter((p) => p.available)) {
+      assert.equal(pl.totalCost + pl.savedCash, 20_000);
+      assert.ok(
+        Array.isArray((pl as any).consolidatedLines) &&
+          (pl as any).consolidatedLines.length >= 1,
+        `Slot ${pl.key} must expose consolidatedLines`
+      );
+      for (const ln of pl.lines) {
+        assert.ok(
+          ln.multiple >= 1 && ln.multiple <= 999,
+          `Slot ${pl.key} line multiple must be <= 999 at ¥20,000, got ${ln.multiple}`
+        );
+      }
+    }
+
+    const negEvPicks = [
+      makePick(twoWheel[0], "HAD", "h"),
+      makePick(twoWheel[1], "HAD", "h"),
+    ];
+    const wsSubj15 = evaluateQuantWorkspace(
+      {
+        picks: negEvPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 15,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: twoWheel.map((m) => m.id),
+        budget: 100,
+        stance: "home-lean",
+        unlockFullAgg: false,
+      },
+      twoWheel
+    );
+    assert.ok(wsSubj15.effectiveReport.objectiveEVRate < 0);
+    assert.ok(
+      wsSubj15.insights.recommendedBankrollPct <= 2,
+      `Negative objective EV must cap Kelly bankroll at <= 2% even under +15% slider, got ${wsSubj15.insights.recommendedBankrollPct}%`
+    );
+
+    // 4. Axis 2 (c).1: applyEquivalentSwap at odd multiple = 11 (¥22) preserves exact ¥22 budget & minPayout > ¥32.78!
+    const oddSwapMatch: MatchItem = {
+      ...twoWheel[0],
+      id: "s6-odd-swap",
+      pools: {
+        ...twoWheel[0].pools,
+        HAD: {
+          ...twoWheel[0].pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.35, trend: 0, fairProb: 0.39 },
+            { key: "d", label: "平", odds: 3.3, trend: 0, fairProb: 0.28 },
+            { key: "a", label: "客胜", odds: 2.85, trend: 0, fairProb: 0.33 },
+          ],
+        },
+        HHAD: {
+          ...twoWheel[0].pools.HHAD,
+          single: true,
+          selling: true,
+          goalLine: "-1",
+          options: [
+            { key: "hh", label: "让胜", odds: 4.8, trend: 0, fairProb: 0.18 },
+            { key: "hd", label: "让平", odds: 3.75, trend: 0, fairProb: 0.21 },
+            { key: "ha", label: "让负", odds: 1.49, trend: 0, fairProb: 0.61 },
+          ],
+        },
+      },
+    };
+    const ctrlSwap = createBetSlipController({
+      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      debounceMs: 0,
+    });
+    const initOddPicks = [makePick(oddSwapMatch, "HHAD", "ha")];
+    ctrlSwap.applyAuthenticatedBundle({
+      matches: [oddSwapMatch],
+      initialPicks: initOddPicks,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: initOddPicks,
+          multiple: 11,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: [oddSwapMatch.id],
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        [oddSwapMatch]
+      ),
+    });
+    ctrlSwap.setDirectMultiple(11);
+    await ctrlSwap.flush();
+    const tip11 = ctrlSwap.getState().workspace.insights.activeSwapTip!;
+    assert.ok(tip11, "Expected activeSwapTip at 11 notes (¥22)");
+    assert.equal(ctrlSwap.applyEquivalentSwap(tip11), true);
+    await ctrlSwap.flush();
+    assert.equal(
+      ctrlSwap.getState().workspace.effectiveReport.totalCost,
+      22,
+      "Swapping at 11x (¥22) must preserve exact ¥22 budget without flooring to ¥20"
+    );
+    assert.equal(
+      ctrlSwap.getState().workspace.effectiveReport.minPayout,
+      33,
+      "Swapping at ¥22 must achieve (5,6) minPayout = ¥33.00 > ¥32.78"
+    );
+
+    // 5. Axis 2 (a).3, (b).1 & Axis 1 #2/#3: XiaoGao bridge synergy + UI/Manual hygiene
+    const bridgeTwoM: MatchItem[] = [
+      {
+        ...twoWheel[0],
+        id: "20261121-b1",
+        matchNumStr: "周六001",
+        kickoff: "19:35",
+        pools: {
+          ...twoWheel[0].pools,
+          HAD: { ...twoWheel[0].pools.HAD, single: false, selling: true },
+        },
+      },
+      {
+        ...twoWheel[1],
+        id: "20261121-b2",
+        matchNumStr: "周六002",
+        kickoff: "23:00",
+        pools: {
+          ...twoWheel[1].pools,
+          HAD: {
+            ...twoWheel[1].pools.HAD,
+            single: false,
+            selling: true,
+            options: [
+              { key: "h", label: "主胜", odds: 1.48, trend: 0, fairProb: 0.62 },
+              { key: "d", label: "平", odds: 4.1, trend: 0, fairProb: 0.22 },
+              { key: "a", label: "客胜", odds: 5.6, trend: 0, fairProb: 0.16 },
+            ],
+          },
+        },
+      },
+    ];
+    const brPicks = [
+      makePick(bridgeTwoM[0], "HAD", "h"),
+      makePick(bridgeTwoM[1], "HAD", "h"),
+    ];
+    const wsBr = evaluateQuantWorkspace(
+      {
+        picks: brPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: bridgeTwoM.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      bridgeTwoM
+    );
+    const brComboCtx = buildComboDiagnosisContext({
+      sourceMode: "picked",
+      targetMatches: bridgeTwoM,
+      picks: brPicks,
+      effectiveReport: wsBr.effectiveReport,
+      appliedPlan: null,
+      planSpec: null,
+      insights: wsBr.insights,
+      userNote: "",
+    });
+    assert.ok(
+      brComboCtx.actuaryContext.shieldSummary.includes("过桥") ||
+        brComboCtx.actuaryContext.shieldSummary.includes("搭子"),
+      `XiaoGao combo context must recognize 2串1 bridge-match structure, got: ${brComboCtx.actuaryContext.shieldSummary}`
+    );
+
+    const appSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    assert.equal(
+      appSrc.includes("realProfitProb"),
+      false,
+      "SkinPhoneApp.tsx must contain zero residual realProfitProb leaks"
+    );
+    const synIdx = appSrc.indexOf("一键合成单关");
+    const bridgeCtaIdx = appSrc.indexOf("🌉一键凑2串1");
+    assert.ok(
+      synIdx >= 0 && bridgeCtaIdx > synIdx,
+      "Compact bottom bar must keep 一键合成单关 ahead of 🌉一键凑2串1 when same-match HAFU rescue exists"
+    );
+
+    const manualModalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/manual/UserManualModal.tsx"),
+      "utf8"
+    );
+    assert.equal(
+      manualModalSrc.includes("全稳赚"),
+      false,
+      "UserManualModal.tsx must remove legacy 全稳赚 label"
+    );
+    assert.ok(
+      manualModalSrc.includes("过桥配菜") &&
+        manualModalSrc.includes("智能合票减张"),
+      "UserManualModal.tsx body must include illustrated Spec 0012 entries"
     );
   });
 });

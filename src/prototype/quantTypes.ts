@@ -258,6 +258,7 @@ export interface ArchetypePlan {
   missOneReturn: number | null;
   breakevenUpgradeCost?: number | null;
   consolidateTickets?: boolean;
+  consolidatedLines?: PlanTicketLine[];
   vigPct: number;
   reasons: string[];
   lines: PlanTicketLine[];
@@ -323,6 +324,7 @@ export type AppliedPlanSpec =
       scaleMultiple?: number;
       upgradeToBreakeven?: boolean;
       consolidateTickets?: boolean;
+      targetBudgetCost?: number;
     }
   | {
       kind: "archetype";
