@@ -1953,23 +1953,23 @@ export function SkinPhoneApp({
                     : "0 假中奖倒贴"}
                 </em>
               </div>
-              <div className="tile">
-                <span>数学期望与抽水</span>
-                <b>
-                  {(currentArch.expectedValueRate ??
-                    -currentArch.vigPct / 100) *
-                    100 >=
-                  0
-                    ? "+"
-                    : ""}
-                  {(
-                    (currentArch.expectedValueRate ??
-                      -currentArch.vigPct / 100) * 100
-                  ).toFixed(1)}
-                  %
-                </b>
-                <em>单池暗扣 -{currentArch.vigPct}%</em>
-              </div>
+              {(() => {
+                const archEvPct = currentArch.expectedValueRate * 100;
+                const payoutReturnPct = Math.max(
+                  0,
+                  100 - currentArch.vigPct
+                ).toFixed(1);
+                return (
+                  <div className="tile">
+                    <span>数学期望与抽水</span>
+                    <b>
+                      {archEvPct >= 0 ? "+" : ""}
+                      {archEvPct.toFixed(1)}%
+                    </b>
+                    <em>票面返还 {payoutReturnPct}%</em>
+                  </div>
+                );
+              })()}
               <div className="tile">
                 <span>店面合票张数</span>
                 <b>{currentArch.lines.length} 张实票</b>

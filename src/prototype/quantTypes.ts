@@ -220,7 +220,7 @@ export interface PlanTicketLine {
 export interface ArchetypePlan {
   key: ArchetypeKey;
   available: boolean;
-  alphaKind?: "positive-ev" | "relative-alpha" | "none";
+  alphaKind?: "positive-ev" | "none";
   emptyReason?: string | null;
   shortTab: string;
   badge: string;
@@ -232,8 +232,8 @@ export interface ArchetypePlan {
   maxReturn: number;
   winProb: number;
   profitProb: number;
-  expectedValueRate?: number;
-  underwaterCount?: number;
+  expectedValueRate: number;
+  underwaterCount: number;
   wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
   vigPct: number;

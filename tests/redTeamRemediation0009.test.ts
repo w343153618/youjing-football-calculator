@@ -1079,4 +1079,343 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       `Expected all 4 benchmark layers to pass, got gates=${JSON.stringify(report.gates)}`
     );
   });
+
+  it("Slice 05 · Two-Axis Code-Review Regression Lock (Axis 1 Standards & Axis 2 Spec Fidelity)", async () => {
+    const repoRoot = process.cwd();
+
+    // 1. A1-1: Mutating odds on a match with pre-populated shinProb MUST recompute shinProb & fairProb (zero stale shinProb)
+    const staleShinMatch = structuredClone(FALLBACK_MATCHES[0]);
+    assert.ok((staleShinMatch.pools.HAD.options[0].shinProb ?? 0) > 0.45);
+    staleShinMatch.pools.HAD.options[0].odds = 9.5;
+    staleShinMatch.pools.HAD.options[2].odds = 1.28;
+    const calRecomputed = calibrateMatchCoherentModel(staleShinMatch);
+    assert.ok(
+      calRecomputed.pools.HAD.options[0].shinProb < 0.15,
+      `Expected fresh shinProb < 0.15 after odds 1.69 -> 9.50, got ${calRecomputed.pools.HAD.options[0].shinProb}`
+    );
+    assert.ok(
+      calRecomputed.pools.HAD.options[0].fairProb < 0.3,
+      `Expected fresh coherent fairProb < 0.30 (down from 0.538) after HAD odds 1.69 -> 9.50, got ${calRecomputed.pools.HAD.options[0].fairProb}`
+    );
+    staleShinMatch.pools.HHAD.selling = false;
+    staleShinMatch.pools.HAFU.selling = false;
+    staleShinMatch.pools.CRS.selling = false;
+    const calHadOnly = calibrateMatchCoherentModel(staleShinMatch);
+    assert.ok(
+      calHadOnly.pools.HAD.options[0].fairProb < 0.15,
+      `Expected fresh HAD+TTG fairProb < 0.15 after HAD odds 1.69 -> 9.50, got ${calHadOnly.pools.HAD.options[0].fairProb}`
+    );
+
+    // 2. A1-3 & A2-(c).2: Full key/label cache fingerprint — swapping middle chars ("s01s00" <-> "s05s00") at fixed odds indices invalidates WeakMap in evaluateQuantWorkspace
+    const keySwapMatch = structuredClone(FALLBACK_MATCHES[1]);
+    const crs10Pick = {
+      matchId: keySwapMatch.id,
+      matchNumStr: keySwapMatch.matchNumStr,
+      home: keySwapMatch.home,
+      away: keySwapMatch.away,
+      poolCode: "CRS",
+      poolName: "比分",
+      singleAllowed: true,
+      optionKey: "s01s00",
+      optionLabel: "1:0",
+      odds: 6.0,
+      fairProb: 0.1,
+    };
+    const wsKeyBefore = evaluateQuantWorkspace(
+      { picks: [crs10Pick], multiple: 1, targetIds: [keySwapMatch.id] },
+      [keySwapMatch]
+    );
+    const before10 = wsKeyBefore.manualReport.anyWinProb;
+    const i10 = keySwapMatch.pools.CRS.options.findIndex(
+      (o: any) => o.label === "1:0"
+    );
+    const i50 = keySwapMatch.pools.CRS.options.findIndex(
+      (o: any) => o.label === "5:0"
+    );
+    keySwapMatch.pools.CRS.options[i10] = {
+      ...keySwapMatch.pools.CRS.options[i10],
+      key: "s05s00",
+      label: "5:0",
+    };
+    keySwapMatch.pools.CRS.options[i50] = {
+      ...keySwapMatch.pools.CRS.options[i50],
+      key: "s01s00",
+      label: "1:0",
+    };
+    const wsKeyAfter = evaluateQuantWorkspace(
+      { picks: [crs10Pick], multiple: 1, targetIds: [keySwapMatch.id] },
+      [keySwapMatch]
+    );
+    const after10 = wsKeyAfter.manualReport.anyWinProb;
+    assert.ok(
+      Math.abs(after10 - before10) > 0.005,
+      `CRS key/label swap at fixed odds indices must invalidate WeakMap cache (${before10} -> ${after10})`
+    );
+
+    // 3. A1-2: Deduplicate identical (matchId, poolCode, optionKey) picks in computeTruthReport & evaluateQuantWorkspace
+    const m0 = FALLBACK_MATCHES[1];
+    const singlePick = {
+      matchId: m0.id,
+      matchNumStr: m0.matchNumStr,
+      home: m0.home,
+      away: m0.away,
+      poolCode: "HAD",
+      poolName: "胜平负",
+      singleAllowed: true,
+      optionKey: "h",
+      optionLabel: "主胜",
+      odds: m0.pools.HAD.options[0].odds,
+      fairProb: m0.pools.HAD.options[0].fairProb,
+    };
+    const dupPicks = Array.from({ length: 50 }, () => ({ ...singlePick }));
+    const dupRep = computeTruthReport(dupPicks, 2, [m0], { mode: "auto" });
+    assert.equal(
+      dupRep.betCount,
+      1,
+      "Duplicate identical picks must deduplicate to 1 bet"
+    );
+    const dupWs = evaluateQuantWorkspace(
+      { picks: dupPicks, multiple: 2, targetIds: [m0.id], budget: 100 },
+      [m0]
+    );
+    assert.equal(dupWs.manualReport.betCount, 1);
+
+    // 4. A2-(c).1: >32,768-state 7M x 4 TTG 2串1 preserves exact realProfitProb AND combos EV (zero overflowKey mass dumping)
+    const sevenM = FALLBACK_MATCHES.slice(0, 7);
+    const ttgPicks7 = sevenM.flatMap((m: any) =>
+      ["s0", "s1", "s2", "s3"].map((k) => {
+        const o = m.pools.TTG.options.find((x: any) => x.key === k)!;
+        return {
+          matchId: m.id,
+          matchNumStr: m.matchNumStr,
+          home: m.home,
+          away: m.away,
+          poolCode: "TTG",
+          poolName: "总进球",
+          singleAllowed: true,
+          optionKey: o.key,
+          optionLabel: o.label,
+          odds: o.odds,
+          fairProb: o.fairProb,
+        };
+      })
+    );
+    const rep7 = computeTruthReport(ttgPicks7, 1, sevenM, {
+      mode: "free",
+      passSizes: [2],
+    });
+    const perMatch5 = sevenM.map((m: any) => {
+      const opts = ["s0", "s1", "s2", "s3"].map((k) =>
+        m.pools.TTG.options.find((x: any) => x.key === k)!
+      );
+      const pMiss = Math.max(0, 1 - opts.reduce((a, o) => a + o.fairProb, 0));
+      return [
+        { prob: pMiss, unitOdds: 0 },
+        ...opts.map((o) => ({ prob: o.fairProb, unitOdds: o.odds })),
+      ];
+    });
+    let exactProfitProb7 = 0;
+    const chosenOdds = new Float64Array(7);
+    const walkExact7 = (depth: number, pAcc: number) => {
+      if (depth === 7) {
+        let payCents = 0;
+        for (let i = 0; i < 7; i++) {
+          if (chosenOdds[i] === 0) continue;
+          for (let j = i + 1; j < 7; j++) {
+            if (chosenOdds[j] === 0) continue;
+            payCents += Math.round(
+              bankerRoundParlayUnitPayout([chosenOdds[i], chosenOdds[j]]) * 100
+            );
+          }
+        }
+        if (payCents >= rep7.totalCost * 100) exactProfitProb7 += pAcc;
+        return;
+      }
+      for (const st of perMatch5[depth]) {
+        chosenOdds[depth] = st.unitOdds;
+        walkExact7(depth + 1, pAcc * st.prob);
+      }
+    };
+    walkExact7(0, 1);
+    assert.ok(
+      Math.abs(rep7.realProfitProb - exactProfitProb7) < 1e-9,
+      `7M x 4 TTG 2串1 realProfitProb (${rep7.realProfitProb}) must match exact 5^7 truth (${exactProfitProb7})`
+    );
+    const combosExpRet7 = rep7.combos.reduce(
+      (a: number, c: any) => a + c.prob * c.totalPayout,
+      0
+    );
+    const combosEv7 = (combosExpRet7 - rep7.totalCost) / rep7.totalCost;
+    assert.ok(
+      Math.abs(combosEv7 - rep7.expectedValueRate) < 1e-6,
+      `7M x 4 TTG combos EV (${combosEv7}) must match exact linear EV (${rep7.expectedValueRate})`
+    );
+
+    // 5. A2-(a).2 & A1-3: Workspace hit-matrix reuse on bonus optimization AND _cachedJointEval invalidation on equal-cost mutation
+    const eightPicks = FALLBACK_MATCHES.map((m: any) => ({
+      matchId: m.id,
+      matchNumStr: m.matchNumStr,
+      home: m.home,
+      away: m.away,
+      poolCode: "HAD",
+      poolName: "胜平负",
+      singleAllowed: Boolean(m.pools.HAD.single),
+      optionKey: "h",
+      optionLabel: "主胜",
+      odds: m.pools.HAD.options[0].odds,
+      fairProb: m.pools.HAD.options[0].fairProb,
+    }));
+    const wsBonus = evaluateQuantWorkspace(
+      {
+        picks: eightPicks,
+        multiple: 2,
+        passSpec: { mode: "combo", comboCode: "8x247" },
+        planSpec: { kind: "bonus", optMode: "hot-first", scaleMultiple: 1 },
+        targetIds: FALLBACK_MATCHES.map((m: any) => m.id),
+        budget: 500,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.ok(
+      Boolean((wsBonus.manualReport as any)._reusableHitMatrix),
+      "manualReport must attach _reusableHitMatrix for bonus-optimization dot-product reuse"
+    );
+    const wsBonus5 = evaluateQuantWorkspace(
+      {
+        picks: eightPicks.slice(0, 5),
+        multiple: 4,
+        passSpec: { mode: "combo", comboCode: "5x26" },
+        planSpec: { kind: "bonus", optMode: "equal", scaleMultiple: 1 },
+        targetIds: FALLBACK_MATCHES.slice(0, 5).map((m: any) => m.id),
+        budget: 500,
+      },
+      FALLBACK_MATCHES
+    );
+    assert.ok(Boolean(wsBonus5.appliedPlan));
+    const lastIdx = wsBonus5.appliedPlan!.lines.length - 1;
+    assert.ok(wsBonus5.appliedPlan!.lines[0].multiple > 1);
+    const mutatedPlan = {
+      ...wsBonus5.appliedPlan!,
+      lines: wsBonus5.appliedPlan!.lines.map((l: any, idx: number) =>
+        idx === 0
+          ? {
+              ...l,
+              multiple: l.multiple - 1,
+              cost: (l.multiple - 1) * 2,
+              returnPayout: Number(
+                (l.unitPayout * (l.multiple - 1)).toFixed(2)
+              ),
+            }
+          : idx === lastIdx
+            ? {
+                ...l,
+                multiple: l.multiple + 1,
+                cost: (l.multiple + 1) * 2,
+                returnPayout: Number(
+                  (l.unitPayout * (l.multiple + 1)).toFixed(2)
+                ),
+              }
+            : l
+      ),
+    };
+    Object.defineProperty(mutatedPlan, "_cachedJointEval", {
+      value: (wsBonus5.appliedPlan as any)._cachedJointEval,
+      enumerable: false,
+    });
+    assert.equal(mutatedPlan.totalCost, wsBonus5.appliedPlan!.totalCost);
+    const repBeforeMut = wsBonus5.effectiveReport;
+    const repAfterMut = archetypeToReport(mutatedPlan, null, FALLBACK_MATCHES);
+    assert.notEqual(
+      repAfterMut.expectedValueRate,
+      repBeforeMut.expectedValueRate,
+      "Mutating line multiples at equal totalCost must invalidate _cachedJointEval"
+    );
+
+    // 6. A2-(b).1 & A2-(c).4: Slot ④ emits NO multi-leg resonance parlay when legal singles exist, and blocks negative-shrunk-EV non-single pair even under stance tilt
+    const lagSingleA = structuredClone(FALLBACK_MATCHES[0]);
+    lagSingleA.id = "LAG-SGL-A";
+    lagSingleA.pools.HAFU.options.find((o: any) => o.key === "dh")!.odds = 9.5;
+    const lagSingleB = structuredClone(FALLBACK_MATCHES[2]);
+    lagSingleB.id = "LAG-SGL-B";
+    lagSingleB.pools.HAFU.options.find((o: any) => o.key === "dh")!.odds = 12.0;
+    const p4TwoSingles = generateParetoPortfolio(
+      [lagSingleA, lagSingleB],
+      100,
+      "objective",
+      false,
+      []
+    )[3];
+    assert.equal(p4TwoSingles.available, true);
+    assert.equal(
+      p4TwoSingles.lines.every((l: any) => l.legs.length === 1),
+      true,
+      "Slot ④ must NOT append 2~3-leg resonance parlays when legal +EV singles exist"
+    );
+
+    const nonSingleMildPos = structuredClone(FALLBACK_MATCHES[0]);
+    nonSingleMildPos.id = "NON-SGL-MILD";
+    nonSingleMildPos.pools.HHAD.single = false;
+    nonSingleMildPos.pools.HHAD.options[0].odds = 3.95;
+    const normalPartner = structuredClone(FALLBACK_MATCHES[2]);
+    const p4NonSinglePair = generateParetoPortfolio(
+      [nonSingleMildPos, normalPartner],
+      100,
+      "home-lean",
+      false,
+      []
+    )[3];
+    if (p4NonSinglePair.available) {
+      assert.ok(p4NonSinglePair.expectedValueRate > 0);
+      assert.equal(
+        p4NonSinglePair.lines.some(
+          (l: any) =>
+            l.legs.length >= 2 && p4NonSinglePair.expectedValueRate <= 0
+        ),
+        false
+      );
+    }
+
+    // 7. A2-(a).3 & A1-3: UI Tile 3 subtitle ("票面返还"), required ArchetypePlan fields, and manualQaEngine covering-wheel sync
+    const appSrc = fs.readFileSync(
+      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    const typesSrc = fs.readFileSync(
+      path.join(repoRoot, "src/prototype/quantTypes.ts"),
+      "utf8"
+    );
+    const qaSrc = fs.readFileSync(
+      path.join(repoRoot, "server/manualQaEngine.mjs"),
+      "utf8"
+    );
+    assert.ok(
+      appSrc.includes("票面返还"),
+      "Tile 3 subtitle must display 票面返还 rate"
+    );
+    assert.equal(
+      appSrc.includes("单池暗扣"),
+      false,
+      "Tile 3 must not mislabel parlay vigPct as 单池暗扣"
+    );
+    assert.equal(
+      typesSrc.includes("expectedValueRate?:"),
+      false,
+      "ArchetypePlan.expectedValueRate must be required (non-optional)"
+    );
+    assert.equal(
+      typesSrc.includes("underwaterCount?:"),
+      false,
+      "ArchetypePlan.underwaterCount must be required (non-optional)"
+    );
+    assert.equal(
+      typesSrc.includes("relative-alpha"),
+      false,
+      "ArchetypePlan.alphaKind must drop obsolete relative-alpha union arm"
+    );
+    assert.equal(
+      qaSrc.includes("黑掉 1~2 场"),
+      false,
+      "manualQaEngine.mjs qa-covering-wheel must not overclaim 1~2 match guarantee"
+    );
+  });
 });

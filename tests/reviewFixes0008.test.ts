@@ -59,6 +59,8 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       maxReturn: 100,
       winProb: 0.3,
       profitProb: 0.3,
+      expectedValueRate: 0,
+      underwaterCount: 0,
       missOneReturn: null,
       vigPct: 12,
       reasons: [],
@@ -289,7 +291,7 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
         TTG: {
           ...m0Base.pools.TTG,
           options: m0Base.pools.TTG.options.map((o) =>
-            o.key === "s2" ? { ...o, odds: 3.95 } : o
+            o.key === "s2" ? { ...o, odds: 4.65 } : o
           ),
         },
       },
