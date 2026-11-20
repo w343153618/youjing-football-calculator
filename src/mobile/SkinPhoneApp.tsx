@@ -836,6 +836,7 @@ export function SkinPhoneApp({
       cost: plan.totalCost,
       seq: Date.now(),
     });
+    setDkFocusStep(3);
     setDkRightTab("audit");
     setTab("audit");
     showSpringToast(
@@ -843,6 +844,12 @@ export function SkinPhoneApp({
       `✅ 已移交审单台 · 精算配单【${plan.shortTab}】`
     );
   };
+
+  useEffect(() => {
+    if (!planSpec) {
+      setHandoffBanner(null);
+    }
+  }, [planSpec]);
 
   useEffect(() => {
     if (!handoffBanner) return;
@@ -860,6 +867,8 @@ export function SkinPhoneApp({
 
   const restoreEqualMultiple = () => {
     betCtrl.restoreEqualMultiple();
+    setHandoffBanner(null);
+    setDkFocusStep(null);
     playTactileCue("tap-off");
     showSpringToast(layerRef.current, "已恢复默认等倍统配");
   };
@@ -2274,6 +2283,8 @@ export function SkinPhoneApp({
     effectiveReport.tickets?.length ??
     effectiveReport.betCount;
 
+  const isPlanHandoff = Boolean(appliedPlan || (planSpec && handoffBanner));
+
   const auditContent = (
     <>
       {effectiveReport.matchCount === 0 ? (
@@ -2312,15 +2323,15 @@ export function SkinPhoneApp({
           {/* Step ③ 方案来源与移交感知横幅（支持 3+1 精算配单态 & 手动自选过关态） */}
           <div
             key={
-              handoffBanner?.seq ??
-              appliedPlan?.key ??
-              `manual-${effectiveReport.modeLabel}`
+              isPlanHandoff
+                ? (handoffBanner?.seq ?? appliedPlan?.key ?? "plan-handoff")
+                : `manual-${effectiveReport.modeLabel}`
             }
-            className={`handoff-banner num ${!appliedPlan && !handoffBanner ? "manual-src" : ""}`}
+            className={`handoff-banner num ${!isPlanHandoff ? "manual-src" : ""}`}
           >
             <div>
               <b>
-                {appliedPlan || handoffBanner
+                {isPlanHandoff
                   ? `✅ 当前正在审阅：${
                       appliedPlan
                         ? `【${appliedPlan.shortTab}】¥${effectiveReport.totalCost} 方案`
@@ -2329,12 +2340,12 @@ export function SkinPhoneApp({
                   : `📋 当前正在审阅：手动选单 · ${effectiveReport.modeLabel}（共 ${auditTicketCount} 注 · ¥${effectiveReport.totalCost}）`}
               </b>
               <div className="small" style={{ marginTop: 1 }}>
-                {appliedPlan
+                {isPlanHandoff
                   ? "已完成不等倍精算拆票 · 可直接核对打票或微调沙盒"
                   : "等倍手动选单 · 可点下方智能分倍或切往②3+1精算配单"}
               </div>
             </div>
-            {appliedPlan ? (
+            {isPlanHandoff ? (
               <button
                 type="button"
                 className="key mini"

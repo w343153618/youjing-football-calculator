@@ -993,8 +993,10 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
         appSrc.includes("...wsParams") &&
         appSrc.includes("buildMatchIntelDigest") &&
         appSrc.includes("一球小胜卡盘温度计") &&
-        appSrc.includes("一键合成单关"),
-      "SkinPhoneApp must render string/array residualRisks, forward workspace params to analyze-combo, show card-pan thermometer, and expose Step 3 single-match synthesis CTA"
+        appSrc.includes("一键合成单关") &&
+        appSrc.includes("isPlanHandoff") &&
+        appSrc.includes("setDkFocusStep(3)"),
+      "SkinPhoneApp must render string/array residualRisks, forward workspace params to analyze-combo, show card-pan thermometer, expose Step 3 single-match synthesis CTA, and sync handoffBanner/dkFocusStep"
     );
   });
 });
