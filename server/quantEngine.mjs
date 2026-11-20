@@ -5150,6 +5150,44 @@ function tiltAtomicProbsBySubjectiveDelta(
   return out;
 }
 
+function computeMinDiscreteSplitNotes(odds1, odds2, singleOdds, maxScan = 99) {
+  const u1 = bankerRoundParlayUnitPayout([odds1]);
+  const u2 = bankerRoundParlayUnitPayout([odds2]);
+  const uSingle = bankerRoundParlayUnitPayout([singleOdds]);
+  if (!(u1 > 0 && u2 > 0 && uSingle > 0)) return null;
+  for (let n = 2; n <= maxScan; n++) {
+    const target = n * uSingle;
+    const m1Ideal = Math.max(
+      1,
+      Math.min(n - 1, Math.round((n * u2) / (u1 + u2)))
+    );
+    for (
+      let m1 = Math.max(1, m1Ideal - 1);
+      m1 <= Math.min(n - 1, m1Ideal + 1);
+      m1++
+    ) {
+      const m2 = n - m1;
+      const worstPay = Math.min(m1 * u1, m2 * u2);
+      if (worstPay > target + 1e-9) {
+        return n;
+      }
+    }
+  }
+  return null;
+}
+
+function canDiscreteSplitBeatSingleWithinNotes(
+  odds1,
+  odds2,
+  singleOdds,
+  availNotes
+) {
+  const maxN = Math.min(999, Math.floor(Number(availNotes) || 0));
+  if (maxN < 2) return false;
+  const minN = computeMinDiscreteSplitNotes(odds1, odds2, singleOdds, maxN);
+  return typeof minN === "number" && minN <= maxN;
+}
+
 function computeEquivalentArbitrages(m) {
   const arbitrages = [];
   if (!m?.pools) return arbitrages;
@@ -5244,6 +5282,9 @@ function computeEquivalentArbitrages(m) {
               { poolCode: "HAD", optionKey: "a" },
             ]
           : [{ poolCode: "HHAD", optionKey: "ha" }];
+        const minSplitNotes = !hhadBetter
+          ? computeMinDiscreteSplitNotes(hadD.odds, hadA.odds, hhadAway.odds)
+          : null;
         arbitrages.push({
           matchId: m.id,
           title: `${m.away}受让不败同义比价`,
@@ -5256,7 +5297,11 @@ function computeEquivalentArbitrages(m) {
           edgePct: Number(edge.toFixed(1)),
           detail: hhadBetter
             ? `直接买单选「让负@${hhadAway.odds.toFixed(2)}」比双选「平+负(合成等效水位@${synDouble.toFixed(2)})」多赚 +${edge.toFixed(1)}% 且免凑整损耗！`
-            : `配平「平+客胜(合成等效水位@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%！`,
+            : `配平「平+客胜(合成等效水位@${synDouble.toFixed(2)})」比直接买「让负」高出 +${edge.toFixed(1)}%${
+                minSplitNotes
+                  ? `（需至少 ${minSplitNotes} 注即 ¥${minSplitNotes * 2} 分倍配平才免两元凑整损耗）`
+                  : ""
+              }！`,
           betterPicks,
           worsePicks,
           poolCode: betterPicks[0].poolCode,
@@ -5287,6 +5332,9 @@ function computeEquivalentArbitrages(m) {
               { poolCode: "HAD", optionKey: "d" },
             ]
           : [{ poolCode: "HHAD", optionKey: "hh" }];
+        const minSplitNotes = !hhadBetter
+          ? computeMinDiscreteSplitNotes(hadH.odds, hadD.odds, hhadHome.odds)
+          : null;
         arbitrages.push({
           matchId: m.id,
           title: `${m.home}不败同义比价`,
@@ -5299,7 +5347,11 @@ function computeEquivalentArbitrages(m) {
           edgePct: Number(edge.toFixed(1)),
           detail: hhadBetter
             ? `单选「让胜@${hhadHome.odds.toFixed(2)}」比双选「主胜+平(合成等效水位@${synDouble.toFixed(2)})」高 +${edge.toFixed(1)}% 且仅需1注！`
-            : `配平「主胜+平」合成等效水位高出 +${edge.toFixed(1)}%！`,
+            : `配平「主胜+平」合成等效水位高出 +${edge.toFixed(1)}%${
+                minSplitNotes
+                  ? `（需至少 ${minSplitNotes} 注即 ¥${minSplitNotes * 2} 分倍配平才免两元凑整损耗）`
+                  : ""
+              }！`,
           betterPicks,
           worsePicks,
           poolCode: betterPicks[0].poolCode,
@@ -6692,6 +6744,7 @@ function buildBlockedTruthReport({
   poolCap,
   activePassSizes = [],
   activeComboCode = null,
+  bankerMatchIds = [],
   availableFreePasses,
   availableComboPasses,
   hasSameMatchCrossPoolConflict,
@@ -6712,6 +6765,7 @@ function buildBlockedTruthReport({
     poolCap,
     activePassSizes,
     activeComboCode,
+    bankerMatchIds,
     availableFreePasses,
     availableComboPasses,
     hasSameMatchCrossPoolConflict,
@@ -7101,6 +7155,31 @@ export function computeTruthReport(
     modeLabel = effectiveMaxPass === 1 ? "单关" : `${effectiveMaxPass}串1`;
   }
 
+  const matchIdsInOrder = matchGroups.map((grp) => grp[0].matchId);
+  let bankerMatchIds = [];
+  if (
+    matchCount >= 3 &&
+    !forceSingleOnly &&
+    !activeComboCode &&
+    Array.isArray(passSpec?.bankerMatchIds) &&
+    passSpec.bankerMatchIds.length > 0
+  ) {
+    const minActivePass = Math.min(...activePassSizes);
+    const maxBankers =
+      minActivePass >= 2 ? Math.min(matchCount - 1, minActivePass - 1) : 0;
+    if (maxBankers > 0) {
+      const requestedSet = new Set(
+        passSpec.bankerMatchIds.filter((id) => typeof id === "string")
+      );
+      bankerMatchIds = matchIdsInOrder
+        .filter((id) => requestedSet.has(id))
+        .slice(0, maxBankers);
+    }
+  }
+  if (bankerMatchIds.length > 0) {
+    modeLabel = `${modeLabel}(${bankerMatchIds.length}胆)`;
+  }
+
   const availableFreePasses = buildFreePassMetadata(
     matchCount,
     poolCap,
@@ -7130,6 +7209,39 @@ export function computeTruthReport(
   } else if (forceSingleOnly && hasSameMatchCrossPoolConflict) {
     for (let mIdx = 0; mIdx < matchGroups.length; mIdx++) {
       totalRawBetCount += matchGroups[mIdx].length;
+    }
+  } else if (bankerMatchIds.length > 0) {
+    const bankerSet = new Set(bankerMatchIds);
+    let bankerTupleCount = 1;
+    const trailerSizes = [];
+    for (let mIdx = 0; mIdx < matchGroups.length; mIdx++) {
+      const sz = matchGroups[mIdx].length;
+      if (bankerSet.has(matchIdsInOrder[mIdx])) {
+        bankerTupleCount = Math.min(
+          Number.MAX_SAFE_INTEGER,
+          bankerTupleCount * sz
+        );
+      } else {
+        trailerSizes.push(sz);
+      }
+    }
+    const tLen = trailerSizes.length;
+    const elemSymTrailer = new Float64Array(tLen + 1);
+    elemSymTrailer[0] = 1;
+    for (let tIdx = 0; tIdx < tLen; tIdx++) {
+      const sz = trailerSizes[tIdx];
+      for (let k = tIdx + 1; k >= 1; k--) {
+        elemSymTrailer[k] += elemSymTrailer[k - 1] * sz;
+      }
+    }
+    const bCount = bankerMatchIds.length;
+    for (const k of activePassSizes) {
+      const needTrailer = k - bCount;
+      if (needTrailer >= 0 && needTrailer <= tLen) {
+        totalRawBetCount += Math.round(
+          bankerTupleCount * (elemSymTrailer[needTrailer] ?? 0)
+        );
+      }
     }
   } else {
     const elemSym = new Float64Array(matchCount + 1);
@@ -7180,6 +7292,7 @@ export function computeTruthReport(
       poolCap,
       activePassSizes,
       activeComboCode,
+      bankerMatchIds,
       availableFreePasses,
       availableComboPasses,
       hasSameMatchCrossPoolConflict,
@@ -7221,6 +7334,18 @@ export function computeTruthReport(
       }
     }
   } else {
+    const bankerSet =
+      bankerMatchIds.length > 0 ? new Set(bankerMatchIds) : null;
+    const bankerIndices = bankerSet
+      ? matchIdsInOrder
+          .map((id, idx) => (bankerSet.has(id) ? idx : -1))
+          .filter((idx) => idx >= 0)
+      : [];
+    const trailerIndices = bankerSet
+      ? matchIdsInOrder
+          .map((id, idx) => (!bankerSet.has(id) ? idx : -1))
+          .filter((idx) => idx >= 0)
+      : [];
     for (const k of activePassSizes) {
       if (k === 1) {
         for (let mIdx = 0; mIdx < matchGroups.length; mIdx++) {
@@ -7229,7 +7354,16 @@ export function computeTruthReport(
           }
         }
       } else {
-        const indexSubsets = combinationsOfIndices(matchCount, k);
+        const indexSubsets = bankerSet
+          ? combinationsOfIndices(
+              trailerIndices.length,
+              k - bankerIndices.length
+            ).map((tSub) =>
+              [...bankerIndices, ...tSub.map((ti) => trailerIndices[ti])].sort(
+                (a, b) => a - b
+              )
+            )
+          : combinationsOfIndices(matchCount, k);
         for (const subset of indexSubsets) {
           let tupleCartesian = [[]];
           for (const mIdx of subset) {
@@ -7490,6 +7624,7 @@ export function computeTruthReport(
     poolCap,
     activePassSizes,
     activeComboCode,
+    bankerMatchIds,
     availableFreePasses,
     availableComboPasses,
     hasSameMatchCrossPoolConflict,
@@ -12666,7 +12801,180 @@ function validatePlanLateHedgeConsistency(appliedPlan, late) {
   return { ok: true, latePicks: Array.from(latePickMap.values()) };
 }
 
-/** 3. 审单细节小 Tips：早晚场时间差对冲锁利 + 串关拖油瓶体检 + 同义省钱替换 + 连黑预警 */
+function computeBridgeCandidates(anchorMatch, anchorPicks, matches) {
+  if (!anchorMatch || !Array.isArray(matches) || matches.length < 2) {
+    return [];
+  }
+  const others = matches.filter((m) => m && m.id !== anchorMatch.id);
+  if (others.length === 0) return [];
+
+  const allSameDateFmt = [anchorMatch, ...others].every(
+    (m) => parseMatchDatePrefixMinutes(m.id) !== null
+  );
+  const timeOf = (m) =>
+    (allSameDateFmt ? (parseMatchDatePrefixMinutes(m.id) ?? 0) : 0) +
+    parseKickoffMinutes(m.kickoff);
+  const anchorMinutes = timeOf(anchorMatch);
+  const anchorOpposite = resolveComplementaryLateHedge(
+    anchorMatch,
+    anchorPicks
+  );
+
+  const rawOptions = [];
+  for (const m of others) {
+    const mMinutes = timeOf(m);
+    const diff = mMinutes - anchorMinutes;
+    const absGap = Math.abs(diff);
+    for (const poolCode of ["HAD", "HHAD"]) {
+      const pool = m.pools?.[poolCode];
+      if (
+        !pool ||
+        pool.selling === false ||
+        !Array.isArray(pool.options) ||
+        pool.options.length === 0
+      ) {
+        continue;
+      }
+      for (const opt of pool.options) {
+        const odds = Number(opt.odds);
+        const fairProb = Number(opt.fairProb);
+        if (!(odds > 1.01 && fairProb > 0.05)) continue;
+        const singleLegReturnRate = Number((odds * fairProb).toFixed(4));
+        const pseudoPick = {
+          matchId: m.id,
+          poolCode,
+          optionKey: opt.key,
+          optionLabel: opt.label,
+          odds,
+          fairProb,
+        };
+        let canHedge = false;
+        let hedgeOppositeDesc = "";
+        if (absGap >= 135) {
+          if (diff >= 135) {
+            const lateRes = resolveComplementaryLateHedge(m, [pseudoPick]);
+            if (lateRes.ok) {
+              canHedge = true;
+              hedgeOppositeDesc = lateRes.candidate.label;
+            }
+          } else if (diff <= -135 && anchorOpposite.ok) {
+            canHedge = true;
+            hedgeOppositeDesc = anchorOpposite.candidate.label;
+          }
+        }
+        rawOptions.push({
+          match: m,
+          poolCode,
+          poolName: pool.name || (poolCode === "HAD" ? "胜平负" : "让球"),
+          opt,
+          odds,
+          fairProb,
+          singleLegReturnRate,
+          absGap,
+          diff,
+          canHedge,
+          hedgeOppositeDesc,
+        });
+      }
+    }
+  }
+
+  if (rawOptions.length === 0) return [];
+
+  const steadyPool = rawOptions.filter((c) => c.fairProb >= 0.48);
+  const fallbackPool =
+    steadyPool.length > 0
+      ? steadyPool
+      : rawOptions.filter((c) => c.fairProb >= 0.36);
+  const vigCandidates = (
+    fallbackPool.length > 0 ? fallbackPool : rawOptions
+  ).sort(
+    (a, b) =>
+      b.singleLegReturnRate - a.singleLegReturnRate || b.fairProb - a.fairProb
+  );
+
+  const out = [];
+  const topVig = vigCandidates[0];
+  if (topVig) {
+    const vigPct = Math.max(
+      0,
+      Number(((1 - topVig.singleLegReturnRate) * 100).toFixed(1))
+    );
+    out.push({
+      kind: "lowest-vig",
+      badge: "🛡️ 全盘最低抽水稳胆搭子",
+      matchId: topVig.match.id,
+      matchNumStr: topVig.match.matchNumStr,
+      home: topVig.match.home,
+      away: topVig.match.away,
+      kickoff: topVig.match.kickoff,
+      poolCode: topVig.poolCode,
+      poolName: topVig.poolName,
+      optionKey: topVig.opt.key,
+      optionLabel: topVig.opt.label,
+      odds: topVig.odds,
+      fairProb: topVig.fairProb,
+      singleLegReturnRate: topVig.singleLegReturnRate,
+      gapMinutes: topVig.absGap > 0 ? topVig.absGap : null,
+      reason: `单腿客观期望返还 ${(topVig.singleLegReturnRate * 100).toFixed(1)}%（过桥暗耗仅 ${vigPct}%），正路真率 ${(topVig.fairProb * 100).toFixed(0)}%，适合低损耗凑成合法 2串1`,
+    });
+  }
+
+  const hedgePoolAll = rawOptions.filter((c) => c.canHedge);
+  const hedgeSteady = hedgePoolAll.filter((c) => c.fairProb >= 0.4);
+  const hedgeSorted = (
+    hedgeSteady.length > 0 ? hedgeSteady : hedgePoolAll
+  ).sort((a, b) => {
+    const aDiffMatch = topVig && a.match.id !== topVig.match.id ? 1 : 0;
+    const bDiffMatch = topVig && b.match.id !== topVig.match.id ? 1 : 0;
+    if (bDiffMatch !== aDiffMatch) return bDiffMatch - aDiffMatch;
+    const aLate = a.diff >= 135 ? 1 : 0;
+    const bLate = b.diff >= 135 ? 1 : 0;
+    if (bLate !== aLate) return bLate - aLate;
+    return (
+      b.singleLegReturnRate - a.singleLegReturnRate || b.fairProb - a.fairProb
+    );
+  });
+
+  const topHedge = hedgeSorted.find(
+    (c) =>
+      !topVig ||
+      c.match.id !== topVig.match.id ||
+      c.poolCode !== topVig.poolCode ||
+      c.opt.key !== topVig.opt.key
+  );
+  if (topHedge) {
+    const hrs = Math.floor(topHedge.absGap / 60);
+    const mins = topHedge.absGap % 60;
+    const gapLabel =
+      hrs > 0 ? `${hrs}小时${mins > 0 ? `${mins}分` : ""}` : `${mins}分钟`;
+    out.push({
+      kind: "staggered-hedge",
+      badge: "⏰ 时间差单关锁利搭子",
+      matchId: topHedge.match.id,
+      matchNumStr: topHedge.match.matchNumStr,
+      home: topHedge.match.home,
+      away: topHedge.match.away,
+      kickoff: topHedge.match.kickoff,
+      poolCode: topHedge.poolCode,
+      poolName: topHedge.poolName,
+      optionKey: topHedge.opt.key,
+      optionLabel: topHedge.opt.label,
+      odds: topHedge.odds,
+      fairProb: topHedge.fairProb,
+      singleLegReturnRate: topHedge.singleLegReturnRate,
+      gapMinutes: topHedge.absGap,
+      reason:
+        topHedge.diff >= 135
+          ? `与主看场开球间隔 ${gapLabel}（≥135分钟安全线）且反向盘开放单关；首关红单后可单关补买反向盘提前锁利`
+          : `早于主看场 ${gapLabel} 开球且主看场反向盘开放单关；早场红单后可在主看场开球前单关补单锁利`,
+    });
+  }
+
+  return out;
+}
+
+/** 3. 审单细节小 Tips：早晚场时间差对冲锁利 + 串关拖油瓶体检 + 同义省钱替换 + 过桥配菜寻优 + 连黑预警 */
 export function computeProOrderInsights(
   picks,
   report,
@@ -12693,7 +13001,7 @@ export function computeProOrderInsights(
     oppositeOdds: 1.85,
     hedgeCost: 0,
     lockedNetProfit: 0,
-    reason: "需至少选择 2 场且开球时间间隔 ≥ 110 分钟（前场完场后可补单锁利）",
+    reason: "需至少选择 2 场且开球时间间隔 ≥ 135 分钟（前场完场后可补单锁利）",
   };
 
   if (pickedMatches.length >= 2) {
@@ -12747,8 +13055,21 @@ export function computeProOrderInsights(
           lateKickoff: late.kickoff,
           reason:
             sortedByTime.length >= 3
-              ? `前序最晚场次 ${penultimate.matchNumStr}(${penultimate.kickoff}) 与末场 ${late.matchNumStr}(${late.kickoff}) 开球仅差 ${gap} 分钟（需 ≥ 110 分钟），前序场次未在末场开球前完场，无法单场无风险锁利`
-              : `两场开球仅间隔 ${gap} 分钟（需 ≥ 110 分钟），前场尚未完场，暂无法执行早晚场补单锁利`,
+              ? `前序最晚场次 ${penultimate.matchNumStr}(${penultimate.kickoff}) 与末场 ${late.matchNumStr}(${late.kickoff}) 开球仅差 ${gap} 分钟（需 ≥ 135 分钟），前序场次未在末场开球前完场，无法单场锁利`
+              : `两场开球仅间隔 ${gap} 分钟（需 ≥ 135 分钟），前场尚未完场，暂无法执行早晚场补单锁利`,
+        };
+      } else if (gap < 135) {
+        hedge = {
+          ...hedge,
+          available: false,
+          hedgeMode: "unavailable",
+          gapMinutes: gap,
+          gapText,
+          earlyMatchTitle,
+          lateMatchTitle,
+          earlyKickoff: penultimate.kickoff,
+          lateKickoff: late.kickoff,
+          reason: `两场开球间隔 ${gap} 分钟处于临界区（实战安全间隔建议 ≥ 135 分钟），存在现代足球超长伤停补时与体彩店提前停售踏空风险，暂不建议裸奔等补单`,
         };
       } else {
         const planConsistency = validatePlanLateHedgeConsistency(
@@ -12939,6 +13260,14 @@ export function computeProOrderInsights(
   }
 
   let activeSwapTip = null;
+  const availComboNotes = Math.max(
+    1,
+    report?.totalCost > 0 && report?.betCount > 0
+      ? Math.floor(
+          Number(report.totalCost) / Math.max(2, Number(report.betCount) * 2)
+        )
+      : Math.round(Number(report?.multiple) || 1)
+  );
   for (const m of pickedMatches) {
     const mpicks = effectivePicks.filter((p) => p.matchId === m.id);
     const arbitrages = computeEquivalentArbitrages(m);
@@ -12968,13 +13297,50 @@ export function computeProOrderInsights(
             (p) => p.poolCode === bp.poolCode && p.optionKey === bp.optionKey
           )
         );
-      return hasAllWorse && !hasAllBetter;
+      if (!hasAllWorse || hasAllBetter) return false;
+
+      if (arb.betterPicks.length === 2 && arb.worsePicks.length === 1) {
+        const bp1 = m.pools?.[arb.betterPicks[0].poolCode]?.options?.find(
+          (o) => o.key === arb.betterPicks[0].optionKey
+        );
+        const bp2 = m.pools?.[arb.betterPicks[1].poolCode]?.options?.find(
+          (o) => o.key === arb.betterPicks[1].optionKey
+        );
+        const wp0 = m.pools?.[arb.worsePicks[0].poolCode]?.options?.find(
+          (o) => o.key === arb.worsePicks[0].optionKey
+        );
+        if (
+          bp1 &&
+          bp2 &&
+          wp0 &&
+          !canDiscreteSplitBeatSingleWithinNotes(
+            bp1.odds,
+            bp2.odds,
+            wp0.odds,
+            availComboNotes
+          )
+        ) {
+          return false;
+        }
+      }
+      return true;
     });
     if (matchedArb) {
       activeSwapTip = matchedArb;
       break;
     }
   }
+
+  const bridgeCandidates =
+    pickedMatches.length === 1 &&
+    report?.canCheckout === false &&
+    !report?.hasSameMatchCrossPoolConflict
+      ? computeBridgeCandidates(
+          pickedMatches[0],
+          effectivePicks.filter((p) => p.matchId === pickedMatches[0].id),
+          matches
+        )
+      : [];
 
   const p = Math.max(0.03, report.realProfitProb);
   const fiveLossStreakProb = Math.pow(1 - p, 5);
@@ -13005,6 +13371,7 @@ export function computeProOrderInsights(
     fiveLossStreakProb,
     recommendedBankrollPct,
     activeSwapTip,
+    bridgeCandidates,
   };
 }
 
@@ -14419,6 +14786,13 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
     poolCap: fallbackManual?.poolCap ?? 8,
     activePassSizes: activeSizes,
     activeComboCode: null,
+    bankerMatchIds: Array.isArray(fallbackManual?.bankerMatchIds)
+      ? fallbackManual.bankerMatchIds.filter(
+          (id) =>
+            matchSet.has(id) &&
+            plan.lines.every((l) => l.legs.some((lg) => lg.matchId === id))
+        )
+      : [],
     availableFreePasses:
       fallbackManual?.availableFreePasses ??
       buildFreePassMetadata(

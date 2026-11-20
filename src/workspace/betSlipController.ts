@@ -5,6 +5,7 @@ import {
   type AppliedPlanSpec,
   type ArchetypePlan,
   type BonusOptMode,
+  type BridgeMatchCandidate,
   type ComboRow,
   type EquivalentArbItem,
   type MatchItem,
@@ -670,6 +671,52 @@ function trimToSinglePoolPerMatch(picks: SelectedPick[]): {
     return true;
   });
   return { cleaned, trimmed };
+}
+
+function sanitizePassSpecForPicks(
+  passSpec: PassSelectionSpec,
+  nextPicks: SelectedPick[]
+): PassSelectionSpec {
+  if (!passSpec || passSpec.mode === "combo") {
+    return passSpec?.bankerMatchIds
+      ? { mode: passSpec.mode, comboCode: passSpec.comboCode }
+      : passSpec;
+  }
+  const distinctIds = Array.from(new Set(nextPicks.map((p) => p.matchId)));
+  if (distinctIds.length < 3) {
+    if (!passSpec.bankerMatchIds && passSpec.mode === "auto") return passSpec;
+    const validSizes = Array.isArray(passSpec.passSizes)
+      ? passSpec.passSizes.filter((s) => s >= 1 && s <= distinctIds.length)
+      : [];
+    return validSizes.length > 0 && passSpec.mode === "free"
+      ? { mode: "free", passSizes: validSizes }
+      : { mode: "auto" };
+  }
+  const curBankers = Array.isArray(passSpec.bankerMatchIds)
+    ? passSpec.bankerMatchIds.filter((id) => distinctIds.includes(id))
+    : [];
+  const validSizes = Array.isArray(passSpec.passSizes)
+    ? passSpec.passSizes.filter((s) => s >= 1 && s <= distinctIds.length)
+    : [];
+  if (passSpec.mode === "free" && validSizes.length > 0) {
+    const minPass = Math.min(...validSizes);
+    const maxBankers =
+      minPass >= 2 ? Math.min(distinctIds.length - 1, minPass - 1) : 0;
+    const trimmedBankers = curBankers.slice(0, maxBankers);
+    return trimmedBankers.length > 0
+      ? { mode: "free", passSizes: validSizes, bankerMatchIds: trimmedBankers }
+      : { mode: "free", passSizes: validSizes };
+  }
+  return curBankers.length > 0
+    ? {
+        mode: "free",
+        passSizes: [Math.max(2, distinctIds.length - 1)],
+        bankerMatchIds: curBankers.slice(
+          0,
+          Math.max(1, distinctIds.length - 2)
+        ),
+      }
+    : { mode: "auto" };
 }
 
 function buildInitialState(): BetSlipState {
@@ -1383,6 +1430,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         state = {
           ...state,
           planSpec: null,
+          passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
           picks: nextPicks,
           ...syncAutoRadarFields(nextPicks, state.matches, state),
         };
@@ -1484,7 +1532,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: nextPassSpec,
+        passSpec: sanitizePassSpecForPicks(nextPassSpec, nextPicks),
         picks: nextPicks,
         ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
@@ -1547,6 +1595,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
+        passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
         picks: nextPicks,
         ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
@@ -1616,7 +1665,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: "free", passSizes: nextSizes },
+        passSpec: sanitizePassSpecForPicks(
+          {
+            mode: "free",
+            passSizes: nextSizes,
+            bankerMatchIds: state.passSpec.bankerMatchIds,
+          },
+          state.picks
+        ),
       };
       emit();
       void scheduleRefresh();
@@ -1851,8 +1907,15 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         arb.betterPicks.length >= 2 && estBetCount > 0 && estBetCount <= 512
           ? { kind: "bonus", optMode: "equal", scaleMultiple: 1 }
           : null;
+      const nextMultiple =
+        arb.betterPicks.length >= 2 &&
+        arb.worsePicks.length === 1 &&
+        state.multiple >= 2
+          ? Math.max(1, Math.floor(state.multiple / 2))
+          : state.multiple;
       state = {
         ...state,
+        multiple: nextMultiple,
         planSpec: nextPlanSpec,
         picks: nextPicks,
         ...syncAutoRadarFields(nextPicks, state.matches, state),
@@ -1860,6 +1923,189 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       emit();
       void scheduleRefresh();
       return true;
+    },
+
+    toggleBankerMatch(matchId: string): {
+      ok: boolean;
+      isBanker?: boolean;
+      reason?: string;
+    } {
+      const distinctIds = Array.from(
+        new Set(state.picks.map((p) => p.matchId))
+      );
+      if (!distinctIds.includes(matchId)) {
+        return { ok: false, reason: "该场次不在当前选单中" };
+      }
+      if (distinctIds.length < 3) {
+        return { ok: false, reason: "至少选择 3 场比赛才可设胆" };
+      }
+      const manualRep = state.workspace.manualReport;
+      if (manualRep.hasSameMatchCrossPoolConflict || distinctIds.length > 8) {
+        return { ok: false, reason: "纯单关模式不支持设胆" };
+      }
+      const curBankers = (
+        state.passSpec.bankerMatchIds ??
+        manualRep.bankerMatchIds ??
+        []
+      ).filter((id) => distinctIds.includes(id));
+
+      if (curBankers.includes(matchId)) {
+        const nextBankers = curBankers.filter((id) => id !== matchId);
+        const curFreeSizes =
+          state.passSpec.mode === "free" &&
+          Array.isArray(state.passSpec.passSizes)
+            ? state.passSpec.passSizes.filter((s) => s >= 2)
+            : manualRep.activePassSizes.filter((s) => s >= 2);
+        state = {
+          ...state,
+          planSpec: null,
+          passSpec:
+            curFreeSizes.length > 0
+              ? {
+                  mode: "free",
+                  passSizes: curFreeSizes,
+                  ...(nextBankers.length > 0
+                    ? { bankerMatchIds: nextBankers }
+                    : {}),
+                }
+              : { mode: "auto" },
+        };
+        emit();
+        void scheduleRefresh();
+        return { ok: true, isBanker: false };
+      }
+
+      const poolCap = Math.min(8, manualRep.poolCap || 8, distinctIds.length);
+      let nextPassSizes: number[] = [];
+      if (
+        state.passSpec.mode === "free" &&
+        Array.isArray(state.passSpec.passSizes)
+      ) {
+        const multiOnly = state.passSpec.passSizes.filter(
+          (s) => s >= 2 && s <= poolCap
+        );
+        if (
+          multiOnly.length > 0 &&
+          !(multiOnly.length === 1 && multiOnly[0] === distinctIds.length)
+        ) {
+          nextPassSizes = multiOnly;
+        }
+      }
+      if (nextPassSizes.length === 0) {
+        const defaultLowPass = Math.max(
+          2,
+          Math.min(poolCap, distinctIds.length - 1)
+        );
+        nextPassSizes = [defaultLowPass];
+      }
+
+      const minPass = Math.min(...nextPassSizes);
+      const maxBankers =
+        minPass >= 2 ? Math.min(distinctIds.length - 1, minPass - 1) : 0;
+      if (maxBankers <= 0) {
+        return {
+          ok: false,
+          reason: "当前最小过关数不支持设胆（2串1最多设1胆，3串1最多设2胆）",
+        };
+      }
+      if (curBankers.length >= maxBankers) {
+        return {
+          ok: false,
+          reason: `当前最低 ${minPass}串1 最多可设 ${maxBankers} 场胆码`,
+        };
+      }
+
+      const nextBankers = [...curBankers, matchId];
+      state = {
+        ...state,
+        planSpec: null,
+        passSpec: {
+          mode: "free",
+          passSizes: nextPassSizes,
+          bankerMatchIds: nextBankers,
+        },
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true, isBanker: true };
+    },
+
+    applyBridgeCandidate(cand: BridgeMatchCandidate): TogglePickVerdict {
+      const m = state.matches.find((x) => x.id === cand.matchId);
+      if (!m) {
+        return { ok: false, blockedReason: "未找到该配菜赛事" };
+      }
+      if (isPicked(cand.matchId, cand.poolCode, cand.optionKey)) {
+        return {
+          ok: true,
+          action: "added",
+          optionLabel: cand.optionLabel,
+          odds: cand.odds,
+        };
+      }
+      return this.togglePick(m, cand.poolCode, cand.optionKey);
+    },
+
+    upgradeBonusToBreakeven(): {
+      ok: boolean;
+      upgradedCost?: number;
+      reason?: string;
+    } {
+      const manualRep = state.workspace.manualReport;
+      const breakevenCost =
+        state.workspace.appliedPlan?.breakevenUpgradeCost ??
+        manualRep.breakevenUpgradeCost;
+      if (
+        !manualRep.canCheckout ||
+        typeof breakevenCost !== "number" ||
+        breakevenCost <= 0
+      ) {
+        return { ok: false, reason: "当前选单暂无可用的保本升级门槛" };
+      }
+      const optMode: BonusOptMode =
+        state.planSpec?.kind === "bonus" ? state.planSpec.optMode : "equal";
+      const prevConsolidate =
+        state.planSpec?.kind === "bonus"
+          ? state.planSpec.consolidateTickets
+          : undefined;
+      state = {
+        ...state,
+        planSpec: {
+          kind: "bonus",
+          optMode,
+          scaleMultiple: 1,
+          upgradeToBreakeven: true,
+          ...(prevConsolidate !== undefined
+            ? { consolidateTickets: prevConsolidate }
+            : {}),
+        },
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true, upgradedCost: breakevenCost };
+    },
+
+    toggleTicketConsolidation(force?: boolean): {
+      ok: boolean;
+      consolidated: boolean;
+    } {
+      if (!state.planSpec) {
+        return { ok: false, consolidated: false };
+      }
+      const nextVal =
+        typeof force === "boolean"
+          ? force
+          : !Boolean(state.planSpec.consolidateTickets);
+      state = {
+        ...state,
+        planSpec: {
+          ...state.planSpec,
+          consolidateTickets: nextVal,
+        },
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true, consolidated: nextVal };
     },
 
     syncRadarPicksToArchetypes(): { ok: boolean; syncedCount: number } {

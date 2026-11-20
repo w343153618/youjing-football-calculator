@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   FALLBACK_MATCHES,
   calibrateMatchCoherentModel,
+  computeProOrderInsights,
   computeTruthReport,
   evaluateQuantWorkspace,
   generateParetoPortfolio,
@@ -976,6 +977,416 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
         wsTilted15.effectiveReport.subjectiveProjectedEVRate >
           wsTilted15.effectiveReport.objectiveEVRate + 0.15,
       `Expected negative objectiveEVRate (${wsTilted15.effectiveReport.objectiveEVRate}) alongside higher subjectiveProjectedEVRate (${wsTilted15.effectiveReport.subjectiveProjectedEVRate})`
+    );
+  });
+
+  it("Slice 04: supports native banker parlay (📌设胆), Top-2 bridge match finder (🌉过桥配菜搭子), shop anti-slippage (¥2 discrete swap check + 135m hedge window), and headless controller actions", async () => {
+    const { createBetSlipController } =
+      await import("../src/workspace/betSlipController.ts");
+
+    // 1. Native Banker Parlay (📌设胆):
+    //    4 matches: Match 0 single-pick banker (1), Matches 1..3 double-pick trailers (2, 2, 2) under 3串1:
+    //    Without banker: C(3,2)*1*4 + 1*(2*2*2) = 12 + 8 = 20 bets (¥40 at 1x)
+    //    With Match 0 as banker: must include Match 0 + any 2 of 3 trailers = 3 * (2*2) = 12 bets (¥24 at 1x)!
+    const fourMatches = (FALLBACK_MATCHES as MatchItem[]).slice(0, 4);
+    const bankerSlipPicks: SelectedPick[] = [
+      makePick(fourMatches[0], "HAD", "h"),
+      makePick(fourMatches[1], "HAD", "h"),
+      makePick(fourMatches[1], "HAD", "d"),
+      makePick(fourMatches[2], "HAD", "h"),
+      makePick(fourMatches[2], "HAD", "d"),
+      makePick(fourMatches[3], "HAD", "h"),
+      makePick(fourMatches[3], "HAD", "d"),
+    ];
+
+    const repNoBanker = computeTruthReport(bankerSlipPicks, 1, fourMatches, {
+      mode: "free",
+      passSizes: [3],
+    });
+    assert.equal(repNoBanker.betCount, 20);
+    assert.equal(repNoBanker.modeLabel, "3串1");
+
+    const repWithBanker = computeTruthReport(bankerSlipPicks, 1, fourMatches, {
+      mode: "free",
+      passSizes: [3],
+      bankerMatchIds: [fourMatches[0].id],
+    } as any) as any;
+    assert.equal(
+      repWithBanker.betCount,
+      12,
+      `Expected 12 bets with 1 banker on 4-match 3串1, got ${repWithBanker.betCount}`
+    );
+    assert.equal(repWithBanker.totalCost, 24);
+    assert.equal(repWithBanker.modeLabel, "3串1(1胆)");
+    assert.deepEqual(repWithBanker.bankerMatchIds, [fourMatches[0].id]);
+    assert.equal(repWithBanker.tickets.length, 12);
+    for (const tk of repWithBanker.tickets) {
+      assert.ok(
+        tk.legs.some((lg: any) => lg.matchId === fourMatches[0].id),
+        `Every expanded ticket must contain banker match ${fourMatches[0].id}, got ${tk.desc}`
+      );
+    }
+
+    // Over-2048 banker pre-count still blocks explicitly without silent truncation
+    const eightMatches = Array.from({ length: 8 }, (_, idx) => ({
+      ...(FALLBACK_MATCHES[idx % FALLBACK_MATCHES.length] as MatchItem),
+      id: `s4-8m-${idx}`,
+      matchNumStr: `周六00${idx + 1}`,
+    }));
+    const massiveBankerPicks = eightMatches.flatMap((m, idx) =>
+      idx === 0
+        ? [makePick(m, "CRS", "1:0"), makePick(m, "CRS", "2:0")]
+        : [
+            makePick(m, "TTG", "s0"),
+            makePick(m, "TTG", "s1"),
+            makePick(m, "TTG", "s2"),
+            makePick(m, "TTG", "s3"),
+            makePick(m, "TTG", "s4"),
+          ]
+    );
+    const repOver2048Banker = computeTruthReport(
+      massiveBankerPicks,
+      1,
+      eightMatches,
+      {
+        mode: "free",
+        passSizes: [4],
+        bankerMatchIds: [eightMatches[0].id],
+      } as any
+    );
+    // 2 * C(7, 3) * 5^3 = 2 * 35 * 125 = 8,750 > 2,048 -> must block explicitly!
+    assert.equal(repOver2048Banker.canCheckout, false);
+    assert.equal(repOver2048Banker.betCount, 8750);
+
+    // 2. Minimum-Vig Bridge Match Finder (🌉过桥配菜搭子):
+    //    Single non-single match picked -> insights.bridgeCandidates returns Top 2 distinct candidates
+    //    (1: lowest-vig steady favorite >= 48%, 2: staggered-hedge >= 135m with single-open opposite pool)
+    const bridgeSlate: MatchItem[] = [
+      {
+        ...(FALLBACK_MATCHES[0] as MatchItem),
+        id: "20261121-001",
+        matchNumStr: "周六001",
+        kickoff: "19:35",
+        pools: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools,
+          HAD: {
+            ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAD,
+            single: false,
+            selling: true,
+            options: [
+              { key: "h", label: "主胜", odds: 2.05, trend: 0, fairProb: 0.44 },
+              { key: "d", label: "平", odds: 3.35, trend: 0, fairProb: 0.27 },
+              { key: "a", label: "客胜", odds: 3.15, trend: 0, fairProb: 0.29 },
+            ],
+          },
+        },
+      },
+      {
+        ...(FALLBACK_MATCHES[1] as MatchItem),
+        id: "20261121-002",
+        matchNumStr: "周六002",
+        kickoff: "20:00", // Only 25m gap -> cannot hedge, but ultra-low vig steady favorite!
+        pools: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+          HAD: {
+            ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+            single: false,
+            selling: true,
+            options: [
+              {
+                key: "h",
+                label: "主胜",
+                odds: 1.48,
+                trend: 0,
+                fairProb: 0.625,
+              }, // O*p = 0.925!
+              { key: "d", label: "平", odds: 4.1, trend: 0, fairProb: 0.215 },
+              { key: "a", label: "客胜", odds: 5.6, trend: 0, fairProb: 0.16 },
+            ],
+          },
+        },
+      },
+      {
+        ...(FALLBACK_MATCHES[2] as MatchItem),
+        id: "20261121-003",
+        matchNumStr: "周六003",
+        kickoff: "23:00", // 205m gap (>= 135m!) AND HHAD(-1) single: true for complementary hedge!
+        pools: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools,
+          HAD: {
+            ...(FALLBACK_MATCHES[2] as MatchItem).pools.HAD,
+            single: false,
+            selling: true,
+            options: [
+              { key: "h", label: "主胜", odds: 1.72, trend: 0, fairProb: 0.52 },
+              { key: "d", label: "平", odds: 3.55, trend: 0, fairProb: 0.25 },
+              { key: "a", label: "客胜", odds: 4.15, trend: 0, fairProb: 0.23 },
+            ],
+          },
+          HHAD: {
+            ...(FALLBACK_MATCHES[2] as MatchItem).pools.HHAD,
+            single: true,
+            selling: true,
+            goalLine: "-1",
+            name: "让球(-1)",
+            options: [
+              { key: "hh", label: "让胜", odds: 3.1, trend: 0, fairProb: 0.28 },
+              {
+                key: "hd",
+                label: "让平",
+                odds: 3.45,
+                trend: 0,
+                fairProb: 0.24,
+              },
+              {
+                key: "ha",
+                label: "让负",
+                odds: 1.91,
+                trend: 0,
+                fairProb: 0.48,
+              },
+            ],
+          },
+        },
+      },
+    ];
+
+    const singleBlockedPick = [makePick(bridgeSlate[0], "HAD", "h")];
+    const wsBridgeBlocked = evaluateQuantWorkspace(
+      {
+        picks: singleBlockedPick,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: [bridgeSlate[0].id],
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      bridgeSlate
+    ) as any;
+    assert.equal(wsBridgeBlocked.manualReport.canCheckout, false);
+    const bridgeCands = wsBridgeBlocked.insights.bridgeCandidates;
+    assert.ok(
+      Array.isArray(bridgeCands) && bridgeCands.length === 2,
+      `Expected Top 2 bridgeCandidates when 1 non-single match is blocked, got ${JSON.stringify(bridgeCands)}`
+    );
+    assert.equal(bridgeCands[0].kind, "lowest-vig");
+    assert.equal(bridgeCands[0].matchId, "20261121-002");
+    assert.equal(bridgeCands[1].kind, "staggered-hedge");
+    assert.equal(bridgeCands[1].matchId, "20261121-003");
+    assert.ok(bridgeCands[1].gapMinutes >= 135);
+
+    // 3. Shop Anti-Slippage Suite:
+    //    (a) Staggered hedge requires >= 135m safe window; 120m gap in [110, 135) warns about stoppage-time / early-close risk!
+    const critical120Late: MatchItem = {
+      ...bridgeSlate[2],
+      id: "20261121-004",
+      matchNumStr: "周六004",
+      kickoff: "21:35", // Exactly 120m after 19:35 -> in [110, 135) danger zone!
+    };
+    const picks120 = [
+      makePick(bridgeSlate[0], "HAD", "h"),
+      makePick(critical120Late, "HAD", "h"),
+    ];
+    const rep120 = computeTruthReport(picks120, 5, [
+      bridgeSlate[0],
+      critical120Late,
+    ]);
+    const ins120 = computeProOrderInsights(picks120, rep120, [
+      bridgeSlate[0],
+      critical120Late,
+    ]);
+    assert.equal(
+      ins120.hedge.available,
+      false,
+      "120m kickoff gap must NOT mark staggered hedge available (requires >= 135m safe window)"
+    );
+    assert.equal(ins120.hedge.gapMinutes, 120);
+    assert.ok(
+      ins120.hedge.reason.includes("135") &&
+        (ins120.hedge.reason.includes("补时") ||
+          ins120.hedge.reason.includes("停售")),
+      `Expected stoppage-time/135m warning on 120m gap, got: ${ins120.hedge.reason}`
+    );
+
+    // 205m gap (>= 135m) on bridgeSlate[0] + bridgeSlate[2] MUST be available!
+    const picks205 = [
+      makePick(bridgeSlate[0], "HAD", "h"),
+      makePick(bridgeSlate[2], "HAD", "h"),
+    ];
+    const rep205 = computeTruthReport(picks205, 5, [
+      bridgeSlate[0],
+      bridgeSlate[2],
+    ]);
+    const ins205 = computeProOrderInsights(picks205, rep205, [
+      bridgeSlate[0],
+      bridgeSlate[2],
+    ]);
+    assert.equal(ins205.hedge.available, true);
+    assert.equal(ins205.hedge.gapMinutes, 205);
+
+    //    (b) Discrete ¥2 integer-note check on activeSwapTip:
+    //        HAD d@3.30 + a@2.85 (synDouble = 1.529) vs HHAD(-1) ha@1.49 (+2.6% continuous edge):
+    //        For N <= 10 notes (<= ¥20), NO integer split beats ha@1.49 worst payout -> activeSwapTip MUST be null!
+    //        At N = 12 notes (¥24, split 5+6=11 notes <= 12: min(5*6.60, 6*5.70)=33.00 > 11*2.98=32.78), activeSwapTip unlocks!
+    const discreteTrapMatch: MatchItem = {
+      ...bridgeSlate[2],
+      id: "20261121-005",
+      pools: {
+        ...bridgeSlate[2].pools,
+        HAD: {
+          ...bridgeSlate[2].pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.35, trend: 0, fairProb: 0.39 },
+            { key: "d", label: "平", odds: 3.3, trend: 0, fairProb: 0.28 },
+            { key: "a", label: "客胜", odds: 2.85, trend: 0, fairProb: 0.33 },
+          ],
+        },
+        HHAD: {
+          ...bridgeSlate[2].pools.HHAD,
+          single: true,
+          selling: true,
+          goalLine: "-1",
+          options: [
+            { key: "hh", label: "让胜", odds: 4.8, trend: 0, fairProb: 0.18 },
+            { key: "hd", label: "让平", odds: 3.75, trend: 0, fairProb: 0.21 },
+            { key: "ha", label: "让负", odds: 1.49, trend: 0, fairProb: 0.61 },
+          ],
+        },
+      },
+    };
+    const trapPicks = [makePick(discreteTrapMatch, "HHAD", "ha")];
+    const repSmall5 = computeTruthReport(trapPicks, 5, [discreteTrapMatch]); // ¥10 (5 notes)
+    const insSmall5 = computeProOrderInsights(trapPicks, repSmall5, [
+      discreteTrapMatch,
+    ]);
+    assert.equal(
+      insSmall5.activeSwapTip,
+      null,
+      "At ¥10 (5 notes), discrete ¥2 rounding makes HAD[d+a] strictly worse than HHAD ha@1.49 -> must suppress activeSwapTip"
+    );
+
+    const repEnough12 = computeTruthReport(trapPicks, 12, [discreteTrapMatch]); // ¥24 (12 notes >= 11 threshold)
+    const insEnough12 = computeProOrderInsights(trapPicks, repEnough12, [
+      discreteTrapMatch,
+    ]);
+    assert.ok(
+      insEnough12.activeSwapTip !== null &&
+        insEnough12.activeSwapTip.betterPicks.length === 2,
+      "At ¥24 (12 notes), integer split (5,6) strictly dominates 11 notes of ha@1.49 -> activeSwapTip unlocks"
+    );
+
+    // 4. Headless BetSlipController (Seam 2):
+    //    - applyBridgeCandidate turns 1-match blocked slip into legal 2串1
+    //    - toggleBankerMatch auto-enables low free pass & cuts bets, and prunes cleanly on match removal
+    //    - upgradeBonusToBreakeven & toggleTicketConsolidation work end-to-end
+    const ctrl = createBetSlipController({
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+      debounceMs: 0,
+    }) as any;
+    ctrl.applyAuthenticatedBundle({
+      matches: [...bridgeSlate, fourMatches[3]],
+      initialPicks: singleBlockedPick,
+      workspace: wsBridgeBlocked,
+    });
+    assert.equal(ctrl.getState().workspace.manualReport.canCheckout, false);
+
+    const bridgeVerdict = ctrl.applyBridgeCandidate(bridgeCands[0]);
+    assert.equal(bridgeVerdict.ok, true);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.manualReport.canCheckout, true);
+    assert.equal(ctrl.getState().workspace.manualReport.modeLabel, "2串1");
+    assert.equal(ctrl.getState().workspace.insights.bridgeCandidates.length, 0);
+
+    // Add 2 more matches (total 4 matches) with double-picks on trailers, then toggleBankerMatch on bridgeSlate[0]
+    ctrl.togglePick(bridgeSlate[2], "HAD", "h");
+    ctrl.togglePick(bridgeSlate[2], "HAD", "d");
+    ctrl.togglePick(fourMatches[3], "HAD", "h");
+    ctrl.togglePick(fourMatches[3], "HAD", "d");
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.manualReport.matchCount, 4);
+
+    const bankerToggleOn = ctrl.toggleBankerMatch(bridgeSlate[0].id);
+    assert.equal(bankerToggleOn.ok, true);
+    assert.equal(bankerToggleOn.isBanker, true);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.manualReport.modeLabel, "3串1(1胆)");
+    assert.deepEqual(ctrl.getState().workspace.manualReport.bankerMatchIds, [
+      bridgeSlate[0].id,
+    ]);
+
+    // Removing the banker match from slip prunes bankerMatchIds cleanly
+    ctrl.removeMatchFromSlip(bridgeSlate[0].id);
+    await ctrl.flush();
+    assert.deepEqual(
+      ctrl.getState().workspace.manualReport.bankerMatchIds ?? [],
+      []
+    );
+
+    // Test upgradeBonusToBreakeven & toggleTicketConsolidation on 27-bet feasible slip
+    const three27: MatchItem[] = [0, 1, 2].map((idx) => ({
+      ...(FALLBACK_MATCHES[idx] as MatchItem),
+      id: `s4-feas27-${idx}`,
+      pools: {
+        ...(FALLBACK_MATCHES[idx] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[idx] as MatchItem).pools.HAD,
+          selling: true,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: 2.15, trend: 0, fairProb: 0.43 },
+            { key: "d", label: "平", odds: 3.6, trend: 0, fairProb: 0.29 },
+            { key: "a", label: "客胜", odds: 4.6, trend: 0, fairProb: 0.28 },
+          ],
+        },
+      },
+    }));
+    const picks27 = three27.flatMap((m) =>
+      m.pools.HAD.options.map((o) => makePick(m, "HAD", o.key))
+    );
+    ctrl.applyAuthenticatedBundle({
+      matches: three27,
+      initialPicks: picks27,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: picks27,
+          multiple: 1,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: three27.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        three27
+      ),
+    });
+    ctrl.setDirectMultiple(1);
+    await ctrl.flush();
+    ctrl.applyBonusOptimization("equal");
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.effectiveReport.totalCost, 54);
+    assert.ok(ctrl.getState().workspace.effectiveReport.underwaterCount > 0);
+
+    const upg = ctrl.upgradeBonusToBreakeven();
+    assert.equal(upg.ok, true);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.effectiveReport.underwaterCount, 0);
+    assert.ok(ctrl.getState().workspace.effectiveReport.totalCost > 54);
+
+    const consOn = ctrl.toggleTicketConsolidation();
+    assert.equal(consOn.ok, true);
+    assert.equal(consOn.consolidated, true);
+    await ctrl.flush();
+    assert.equal(
+      ctrl.getState().workspace.appliedPlan?.consolidateTickets,
+      true
     );
   });
 });

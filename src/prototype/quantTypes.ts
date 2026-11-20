@@ -134,6 +134,7 @@ export type PassSelectionSpec = {
   mode: "auto" | "free" | "combo";
   passSizes?: number[];
   comboCode?: string;
+  bankerMatchIds?: string[];
 };
 
 export interface FreePassOption {
@@ -168,6 +169,7 @@ export interface TruthReport {
   poolCap: number;
   activePassSizes: number[];
   activeComboCode: string | null;
+  bankerMatchIds?: string[];
   availableFreePasses: FreePassOption[];
   availableComboPasses: ComboPassOption[];
   hasSameMatchCrossPoolConflict: boolean;
@@ -285,12 +287,32 @@ export interface WeakestLinkTip {
   message: string;
 }
 
+export interface BridgeMatchCandidate {
+  kind: "lowest-vig" | "staggered-hedge";
+  badge: string;
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  poolCode: PoolCode;
+  poolName: string;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  fairProb: number;
+  singleLegReturnRate: number;
+  gapMinutes: number | null;
+  reason: string;
+}
+
 export interface ProOrderInsights {
   hedge: StaggeredHedgePlan;
   weakestLink: WeakestLinkTip | null;
   fiveLossStreakProb: number;
   recommendedBankrollPct: number;
   activeSwapTip: EquivalentArbItem | null;
+  bridgeCandidates: BridgeMatchCandidate[];
 }
 
 export type AppliedPlanSpec =
@@ -348,6 +370,7 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   poolCap: 8,
   activePassSizes: [],
   activeComboCode: null,
+  bankerMatchIds: [],
   availableFreePasses: [],
   availableComboPasses: [],
   hasSameMatchCrossPoolConflict: false,
@@ -393,12 +416,13 @@ export const EMPTY_INSIGHTS: ProOrderInsights = {
     oppositeOdds: 1.85,
     hedgeCost: 0,
     lockedNetProfit: 0,
-    reason: "需至少选择 2 场且开球时间间隔 ≥ 110 分钟",
+    reason: "需至少选择 2 场且开球时间间隔 ≥ 135 分钟",
   },
   weakestLink: null,
   fiveLossStreakProb: 0,
   recommendedBankrollPct: 5,
   activeSwapTip: null,
+  bridgeCandidates: [],
 };
 
 export const EMPTY_WORKSPACE_RESPONSE: QuantWorkspaceResponse = {
