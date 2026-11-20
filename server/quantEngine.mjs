@@ -2600,6 +2600,143 @@ function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
   };
 }
 
+function executeBilinearMitmStripJoin(
+  leftStates,
+  rightZero,
+  rightHit,
+  strips,
+  canFastBulkStats,
+  metricsOnly,
+  totalCostCents,
+  refScale,
+  minCrossErr,
+  maxCrossErr,
+  bProb,
+  bExpPay,
+  bExpUnit,
+  bExpClip,
+  bMinC,
+  bMaxC,
+  bBestP,
+  binIndexOf,
+  writeRepState,
+  evalExactCross,
+  addExactPairToBin
+) {
+  for (let u = 0; u < leftStates.length; u++) {
+    const L = leftStates[u];
+    for (let z = 0; z < rightZero.length; z++) {
+      const R = rightZero[z];
+      if (L.intra + R.intra > 0) {
+        addExactPairToBin(
+          L,
+          R,
+          L.intra + R.intra,
+          L.uIntra + R.uIntra,
+          L.cIntra + R.cIntra
+        );
+      }
+    }
+    if (rightHit.length === 0) continue;
+    if (L.hits === 0) {
+      for (let v = 0; v < rightHit.length; v++) {
+        const R = rightHit[v];
+        if (L.intra + R.intra > 0) {
+          addExactPairToBin(
+            L,
+            R,
+            L.intra + R.intra,
+            L.uIntra + R.uIntra,
+            L.cIntra + R.cIntra
+          );
+        }
+      }
+      continue;
+    }
+
+    for (let s = 0; s < strips.length; s++) {
+      const st = strips[s];
+      const lb =
+        L.intra +
+        st.minIntra +
+        Math.floor(refScale * L.sumO * st.minSumO + minCrossErr);
+      const ub =
+        L.intra +
+        st.maxIntra +
+        Math.ceil(refScale * L.sumO * st.maxSumO + maxCrossErr);
+      if (ub <= 0) continue;
+
+      if (
+        canFastBulkStats &&
+        ((lb > 0 && ub < totalCostCents) || lb > totalCostCents)
+      ) {
+        const lp = L.prob * st.pSum;
+        const b = binIndexOf(lb);
+        bProb[b] += lp;
+        const expPayBlock =
+          L.prob *
+          (st.pSum * L.intra +
+            st.sumProbIntra +
+            refScale * L.sumO * st.sumProbSumO);
+        bExpPay[b] += expPayBlock;
+        if (lb < bMinC[b]) bMinC[b] = Math.max(1, lb);
+        if (ub > bMaxC[b]) bMaxC[b] = ub;
+        if (!metricsOnly) {
+          bExpUnit[b] +=
+            L.prob *
+            (st.pSum * L.uIntra +
+              st.sumProbUIntra +
+              200 * L.sumO * st.sumProbSumO);
+          bExpClip[b] += L.prob * (st.pSum * L.cIntra + st.sumProbCIntra);
+          const repP = L.prob * st.bestR.prob;
+          if (repP > bBestP[b]) {
+            bBestP[b] = repP;
+            writeRepState(b, L, st.bestR);
+          }
+        }
+        continue;
+      }
+
+      const sub = st.sub;
+      for (let v = 0; v < sub.length; v++) {
+        const R = sub[v];
+        const baseApprox = L.intra + R.intra + refScale * L.sumO * R.sumO;
+        const pairLb = Math.floor(baseApprox + minCrossErr);
+        const pairUb = Math.ceil(baseApprox + maxCrossErr);
+        if (pairUb <= 0) continue;
+        if (
+          canFastBulkStats &&
+          ((pairLb > 0 && pairUb < totalCostCents) || pairLb > totalCostCents)
+        ) {
+          const lp = L.prob * R.prob;
+          const b = binIndexOf(pairLb);
+          bProb[b] += lp;
+          bExpPay[b] += lp * baseApprox;
+          if (pairLb < bMinC[b]) bMinC[b] = Math.max(1, pairLb);
+          if (pairUb > bMaxC[b]) bMaxC[b] = pairUb;
+          if (!metricsOnly) {
+            bExpUnit[b] += lp * (L.uIntra + R.uIntra + 200 * L.sumO * R.sumO);
+            bExpClip[b] += lp * (L.cIntra + R.cIntra);
+            if (lp > bBestP[b]) {
+              bBestP[b] = lp;
+              writeRepState(b, L, R);
+            }
+          }
+        } else {
+          const [cPay, cUnit, cClip] = evalExactCross(L, R);
+          addExactPairToBin(
+            L,
+            R,
+            L.intra + R.intra + cPay,
+            L.uIntra + R.uIntra + cUnit,
+            L.cIntra + R.cIntra + cClip
+          );
+        }
+      }
+    }
+  }
+}
+
 function evaluateTicketsOnQuotientSpace(
   ticketRows,
   totalCost,
@@ -4073,118 +4210,29 @@ function evaluateTicketsOnQuotientSpace(
     const canFastBulkStats =
       metricsOnly || (maxCrossUnitDiff <= 1.0 && maxCrossClipVal === 0);
 
-    for (let u = 0; u < leftStates.length; u++) {
-      const L = leftStates[u];
-      for (let z = 0; z < rightZero.length; z++) {
-        const R = rightZero[z];
-        if (L.intra + R.intra > 0) {
-          addExactPairToBin(
-            L,
-            R,
-            L.intra + R.intra,
-            L.uIntra + R.uIntra,
-            L.cIntra + R.cIntra
-          );
-        }
-      }
-      if (rightHit.length === 0) continue;
-      if (L.hits === 0) {
-        for (let v = 0; v < rightHit.length; v++) {
-          const R = rightHit[v];
-          if (L.intra + R.intra > 0) {
-            addExactPairToBin(
-              L,
-              R,
-              L.intra + R.intra,
-              L.uIntra + R.uIntra,
-              L.cIntra + R.cIntra
-            );
-          }
-        }
-        continue;
-      }
-
-      for (let s = 0; s < strips.length; s++) {
-        const st = strips[s];
-        const lb =
-          L.intra +
-          st.minIntra +
-          Math.floor(refScale * L.sumO * st.minSumO + minCrossErr);
-        const ub =
-          L.intra +
-          st.maxIntra +
-          Math.ceil(refScale * L.sumO * st.maxSumO + maxCrossErr);
-        if (ub <= 0) continue;
-
-        if (
-          canFastBulkStats &&
-          ((lb > 0 && ub < totalCostCents) || lb > totalCostCents)
-        ) {
-          const lp = L.prob * st.pSum;
-          const b = lb < totalCostCents ? binIndexOf(lb) : binIndexOf(lb);
-          bProb[b] += lp;
-          const expPayBlock =
-            L.prob *
-            (st.pSum * L.intra +
-              st.sumProbIntra +
-              refScale * L.sumO * st.sumProbSumO);
-          bExpPay[b] += expPayBlock;
-          if (lb < bMinC[b]) bMinC[b] = Math.max(1, lb);
-          if (ub > bMaxC[b]) bMaxC[b] = ub;
-          if (!metricsOnly) {
-            bExpUnit[b] +=
-              L.prob *
-              (st.pSum * L.uIntra +
-                st.sumProbUIntra +
-                200 * L.sumO * st.sumProbSumO);
-            bExpClip[b] += L.prob * (st.pSum * L.cIntra + st.sumProbCIntra);
-            const repP = L.prob * st.bestR.prob;
-            if (repP > bBestP[b]) {
-              bBestP[b] = repP;
-              writeRepState(b, L, st.bestR);
-            }
-          }
-          continue;
-        }
-
-        const sub = st.sub;
-        for (let v = 0; v < sub.length; v++) {
-          const R = sub[v];
-          const baseApprox = L.intra + R.intra + refScale * L.sumO * R.sumO;
-          const pairLb = Math.floor(baseApprox + minCrossErr);
-          const pairUb = Math.ceil(baseApprox + maxCrossErr);
-          if (pairUb <= 0) continue;
-          if (
-            canFastBulkStats &&
-            ((pairLb > 0 && pairUb < totalCostCents) || pairLb > totalCostCents)
-          ) {
-            const lp = L.prob * R.prob;
-            const b = binIndexOf(pairLb);
-            bProb[b] += lp;
-            bExpPay[b] += lp * baseApprox;
-            if (pairLb < bMinC[b]) bMinC[b] = Math.max(1, pairLb);
-            if (pairUb > bMaxC[b]) bMaxC[b] = pairUb;
-            if (!metricsOnly) {
-              bExpUnit[b] += lp * (L.uIntra + R.uIntra + 200 * L.sumO * R.sumO);
-              bExpClip[b] += lp * (L.cIntra + R.cIntra);
-              if (lp > bBestP[b]) {
-                bBestP[b] = lp;
-                writeRepState(b, L, R);
-              }
-            }
-          } else {
-            const [cPay, cUnit, cClip] = evalExactCross(L, R);
-            addExactPairToBin(
-              L,
-              R,
-              L.intra + R.intra + cPay,
-              L.uIntra + R.uIntra + cUnit,
-              L.cIntra + R.cIntra + cClip
-            );
-          }
-        }
-      }
-    }
+    executeBilinearMitmStripJoin(
+      leftStates,
+      rightZero,
+      rightHit,
+      strips,
+      canFastBulkStats,
+      metricsOnly,
+      totalCostCents,
+      refScale,
+      minCrossErr,
+      maxCrossErr,
+      bProb,
+      bExpPay,
+      bExpUnit,
+      bExpClip,
+      bMinC,
+      bMaxC,
+      bBestP,
+      binIndexOf,
+      writeRepState,
+      evalExactCross,
+      addExactPairToBin
+    );
 
     // Exact global minPayout & maxPayout search seeded with min-odds / max-odds corners (<0.05ms, 0-cent error!)
     if (rightHit.length > 0 && leftStates.length > 0) {
