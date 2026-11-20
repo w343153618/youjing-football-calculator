@@ -1,6 +1,6 @@
 # Spec 0011: 跨语言盲审精算精度收口、法定单关对冲门禁与零诱导诚实披露升级（Blind-Audit Actuarial Precision, Statutory Hedge Gate & Zero-Inducement Honesty Remediation）
 
-Status: `ready-for-agent`
+Status: `completed`
 Baseline Anchor: `docs/specs/0000-baseline-spec.md`, `docs/specs/0009-red-team-remediation-and-real-oos-closure.md` & `docs/specs/0010-guided-123-workflow-tactile-flip-ui-and-actuary-intel-synergy.md`
 Related ADRs: `ADR-0007`, `ADR-0008`, `ADR-0009`, `ADR-0010`, `ADR-0011`, `ADR-0012`
 Canonical Vocabulary: `GLOSSARY.md`

@@ -1,5 +1,7 @@
 import {
   EMPTY_WORKSPACE_RESPONSE,
+  SUBJECTIVE_DELTA_MAX,
+  SUBJECTIVE_DELTA_MIN,
   type AppliedPlanSpec,
   type ArchetypePlan,
   type BonusOptMode,
@@ -1655,12 +1657,22 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       if (manualRep.combos.length === 0 && manualRep.betCount === 0) {
         return { ok: false };
       }
-      const lineCount = manualRep.tickets?.length ?? manualRep.betCount;
+      const lineCount = Math.max(
+        manualRep.tickets?.length ?? 0,
+        manualRep.betCount
+      );
       if (lineCount > 512) {
         return {
           ok: false,
           blockedReason:
             "当前复式超出 512 注线下逐票分倍上限，请精简包号或改用【3+1 精算配单】",
+        };
+      }
+      if (!manualRep.canCheckout) {
+        return {
+          ok: false,
+          blockedReason:
+            manualRep.ruleBlockReason || "当前选单暂不满足合法出票条件",
         };
       }
       state = {
@@ -1808,11 +1820,35 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       ) {
         return false;
       }
-      const estBetCount =
-        Math.max(1, state.workspace.manualReport.betCount || 1) *
-        Math.max(1, arb.betterPicks.length);
+      const perMatchCounts = new Map<string, number>();
+      for (const pk of nextPicks) {
+        perMatchCounts.set(
+          pk.matchId,
+          (perMatchCounts.get(pk.matchId) ?? 0) + 1
+        );
+      }
+      const countArr = Array.from(perMatchCounts.values());
+      const activeSizes =
+        state.workspace.manualReport.activePassSizes.length > 0
+          ? state.workspace.manualReport.activePassSizes
+          : [Math.min(8, countArr.length)];
+      const maxPassSize = Math.min(
+        countArr.length,
+        Math.max(0, ...activeSizes)
+      );
+      const elemDp = new Float64Array(maxPassSize + 1);
+      elemDp[0] = 1;
+      for (const c of countArr) {
+        for (let s = maxPassSize; s >= 1; s--) {
+          elemDp[s] += elemDp[s - 1] * c;
+        }
+      }
+      const estBetCount = activeSizes.reduce(
+        (sum, s) => sum + (s <= maxPassSize ? elemDp[s] : 0),
+        0
+      );
       const nextPlanSpec: AppliedPlanSpec =
-        arb.betterPicks.length >= 2 && estBetCount <= 512
+        arb.betterPicks.length >= 2 && estBetCount > 0 && estBetCount <= 512
           ? { kind: "bonus", optMode: "equal", scaleMultiple: 1 }
           : null;
       state = {
@@ -1922,7 +1958,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     setSubjectiveDeltaPct(val: number) {
-      const clamped = Math.max(-15, Math.min(15, Math.round(Number(val) || 0)));
+      const clamped = Math.max(
+        SUBJECTIVE_DELTA_MIN,
+        Math.min(SUBJECTIVE_DELTA_MAX, Math.round(Number(val) || 0))
+      );
       state = { ...state, subjectiveDeltaPct: clamped };
       emit();
       void scheduleRefresh();

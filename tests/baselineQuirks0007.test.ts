@@ -645,7 +645,8 @@ describe("Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
     assert.equal(insHadD.hedge.available, true);
     const expectedHA = 1 / (1 / 2.4 + 1 / 2.7); // 6.48 / 5.10
     assert.ok(Math.abs(insHadD.hedge.oppositeOdds - expectedHA) < 1e-9);
-    assert.equal(insHadD.hedge.hedgeCost, 108);
+    // Exact physical ¥2 integer pair split (Spec 0011): 28 notes on h@2.40 (¥56 -> ¥134.40) + 25 notes on a@2.70 (¥50 -> ¥135.00) = ¥106 hedgeCost, locking min(136.40, 134.40, 135.00) - 20 - 106 = +¥8.40
+    assert.equal(insHadD.hedge.hedgeCost, 106);
     assert.equal(insHadD.hedge.lockedNetProfit, 8.4);
 
     // (d) HAD double pick [h, d] -> uses remaining 3rd option HAD a (@3.60)

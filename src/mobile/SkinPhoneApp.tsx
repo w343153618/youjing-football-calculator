@@ -7,6 +7,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import {
+  SUBJECTIVE_DELTA_MAX,
+  SUBJECTIVE_DELTA_MIN,
   type ArchetypePlan,
   type BonusOptMode,
   type EquivalentArbItem,
@@ -693,6 +695,12 @@ export function SkinPhoneApp({
 
   const manualReport = workspace.manualReport;
   const effectiveReport = workspace.effectiveReport;
+  const manualBonusLineCount = Math.max(
+    manualReport.tickets?.length ?? 0,
+    manualReport.betCount
+  );
+  const isBonusOver512 = manualBonusLineCount > 512;
+  const isBonusOptDisabled = !manualReport.canCheckout || isBonusOver512;
   const appliedPlan = planSpec ? workspace.appliedPlan : null;
   const insights = workspace.insights;
   const allWarnings = workspace.allWarnings;
@@ -2485,10 +2493,7 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
-                        disabled={
-                          (manualReport.tickets?.length ??
-                            manualReport.betCount) > 512
-                        }
+                        disabled={isBonusOptDisabled}
                         className={`key mini ${appliedPlan?.shortTab === "平均优化" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("equal", e.currentTarget)
@@ -2499,10 +2504,7 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
-                        disabled={
-                          (manualReport.tickets?.length ??
-                            manualReport.betCount) > 512
-                        }
+                        disabled={isBonusOptDisabled}
                         className={`key mini ${appliedPlan?.shortTab === "博热保本" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("hot-first", e.currentTarget)
@@ -2513,10 +2515,7 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
-                        disabled={
-                          (manualReport.tickets?.length ??
-                            manualReport.betCount) > 512
-                        }
+                        disabled={isBonusOptDisabled}
                         className={`key mini ${appliedPlan?.shortTab === "博冷高弹" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("cold-first", e.currentTarget)
@@ -2525,8 +2524,7 @@ export function SkinPhoneApp({
                         ③ 博冷高弹
                       </button>
                     </div>
-                    {(manualReport.tickets?.length ?? manualReport.betCount) >
-                      512 && (
+                    {isBonusOver512 && (
                       <div
                         className="small"
                         style={{
@@ -2624,10 +2622,7 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
-                        disabled={
-                          (manualReport.tickets?.length ??
-                            manualReport.betCount) > 512
-                        }
+                        disabled={isBonusOptDisabled}
                         className="key mini dark"
                         onClick={(e) =>
                           upgradeToZeroUnderwater(e.currentTarget)
@@ -3044,7 +3039,10 @@ export function SkinPhoneApp({
               insights.hedge.available &&
               insights.hedge.hedgeMode === "reduce-loss"
                 ? "⚠️ 早场红单减损补单 & 主观信心/腰斩沙盒"
-                : "⏰ 早晚场对冲锁利 & 主观信心/腰斩沙盒"
+                : insights.hedge.available &&
+                    insights.hedge.hedgeMode === "break-even"
+                  ? "⚖️ 早晚场零损锁回本金 & 主观信心/腰斩沙盒"
+                  : "⏰ 早晚场对冲锁利 & 主观信心/腰斩沙盒"
             }
             summary={
               insights.hedge.available
@@ -3079,7 +3077,10 @@ export function SkinPhoneApp({
                     {insights.hedge.available &&
                     insights.hedge.hedgeMode === "reduce-loss"
                       ? "⚠️ 早场红单减损补单（非正收益）"
-                      : "⏰ 早晚场时间差对冲锁利"}
+                      : insights.hedge.available &&
+                          insights.hedge.hedgeMode === "break-even"
+                        ? "⚖️ 早晚场零损锁回本金"
+                        : "⏰ 早晚场时间差对冲锁利"}
                   </div>
                   <div className="small num">
                     {insights.hedge.available
@@ -3179,8 +3180,8 @@ export function SkinPhoneApp({
                 </div>
                 <input
                   type="range"
-                  min={-15}
-                  max={15}
+                  min={SUBJECTIVE_DELTA_MIN}
+                  max={SUBJECTIVE_DELTA_MAX}
                   step={1}
                   value={subjectiveDeltaPct}
                   onChange={(e) => {

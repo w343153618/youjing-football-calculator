@@ -2595,11 +2595,11 @@ function evaluateTicketsOnQuotientSpace(
   let prodSize = 1;
   for (let m = 0; m < M; m++) {
     prodSize *= quotientByMatch[m].length;
-    if (prodSize > 1_000_000) break;
+    if (prodSize > 1_000_000_000) break;
   }
 
-  // Case B: 9~15 pure single-pass matches -> Exact integer-cent 1D DP + mutually-exclusive payout-tier combos
-  if (M > 8 && isAllSingleTickets) {
+  // Case B: pure single-pass matches -> Exact integer-cent 1D DP + mutually-exclusive payout-tier combos
+  if (isAllSingleTickets && (M > 8 || prodSize > 65_536)) {
     const gcdInt = (a, b) => {
       let x = Math.abs(Math.trunc(a));
       let y = Math.abs(Math.trunc(b));
@@ -2996,12 +2996,63 @@ function evaluateTicketsOnQuotientSpace(
     };
   }
 
-  // Adjacent-gap quantile compression ONLY when joint states exceed 2,200,000 (keeps <= 2.2M states such as 8x5 TTG = 1.68M 100% uncompressed & exact);
-  // missStates are strictly isolated so anyWinProb stays exact, and linear EV is locked to exactExpectedReturn.
-  const EXACT_JOINT_STATE_CAP = 2_200_000;
+  // Exact Bilinear Meet-in-the-Middle for <=2,048-bet Cartesian <=2-leg single-pool-per-match slips (e.g. 8x5 / 8x6 / 8x8 TTG 2串1 up to 43M states in <10ms with 0 lossy merge);
+  // <=512-line mutually-exclusive bonus plans stay exact up to 400k states (covering 5^8 = 390,625), while untrusted <=64-line snapshotPlan inputs cap strictly at 131,072 states (<10ms DoS-safe).
+  const isMutuallyExclusivePerMatch = quotientByMatch.every((qs) =>
+    qs.every((q) => q.hitSet.size <= 1)
+  );
+  const EXACT_JOINT_STATE_CAP =
+    isMutuallyExclusivePerMatch && K > 64 && K <= 512 ? 400_000 : 131_072;
+  let maxTicketLegs = 0;
+  let twoLegCount = 0;
+  let firstTwoLegMult = -1;
+  let allTwoLegSameMult = true;
+  for (let k = 0; k < K; k++) {
+    let lc = 0;
+    for (let m = 0; m < M; m++) {
+      if (ticketOptIdx[k * M + m] >= 0) lc++;
+    }
+    if (lc > maxTicketLegs) maxTicketLegs = lc;
+    if (lc === 2) {
+      twoLegCount++;
+      const mult = Number(ticketRows[k].multiple || 1);
+      if (firstTwoLegMult < 0) firstTwoLegMult = mult;
+      else if (mult !== firstTwoLegMult) allTwoLegSameMult = false;
+    }
+  }
+  let expectedCartesianPairs = 0;
+  if (isMutuallyExclusivePerMatch && maxTicketLegs === 2) {
+    const hitCounts = quotientByMatch.map((qs) => {
+      const seen = new Set();
+      for (const q of qs) {
+        if (q.hitSet.size === 1) seen.add(q.hitSet.values().next().value);
+      }
+      return seen.size;
+    });
+    for (let i = 0; i < M; i++) {
+      for (let j = i + 1; j < M; j++) {
+        expectedCartesianPairs += hitCounts[i] * hitCounts[j];
+      }
+    }
+  }
+  const canUseExactBilinearMitm =
+    !isAllSingleTickets &&
+    isMutuallyExclusivePerMatch &&
+    M >= 2 &&
+    M <= 8 &&
+    K <= 2048 &&
+    maxTicketLegs === 2 &&
+    allTwoLegSameMult &&
+    twoLegCount > 0 &&
+    twoLegCount === expectedCartesianPairs &&
+    prodSize > EXACT_JOINT_STATE_CAP;
+
   let evalQuotient = quotientByMatch;
   let compressedPerMatch = false;
-  if (prodSize > EXACT_JOINT_STATE_CAP || (M > 8 && !isAllSingleTickets)) {
+  if (
+    !canUseExactBilinearMitm &&
+    (prodSize > EXACT_JOINT_STATE_CAP || (M > 8 && !isAllSingleTickets))
+  ) {
     compressedPerMatch = true;
     const matchBuckets = quotientByMatch.map((qStates, m) => {
       let missProb = 0;
@@ -3421,12 +3472,650 @@ function evaluateTicketsOnQuotientSpace(
   };
 
   const canUseScalarPrefixDfs =
+    !canUseExactBilinearMitm &&
     evalProdSize > 65_536 &&
     M >= 2 &&
     M <= 8 &&
     distinctOptsByMatch.every((opts) => opts.length <= 31);
 
-  if (canUseScalarPrefixDfs) {
+  if (canUseExactBilinearMitm) {
+    // Exact Bilinear Meet-in-the-Middle + Exact Rounding-Band Strip Solver (0 unequal-odds merge across <=43M states)
+    const mStates = evalQuotient.map((qs, m) => {
+      const opts = distinctOptsByMatch[m];
+      const byOpt = new Map();
+      let missP = 0;
+      for (const q of qs) {
+        if (q.hitSet.size === 0) {
+          missP += q.prob;
+        } else {
+          const jIdx = q.hitSet.values().next().value;
+          byOpt.set(jIdx, (byOpt.get(jIdx) ?? 0) + q.prob);
+        }
+      }
+      const arr = [];
+      for (const [jIdx, p] of byOpt.entries()) {
+        if (p > 0) {
+          arr.push({
+            prob: p,
+            jIdx,
+            odds: Number(opts[jIdx]?.odds || 0),
+            sglPay: 0,
+            sglUnit: 0,
+            sglClip: 0,
+          });
+        }
+      }
+      if (missP > 0) {
+        arr.push({
+          prob: missP,
+          jIdx: -1,
+          odds: 0,
+          sglPay: 0,
+          sglUnit: 0,
+          sglClip: 0,
+        });
+      }
+      return arr;
+    });
+
+    const optToStateIdx = mStates.map((st, m) => {
+      const map = new Int32Array(
+        Math.max(1, distinctOptsByMatch[m].length)
+      ).fill(-1);
+      for (let s = 0; s < st.length; s++) {
+        if (st[s].jIdx >= 0) map[st[s].jIdx] = s;
+      }
+      return map;
+    });
+
+    const pairPay = Array.from({ length: M }, (_, i) =>
+      Array.from({ length: M }, (_, j) =>
+        j > i ? new Float64Array(mStates[i].length * mStates[j].length) : null
+      )
+    );
+    const pairUnit = !metricsOnly
+      ? Array.from({ length: M }, (_, i) =>
+          Array.from({ length: M }, (_, j) =>
+            j > i
+              ? new Float64Array(mStates[i].length * mStates[j].length)
+              : null
+          )
+        )
+      : null;
+    const pairClip = !metricsOnly
+      ? Array.from({ length: M }, (_, i) =>
+          Array.from({ length: M }, (_, j) =>
+            j > i
+              ? new Float64Array(mStates[i].length * mStates[j].length)
+              : null
+          )
+        )
+      : null;
+
+    for (let k = 0; k < K; k++) {
+      let m1 = -1;
+      let j1 = -1;
+      let m2 = -1;
+      let j2 = -1;
+      for (let m = 0; m < M; m++) {
+        const jIdx = ticketOptIdx[k * M + m];
+        if (jIdx >= 0) {
+          if (m1 < 0) {
+            m1 = m;
+            j1 = jIdx;
+          } else {
+            m2 = m;
+            j2 = jIdx;
+          }
+        }
+      }
+      if (m1 >= 0 && m2 < 0) {
+        const s1 = optToStateIdx[m1][j1];
+        if (s1 >= 0) {
+          mStates[m1][s1].sglPay += rowPayCents[k];
+          if (!metricsOnly) {
+            mStates[m1][s1].sglUnit += rowUnitCents[k];
+            mStates[m1][s1].sglClip += rowClipCents[k];
+          }
+        }
+      } else if (m1 >= 0 && m2 > m1) {
+        const s1 = optToStateIdx[m1][j1];
+        const s2 = optToStateIdx[m2][j2];
+        if (s1 >= 0 && s2 >= 0) {
+          const idx = s1 * mStates[m2].length + s2;
+          pairPay[m1][m2][idx] += rowPayCents[k];
+          if (!metricsOnly) {
+            pairUnit[m1][m2][idx] += rowUnitCents[k];
+            pairClip[m1][m2][idx] += rowClipCents[k];
+          }
+        }
+      }
+    }
+
+    const ML = M >> 1;
+    const MR = M - ML;
+    const refMult =
+      K > 0 ? Math.max(1, Number(ticketRows[0].multiple || 1)) : 1;
+    const refScale = 200 * refMult;
+
+    let minCrossErr = 0;
+    let maxCrossErr = 0;
+    let maxCrossUnitDiff = 0;
+    let maxCrossClipVal = 0;
+    for (let i = 0; i < ML; i++) {
+      const stI = mStates[i];
+      for (let j = ML; j < M; j++) {
+        const stJ = mStates[j];
+        const lenJ = stJ.length;
+        const pp = pairPay[i][j];
+        let pMin = Infinity;
+        let pMax = -Infinity;
+        for (let a = 0; a < stI.length; a++) {
+          const oa = stI[a].odds;
+          const baseOff = a * lenJ;
+          for (let b = 0; b < lenJ; b++) {
+            const ob = stJ[b].odds;
+            const d = pp[baseOff + b] - refScale * oa * ob;
+            if (d < pMin) pMin = d;
+            if (d > pMax) pMax = d;
+            if (!metricsOnly) {
+              const ud = Math.abs(pairUnit[i][j][baseOff + b] - 200 * oa * ob);
+              if (ud > maxCrossUnitDiff) maxCrossUnitDiff = ud;
+              if (pairClip[i][j][baseOff + b] > maxCrossClipVal) {
+                maxCrossClipVal = pairClip[i][j][baseOff + b];
+              }
+            }
+          }
+        }
+        minCrossErr += pMin;
+        maxCrossErr += pMax;
+      }
+    }
+
+    const buildHalfStates = (startM, len) => {
+      const out = [];
+      const curIdx = new Int32Array(len);
+      const rec = (d, prob, intra, uIntra, cIntra, sumO, hits) => {
+        if (d === len) {
+          out.push({
+            prob,
+            intra,
+            uIntra,
+            cIntra,
+            sumO,
+            hits,
+            s: Int32Array.from(curIdx),
+          });
+          return;
+        }
+        const m = startM + d;
+        const st = mStates[m];
+        for (let a = 0; a < st.length; a++) {
+          const pn = prob * st[a].prob;
+          if (!(pn > 0)) continue;
+          let addPay = st[a].sglPay;
+          let addU = st[a].sglUnit;
+          let addC = st[a].sglClip;
+          const isHit = st[a].jIdx >= 0;
+          if (isHit) {
+            for (let p = 0; p < d; p++) {
+              const mPrev = startM + p;
+              const sp = curIdx[p];
+              if (mStates[mPrev][sp].jIdx >= 0) {
+                const idx = sp * st.length + a;
+                addPay += pairPay[mPrev][m][idx];
+                if (!metricsOnly) {
+                  addU += pairUnit[mPrev][m][idx];
+                  addC += pairClip[mPrev][m][idx];
+                }
+              }
+            }
+          }
+          curIdx[d] = a;
+          rec(
+            d + 1,
+            pn,
+            intra + addPay,
+            uIntra + addU,
+            cIntra + addC,
+            sumO + (isHit ? st[a].odds : 0),
+            hits + (isHit ? 1 : 0)
+          );
+        }
+      };
+      rec(0, 1, 0, 0, 0, 0, 0);
+      return out;
+    };
+
+    const leftStates = buildHalfStates(0, ML);
+    const rightStates = buildHalfStates(ML, MR);
+
+    const evalExactCross = (L, R) => {
+      let cPay = 0;
+      let cUnit = 0;
+      let cClip = 0;
+      for (let i = 0; i < ML; i++) {
+        const si = L.s[i];
+        if (mStates[i][si].jIdx < 0) continue;
+        for (let j = 0; j < MR; j++) {
+          const mR = ML + j;
+          const sj = R.s[j];
+          if (mStates[mR][sj].jIdx < 0) continue;
+          const idx = si * mStates[mR].length + sj;
+          cPay += pairPay[i][mR][idx];
+          if (!metricsOnly) {
+            cUnit += pairUnit[i][mR][idx];
+            cClip += pairClip[i][mR][idx];
+          }
+        }
+      }
+      return [cPay, cUnit, cClip];
+    };
+
+    const BINS = 96;
+    const bProb = new Float64Array(BINS);
+    const bExpPay = new Float64Array(BINS);
+    const bExpUnit = !metricsOnly ? new Float64Array(BINS) : null;
+    const bExpClip = !metricsOnly ? new Float64Array(BINS) : null;
+    const bMinC = new Float64Array(BINS).fill(Infinity);
+    const bMaxC = new Float64Array(BINS);
+    const bBestP = !metricsOnly ? new Float64Array(BINS) : null;
+    const bRepOpt = !metricsOnly ? new Int32Array(BINS * M).fill(-1) : null;
+    const invCostScale = 48 / Math.max(1, totalCostCents);
+
+    const binIndexOf = (payC) =>
+      payC < totalCostCents
+        ? Math.min(47, (payC * invCostScale) | 0)
+        : (48 +
+            Math.min(47, Math.log1p((payC - totalCostCents) * 0.01) * 6.0)) |
+          0;
+
+    const writeRepState = (b, L, R) => {
+      const baseOff = b * M;
+      for (let i = 0; i < ML; i++) {
+        bRepOpt[baseOff + i] = mStates[i][L.s[i]].jIdx;
+      }
+      for (let j = 0; j < MR; j++) {
+        bRepOpt[baseOff + ML + j] = mStates[ML + j][R.s[j]].jIdx;
+      }
+    };
+
+    const addExactPairToBin = (L, R, totPay, totUnit, totClip) => {
+      if (!(totPay > 0)) return;
+      const lp = L.prob * R.prob;
+      if (totPay < globalMinWinCents) globalMinWinCents = totPay;
+      if (totPay > globalMaxWinCents) globalMaxWinCents = totPay;
+      const b = binIndexOf(totPay);
+      bProb[b] += lp;
+      bExpPay[b] += lp * totPay;
+      if (totPay < bMinC[b]) bMinC[b] = totPay;
+      if (totPay > bMaxC[b]) bMaxC[b] = totPay;
+      if (!metricsOnly) {
+        bExpUnit[b] += lp * totUnit;
+        bExpClip[b] += lp * totClip;
+        if (lp > bBestP[b]) {
+          bBestP[b] = lp;
+          writeRepState(b, L, R);
+        }
+      }
+    };
+
+    const rightZero = rightStates.filter((r) => r.hits === 0);
+    const rightHit = rightStates
+      .filter((r) => r.hits > 0)
+      .sort((a, b) => a.sumO - b.sumO || a.intra - b.intra);
+
+    const STRIP_TARGET = 32;
+    const stripCount = Math.min(
+      STRIP_TARGET,
+      Math.max(1, Math.ceil(rightHit.length / 96))
+    );
+    const strips = [];
+    for (let s = 0; s < stripCount; s++) {
+      const lo = Math.floor((s * rightHit.length) / stripCount);
+      const hi = Math.floor(((s + 1) * rightHit.length) / stripCount);
+      if (lo >= hi) continue;
+      const sub = rightHit.slice(lo, hi);
+      let minIntra = Infinity;
+      let maxIntra = 0;
+      let pSum = 0;
+      let sumProbIntra = 0;
+      let sumProbUIntra = 0;
+      let sumProbCIntra = 0;
+      let sumProbSumO = 0;
+      let bestR = sub[0];
+      for (let i = 0; i < sub.length; i++) {
+        const r = sub[i];
+        if (r.intra < minIntra) minIntra = r.intra;
+        if (r.intra > maxIntra) maxIntra = r.intra;
+        pSum += r.prob;
+        sumProbIntra += r.prob * r.intra;
+        sumProbSumO += r.prob * r.sumO;
+        if (!metricsOnly) {
+          sumProbUIntra += r.prob * r.uIntra;
+          sumProbCIntra += r.prob * r.cIntra;
+          if (r.prob > bestR.prob) bestR = r;
+        }
+      }
+      strips.push({
+        sub,
+        pSum,
+        minSumO: sub[0].sumO,
+        maxSumO: sub[sub.length - 1].sumO,
+        minIntra,
+        maxIntra,
+        sumProbIntra,
+        sumProbUIntra,
+        sumProbCIntra,
+        sumProbSumO,
+        bestR,
+      });
+    }
+
+    const canFastBulkStats =
+      metricsOnly || (maxCrossUnitDiff <= 1.0 && maxCrossClipVal === 0);
+
+    for (let u = 0; u < leftStates.length; u++) {
+      const L = leftStates[u];
+      for (let z = 0; z < rightZero.length; z++) {
+        const R = rightZero[z];
+        if (L.intra + R.intra > 0) {
+          addExactPairToBin(
+            L,
+            R,
+            L.intra + R.intra,
+            L.uIntra + R.uIntra,
+            L.cIntra + R.cIntra
+          );
+        }
+      }
+      if (rightHit.length === 0) continue;
+      if (L.hits === 0) {
+        for (let v = 0; v < rightHit.length; v++) {
+          const R = rightHit[v];
+          if (L.intra + R.intra > 0) {
+            addExactPairToBin(
+              L,
+              R,
+              L.intra + R.intra,
+              L.uIntra + R.uIntra,
+              L.cIntra + R.cIntra
+            );
+          }
+        }
+        continue;
+      }
+
+      for (let s = 0; s < strips.length; s++) {
+        const st = strips[s];
+        const lb =
+          L.intra +
+          st.minIntra +
+          Math.floor(refScale * L.sumO * st.minSumO + minCrossErr);
+        const ub =
+          L.intra +
+          st.maxIntra +
+          Math.ceil(refScale * L.sumO * st.maxSumO + maxCrossErr);
+        if (ub <= 0) continue;
+
+        if (
+          canFastBulkStats &&
+          ((lb > 0 && ub < totalCostCents) || lb >= totalCostCents)
+        ) {
+          const lp = L.prob * st.pSum;
+          const b = lb < totalCostCents ? binIndexOf(lb) : binIndexOf(lb);
+          bProb[b] += lp;
+          const expPayBlock =
+            L.prob *
+            (st.pSum * L.intra +
+              st.sumProbIntra +
+              refScale * L.sumO * st.sumProbSumO);
+          bExpPay[b] += expPayBlock;
+          if (lb < bMinC[b]) bMinC[b] = Math.max(1, lb);
+          if (ub > bMaxC[b]) bMaxC[b] = ub;
+          if (!metricsOnly) {
+            bExpUnit[b] +=
+              L.prob *
+              (st.pSum * L.uIntra +
+                st.sumProbUIntra +
+                200 * L.sumO * st.sumProbSumO);
+            bExpClip[b] += L.prob * (st.pSum * L.cIntra + st.sumProbCIntra);
+            const repP = L.prob * st.bestR.prob;
+            if (repP > bBestP[b]) {
+              bBestP[b] = repP;
+              writeRepState(b, L, st.bestR);
+            }
+          }
+          continue;
+        }
+
+        const sub = st.sub;
+        for (let v = 0; v < sub.length; v++) {
+          const R = sub[v];
+          const baseApprox = L.intra + R.intra + refScale * L.sumO * R.sumO;
+          const pairLb = Math.floor(baseApprox + minCrossErr);
+          const pairUb = Math.ceil(baseApprox + maxCrossErr);
+          if (pairUb <= 0) continue;
+          if (
+            canFastBulkStats &&
+            ((pairLb > 0 && pairUb < totalCostCents) ||
+              pairLb >= totalCostCents)
+          ) {
+            const lp = L.prob * R.prob;
+            const b = binIndexOf(pairLb);
+            bProb[b] += lp;
+            bExpPay[b] += lp * baseApprox;
+            if (pairLb < bMinC[b]) bMinC[b] = Math.max(1, pairLb);
+            if (pairUb > bMaxC[b]) bMaxC[b] = pairUb;
+            if (!metricsOnly) {
+              bExpUnit[b] += lp * (L.uIntra + R.uIntra + 200 * L.sumO * R.sumO);
+              bExpClip[b] += lp * (L.cIntra + R.cIntra);
+              if (lp > bBestP[b]) {
+                bBestP[b] = lp;
+                writeRepState(b, L, R);
+              }
+            }
+          } else {
+            const [cPay, cUnit, cClip] = evalExactCross(L, R);
+            addExactPairToBin(
+              L,
+              R,
+              L.intra + R.intra + cPay,
+              L.uIntra + R.uIntra + cUnit,
+              L.cIntra + R.cIntra + cClip
+            );
+          }
+        }
+      }
+    }
+
+    // Exact global minPayout & maxPayout search seeded with min-odds / max-odds corners (<0.05ms, 0-cent error!)
+    if (rightHit.length > 0 && leftStates.length > 0) {
+      const evalFullAssignment = (stateIdxByMatch) => {
+        let tot = 0;
+        for (let i = 0; i < M; i++) {
+          const si = stateIdxByMatch[i];
+          const stI = mStates[i][si];
+          tot += stI.sglPay;
+          if (stI.jIdx < 0) continue;
+          for (let j = i + 1; j < M; j++) {
+            const sj = stateIdxByMatch[j];
+            if (mStates[j][sj].jIdx < 0) continue;
+            tot += pairPay[i][j][si * mStates[j].length + sj];
+          }
+        }
+        return tot;
+      };
+      const maxCorner = mStates.map((st) => {
+        let best = 0;
+        for (let i = 1; i < st.length; i++) {
+          if (st[i].odds > st[best].odds) best = i;
+        }
+        return best;
+      });
+      const seedMax = evalFullAssignment(maxCorner);
+      if (seedMax > globalMaxWinCents) globalMaxWinCents = seedMax;
+
+      const minHitIdx = mStates.map((st) => {
+        let best = -1;
+        for (let i = 0; i < st.length; i++) {
+          if (st[i].jIdx >= 0 && (best < 0 || st[i].odds < st[best].odds)) {
+            best = i;
+          }
+        }
+        return best;
+      });
+      const missIdx = mStates.map((st) => st.findIndex((x) => x.jIdx < 0));
+      if (minHitIdx.every((x) => x >= 0)) {
+        const allMinHit = evalFullAssignment(minHitIdx);
+        if (allMinHit > 0 && allMinHit < globalMinWinCents) {
+          globalMinWinCents = allMinHit;
+        }
+      }
+      // Also seed minimal 2-hit + (M-2)-miss states when misses exist
+      for (let a = 0; a < M; a++) {
+        if (minHitIdx[a] < 0) continue;
+        for (let b = a + 1; b < M; b++) {
+          if (minHitIdx[b] < 0) continue;
+          let canMissRest = true;
+          const assign = new Int32Array(M);
+          for (let m = 0; m < M; m++) {
+            if (m === a || m === b) assign[m] = minHitIdx[m];
+            else if (missIdx[m] >= 0) assign[m] = missIdx[m];
+            else if (minHitIdx[m] >= 0) assign[m] = minHitIdx[m];
+            else canMissRest = false;
+          }
+          if (canMissRest) {
+            const pVal = evalFullAssignment(assign);
+            if (pVal > 0 && pVal < globalMinWinCents) globalMinWinCents = pVal;
+          }
+        }
+      }
+
+      const rightAsc = rightHit; // already sorted ascending by sumO!
+      const nR = rightAsc.length;
+      const sufMinIntraR = new Float64Array(nR);
+      sufMinIntraR[nR - 1] = rightAsc[nR - 1].intra;
+      for (let i = nR - 2; i >= 0; i--) {
+        sufMinIntraR[i] = Math.min(rightAsc[i].intra, sufMinIntraR[i + 1]);
+      }
+      const leftPosAsc = leftStates
+        .filter((l) => l.hits > 0)
+        .sort(
+          (a, b) =>
+            a.intra +
+            refScale * a.sumO * rightAsc[0].sumO -
+            (b.intra + refScale * b.sumO * rightAsc[0].sumO)
+        );
+      for (let u = 0; u < leftPosAsc.length; u++) {
+        const L = leftPosAsc[u];
+        const minLBound =
+          L.intra +
+          sufMinIntraR[0] +
+          Math.floor(refScale * L.sumO * rightAsc[0].sumO + minCrossErr);
+        if (minLBound >= globalMinWinCents) continue;
+        for (let v = 0; v < nR; v++) {
+          const R = rightAsc[v];
+          const lb =
+            L.intra +
+            sufMinIntraR[v] +
+            Math.floor(refScale * L.sumO * R.sumO + minCrossErr);
+          if (lb >= globalMinWinCents) break;
+          const [cPay] = evalExactCross(L, R);
+          const tot = L.intra + R.intra + cPay;
+          if (tot > 0 && tot < globalMinWinCents) globalMinWinCents = tot;
+        }
+      }
+
+      const rightDesc = [...rightHit].sort(
+        (a, b) => b.sumO - a.sumO || b.intra - a.intra
+      );
+      const sufMaxIntraR = new Float64Array(nR);
+      sufMaxIntraR[nR - 1] = rightDesc[nR - 1].intra;
+      for (let i = nR - 2; i >= 0; i--) {
+        sufMaxIntraR[i] = Math.max(rightDesc[i].intra, sufMaxIntraR[i + 1]);
+      }
+      const leftPosDesc = leftStates
+        .filter((l) => l.hits > 0)
+        .sort(
+          (a, b) =>
+            b.intra +
+            refScale * b.sumO * rightDesc[0].sumO -
+            (a.intra + refScale * a.sumO * rightDesc[0].sumO)
+        );
+      for (let u = 0; u < leftPosDesc.length; u++) {
+        const L = leftPosDesc[u];
+        const maxLBound =
+          L.intra +
+          sufMaxIntraR[0] +
+          Math.ceil(refScale * L.sumO * rightDesc[0].sumO + maxCrossErr);
+        if (maxLBound <= globalMaxWinCents) continue;
+        for (let v = 0; v < nR; v++) {
+          const R = rightDesc[v];
+          const ub =
+            L.intra +
+            sufMaxIntraR[v] +
+            Math.ceil(refScale * L.sumO * R.sumO + maxCrossErr);
+          if (ub <= globalMaxWinCents) break;
+          const [cPay] = evalExactCross(L, R);
+          const tot = L.intra + R.intra + cPay;
+          if (tot > globalMaxWinCents) globalMaxWinCents = tot;
+        }
+      }
+    }
+
+    let bIdx = 0;
+    for (let b = 0; b < BINS; b++) {
+      const prob = bProb[b];
+      if (!(prob > 0 && bMaxC[b] > 0)) continue;
+      const isUnderwater = b < 48;
+      const clampedMinC = isUnderwater
+        ? Math.max(
+            globalMinWinCents < Infinity ? globalMinWinCents : 1,
+            bMinC[b]
+          )
+        : Math.max(totalCostCents, bMinC[b]);
+      const clampedMaxC = isUnderwater
+        ? Math.min(Math.max(1, totalCostCents - 1), bMaxC[b])
+        : Math.min(
+            globalMaxWinCents > 0 ? globalMaxWinCents : bMaxC[b],
+            bMaxC[b]
+          );
+      const isSingleton = clampedMinC === clampedMaxC;
+      const totalPayout = isSingleton
+        ? clampedMinC / 100
+        : bExpPay[b] / prob / 100;
+      if (metricsOnly) {
+        metricTiers.push({ prob, totalPayout, isUnderwater });
+      } else {
+        const baseOff = b * M;
+        const winIndices = [];
+        for (let k = 0; k < K; k++) {
+          let hit = true;
+          for (let m = 0; m < M; m++) {
+            const jIdx = ticketOptIdx[k * M + m];
+            if (jIdx >= 0 && bRepOpt[baseOff + m] !== jIdx) {
+              hit = false;
+              break;
+            }
+          }
+          if (hit) winIndices.push(k);
+        }
+        if (winIndices.length > 0) {
+          combos.push(
+            formatBucketCombo(winIndices, prob, bIdx++, {
+              totalPayout,
+              unitPayout: bExpUnit[b] / prob / 100,
+              cappedClipped: bExpClip[b] / prob / 100,
+              isUnderwater,
+              minCents: clampedMinC,
+              maxCents: clampedMaxC,
+            })
+          );
+        }
+      }
+    }
+  } else if (canUseScalarPrefixDfs) {
     const stateProbs = evalQuotient.map((qs) =>
       Float64Array.from(qs, (q) => q.prob)
     );
@@ -3526,7 +4215,36 @@ function evaluateTicketsOnQuotientSpace(
       : null;
 
     const invCostScale = 48 / Math.max(1, totalCostCents);
+    const MAX_SCALAR_LEAVES = 450_000;
+    let visitedScalarLeaves = 0;
+    const sumMaskDelta = (msk, oPay, oUnit, oClip) => {
+      if (msk === 0) return [0, 0, 0];
+      if ((msk & (msk - 1)) === 0) {
+        const j = 31 - Math.clz32(msk);
+        return [
+          oPay[j],
+          !metricsOnly ? oUnit[j] : 0,
+          !metricsOnly ? oClip[j] : 0,
+        ];
+      }
+      let aPay = 0;
+      let aUnit = 0;
+      let aClip = 0;
+      let v = msk;
+      while (v !== 0) {
+        const lsb = v & -v;
+        const j = 31 - Math.clz32(lsb);
+        aPay += oPay[j];
+        if (!metricsOnly) {
+          aUnit += oUnit[j];
+          aClip += oClip[j];
+        }
+        v &= v - 1;
+      }
+      return [aPay, aUnit, aClip];
+    };
     const walkScalar = (m, curProb, accPay, accUnit, accClip) => {
+      if (visitedScalarLeaves >= MAX_SCALAR_LEAVES) return;
       const r = distinctOptsByMatch[m].length;
       const oPay = optPayBuf[m];
       const oUnit = !metricsOnly ? optUnitBuf[m] : null;
@@ -3569,33 +4287,14 @@ function evaluateTicketsOnQuotientSpace(
       const sLen = pArr.length;
 
       if (m === M - 1) {
+        visitedScalarLeaves += sLen;
         for (let s = 0; s < sLen; s++) {
-          const msk = mArr[s];
-          let addPay = 0;
-          let addUnit = 0;
-          let addClip = 0;
-          if (msk !== 0) {
-            if ((msk & (msk - 1)) === 0) {
-              const j = 31 - Math.clz32(msk);
-              addPay = oPay[j];
-              if (!metricsOnly) {
-                addUnit = oUnit[j];
-                addClip = oClip[j];
-              }
-            } else {
-              let v = msk;
-              while (v !== 0) {
-                const lsb = v & -v;
-                const j = 31 - Math.clz32(lsb);
-                addPay += oPay[j];
-                if (!metricsOnly) {
-                  addUnit += oUnit[j];
-                  addClip += oClip[j];
-                }
-                v &= v - 1;
-              }
-            }
-          }
+          const [addPay, addUnit, addClip] = sumMaskDelta(
+            mArr[s],
+            oPay,
+            oUnit,
+            oClip
+          );
           const totPay = accPay + addPay;
           if (totPay <= 0) continue;
           const lp = curProb * pArr[s];
@@ -3629,32 +4328,14 @@ function evaluateTicketsOnQuotientSpace(
       }
 
       for (let s = 0; s < sLen; s++) {
+        if (visitedScalarLeaves >= MAX_SCALAR_LEAVES) break;
         const msk = mArr[s];
-        let addPay = 0;
-        let addUnit = 0;
-        let addClip = 0;
-        if (msk !== 0) {
-          if ((msk & (msk - 1)) === 0) {
-            const j = 31 - Math.clz32(msk);
-            addPay = oPay[j];
-            if (!metricsOnly) {
-              addUnit = oUnit[j];
-              addClip = oClip[j];
-            }
-          } else {
-            let v = msk;
-            while (v !== 0) {
-              const lsb = v & -v;
-              const j = 31 - Math.clz32(lsb);
-              addPay += oPay[j];
-              if (!metricsOnly) {
-                addUnit += oUnit[j];
-                addClip += oClip[j];
-              }
-              v &= v - 1;
-            }
-          }
-        }
+        const [addPay, addUnit, addClip] = sumMaskDelta(
+          msk,
+          oPay,
+          oUnit,
+          oClip
+        );
         curMask[m] = msk;
         if (!metricsOnly) chosenS[m] = s;
         walkScalar(
@@ -6818,7 +7499,7 @@ function allocateWheelMeanCvar(
       const tailLen = Math.max(1, Math.ceil(v * 0.5));
       let uSum = 0;
       for (let t = 0; t < tailLen; t++) uSum += vec[ordIdx[t]];
-      tailAvg = 0.65 * wCvar + 0.35 * (uSum / tailLen);
+      tailAvg = 0.8 * wCvar + 0.2 * (uSum / tailLen);
     } else {
       vec.sort();
       const tailLen = Math.max(1, Math.ceil(v * 0.5));
@@ -6926,7 +7607,12 @@ function allocateWheelMeanCvar(
       if (!improved) break;
     }
 
-    // 3-way integer neighborhood polish ((+2,-1,-1) and (+1,+1,-2)) to escape 2-opt integer plateaus
+    return { mults, metrics: evalCandidateMults(mults) };
+  };
+
+  // 3-way integer neighborhood polish ((+2,-1,-1) and (-2,+1,+1)) run once on the selected note-trial winner (keeps 8-match latency <10ms!)
+  const polishChosen3Opt = (mults) => {
+    if (exactNotesOnly || B < 3 || B > 8 || v > 8) return;
     const isBetterMetrics = (nxt, cur) =>
       (nxt.tailAvg >= cur.tailAvg - 1e-9 &&
         nxt.floorRatio >= cur.floorRatio - 1e-9 &&
@@ -6935,53 +7621,48 @@ function allocateWheelMeanCvar(
           nxt.floorRatio > cur.floorRatio + 1e-6 ||
           nxt.evRate > cur.evRate + 1e-6)) ||
       (nxt.tailAvg > cur.tailAvg + 1e-6 && nxt.floorVal >= cur.floorVal - 1e-9);
-    if (!exactNotesOnly && B >= 3 && B <= 7 && v <= 7) {
-      for (let pass = 0; pass < 2; pass++) {
-        let improved3 = false;
-        let cur = evalCandidateMults(mults);
-        for (let a = 0; a < B; a++) {
-          for (let b = 0; b < B; b++) {
-            if (b === a) continue;
-            for (let c = b + 1; c < B; c++) {
-              if (c === a) continue;
-              // Move (+2, -1, -1)
-              if (mults[a] + 2 <= 999 && mults[b] >= 2 && mults[c] >= 2) {
-                mults[a] += 2;
-                mults[b] -= 1;
-                mults[c] -= 1;
-                const nxt = evalCandidateMults(mults);
-                if (isBetterMetrics(nxt, cur)) {
-                  cur = nxt;
-                  improved3 = true;
-                } else {
-                  mults[a] -= 2;
-                  mults[b] += 1;
-                  mults[c] += 1;
-                }
-              }
-              // Move (-2, +1, +1)
-              if (mults[a] >= 3 && mults[b] + 1 <= 999 && mults[c] + 1 <= 999) {
+    const maxPasses = B <= 7 ? 2 : 1;
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let improved3 = false;
+      let cur = evalCandidateMults(mults);
+      for (let a = 0; a < B; a++) {
+        for (let b = 0; b < B; b++) {
+          if (b === a) continue;
+          for (let c = b + 1; c < B; c++) {
+            if (c === a) continue;
+            if (mults[a] + 2 <= 999 && mults[b] >= 2 && mults[c] >= 2) {
+              mults[a] += 2;
+              mults[b] -= 1;
+              mults[c] -= 1;
+              const nxt = evalCandidateMults(mults);
+              if (isBetterMetrics(nxt, cur)) {
+                cur = nxt;
+                improved3 = true;
+              } else {
                 mults[a] -= 2;
                 mults[b] += 1;
                 mults[c] += 1;
-                const nxt = evalCandidateMults(mults);
-                if (isBetterMetrics(nxt, cur)) {
-                  cur = nxt;
-                  improved3 = true;
-                } else {
-                  mults[a] += 2;
-                  mults[b] -= 1;
-                  mults[c] -= 1;
-                }
+              }
+            }
+            if (mults[a] >= 3 && mults[b] + 1 <= 999 && mults[c] + 1 <= 999) {
+              mults[a] -= 2;
+              mults[b] += 1;
+              mults[c] += 1;
+              const nxt = evalCandidateMults(mults);
+              if (isBetterMetrics(nxt, cur)) {
+                cur = nxt;
+                improved3 = true;
+              } else {
+                mults[a] += 2;
+                mults[b] -= 1;
+                mults[c] -= 1;
               }
             }
           }
         }
-        if (!improved3) break;
       }
+      if (!improved3) break;
     }
-
-    return { mults, metrics: evalCandidateMults(mults) };
   };
 
   const maxNotes = Math.max(K, Math.floor(targetBudgetYuan / 2));
@@ -7014,10 +7695,16 @@ function allocateWheelMeanCvar(
       b.metrics.floorRatio - a.metrics.floorRatio ||
       b.metrics.evRate - a.metrics.evRate
   )[0];
+  polishChosen3Opt(chosen.mults);
 
   const lines = materializePlanLines(allSpecs, chosen.mults);
   const missOneReturn = computeSurvivingMissOneFloor(lines, matchIds);
-  return { lines, missOneReturn };
+  const finalMetrics = evalCandidateMults(chosen.mults);
+  return {
+    lines,
+    missOneReturn,
+    weightedTailRatio: finalMetrics.tailRatio,
+  };
 }
 
 function materializePlanLines(specs, mults) {
@@ -7542,7 +8229,7 @@ function allocateSpearAndExactShield(
   spearSpecs,
   shieldSpec,
   targetBudgetYuan,
-  { lockPrimarySpear = false } = {}
+  { lockPrimarySpear = false, optimizeShieldUtility = false } = {}
 ) {
   const mappedSpears = spearSpecs
     .map((r) => {
@@ -7634,12 +8321,62 @@ function allocateSpearAndExactShield(
           remNotes >= spearsLocal.length &&
           remNotes * spearsLocal[0].unitPayout >= totalStake
         ) {
+          const shProb = effectiveShieldSpec.legs.reduce(
+            (a, g) => a * g.fairProb,
+            1
+          );
+          let chosenShieldMult = exactShieldMult;
+          let chosenRoleLabel = effectiveShieldSpec.roleLabel;
+          if (optimizeShieldUtility && spearsLocal.length === 1) {
+            const sp0 = spearsLocal[0];
+            const minSpear0 = Math.ceil((totalStake - 1e-12) / sp0.unitPayout);
+            const maxShieldMult = Math.min(
+              Math.floor((totalNotes - 1) / 2),
+              totalNotes - minSpear0
+            );
+            if (maxShieldMult > exactShieldMult) {
+              const refW = Math.max(2, targetBudgetYuan, totalStake);
+              const GAMMA = 0.65;
+              const pMiss = Math.max(0, 1 - sp0.prob - shProb);
+              const missTerm =
+                pMiss *
+                Math.log(Math.max(1e-6, 1 - (GAMMA * totalStake) / refW));
+              let bestU = -Infinity;
+              for (let mSh = exactShieldMult; mSh <= maxShieldMult; mSh++) {
+                const mSp = totalNotes - mSh;
+                const u =
+                  sp0.prob *
+                    Math.log(
+                      Math.max(
+                        1e-6,
+                        1 + (GAMMA * (mSp * sp0.unitPayout - totalStake)) / refW
+                      )
+                    ) +
+                  shProb *
+                    Math.log(
+                      Math.max(
+                        1e-6,
+                        1 + (GAMMA * (mSh * unitU - totalStake)) / refW
+                      )
+                    ) +
+                  missTerm;
+                if (u > bestU + 1e-15) {
+                  bestU = u;
+                  chosenShieldMult = mSh;
+                }
+              }
+              if (chosenShieldMult > exactShieldMult) {
+                chosenRoleLabel = "对数效用协同副攻";
+              }
+            }
+          }
           cleanShield = {
             ...effectiveShieldSpec,
+            roleLabel: chosenRoleLabel,
             rawUnit: rawU,
             unitPayout: unitU,
-            prob: effectiveShieldSpec.legs.reduce((a, g) => a * g.fairProb, 1),
-            exactMult: exactShieldMult,
+            prob: shProb,
+            exactMult: chosenShieldMult,
           };
         }
       }
@@ -7737,10 +8474,7 @@ function allocateSpearAndExactShield(
       const curTotalNotes =
         attackMults.reduce((a, b) => a + b, 0) + cleanShield.exactMult;
       const exactReq = Math.ceil((curTotalNotes * 2) / cleanShield.unitPayout);
-      if (
-        exactReq !== cleanShield.exactMult &&
-        exactReq < curTotalNotes * 0.45
-      ) {
+      if (exactReq > cleanShield.exactMult && exactReq < curTotalNotes * 0.45) {
         const diff = exactReq - cleanShield.exactMult;
         if (attackMults[0] - diff >= 1) {
           attackMults[0] -= diff;
@@ -9061,7 +9795,7 @@ export function generateParetoPortfolio(
         [{ id: "ev-sp1", roleLabel: "主攻高性价比箭", legs: [ancLegs[0]] }],
         shield,
         cleanBudget,
-        { lockPrimarySpear: true }
+        { lockPrimarySpear: true, optimizeShieldUtility: true }
       );
     } else if (anc.length > 0) {
       const {
@@ -9107,7 +9841,8 @@ export function generateParetoPortfolio(
               roleLabel: "最小整数倍卡盘盾",
               legs: [hhadCompatLegs[1]],
             },
-            cleanBudget
+            cleanBudget,
+            { optimizeShieldUtility: true }
           )
         );
       } else if (hhadCompatLegs.length === 1) {
@@ -9211,7 +9946,8 @@ export function generateParetoPortfolio(
               roleLabel: "最小整数倍闷平进球盾",
               legs: [sortedTtgD[1]],
             },
-            cleanBudget
+            cleanBudget,
+            { optimizeShieldUtility: true }
           )
         );
       }
@@ -9237,7 +9973,8 @@ export function generateParetoPortfolio(
         sec
           ? { id: "ev-sh", roleLabel: "最小整数倍回本盾", legs: [sec] }
           : null,
-        cleanBudget
+        cleanBudget,
+        { optimizeShieldUtility: true }
       );
       const exactLogSplitLines = sec
         ? allocateSpearAndExactShield(
@@ -9468,20 +10205,35 @@ export function generateParetoPortfolio(
         }
         flipCands.sort((a, b) => b.score - a.score);
         for (const fc of flipCands.slice(0, 4)) {
-          const shLines = allocateSpearAndExactShield(
-            [{ id: "ev-sp1", roleLabel: "高性价比主攻箭", legs: bLegs }],
-            { id: "ev-sh", roleLabel: "最小整数倍回本盾", legs: fc.legs },
-            cleanBudget,
-            { lockPrimarySpear: hasUserAnchors }
-          );
-          if (shLines.length > 0) {
-            slot2Candidates.push({
-              lines: shLines,
-              hasShield: shLines.some((l) =>
-                String(l.roleLabel).includes("盾")
-              ),
-              obj: evalLines4DObj(shLines, true),
-            });
+          const optModes =
+            evActiveMatches.length <= 3 ? [false, true] : [false];
+          for (const optUtil of optModes) {
+            const shLines = allocateSpearAndExactShield(
+              [{ id: "ev-sp1", roleLabel: "高性价比主攻箭", legs: bLegs }],
+              { id: "ev-sh", roleLabel: "最小整数倍回本盾", legs: fc.legs },
+              cleanBudget,
+              {
+                lockPrimarySpear: hasUserAnchors,
+                optimizeShieldUtility: optUtil,
+              }
+            );
+            if (shLines.length > 0) {
+              const obj = evalLines4DObj(shLines, true);
+              if (
+                !optUtil ||
+                shLines.length < 2 ||
+                shLines[1].prob * shLines[1].unitPayout >=
+                  shLines[0].prob * shLines[0].unitPayout - 1e-6
+              ) {
+                slot2Candidates.push({
+                  lines: shLines,
+                  hasShield: shLines.some((l) =>
+                    String(l.roleLabel).includes("盾")
+                  ),
+                  obj,
+                });
+              }
+            }
           }
         }
       }
@@ -9515,15 +10267,16 @@ export function generateParetoPortfolio(
   }
   if (slot2SplitCapNote) slot2Reasons.push(slot2SplitCapNote);
   slot2Reasons.push(
-    "基于分数凯利对数财富效用（Expected Log-Wealth Utility）锁死最小保本护盾注数，火力集中高效率主攻组合"
+    "基于分数凯利对数财富效用（Expected Log-Wealth Utility）在零倒贴整数域寻优主攻与护盾配比，兼顾复利增长与回撤保护"
   );
 
   const slot2Plan = packSlot({
     key: "max-ev-utility",
     shortTab: "⚖️ 期望效用",
     badge: "⚖️ 期望效用极值",
-    title: "对数财富效用 · 最小整数倍锁盾",
-    tagline: "精准锁死保本护盾最小注数 · 火力集中高效率主攻组合",
+    title: "对数财富效用 · 主攻护盾整数寻优",
+    tagline:
+      "按期望对数财富效用寻优零倒贴主攻与护盾整数配比 · 火力集中高效率组合",
     lines: slot2Lines,
     reasons: slot2Reasons,
     prependWarningReason: anchoredDragWarning,
@@ -9621,6 +10374,7 @@ export function generateParetoPortfolio(
 
   let slot3HasPartialCushionBlindSpot = false;
   let slot3UsesSubPoolCushion = false;
+  let slot3MissingOneSideCushion = false;
   let slot3MinCushionCondCov = 1;
 
   if (selected.length === 1) {
@@ -9926,15 +10680,19 @@ export function generateParetoPortfolio(
               chosenSglsB.reduce((acc, g) => acc + getLegCondPair(1, g)[0], 0)
             );
       slot3MinCushionCondCov = Math.min(covA, covB);
+      slot3MissingOneSideCushion =
+        chosenSglsA.length === 0 || chosenSglsB.length === 0;
       slot3UsesSubPoolCushion = [...chosenSglsA, ...chosenSglsB].some(
         (g) => g.poolCode !== "HAD" && g.poolCode !== "HHAD"
       );
       slot3HasPartialCushionBlindSpot =
+        !slot3MissingOneSideCushion &&
         (chosenSglsA.length > 0 || chosenSglsB.length > 0) &&
         slot3MinCushionCondCov < 0.999;
     } else {
       slot3Lines = materializePlanLines([mainKicker], [totalNotes]);
       slot3MissOneReturn = 0;
+      slot3MissingOneSideCushion = true;
     }
   } else {
     const v = selected.length;
@@ -9965,13 +10723,23 @@ export function generateParetoPortfolio(
         bankerRoundParlayUnitPayout(wheelLegs.map((g) => g.odds)) <=
           statutorySingleBetCap(v);
 
-      const scoreWheelCandidate = (obj, missOneReturn, totalC) => {
+      const scoreWheelCandidate = (
+        obj,
+        missOneReturn,
+        totalC,
+        weightedTailRatio = null
+      ) => {
         const probWeightedFloor = Math.min(
           2.0,
           (missOneReturn * missOneHitWeight) / Math.max(1, totalC)
         );
+        const effCvarRatio =
+          typeof weightedTailRatio === "number" &&
+          Number.isFinite(weightedTailRatio)
+            ? 0.6 * weightedTailRatio + 0.4 * obj.missOneCvarRatio
+            : obj.missOneCvarRatio;
         return (
-          0.55 * obj.missOneCvarRatio +
+          0.55 * effCvarRatio +
           0.2 * probWeightedFloor +
           0.15 * obj.profitProb +
           0.1 * obj.evRate
@@ -10023,8 +10791,12 @@ export function generateParetoPortfolio(
         if (totalC <= 0) continue;
         const obj = evalLines4DObj(cand.lines);
         const score =
-          scoreWheelCandidate(obj, cand.missOneReturn, totalC) +
-          (isGenuinePairCoveringDesign(v, subBlocks) ? 0.02 : 0);
+          scoreWheelCandidate(
+            obj,
+            cand.missOneReturn,
+            totalC,
+            cand.weightedTailRatio
+          ) + (isGenuinePairCoveringDesign(v, subBlocks) ? 0.02 : 0);
         wheelCands.push({
           lines: cand.lines,
           missOneReturn: cand.missOneReturn,
@@ -10079,8 +10851,12 @@ export function generateParetoPortfolio(
           if (totalC <= 0) continue;
           const obj = evalLines4DObj(cand.lines);
           const score =
-            scoreWheelCandidate(obj, cand.missOneReturn, totalC) +
-            (isPairCover ? 0.02 : 0);
+            scoreWheelCandidate(
+              obj,
+              cand.missOneReturn,
+              totalC,
+              cand.weightedTailRatio
+            ) + (isPairCover ? 0.02 : 0);
           const cleanDesignBase = d.name.replace(/独立分块$/, "");
           const designLabel = isPairCover
             ? `${d.name}${kicker ? `+${v}串1` : ""} 旋转矩阵缩水 (${cand.lines.length}张实票)`
@@ -10132,11 +10908,13 @@ export function generateParetoPortfolio(
       ? slot3IsCoveringWheel
         ? `采用组合覆盖设计 ${slot3DesignLabel}（满足任意两场全覆盖 t≥2，严控 ≤ 10 张实票），锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
         : `采用中国体彩 ${slot3DesignLabel} 结构（严控 ≤ 10 张独立实票），锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
-      : slot3HasPartialCushionBlindSpot
-        ? slot3UsesSubPoolCushion
-          ? `借道半全场/局部单关构建回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出半场逆转等未覆盖死角派奖为 ¥0`
-          : `采用让球单关构建高赔回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出一球卡盘未覆盖死角派奖为 ¥0`
-        : "配置无死角主盘单关回血垫，最大化错 1 场保底回血与连红上限",
+      : slot3MissingOneSideCushion
+        ? "仅开放单关场次可配回血垫，若未开放单关场次爆冷则错 1 场保底为 ¥0.00"
+        : slot3HasPartialCushionBlindSpot
+          ? slot3UsesSubPoolCushion
+            ? `借道半全场/局部单关构建回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出半场逆转等未覆盖死角派奖为 ¥0`
+            : `采用让球单关构建高赔回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出一球卡盘未覆盖死角派奖为 ¥0`
+          : "配置无死角主盘单关回血垫，最大化错 1 场保底回血与连红上限",
   ];
 
   const slot3Plan = packSlot({
@@ -10171,11 +10949,13 @@ export function generateParetoPortfolio(
       selected.length >= 3
         ? `黑掉1场保底拿回 ¥${slot3MissOneReturn.toFixed(1)} · 全中叠加拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
         : selected.length === 2
-          ? slot3HasPartialCushionBlindSpot
-            ? slot3UsesSubPoolCushion
-              ? `命中回血垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（半场逆转死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
-              : `命中让球垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（一球卡盘死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
-            : `黑掉1场保底拿回 ¥${slot3MissOneReturn.toFixed(1)} · 全中叠加拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+          ? slot3MissingOneSideCushion
+            ? `单侧未开单关保底 ¥0.0（有垫侧回血 ¥${Math.max(0, ...slot3Lines.filter((l) => l.legs.length === 1).map((l) => l.returnPayout)).toFixed(1)}） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+            : slot3HasPartialCushionBlindSpot
+              ? slot3UsesSubPoolCushion
+                ? `命中回血垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（半场逆转死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+                : `命中让球垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（一球卡盘死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+              : `黑掉1场保底拿回 ¥${slot3MissOneReturn.toFixed(1)} · 全中叠加拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
           : `命中缓冲网保底拿回 ¥${slot3Plan.minReturn.toFixed(1)} ~ 最高 ¥${slot3Plan.maxReturn.toFixed(1)}`;
   }
 
@@ -10509,6 +11289,11 @@ function resolveComplementaryLateHedge(late, latePicks) {
     opt1 && opt2
       ? {
           label: `${late.home} 反向【${poolTag}·${opt1.label}+${opt2.label}配平】`,
+          poolTag,
+          opt1Label: opt1.label,
+          opt2Label: opt2.label,
+          odds1: opt1.odds,
+          odds2: opt2.odds,
           odds: 1 / (1 / opt1.odds + 1 / opt2.odds),
           isPair: true,
         }
@@ -10872,19 +11657,60 @@ export function computeProOrderInsights(
             minAllHitPayout > 0
               ? minAllHitPayout
               : Math.max(report.minPayout, report.likelyRange?.[0] ?? 0);
-          const rawHedgeMoney = targetReturn / oppOdds;
-          const minStake = bestCand.isPair ? 4 : 2;
-          const hedgeCost = Math.max(
-            minStake,
-            Math.round(rawHedgeMoney / 2) * 2
-          );
-          const lockedNetProfit = Number(
-            (
-              Math.min(targetReturn, hedgeCost * oppOdds) -
-              report.totalCost -
-              hedgeCost
-            ).toFixed(2)
-          );
+          let hedgeCost = 2;
+          let lockedNetProfit = -report.totalCost;
+          let oppositeLabel = bestCand.label;
+          if (
+            bestCand.isPair &&
+            Number(bestCand.odds1) > 0 &&
+            Number(bestCand.odds2) > 0
+          ) {
+            const u1 = bankerRoundParlayUnitPayout([bestCand.odds1]);
+            const u2 = bankerRoundParlayUnitPayout([bestCand.odds2]);
+            const m1Mid = Math.max(1, Math.round(targetReturn / u1));
+            const m2Mid = Math.max(1, Math.round(targetReturn / u2));
+            let bestNet = -Infinity;
+            let bestM1 = m1Mid;
+            let bestM2 = m2Mid;
+            for (let m1 = Math.max(1, m1Mid - 3); m1 <= m1Mid + 3; m1++) {
+              for (let m2 = Math.max(1, m2Mid - 3); m2 <= m2Mid + 3; m2++) {
+                const cHedge = 2 * (m1 + m2);
+                const worstPay = Math.min(targetReturn, m1 * u1, m2 * u2);
+                const net = worstPay - report.totalCost - cHedge;
+                if (
+                  net > bestNet + 1e-9 ||
+                  (Math.abs(net - bestNet) <= 1e-9 &&
+                    cHedge < 2 * (bestM1 + bestM2))
+                ) {
+                  bestNet = net;
+                  bestM1 = m1;
+                  bestM2 = m2;
+                }
+              }
+            }
+            hedgeCost = 2 * (bestM1 + bestM2);
+            lockedNetProfit = Number(bestNet.toFixed(2));
+            oppositeLabel = `${late.home} 反向【${bestCand.poolTag}·${bestCand.opt1Label}¥${2 * bestM1}+${bestCand.opt2Label}¥${2 * bestM2}】`;
+          } else {
+            const uSingle = bankerRoundParlayUnitPayout([oppOdds]);
+            const mMid = Math.max(1, Math.round(targetReturn / uSingle));
+            let bestNet = -Infinity;
+            let bestM = mMid;
+            for (let m = Math.max(1, mMid - 2); m <= mMid + 2; m++) {
+              const cHedge = 2 * m;
+              const worstPay = Math.min(targetReturn, m * uSingle);
+              const net = worstPay - report.totalCost - cHedge;
+              if (
+                net > bestNet + 1e-9 ||
+                (Math.abs(net - bestNet) <= 1e-9 && cHedge < 2 * bestM)
+              ) {
+                bestNet = net;
+                bestM = m;
+              }
+            }
+            hedgeCost = 2 * bestM;
+            lockedNetProfit = Number(bestNet.toFixed(2));
+          }
           const hedgeMode =
             lockedNetProfit > 0
               ? "lock-profit"
@@ -10912,7 +11738,7 @@ export function computeProOrderInsights(
             lateMatchTitle,
             earlyKickoff: penultimate.kickoff,
             lateKickoff: late.kickoff,
-            oppositeLabel: bestCand.label,
+            oppositeLabel,
             oppositeOdds: oppOdds,
             hedgeCost,
             lockedNetProfit,
@@ -10978,8 +11804,8 @@ export function computeProOrderInsights(
   let activeSwapTip = null;
   for (const m of pickedMatches) {
     const mpicks = effectivePicks.filter((p) => p.matchId === m.id);
-    const mq = analyzeMatchMicroQuant(m);
-    const matchedArb = mq.arbitrages.find((arb) => {
+    const arbitrages = computeEquivalentArbitrages(m);
+    const matchedArb = arbitrages.find((arb) => {
       if (
         pickedMatches.length === 1 &&
         report?.canCheckout === true &&
@@ -11737,33 +12563,12 @@ function applySandboxToPlan(
   if (hasMissOne) {
     const distinctMids = Array.from(planMatchIds);
     if (distinctMids.length >= 2) {
-      const missPayouts = distinctMids.map((missedId) => {
-        const surv = lines.filter(
-          (l) => !l.legs.some((g) => g.matchId === missedId)
-        );
-        if (surv.length === 0) return 0;
-        let multiSum = 0;
-        const singlePoolGroups = new Map();
-        for (const ln of surv) {
-          if (ln.legs.length >= 2) {
-            multiSum += ln.returnPayout;
-          } else if (ln.legs.length === 1) {
-            const g = ln.legs[0];
-            const gk = `${g.matchId}:${g.poolCode}`;
-            const arr = singlePoolGroups.get(gk) ?? [];
-            arr.push(ln.returnPayout);
-            singlePoolGroups.set(gk, arr);
-          }
-        }
-        let singleGuaranteed = 0;
-        for (const arr of singlePoolGroups.values()) {
-          singleGuaranteed += Math.min(...arr);
-        }
-        return Number((multiSum + singleGuaranteed).toFixed(2));
-      });
-      const posMiss = missPayouts.filter((v) => v > 0);
-      missOneReturn =
-        posMiss.length > 0 ? Math.min(...posMiss) : jointEval.minPayout;
+      const hasSubMatchTicket = lines.some((l) =>
+        distinctMids.some((mid) => !l.legs.some((g) => g.matchId === mid))
+      );
+      missOneReturn = hasSubMatchTicket
+        ? computeSurvivingMissOneFloor(lines, distinctMids)
+        : jointEval.minPayout;
     } else {
       missOneReturn = jointEval.minPayout;
     }

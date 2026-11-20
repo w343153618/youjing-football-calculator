@@ -1196,8 +1196,9 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       "Slider max={20} must be replaced by symmetric max={15}"
     );
     assert.ok(
-      uiSrc.includes("max={15}"),
-      "Slider must enforce symmetric max={15}"
+      uiSrc.includes("max={15}") ||
+        uiSrc.includes("max={SUBJECTIVE_DELTA_MAX}"),
+      "Slider must enforce symmetric max={15} / SUBJECTIVE_DELTA_MAX"
     );
     assert.ok(
       !uiSrc.includes("保本锁回"),
@@ -1214,6 +1215,624 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     assert.ok(
       uiSrc.includes("paperWonCount"),
       "Ledger stats tile must display dual-sided paperWonCount"
+    );
+  });
+
+  it("Slice 05 · Two-Axis Review Remediation: seals snapshotPlan DoS & >2.2M-state 8x6/8x8 TTG exactness (<40ms), >2048-bet bonus gate, integer pair-hedge split, anchored Slot ② log-utility, weighted CVaR gain, and one-sided sandbox floor", async () => {
+    const oos = loadOosMatches(16);
+    const m8 = oos.slice(0, 8);
+
+    // 1a. Untrusted 64-line cross-match CRS snapshotPlan across ALL 8 matches (17^8 = 6.98B raw states) MUST finish in < 50ms (zero event-loop DoS!)
+    const advLines: ArchetypePlan["lines"] = [];
+    for (let grp = 0; grp < 4; grp++) {
+      const mA = m8[grp * 2];
+      const mB = m8[grp * 2 + 1];
+      const optsA = mA.pools.CRS.options.slice(0, 16);
+      const optsB = mB.pools.CRS.options.slice(0, 16);
+      for (let i = 0; i < 16; i++) {
+        const legA = makePick(mA, "CRS", optsA[i].label);
+        const legB = makePick(mB, "CRS", optsB[i].label);
+        const u = Math.min(
+          200_000,
+          bankerRoundParlayUnitPayout([legA.odds, legB.odds])
+        );
+        advLines.push({
+          id: `adv-${grp}-${i}`,
+          roleLabel: "测试快照",
+          legs: [
+            { ...legA, kickoff: mA.kickoff },
+            { ...legB, kickoff: mB.kickoff },
+          ],
+          modeLabel: "2串1",
+          multiple: 1,
+          cost: 2,
+          unitPayout: u,
+          returnPayout: u,
+          netProfit: u - 128,
+          prob: legA.fairProb * legB.fairProb,
+        });
+      }
+    }
+    const adv64Snap: ArchetypePlan = {
+      key: "max-ev-utility",
+      available: true,
+      shortTab: "⚖️ 期望效用",
+      badge: "测试",
+      title: "对抗快照测试",
+      tagline: "测试",
+      totalCost: 128,
+      savedCash: 0,
+      minReturn: 10,
+      maxReturn: 5000,
+      winProb: 0.2,
+      profitProb: 0.1,
+      expectedValueRate: -0.2,
+      underwaterCount: 0,
+      missOneReturn: null,
+      vigPct: 12,
+      reasons: ["测试"],
+      lines: advLines,
+    };
+    const tAdv0 = performance.now();
+    const advRep = archetypeToReport(adv64Snap, null, m8);
+    const advMs = performance.now() - tAdv0;
+    assert.notEqual(advRep, null);
+    assert.ok(
+      advMs < 50,
+      `Expected adversarial 64-line 8-match CRS snapshotPlan (17^8 raw states) < 50ms, got ${advMs.toFixed(2)}ms`
+    );
+
+    // 1b. Legal >2.2M-state 8x6 TTG 2串1 (1,008 bets, 7^8 = 5.76M states) & 8x8 TTG 2串1 (1,792 bets, 8^8 = 16.78M states) exactness + p50 < 40ms!
+    for (const kCount of [6, 8]) {
+      const keys = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"].slice(
+        0,
+        kCount
+      );
+      const picks = m8.flatMap((m) => keys.map((k) => makePick(m, "TTG", k)));
+      const samples: number[] = [];
+      let rep = computeTruthReport(picks, 1, m8, {
+        mode: "free",
+        passSizes: [2],
+      });
+      for (let r = 0; r < 5; r++) {
+        const t0 = performance.now();
+        rep = computeTruthReport(picks, 1, m8, {
+          mode: "free",
+          passSizes: [2],
+        });
+        samples.push(performance.now() - t0);
+      }
+      samples.sort((a, b) => a - b);
+      const p50 = samples[2];
+      assert.equal(rep.canCheckout, true);
+      assert.ok(
+        p50 < 40,
+        `Expected 8x${kCount} TTG 2串1 (${rep.betCount} bets) p50 < 40ms, got ${p50.toFixed(2)}ms`
+      );
+
+      // Verify exact realProfitProb on 8x6 TTG against exact pair-table DFS reference
+      if (kCount === 6) {
+        const stProbs = m8.map((m) => {
+          const ps = keys.map(
+            (k) => m.pools.TTG.options.find((o) => o.key === k)!.fairProb
+          );
+          return [...ps, Math.max(0, 1 - ps.reduce((a, b) => a + b, 0))];
+        });
+        const pCents = Array.from({ length: 8 }, (_, i) =>
+          Array.from({ length: 8 }, (_, j) => {
+            if (j <= i) return null;
+            const tbl = Array.from({ length: 7 }, () => new Int32Array(7));
+            for (let a = 0; a < 6; a++) {
+              const oa = m8[i].pools.TTG.options.find(
+                (o) => o.key === keys[a]
+              )!.odds;
+              for (let b = 0; b < 6; b++) {
+                const ob = m8[j].pools.TTG.options.find(
+                  (o) => o.key === keys[b]
+                )!.odds;
+                tbl[a][b] = Math.round(
+                  Math.min(200_000, bankerRoundParlayUnitPayout([oa, ob])) * 100
+                );
+              }
+            }
+            return tbl;
+          })
+        );
+        const costC = rep.betCount * 200;
+        let refWin = 0;
+        let refProf = 0;
+        let refMin = Infinity;
+        let refMax = 0;
+        const ch = new Int32Array(8);
+        const walk6 = (d: number, p: number, acc: number) => {
+          if (d === 7) {
+            const p7 = stProbs[7];
+            for (let s = 0; s < 7; s++) {
+              let add = 0;
+              if (s < 6) {
+                for (let q = 0; q < 7; q++) {
+                  const sq = ch[q];
+                  if (sq < 6) add += pCents[q][7]![sq][s];
+                }
+              }
+              const tot = acc + add;
+              if (tot > 0) {
+                const lp = p * p7[s];
+                refWin += lp;
+                if (tot >= costC) refProf += lp;
+                if (tot < refMin) refMin = tot;
+                if (tot > refMax) refMax = tot;
+              }
+            }
+            return;
+          }
+          const pd = stProbs[d];
+          for (let s = 0; s < 7; s++) {
+            ch[d] = s;
+            let add = 0;
+            if (s < 6) {
+              for (let q = 0; q < d; q++) {
+                const sq = ch[q];
+                if (sq < 6) add += pCents[q][d]![sq][s];
+              }
+            }
+            walk6(d + 1, p * pd[s], acc + add);
+          }
+        };
+        walk6(0, 1, 0);
+        assert.ok(
+          Math.abs(rep.anyWinProb - refWin) < 1e-12,
+          `8x6 TTG anyWinProb ${rep.anyWinProb} != exact ${refWin}`
+        );
+        assert.ok(
+          Math.abs(rep.realProfitProb - refProf) < 1e-12,
+          `8x6 TTG realProfitProb ${rep.realProfitProb} != exact ${refProf} (lossy merge must not occur)`
+        );
+        assert.equal(rep.minPayout, refMin / 100);
+        assert.equal(rep.maxPayout, refMax / 100);
+      }
+    }
+
+    // 2. >2,048-bet slip (8 matches all-3 HAD in 8串1 = 6,561 bets, tickets=[]) MUST block applyBonusOptimization!
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      computeWorkspace: async (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    const picks6561 = m8.flatMap((m) =>
+      m.pools.HAD.options.map((o) => makePick(m, "HAD", o.key))
+    );
+    ctrl.applyAuthenticatedBundle({
+      matches: m8,
+      initialPicks: picks6561,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: picks6561,
+          multiple: 1,
+          passSpec: { mode: "free", passSizes: [8] },
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: m8.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        m8
+      ),
+    });
+    assert.ok(ctrl.getState().workspace.manualReport.betCount > 2048);
+    assert.equal(
+      ctrl.getState().workspace.manualReport.tickets?.length ?? 0,
+      0
+    );
+    const res6561 = ctrl.applyBonusOptimization("equal") as {
+      ok: boolean;
+      blockedReason?: string;
+    };
+    assert.equal(
+      res6561.ok,
+      false,
+      ">2048-bet blocked slip with tickets=[] must NOT bypass >512 bonus gate"
+    );
+    assert.ok(res6561.blockedReason?.includes("512"));
+    assert.equal(ctrl.getState().planSpec, null);
+
+    // 3. 2-option pair hedge exact ¥2 integer split:
+    // Early 1.60 x Late d@3.82 -> targetReturn = ¥12.22, totalCost = ¥2; Late HAD single h@2.42 (u=4.84), a@2.42 (u=4.84):
+    // Continuous harmonic 1.21 falsely claims ¥10 * 1.21 - 12 = +¥0.10 ("lock-profit"),
+    // whereas EVERY physical integer split loses money: (2,2)->9.68-10=-¥0.32, (2,3)->9.68-12=-¥2.32, (3,3)->12.22-14=-¥1.78 ("reduce-loss")!
+    const baseEarly = FALLBACK_MATCHES[0] as MatchItem;
+    const baseLate = FALLBACK_MATCHES[3] as MatchItem;
+    const pairHedgeEarly: MatchItem = {
+      ...baseEarly,
+      id: "20261117-021",
+      kickoff: "20:00",
+      pools: {
+        ...baseEarly.pools,
+        HAD: {
+          ...baseEarly.pools.HAD,
+          options: [
+            { key: "h", label: "主胜", odds: 1.6, trend: 0, fairProb: 0.55 },
+            { key: "d", label: "平", odds: 3.7, trend: 0, fairProb: 0.24 },
+            { key: "a", label: "客胜", odds: 4.5, trend: 0, fairProb: 0.21 },
+          ],
+        },
+      },
+    };
+    const pairHedgeLate: MatchItem = {
+      ...baseLate,
+      id: "20261117-027",
+      kickoff: "03:45",
+      pools: {
+        ...baseLate.pools,
+        HAD: {
+          ...baseLate.pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.42, trend: 0, fairProb: 0.39 },
+            { key: "d", label: "平", odds: 3.82, trend: 0, fairProb: 0.22 },
+            { key: "a", label: "客胜", odds: 2.42, trend: 0, fairProb: 0.39 },
+          ],
+        },
+        HHAD: {
+          ...baseLate.pools.HHAD,
+          selling: false,
+          single: false,
+        },
+      },
+    };
+    const pairHedgePicks = [
+      makePick(pairHedgeEarly, "HAD", "h"),
+      makePick(pairHedgeLate, "HAD", "d"),
+    ];
+    const repPairHedge = computeTruthReport(pairHedgePicks, 1, [
+      pairHedgeEarly,
+      pairHedgeLate,
+    ]);
+    const insPairHedge = computeProOrderInsights(pairHedgePicks, repPairHedge, [
+      pairHedgeEarly,
+      pairHedgeLate,
+    ]);
+    assert.equal(insPairHedge.hedge.available, true);
+    assert.equal(
+      insPairHedge.hedge.lockedNetProfit,
+      -0.32,
+      `2-option pair hedge must evaluate physical ¥2 integer splits (best is (2,2) -> -¥0.32), got ${insPairHedge.hedge.lockedNetProfit}`
+    );
+    assert.equal(insPairHedge.hedge.hedgeMode, "reduce-loss");
+
+    const uiSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      uiSrc.includes("早晚场零损锁回本金"),
+      "SkinPhoneApp must give break-even hedgeMode an honest neutral header instead of 对冲锁利"
+    );
+
+    // 4. Anchored M=1 Slot ② achieves exact integer-optimal log-wealth split AND honest Slot ② copy
+    const anchored1M: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "anc-log-1m",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.35, trend: 0, fairProb: 0.4 },
+            { key: "d", label: "平", odds: 2.65, trend: 0, fairProb: 0.35 },
+            { key: "a", label: "客胜", odds: 3.6, trend: 0, fairProb: 0.25 },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.TTG,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.CRS,
+          selling: false,
+        },
+      },
+    };
+    const slot2Anc1M = generateParetoPortfolio(
+      [anchored1M],
+      100,
+      "objective",
+      false,
+      [makePick(anchored1M, "HAD", "h")]
+    )[1] as ArchetypePlan;
+    assert.equal(slot2Anc1M.lines.length, 2);
+    // For h@2.35 (p=0.40) + d@2.65 (p=0.35) at ¥100 (50 notes), minimum shield is ceil(100/5.30)=19 (split 31/19),
+    // while exact log-wealth utility optimum is interior split (28, 22)!
+    assert.ok(
+      slot2Anc1M.lines[1].multiple >
+        Math.ceil(slot2Anc1M.totalCost / slot2Anc1M.lines[1].unitPayout),
+      `Anchored 1M Slot ② must optimize integer log-wealth utility beyond minimum breakeven shield, got (${slot2Anc1M.lines[0].multiple}, ${slot2Anc1M.lines[1].multiple})`
+    );
+    assert.ok(
+      !slot2Anc1M.reasons.some((r) => r.includes("锁死最小保本护盾注数")),
+      "Slot ② reasons must not falsely claim shields are always locked to minimum breakeven notes"
+    );
+
+    // 5. Probability-weighted miss-1 CVaR strictly beats uniform equal-multiple allocation on asymmetric 5-match C(5,3,2) slate
+    const asym5: MatchItem[] = m8.slice(0, 5).map((m, idx) => ({
+      ...m,
+      id: `asym5-${idx}`,
+      pools: {
+        ...m.pools,
+        HAD: {
+          ...m.pools.HAD,
+          selling: true,
+          single: false,
+          options:
+            idx < 3
+              ? [
+                  {
+                    key: "h",
+                    label: "主胜",
+                    odds: 1.22,
+                    trend: 0,
+                    fairProb: 0.76,
+                  },
+                  {
+                    key: "d",
+                    label: "平",
+                    odds: 5.1,
+                    trend: 0,
+                    fairProb: 0.15,
+                  },
+                  {
+                    key: "a",
+                    label: "客胜",
+                    odds: 9.0,
+                    trend: 0,
+                    fairProb: 0.09,
+                  },
+                ]
+              : [
+                  {
+                    key: "h",
+                    label: "主胜",
+                    odds: 2.15,
+                    trend: 0,
+                    fairProb: 0.42,
+                  },
+                  {
+                    key: "d",
+                    label: "平",
+                    odds: 3.2,
+                    trend: 0,
+                    fairProb: 0.29,
+                  },
+                  {
+                    key: "a",
+                    label: "客胜",
+                    odds: 3.05,
+                    trend: 0,
+                    fairProb: 0.29,
+                  },
+                ],
+        },
+        HHAD: { ...m.pools.HHAD, selling: false },
+        HAFU: { ...m.pools.HAFU, selling: false },
+        TTG: { ...m.pools.TTG, selling: false },
+        CRS: { ...m.pools.CRS, selling: false },
+      },
+    }));
+    const slot3Asym5 = generateParetoPortfolio(
+      asym5,
+      120,
+      "objective",
+      false,
+      []
+    )[2] as ArchetypePlan;
+    const subLines5 = slot3Asym5.lines.filter((l) => l.legs.length < 5);
+    const calProbs5 = asym5.map(
+      (m) => calibrateMatchCoherentModel(m).pools.HAD.options[0].fairProb
+    );
+    const weights5 = calProbs5.map((p) => (1 - p) / p);
+    const wSum5 = weights5.reduce((a, b) => a + b, 0);
+    const normW5 = weights5.map((w) => w / wSum5);
+    const calcWeightedCvar = (mults: number[]) => {
+      const vec = asym5.map((missedM, x) => ({
+        w: normW5[x],
+        pay: subLines5.reduce(
+          (acc, l, bi) =>
+            acc +
+            (l.legs.some((g) => g.matchId === missedM.id)
+              ? 0
+              : mults[bi] * l.unitPayout),
+          0
+        ),
+      }));
+      vec.sort((a, b) => a.pay - b.pay);
+      let rem = 0.5;
+      let s = 0;
+      for (const item of vec) {
+        const take = Math.min(rem, item.w);
+        s += take * item.pay;
+        rem -= take;
+        if (rem <= 1e-15) break;
+      }
+      return s / 0.5;
+    };
+    const subNotes5 = subLines5.reduce((a, l) => a + l.multiple, 0);
+    const baseEq = Math.floor(subNotes5 / subLines5.length);
+    const eqMults = subLines5.map(
+      (_, i) => baseEq + (i < subNotes5 % subLines5.length ? 1 : 0)
+    );
+    assert.ok(
+      calcWeightedCvar(subLines5.map((l) => l.multiple)) >
+        calcWeightedCvar(eqMults) + 1e-6,
+      "Probability-weighted wheel allocation must strictly beat uniform equal-multiple allocation on asymmetric miss-1 slate"
+    );
+
+    // 6. One-sided M=2 cushion plan MUST keep missOneReturn === 0 under sandbox slider!
+    const noSingleAllPools: MatchItem = {
+      ...(FALLBACK_MATCHES[2] as MatchItem),
+      id: "no-single-any-pool",
+      pools: {
+        HAD: { ...(FALLBACK_MATCHES[2] as MatchItem).pools.HAD, single: false },
+        HHAD: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools.HHAD,
+          single: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools.HAFU,
+          selling: false,
+          single: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools.TTG,
+          selling: false,
+          single: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools.CRS,
+          selling: false,
+          single: false,
+        },
+      },
+    };
+    const oneSidePair = [FALLBACK_MATCHES[1] as MatchItem, noSingleAllPools];
+    const slot3OneSide = generateParetoPortfolio(
+      oneSidePair,
+      100,
+      "objective",
+      false,
+      []
+    )[2] as ArchetypePlan;
+    assert.equal(slot3OneSide.missOneReturn, 0);
+    const wsOneSideSandboxed = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 1,
+        subjectiveDeltaPct: 5,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-cvar-wheel",
+          snapshotPlan: slot3OneSide,
+        },
+        targetIds: oneSidePair.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      oneSidePair
+    );
+    assert.equal(
+      wsOneSideSandboxed.appliedPlan?.missOneReturn,
+      0,
+      "Sandboxed one-sided M=2 cushion plan must preserve missOneReturn === 0 when the uncushioned match misses"
+    );
+
+    // 7. applyEquivalentSwap computes exact post-swap betCount (486 <= 512) instead of crude betCount * 2 (972 > 512)!
+    const swap6Matches: MatchItem[] = [
+      {
+        ...(FALLBACK_MATCHES[0] as MatchItem),
+        id: "swap6-m0",
+        pools: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools,
+          HAD: {
+            ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAD,
+            selling: true,
+            options: [
+              { key: "h", label: "主胜", odds: 1.95, trend: 0, fairProb: 0.46 },
+              { key: "d", label: "平", odds: 3.6, trend: 0, fairProb: 0.25 },
+              { key: "a", label: "客胜", odds: 3.8, trend: 0, fairProb: 0.29 },
+            ],
+          },
+          HHAD: {
+            ...(FALLBACK_MATCHES[0] as MatchItem).pools.HHAD,
+            selling: true,
+            goalLine: "-1",
+            options: [
+              { key: "hh", label: "让胜", odds: 3.5, trend: 0, fairProb: 0.25 },
+              {
+                key: "hd",
+                label: "让平",
+                odds: 3.45,
+                trend: 0,
+                fairProb: 0.26,
+              },
+              {
+                key: "ha",
+                label: "让负",
+                odds: 1.72,
+                trend: 0,
+                fairProb: 0.49,
+              },
+            ],
+          },
+        },
+      },
+      ...m8.slice(1, 6),
+    ];
+    const swap6Picks = [
+      makePick(swap6Matches[0], "HHAD", "ha"),
+      makePick(swap6Matches[0], "HHAD", "hd"),
+      ...swap6Matches
+        .slice(1)
+        .flatMap((m) =>
+          m.pools.HAD.options.map((o) => makePick(m, "HAD", o.key))
+        ),
+    ];
+    ctrl.applyAuthenticatedBundle({
+      matches: swap6Matches,
+      initialPicks: swap6Picks,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: swap6Picks,
+          multiple: 1,
+          passSpec: { mode: "free", passSizes: [6] },
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: swap6Matches.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        swap6Matches
+      ),
+    });
+    assert.equal(ctrl.getState().workspace.manualReport.betCount, 486);
+    const swapOk486 = ctrl.applyEquivalentSwap({
+      matchId: "swap6-m0",
+      title: "同义替换测试",
+      betterChoice: "胜平负[平+客胜]",
+      worseChoice: "让球[让负]",
+      edgePct: 8.5,
+      detail: "测试",
+      betterPicks: [
+        { poolCode: "HAD", optionKey: "d" },
+        { poolCode: "HAD", optionKey: "a" },
+      ],
+      worsePicks: [{ poolCode: "HHAD", optionKey: "ha" }],
+      poolCode: "HAD",
+      optionKey: "d",
+    });
+    assert.equal(swapOk486, true);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.manualReport.betCount, 486);
+    assert.equal(
+      ctrl.getState().planSpec?.kind,
+      "bonus",
+      "Post-swap betCount is 486 <= 512 so auto equal bonus dutching MUST activate"
     );
   });
 });

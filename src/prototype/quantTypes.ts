@@ -11,6 +11,9 @@ export type LegacyArchetypeKey =
 export type ArchetypeKey = PortfolioKey | LegacyArchetypeKey;
 export type BonusOptMode = "equal" | "hot-first" | "cold-first";
 
+export const SUBJECTIVE_DELTA_MIN = -15;
+export const SUBJECTIVE_DELTA_MAX = 15;
+
 export interface OddsOption {
   key: string;
   label: string;
