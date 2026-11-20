@@ -11,6 +11,7 @@ import {
   SUBJECTIVE_DELTA_MIN,
   type ArchetypePlan,
   type BonusOptMode,
+  type BridgeMatchCandidate,
   type EquivalentArbItem,
   type MatchItem,
   type PoolCode,
@@ -703,6 +704,29 @@ export function SkinPhoneApp({
   const isBonusOptDisabled = !manualReport.canCheckout || isBonusOver512;
   const appliedPlan = planSpec ? workspace.appliedPlan : null;
   const insights = workspace.insights;
+  const activeBankerSet = useMemo(
+    () =>
+      new Set(
+        effectiveReport.bankerMatchIds ??
+          manualReport.bankerMatchIds ??
+          passSpec.bankerMatchIds ??
+          []
+      ),
+    [
+      effectiveReport.bankerMatchIds,
+      manualReport.bankerMatchIds,
+      passSpec.bankerMatchIds,
+    ]
+  );
+  const canToggleBanker =
+    manualReport.matchCount >= 3 &&
+    manualReport.matchCount <= 8 &&
+    !manualReport.hasSameMatchCrossPoolConflict;
+  const breakevenTargetCost =
+    appliedPlan?.breakevenUpgradeCost ??
+    effectiveReport.breakevenUpgradeCost ??
+    manualReport.breakevenUpgradeCost ??
+    null;
   const allWarnings = workspace.allWarnings;
   const portfolioPlans = workspace.portfolioPlans?.length
     ? workspace.portfolioPlans
@@ -906,10 +930,91 @@ export function SkinPhoneApp({
     return true;
   };
 
+  const upgradeBonusToBreakevenUI = (triggerEl?: HTMLElement | null) => {
+    const res = betCtrl.upgradeBonusToBreakeven();
+    if (!res.ok) {
+      if (res.reason) {
+        haptic(12);
+        showSpringToast(layerRef.current, res.reason);
+      }
+      return false;
+    }
+    playTactileCue("defuse-celebrate");
+    triggerShimmerSweep(auditCockpitRef.current);
+    burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 24);
+    showSpringToast(
+      layerRef.current,
+      `⚡ 已授权升至最低保本门槛 ¥${res.upgradedCost}（100% 零假中奖）`
+    );
+    return true;
+  };
+
   const upgradeToZeroUnderwater = (triggerEl?: HTMLElement | null) => {
+    if (
+      typeof breakevenTargetCost === "number" &&
+      breakevenTargetCost > effectiveReport.totalCost
+    ) {
+      upgradeBonusToBreakevenUI(triggerEl);
+      return;
+    }
     if (applyBonusOptimization("equal", triggerEl)) {
       playTactileCue("defuse-celebrate");
     }
+  };
+
+  const toggleBankerMatchUI = (
+    matchId: string,
+    homeName: string,
+    triggerEl?: HTMLElement | null
+  ) => {
+    const res = betCtrl.toggleBankerMatch(matchId);
+    if (!res.ok) {
+      haptic(12);
+      showSpringToast(layerRef.current, res.reason || "当前不可设胆");
+      return;
+    }
+    kickElement(triggerEl ?? null, res.isBanker ? 2.4 : -1.2);
+    playTactileCue(res.isBanker ? "tap-on" : "tap-off");
+    showSpringToast(
+      layerRef.current,
+      res.isBanker
+        ? `📌 已设【${homeName}】为必出稳胆（自动剔除无胆冗余组合）`
+        : `已取消【${homeName}】胆码`
+    );
+  };
+
+  const applyBridgeCandidateUI = (
+    cand: BridgeMatchCandidate,
+    triggerEl?: HTMLElement | null
+  ) => {
+    const res = betCtrl.applyBridgeCandidate(cand);
+    if (!res.ok) {
+      haptic(12);
+      showSpringToast(
+        layerRef.current,
+        res.blockedReason || "无法搭上该配菜场"
+      );
+      return;
+    }
+    playTactileCue("optimize-arpeggio");
+    if (triggerEl) burstCelebrationSparks(triggerEl, 18);
+    showSpringToast(
+      layerRef.current,
+      `🌉 已搭上【${cand.matchNumStr} ${cand.home}·${cand.optionLabel}@${cand.odds.toFixed(2)}】凑成合法 2串1`
+    );
+  };
+
+  const toggleTicketConsolidationUI = (triggerEl?: HTMLElement | null) => {
+    const res = betCtrl.toggleTicketConsolidation();
+    if (!res.ok) return;
+    kickElement(triggerEl ?? null, res.consolidated ? 2.2 : -1.2);
+    playTactileCue(res.consolidated ? "optimize-arpeggio" : "tap-off");
+    showSpringToast(
+      layerRef.current,
+      res.consolidated
+        ? "🔗 已开启智能合票减张（相近倍数已聚类合并防打票滑点）"
+        : "已切回精确分倍逐票明细"
+    );
   };
 
   const applyDirectMultiple = (nextRaw: number) => {
@@ -1326,8 +1431,74 @@ export function SkinPhoneApp({
     </div>
   );
 
+  const bridgeCandidates = insights.bridgeCandidates ?? [];
+  const showBridgeFinder =
+    effectiveReport.matchCount === 1 &&
+    !effectiveReport.canCheckout &&
+    bridgeCandidates.length > 0;
+
+  const renderBridgeCandidatesBlock = (compact = false) =>
+    showBridgeFinder ? (
+      <div
+        className="card sonar-card enter num"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          padding: compact ? "8px 10px" : undefined,
+        }}
+      >
+        <div className="co-head" style={{ marginBottom: 0 }}>
+          <span className="sec" style={{ margin: 0 }}>
+            🌉 过桥配菜搭子寻优（还差 1 场凑合法 2串1）
+          </span>
+          <span className="qpill hi">
+            全盘精选 Top {bridgeCandidates.length}
+          </span>
+        </div>
+        {bridgeCandidates.map((cand) => (
+          <div
+            key={`${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
+            className="note-box"
+            style={{ margin: 0, padding: "6px 8px" }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                flexWrap: "wrap",
+              }}
+            >
+              <div>
+                <strong>
+                  {cand.badge} · {cand.matchNumStr} {cand.home}vs{cand.away}
+                </strong>
+                <div className="small" style={{ margin: "2px 0 0" }}>
+                  {cand.poolName}[{cand.optionLabel}@{cand.odds.toFixed(2)} ·
+                  真率
+                  {(cand.fairProb * 100).toFixed(0)}%] — {cand.reason}
+                </div>
+              </div>
+              <button
+                type="button"
+                data-spring="0.88"
+                className="key mini dark"
+                style={{ flexShrink: 0 }}
+                onClick={(e) => applyBridgeCandidateUI(cand, e.currentTarget)}
+              >
+                一键搭上
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    ) : null;
+
   const matchContent = (
     <>
+      {renderBridgeCandidatesBlock(true)}
       {["mix", "spf", "single"].includes(mode) && (
         <div className="mgrid colhead enter">
           <span style={{ textAlign: "left" }}>球队 / 排名</span>
@@ -2171,13 +2342,31 @@ export function SkinPhoneApp({
                 </div>
 
                 <div className="tiles num">
-                  <div className="tile">
-                    <span>真正赚钱率</span>
-                    <b>{(currentArch.profitProb * 100).toFixed(1)}%</b>
-                    <em>
-                      命中任一注 {(currentArch.winProb * 100).toFixed(1)}%
-                    </em>
-                  </div>
+                  {(() => {
+                    const objStrictPct =
+                      (currentArch.objectiveStrictNetGainProb ??
+                        currentArch.strictNetGainProb ??
+                        currentArch.profitProb) * 100;
+                    const archBreakEvenPct =
+                      (currentArch.breakEvenProb ?? 0) * 100;
+                    const archSubjProfitPct =
+                      currentArch.subjectiveProjectedProfitProb != null
+                        ? currentArch.subjectiveProjectedProfitProb * 100
+                        : null;
+                    return (
+                      <div className="tile">
+                        <span>严格净赚率</span>
+                        <b>{objStrictPct.toFixed(1)}%</b>
+                        <em>
+                          {archBreakEvenPct >= 0.05
+                            ? `另含 ${archBreakEvenPct.toFixed(1)}% 刚回本 · 命中 ${(currentArch.winProb * 100).toFixed(1)}%`
+                            : archSubjProfitPct !== null
+                              ? `个人推演 ${archSubjProfitPct.toFixed(1)}% · 命中 ${(currentArch.winProb * 100).toFixed(1)}%`
+                              : `命中任一注 ${(currentArch.winProb * 100).toFixed(1)}%`}
+                        </em>
+                      </div>
+                    );
+                  })()}
                   <div
                     className={`tile ${(currentArch.underwaterCount ?? 0) > 0 ? "danger" : ""}`}
                   >
@@ -2198,19 +2387,29 @@ export function SkinPhoneApp({
                     </em>
                   </div>
                   {(() => {
-                    const archEvPct = currentArch.expectedValueRate * 100;
+                    const archObjEvPct =
+                      (currentArch.objectiveEVRate ??
+                        currentArch.expectedValueRate) * 100;
+                    const archSubjEvPct =
+                      currentArch.subjectiveProjectedEVRate != null
+                        ? currentArch.subjectiveProjectedEVRate * 100
+                        : null;
                     const payoutReturnPct = Math.max(
                       0,
                       100 - currentArch.vigPct
                     ).toFixed(1);
                     return (
                       <div className="tile">
-                        <span>数学期望与抽水</span>
+                        <span>客观数学期望与抽水</span>
                         <b>
-                          {archEvPct >= 0 ? "+" : ""}
-                          {archEvPct.toFixed(1)}%
+                          {archObjEvPct >= 0 ? "+" : ""}
+                          {archObjEvPct.toFixed(1)}%
                         </b>
-                        <em>票面返还 {payoutReturnPct}%</em>
+                        <em>
+                          {archSubjEvPct !== null
+                            ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
+                            : `票面返还 ${payoutReturnPct}%`}
+                        </em>
                       </div>
                     );
                   })()}
@@ -2438,12 +2637,21 @@ export function SkinPhoneApp({
                       </em>
                     </div>
                     <div className="tile">
-                      <span>真赚钱率 vs 命中率</span>
+                      <span>严格净赚率 vs 命中率</span>
                       <b>
-                        {(effectiveReport.realProfitProb * 100).toFixed(1)}% /{" "}
-                        {(effectiveReport.anyWinProb * 100).toFixed(1)}%
+                        {(
+                          effectiveReport.objectiveStrictNetGainProb * 100
+                        ).toFixed(1)}
+                        % / {(effectiveReport.anyWinProb * 100).toFixed(1)}%
                       </b>
-                      <em>净利&gt;0 才算真赢</em>
+                      <em>
+                        {effectiveReport.breakEvenProb >= 0.0005
+                          ? `另含 ${(effectiveReport.breakEvenProb * 100).toFixed(1)}% 刚回本`
+                          : effectiveReport.subjectiveProjectedProfitProb !=
+                              null
+                            ? `个人推演不亏 ${(effectiveReport.subjectiveProjectedProfitProb * 100).toFixed(1)}%`
+                            : "客观净利>0 才算真赚"}
+                      </em>
                     </div>
                     <div
                       ref={underwaterTileRef}
@@ -2462,12 +2670,17 @@ export function SkinPhoneApp({
                       </em>
                     </div>
                     <div className="tile">
-                      <span>危险分与连黑预警</span>
-                      <b>{effectiveReport.dangerScore}分</b>
+                      <span>危险分与客观期望</span>
+                      <b>
+                        {effectiveReport.dangerScore}分 ·{" "}
+                        {effectiveReport.objectiveEVRate >= 0 ? "+" : ""}
+                        {(effectiveReport.objectiveEVRate * 100).toFixed(1)}%
+                      </b>
                       <em>
-                        连黑5次 {(insights.fiveLossStreakProb * 100).toFixed(0)}
-                        % ·{" "}
-                        {effectiveReport.expectedValueRate <= 0
+                        {effectiveReport.subjectiveProjectedEVRate != null
+                          ? `个人推演EV ${effectiveReport.subjectiveProjectedEVRate >= 0 ? "+" : ""}${(effectiveReport.subjectiveProjectedEVRate * 100).toFixed(1)}% · `
+                          : `连黑5次 ${(insights.fiveLossStreakProb * 100).toFixed(0)}% · `}
+                        {effectiveReport.objectiveEVRate <= 0
                           ? `凯利0%·娱乐≤${insights.recommendedBankrollPct}%`
                           : `凯利仓≤${insights.recommendedBankrollPct}%`}
                       </em>
@@ -2525,6 +2738,37 @@ export function SkinPhoneApp({
                         ③ 博冷高弹
                       </button>
                     </div>
+                    {effectiveReport.underwaterCount > 0 &&
+                      typeof breakevenTargetCost === "number" &&
+                      breakevenTargetCost > effectiveReport.totalCost &&
+                      !isBonusOptDisabled && (
+                        <div
+                          style={{
+                            width: "100%",
+                            marginTop: 4,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 6,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span className="small" style={{ margin: 0 }}>
+                            当前 ¥{effectiveReport.totalCost} 严守原预算（仍余{" "}
+                            {effectiveReport.underwaterCount} 组局部回血）
+                          </span>
+                          <button
+                            type="button"
+                            data-spring="0.88"
+                            className="key mini dark num"
+                            onClick={(e) =>
+                              upgradeBonusToBreakevenUI(e.currentTarget)
+                            }
+                          >
+                            ⚡ 一键加至最低保本门槛 ¥{breakevenTargetCost}
+                          </button>
+                        </div>
+                      )}
                     {isBonusOver512 && (
                       <div
                         className="small"
@@ -2598,7 +2842,8 @@ export function SkinPhoneApp({
 
           {/* 防坑雷达 · 弹性保本 · 省钱动作（有预警或优化空间时自动高亮展示） */}
           {((effectiveReport.underwaterCount > 0 &&
-            effectiveReport.effectiveOdds > 1.03) ||
+            effectiveReport.effectiveOdds > 1.005) ||
+            showBridgeFinder ||
             Boolean(effectiveReport.syntheticHint) ||
             Boolean(insights.activeSwapTip) ||
             Boolean(insights.weakestLink) ||
@@ -2609,27 +2854,31 @@ export function SkinPhoneApp({
             >
               <div className="sec">防坑雷达 · 弹性保本 · 省钱动作</div>
 
+              {showBridgeFinder && renderBridgeCandidatesBlock(true)}
+
               {effectiveReport.underwaterCount > 0 &&
-                effectiveReport.effectiveOdds > 1.03 && (
+                typeof breakevenTargetCost === "number" && (
                   <div className="note-box">
                     <strong>✨ 弹性全保本升级方案：</strong>受 2
-                    元整数倍影响，当前统买 {multiple} 倍存在{" "}
-                    {effectiveReport.underwaterCount}{" "}
-                    种假中奖亏钱；启用不等倍配平（预计约 ¥
-                    {effectiveReport.breakevenUpgradeCost ??
-                      effectiveReport.totalCost + 6}
-                    ）即可实现 <strong>100% 组合零亏损保本</strong>！
+                    元整数倍影响，当前 ¥{effectiveReport.totalCost} 存在{" "}
+                    {effectiveReport.underwaterCount} 种局部回血（低于总本金）；
+                    {breakevenTargetCost > effectiveReport.totalCost
+                      ? `需显式授权将本金升至最低保本门槛 ¥${breakevenTargetCost} 即可实现 `
+                      : "在原预算内启用不等倍配平即可实现 "}
+                    <strong>100% 组合零亏损保本</strong>！
                     <div className="note-act">
                       <button
                         type="button"
                         data-spring="0.88"
                         disabled={isBonusOptDisabled}
-                        className="key mini dark"
+                        className="key mini dark num"
                         onClick={(e) =>
                           upgradeToZeroUnderwater(e.currentTarget)
                         }
                       >
-                        一键配平 100% 全保本
+                        {breakevenTargetCost > effectiveReport.totalCost
+                          ? `⚡ 一键加至最低保本门槛 ¥${breakevenTargetCost}`
+                          : "⚖️ 原预算内一键配平 0 假中奖"}
                       </button>
                     </div>
                   </div>
@@ -2807,6 +3056,22 @@ export function SkinPhoneApp({
                         <b>{first.away}</b>
                       </div>
                       <div style={{ display: "flex", gap: 5 }}>
+                        {canToggleBanker && (
+                          <button
+                            type="button"
+                            className={`key mini ${activeBankerSet.has(mid) ? "on" : ""}`}
+                            data-spring="0.85"
+                            onClick={(e) =>
+                              toggleBankerMatchUI(
+                                mid,
+                                first.home,
+                                e.currentTarget
+                              )
+                            }
+                          >
+                            {activeBankerSet.has(mid) ? "📌胆" : "📌设胆"}
+                          </button>
+                        )}
                         {fullMatch && (
                           <button
                             type="button"
@@ -4317,13 +4582,42 @@ export function SkinPhoneApp({
             <span className="num">{effectiveReport.modeLabel}</span>
           </div>
           <div className="p-amt num">合计应付 ¥{effectiveReport.totalCost}</div>
+          {planSpec && appliedPlan && appliedPlan.lines.length >= 2 && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                flexWrap: "wrap",
+                padding: "0 0 8px",
+                marginBottom: 6,
+                borderBottom: "1px dashed rgba(15,23,42,0.16)",
+              }}
+            >
+              <span className="small num" style={{ margin: 0 }}>
+                店面实打约 {effectiveReport.consolidatedTickets} 张票
+                {planSpec.consolidateTickets
+                  ? "（已合并相近倍数防滑点）"
+                  : "（当前为逐注精确分倍）"}
+              </span>
+              <button
+                type="button"
+                data-spring="0.88"
+                className={`key mini ${planSpec.consolidateTickets ? "on" : ""}`}
+                onClick={(e) => toggleTicketConsolidationUI(e.currentTarget)}
+              >
+                🔗 智能合票减张{planSpec.consolidateTickets ? " · 已开" : ""}
+              </button>
+            </div>
+          )}
 
           {(appliedPlan
             ? appliedPlan.lines.flatMap((l) => {
                 const left = l.legs
                   .map(
                     (g) =>
-                      `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
+                      `${activeBankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
                   )
                   .join("×");
                 return splitTerminalPosterSlips(
@@ -4339,13 +4633,13 @@ export function SkinPhoneApp({
                   const left = (tk.legs ?? [])
                     .map(
                       (g) =>
-                        `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
+                        `${activeBankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
                     )
                     .join("×");
                   const passTxt =
                     (tk.legs?.length ?? 1) === 1
                       ? "单关"
-                      : `${tk.legs?.length}串1`;
+                      : `${tk.legs?.length}串1${activeBankerSet.size > 0 ? `(${activeBankerSet.size}胆)` : ""}`;
                   return splitTerminalPosterSlips(
                     tk.id,
                     left,
@@ -4355,7 +4649,7 @@ export function SkinPhoneApp({
                 })
               : picks.map((p) => ({
                   key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,
-                  left: `${p.matchNumStr} ${p.home}vs${p.away}`,
+                  left: `${activeBankerSet.has(p.matchId) ? "📌【胆】" : ""}${p.matchNumStr} ${p.home}vs${p.away}`,
                   right: `${p.poolName}[${p.optionLabel}] × ${multiple}倍`,
                 }))
           ).map((row, _, allRows) => {
@@ -4389,8 +4683,8 @@ export function SkinPhoneApp({
 
           <div className="p-foot">
             <span className="num">
-              保底 ¥{effectiveReport.minPayout.toFixed(2)} · 真赚率{" "}
-              {(effectiveReport.realProfitProb * 100).toFixed(1)}%
+              保底 ¥{effectiveReport.minPayout.toFixed(2)} · 严格净赚{" "}
+              {(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%
             </span>
             <div className="qr">
               {Array.from({ length: 49 }, (_, i) => (
@@ -4713,6 +5007,35 @@ export function SkinPhoneApp({
               ))}
             </div>
 
+            {canToggleBanker && (
+              <>
+                <div className="sec" style={{ marginTop: 10 }}>
+                  📌 胆拖定胆（点亮必出稳胆，一键砍掉不含稳胆的废票）
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {pickedMatchIds.map((mid) => {
+                    const f = picks.find((p) => p.matchId === mid);
+                    if (!f) return null;
+                    const on = activeBankerSet.has(mid);
+                    return (
+                      <button
+                        key={`pass-banker-${mid}`}
+                        type="button"
+                        data-spring="0.88"
+                        className={`key mini num ${on ? "on" : ""}`}
+                        onClick={(e) =>
+                          toggleBankerMatchUI(mid, f.home, e.currentTarget)
+                        }
+                      >
+                        {on ? "📌胆 · " : "📌设胆 · "}
+                        {f.matchNumStr.slice(-3)} {f.home}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
             <div className="sec" style={{ marginTop: 12 }}>
               多串容错过关（中国体彩官方 M串N 错场防爆快选）
             </div>
@@ -4911,18 +5234,32 @@ export function SkinPhoneApp({
                             .join(" · ")}
                         </small>
                       </div>
-                      <button
-                        type="button"
-                        className="key mini"
-                        onClick={() => {
-                          void betCtrl.removeMatchFromSlip(mid);
-                        }}
-                      >
-                        移除
-                      </button>
+                      <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                        {canToggleBanker && (
+                          <button
+                            type="button"
+                            className={`key mini ${activeBankerSet.has(mid) ? "on" : ""}`}
+                            onClick={(e) =>
+                              toggleBankerMatchUI(mid, f.home, e.currentTarget)
+                            }
+                          >
+                            {activeBankerSet.has(mid) ? "📌胆" : "📌设胆"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="key mini"
+                          onClick={() => {
+                            void betCtrl.removeMatchFromSlip(mid);
+                          }}
+                        >
+                          移除
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
+                {showBridgeFinder && renderBridgeCandidatesBlock(true)}
               </div>
             )}
           </>
@@ -5071,8 +5408,8 @@ export function SkinPhoneApp({
                   ? effectiveReport.ruleBlockReason ||
                     "未开单关 · 还差 1 场凑 2串1"
                   : effectiveReport.underwaterCount > 0
-                    ? `保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · ⚠️ ${effectiveReport.underwaterCount}组假中奖 · 真赚率 ${(effectiveReport.realProfitProb * 100).toFixed(1)}%`
-                    : `真实保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · 真赚率 ${(effectiveReport.realProfitProb * 100).toFixed(1)}%`}
+                    ? `保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · ⚠️ ${effectiveReport.underwaterCount}组局部回血 · 净赚率 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`
+                    : `真实保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · 严格净赚 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`}
             </small>
           </div>
         </div>
@@ -5173,6 +5510,8 @@ export function SkinPhoneApp({
           setBarPopover(null);
           if (effectiveReport.canCheckout) {
             setSheet({ type: "poster" });
+          } else if (showBridgeFinder && bridgeCandidates[0]) {
+            applyBridgeCandidateUI(bridgeCandidates[0]);
           } else if (
             effectiveReport.matchCount === 1 &&
             effectiveReport.syntheticRescuePicks &&
@@ -5188,11 +5527,13 @@ export function SkinPhoneApp({
       >
         {effectiveReport.canCheckout
           ? "打票核对"
-          : effectiveReport.matchCount === 1 &&
-              effectiveReport.syntheticRescuePicks &&
-              effectiveReport.syntheticRescuePicks.length > 0
-            ? "一键合成单关"
-            : "去凑场次"}
+          : showBridgeFinder
+            ? "🌉一键凑2串1"
+            : effectiveReport.matchCount === 1 &&
+                effectiveReport.syntheticRescuePicks &&
+                effectiveReport.syntheticRescuePicks.length > 0
+              ? "一键合成单关"
+              : "去凑场次"}
       </button>
     </div>
   ) : (

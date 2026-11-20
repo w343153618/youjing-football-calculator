@@ -188,9 +188,19 @@ export function buildComboDiagnosisContext({
     }
   }
 
+  const bankerSet = new Set(
+    Array.isArray(effectiveReport?.bankerMatchIds)
+      ? effectiveReport.bankerMatchIds
+      : []
+  );
+  const bankerMatchLabels = [];
   const dualCoveredMatches = [];
   const matchesPayload = targetMatches.slice(0, 8).map((m) => {
     const mq = m.microQuant || {};
+    const isBanker = sourceMode === "picked" && bankerSet.has(m.id);
+    if (isBanker) {
+      bankerMatchLabels.push(`${m.matchNumStr || m.home}`);
+    }
     const planLegs = planLegsByMatch.get(m.id) || [];
     const mpicks =
       sourceMode === "picked"
@@ -217,7 +227,7 @@ export function buildComboDiagnosisContext({
 
     const userPickedDesc =
       formattedPicks.length > 0
-        ? formattedPicks.join(" + ")
+        ? `${isBanker ? "📌【胆】" : ""}${formattedPicks.join(" + ")}`
         : sourceMode === "picked" && appliedPlan
           ? "精算配单已主动精简剔除本场（未入实票）"
           : "";
@@ -254,6 +264,12 @@ export function buildComboDiagnosisContext({
     ? `${effectiveReport.expectedValueRate >= 0 ? "+" : ""}${(
         Number(effectiveReport.expectedValueRate || 0) * 100
       ).toFixed(1)}%`
+    : null;
+  const objEvRate = Number(
+    effectiveReport?.objectiveEVRate ?? effectiveReport?.expectedValueRate ?? 0
+  );
+  const objEvPctStr = hasValidReport
+    ? `${objEvRate >= 0 ? "+" : ""}${(objEvRate * 100).toFixed(1)}%`
     : null;
 
   let actuaryContext;
@@ -295,8 +311,19 @@ export function buildComboDiagnosisContext({
       `用户已启用【${originPrefix} · ${cleanSlotName}】（共 ${appliedPlan.lines.length} 张实票，总本金 ¥${effectiveReport?.totalCost ?? appliedPlan.totalCost}）`,
       zeroUw
         ? "已在数学上实现覆盖态 0 假中奖倒贴（消除了中奖亏本隐患）"
-        : `属容错回血结构（含 ${uwCount} 组局部回血低于总本金）`,
+        : !isArchetype && !planSpec?.upgradeToBreakeven
+          ? `已严守用户当前预算主权做最优减损分配（仍含 ${uwCount} 组局部回血低于总本金${
+              typeof appliedPlan.breakevenUpgradeCost === "number"
+                ? `，最低全保本门槛 ¥${appliedPlan.breakevenUpgradeCost}`
+                : ""
+            }）`
+          : `属容错回血结构（含 ${uwCount} 组局部回血低于总本金）`,
     ];
+    if (bankerMatchLabels.length > 0) {
+      shieldParts.push(
+        `已启用胆拖定胆（📌【胆】锁定 ${bankerMatchLabels.join("、")} 必出，剔除无胆冗余组合）`
+      );
+    }
     if (
       typeof appliedPlan.missOneReturn === "number" &&
       appliedPlan.missOneReturn > 0
@@ -354,6 +381,11 @@ export function buildComboDiagnosisContext({
         `当前为手动等倍方案（${effectiveReport.modeLabel}，暂未启用不等倍护盾或旋转矩阵容错）`
       );
     }
+    if (bankerMatchLabels.length > 0) {
+      shieldParts.push(
+        `已启用胆拖定胆（📌【胆】锁定 ${bankerMatchLabels.join("、")} 必出）`
+      );
+    }
     if (dualCoveredMatches.length > 0) {
       shieldParts.push(`手动双选覆盖：${dualCoveredMatches.join("、")}`);
     }
@@ -388,9 +420,17 @@ export function buildComboDiagnosisContext({
         1
       )}~最高¥${Number(effectiveReport.maxPayout || 0).toFixed(1)} · 综合暗扣抽水${
         effectiveReport.avgVigLossPer100
-      }% · 真赚钱率${((Number(effectiveReport.realProfitProb) || 0) * 100).toFixed(1)}% · 校准EV ${evPctStr} · ${
-        zeroUw ? "0 假中奖倒贴" : `${uwCount} 组假中奖倒贴`
-      }`
+      }% · 严格净赚率${(
+        (Number(
+          effectiveReport.objectiveStrictNetGainProb ??
+            effectiveReport.strictNetGainProb ??
+            effectiveReport.realProfitProb
+        ) || 0) * 100
+      ).toFixed(1)}% · 客观EV ${objEvPctStr}${
+        effectiveReport.subjectiveProjectedEVRate != null
+          ? `(个人推演EV ${evPctStr})`
+          : ""
+      } · ${zeroUw ? "0 假中奖倒贴" : `${uwCount} 组假中奖倒贴`}`
     : `共勾选 ${matchesPayload.length} 场比赛进行多场联合排雷把脉`;
 
   return {

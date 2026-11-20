@@ -1389,4 +1389,134 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       true
     );
   });
+
+  it("Slice 05 · Seam 3: syncs XiaoGao combo context (banker & budget-sovereign partial recovery), serves 0ms Iron-Cage Manual KB for banker/bridge/objective-split/ticket-consolidate/135m, and wires all 5 embedded UI contracts", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const { buildComboDiagnosisContext } =
+      await import("../server/xiaogaoCore.mjs");
+    const { createManualQaEngine } =
+      await import("../server/manualQaEngine.mjs");
+
+    // 1. XiaoGao Combo Context recognizes native banker (📌【胆】) & budget-sovereign partial shield + objective EV
+    const fourM = (FALLBACK_MATCHES as MatchItem[]).slice(0, 4);
+    const bPicks: SelectedPick[] = [
+      makePick(fourM[0], "HAD", "h"),
+      makePick(fourM[1], "HAD", "h"),
+      makePick(fourM[1], "HAD", "d"),
+      makePick(fourM[2], "HAD", "h"),
+      makePick(fourM[2], "HAD", "d"),
+      makePick(fourM[3], "HAD", "h"),
+      makePick(fourM[3], "HAD", "d"),
+    ];
+    const wsBanker = evaluateQuantWorkspace(
+      {
+        picks: bPicks,
+        multiple: 1,
+        passSpec: {
+          mode: "free",
+          passSizes: [3],
+          bankerMatchIds: [fourM[0].id],
+        },
+        subjectiveDeltaPct: 12,
+        simVoidFirstMatch: false,
+        planSpec: { kind: "bonus", optMode: "equal", scaleMultiple: 1 },
+        targetIds: fourM.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      fourM
+    );
+    const comboCtx = buildComboDiagnosisContext({
+      sourceMode: "picked",
+      targetMatches: fourM,
+      picks: bPicks,
+      effectiveReport: wsBanker.effectiveReport,
+      appliedPlan: wsBanker.appliedPlan,
+      planSpec: { kind: "bonus", optMode: "equal", scaleMultiple: 1 },
+      insights: wsBanker.insights,
+      userNote: "",
+    });
+    assert.ok(
+      comboCtx.actuaryContext.shieldSummary.includes("胆") &&
+        comboCtx.matches[0].userPickedDesc.includes("【胆】"),
+      `Expected XiaoGao combo context to annotate banker match 【胆】, got shieldSummary=${comboCtx.actuaryContext.shieldSummary}`
+    );
+    assert.ok(
+      comboCtx.orderSummary.includes("客观EV"),
+      `Expected XiaoGao orderSummary to expose 客观EV alongside subjective shift, got ${comboCtx.orderSummary}`
+    );
+
+    // 2. Iron-Cage Manual Q&A 0ms local-kb answers for all new Spec 0012 concepts + 135m safe hedge window
+    const qaEngine = createManualQaEngine({
+      accountManager: {
+        recordQaViolation: () => ({
+          locked: false,
+          strikeCount: 1,
+          maxAllowed: 4,
+        }),
+        consumeDailyQaQuota: () => ({ ok: true, remaining: 19 }),
+      },
+      xiaogaoService: {
+        invokeManualGrounded: async () => {
+          throw new Error("Should hit 0ms local-kb without invoking LLM");
+        },
+      },
+    });
+    for (const [qText, mustContain] of [
+      ["📌 设胆和胆拖过关怎么用？", "胆"],
+      ["只选1场未开单关怎么用过桥配菜搭子凑2串1？", "2串1"],
+      ["严格净赚率和刚回本率有什么区别？", "净赚"],
+      ["一键加至最低保本门槛和智能合票减张有什么用？", "合票"],
+      ["早晚场时间差对冲锁利怎么操作？", "135"],
+    ] as const) {
+      const res = await qaEngine.answerManualQuestion({
+        userId: "u-test",
+        question: qText,
+        ip: "127.0.0.1",
+      });
+      assert.equal(
+        res.source,
+        "local-kb",
+        `Question "${qText}" must resolve via 0ms local-kb, got ${res.source}`
+      );
+      assert.ok(
+        res.answer.includes(mustContain),
+        `Answer for "${qText}" must mention "${mustContain}", got: ${res.answer}`
+      );
+    }
+
+    // 3. Embedded 5-point Dual-Viewport UI contracts in SkinPhoneApp.tsx & UserManualModal.tsx
+    const appSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      appSrc.includes("toggleBankerMatch") && appSrc.includes("设胆"),
+      "SkinPhoneApp must wire toggleBankerMatch and 📌设胆 capsules"
+    );
+    assert.ok(
+      appSrc.includes("bridgeCandidates") &&
+        appSrc.includes("applyBridgeCandidate"),
+      "SkinPhoneApp must render Top-2 bridgeCandidates with 1-click applyBridgeCandidate"
+    );
+    assert.ok(
+      appSrc.includes("objectiveStrictNetGainProb") &&
+        appSrc.includes("objectiveEVRate") &&
+        appSrc.includes("刚回本"),
+      "SkinPhoneApp primary KPIs must lock to objectiveStrictNetGainProb / objectiveEVRate and disclose breakEvenProb"
+    );
+    assert.ok(
+      appSrc.includes("upgradeBonusToBreakeven") &&
+        appSrc.includes("最低保本门槛"),
+      "SkinPhoneApp must provide explicit ⚡ 一键加至最低保本门槛 ¥X authorization button"
+    );
+    assert.ok(
+      appSrc.includes("toggleTicketConsolidation") &&
+        appSrc.includes("智能合票减张") &&
+        appSrc.includes("【胆】"),
+      "Poster ticket sheet must render 📌【胆】 badge and 🔗 智能合票减张 toggle"
+    );
+  });
 });
