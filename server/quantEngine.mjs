@@ -63,6 +63,17 @@ export function statutorySingleBetCap(matchCount) {
   return 1_000_000;
 }
 
+function effectiveNonVoidLegCount(legOdds) {
+  if (!Array.isArray(legOdds) || legOdds.length === 0) return 1;
+  let valid = 0;
+  for (let i = 0; i < legOdds.length; i++) {
+    if (Math.abs(Number(legOdds[i]) - 1.0) > 1e-9) valid += 1;
+  }
+  return Math.max(1, valid);
+}
+
+const TRUSTED_SERVER_BONUS_PLANS = new WeakSet();
+
 /** 中国体彩五大玩法法定最高串关关数上限（源自官方 lotJs.js limitLen） */
 export const POOL_MAX_PASS = {
   HAD: 8,
@@ -2899,9 +2910,9 @@ function evaluateTicketsOnQuotientSpace(
     };
   }
 
-  // Adjacent-gap quantile compression on per-match winStates ONLY when joint states exceed 131,072;
+  // Adjacent-gap quantile compression ONLY when joint states exceed 2,200,000 (keeps <= 2.2M states such as 8x5 TTG = 1.68M 100% uncompressed & exact);
   // missStates are strictly isolated so anyWinProb stays exact, and linear EV is locked to exactExpectedReturn.
-  const EXACT_JOINT_STATE_CAP = 131_072;
+  const EXACT_JOINT_STATE_CAP = 2_200_000;
   let evalQuotient = quotientByMatch;
   let compressedPerMatch = false;
   if (prodSize > EXACT_JOINT_STATE_CAP || (M > 8 && !isAllSingleTickets)) {
@@ -2936,7 +2947,7 @@ function evaluateTicketsOnQuotientSpace(
       return p;
     };
 
-    // Pass 1: merge strictly interior adjacent winStates [1 .. wins.length - 3] when wins.length >= 4 so both endpoints stay untouched
+    let mergeFlip = 0;
     while (calcBucketProd() > EXACT_JOINT_STATE_CAP) {
       let targetM = -1;
       let maxWins = 3;
@@ -2962,25 +2973,25 @@ function evaluateTicketsOnQuotientSpace(
       const a = wins[bestIdx];
       const b = wins[bestIdx + 1];
       const sumP = a.prob + b.prob;
+      const meanMerged =
+        sumP > 0
+          ? (a.prob * a.meanOdds + b.prob * b.meanOdds) / sumP
+          : a.meanOdds;
       const repHitSet =
         bestIdx === 0
           ? a.hitSet
           : bestIdx + 1 === wins.length - 1
             ? b.hitSet
-            : a.prob >= b.prob
-              ? a.hitSet
-              : b.hitSet;
+            : (++mergeFlip & 1) === 1
+              ? b.hitSet
+              : a.hitSet;
       wins.splice(bestIdx, 2, {
         prob: sumP,
         hitSet: repHitSet,
-        meanOdds:
-          sumP > 0
-            ? (a.prob * a.meanOdds + b.prob * b.meanOdds) / sumP
-            : a.meanOdds,
+        meanOdds: meanMerged,
       });
     }
 
-    // Pass 2: if still > 131,072, fold middle winState into closer endpoint
     for (
       let m = M - 1;
       m >= 0 && calcBucketProd() > EXACT_JOINT_STATE_CAP;
@@ -3008,7 +3019,6 @@ function evaluateTicketsOnQuotientSpace(
       }
     }
 
-    // Pass 3 (only reachable if M > 10 non-single): collapse winStates to 1 representative, NEVER touching missProb
     for (
       let m = M - 1;
       m >= 0 && calcBucketProd() > EXACT_JOINT_STATE_CAP;
@@ -3030,6 +3040,12 @@ function evaluateTicketsOnQuotientSpace(
       for (const w of mb.wins) out.push({ prob: w.prob, hitSet: w.hitSet });
       return out;
     });
+  }
+
+  let evalProdSize = 1;
+  for (let m = 0; m < M; m++) {
+    evalProdSize *= evalQuotient[m].length;
+    if (evalProdSize > 10_000_000) break;
   }
 
   // Pre-index flat distinct legs & pre-formatted tags once for zero-allocation combo formatting
@@ -3318,7 +3334,301 @@ function evaluateTicketsOnQuotientSpace(
     }
   };
 
-  if (K <= 32) {
+  const canUseScalarPrefixDfs =
+    evalProdSize > 65_536 &&
+    M >= 2 &&
+    M <= 8 &&
+    distinctOptsByMatch.every((opts) => opts.length <= 31);
+
+  if (canUseScalarPrefixDfs) {
+    const stateProbs = evalQuotient.map((qs) =>
+      Float64Array.from(qs, (q) => q.prob)
+    );
+    const stateMasks = evalQuotient.map((qs) =>
+      Int32Array.from(qs, (q) => {
+        let msk = 0;
+        for (const j of q.hitSet) msk |= 1 << j;
+        return msk;
+      })
+    );
+
+    const bucketLists = Array.from({ length: M * 32 }, () => []);
+    let totalPrefPairs = 0;
+    for (let k = 0; k < K; k++) {
+      let lastM = -1;
+      let lastJ = -1;
+      let legCnt = 0;
+      for (let m = 0; m < M; m++) {
+        const jIdx = ticketOptIdx[k * M + m];
+        if (jIdx >= 0) {
+          lastM = m;
+          lastJ = jIdx;
+          legCnt += 1;
+        }
+      }
+      if (lastM >= 0 && lastJ >= 0) {
+        bucketLists[lastM * 32 + lastJ].push(k);
+        totalPrefPairs += Math.max(0, legCnt - 1);
+      }
+    }
+
+    const slotStart = new Int32Array(M * 32);
+    const slotEnd = new Int32Array(M * 32);
+    const ePay = new Float64Array(K);
+    const eUnit = !metricsOnly ? new Float64Array(K) : null;
+    const eClip = !metricsOnly ? new Float64Array(K) : null;
+    const ePStart = new Int32Array(K);
+    const ePEnd = new Int32Array(K);
+    const prefM = new Int32Array(Math.max(1, totalPrefPairs));
+    const prefBit = new Int32Array(Math.max(1, totalPrefPairs));
+
+    let eCursor = 0;
+    let pCursor = 0;
+    for (let slot = 0; slot < M * 32; slot++) {
+      slotStart[slot] = eCursor;
+      const ks = bucketLists[slot];
+      const lastM = slot >> 5;
+      for (let idx = 0; idx < ks.length; idx++) {
+        const k = ks[idx];
+        ePay[eCursor] = rowPayCents[k];
+        if (!metricsOnly) {
+          eUnit[eCursor] = rowUnitCents[k];
+          eClip[eCursor] = rowClipCents[k];
+        }
+        ePStart[eCursor] = pCursor;
+        for (let m = 0; m < lastM; m++) {
+          const jIdx = ticketOptIdx[k * M + m];
+          if (jIdx >= 0) {
+            prefM[pCursor] = m;
+            prefBit[pCursor] = 1 << jIdx;
+            pCursor += 1;
+          }
+        }
+        ePEnd[eCursor] = pCursor;
+        eCursor += 1;
+      }
+      slotEnd[slot] = eCursor;
+    }
+
+    const BINS = 96;
+    const bProb = new Float64Array(BINS);
+    const bExpPay = new Float64Array(BINS);
+    const bExpUnit = !metricsOnly ? new Float64Array(BINS) : null;
+    const bExpClip = !metricsOnly ? new Float64Array(BINS) : null;
+    const bMinC = new Float64Array(BINS).fill(Infinity);
+    const bMaxC = new Float64Array(BINS);
+    const bBestP = !metricsOnly ? new Float64Array(BINS) : null;
+    const bRepS = !metricsOnly ? new Int32Array(BINS * M).fill(-1) : null;
+
+    const curMask = new Int32Array(M);
+    const chosenS = !metricsOnly ? new Int32Array(M) : null;
+    const optPayBuf = Array.from(
+      { length: M },
+      (_, m) => new Float64Array(Math.max(1, distinctOptsByMatch[m].length))
+    );
+    const optUnitBuf = !metricsOnly
+      ? Array.from(
+          { length: M },
+          (_, m) => new Float64Array(Math.max(1, distinctOptsByMatch[m].length))
+        )
+      : null;
+    const optClipBuf = !metricsOnly
+      ? Array.from(
+          { length: M },
+          (_, m) => new Float64Array(Math.max(1, distinctOptsByMatch[m].length))
+        )
+      : null;
+
+    const invCostScale = 48 / Math.max(1, totalCostCents);
+    const walkScalar = (m, curProb, accPay, accUnit, accClip) => {
+      const r = distinctOptsByMatch[m].length;
+      const oPay = optPayBuf[m];
+      const oUnit = !metricsOnly ? optUnitBuf[m] : null;
+      const oClip = !metricsOnly ? optClipBuf[m] : null;
+      const baseSlot = m << 5;
+
+      for (let j = 0; j < r; j++) {
+        let sPay = 0;
+        let sUnit = 0;
+        let sClip = 0;
+        const st = slotStart[baseSlot + j];
+        const en = slotEnd[baseSlot + j];
+        for (let e = st; e < en; e++) {
+          let ok = true;
+          const ps = ePStart[e];
+          const pe = ePEnd[e];
+          for (let p = ps; p < pe; p++) {
+            if ((curMask[prefM[p]] & prefBit[p]) === 0) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) {
+            sPay += ePay[e];
+            if (!metricsOnly) {
+              sUnit += eUnit[e];
+              sClip += eClip[e];
+            }
+          }
+        }
+        oPay[j] = sPay;
+        if (!metricsOnly) {
+          oUnit[j] = sUnit;
+          oClip[j] = sClip;
+        }
+      }
+
+      const pArr = stateProbs[m];
+      const mArr = stateMasks[m];
+      const sLen = pArr.length;
+
+      if (m === M - 1) {
+        for (let s = 0; s < sLen; s++) {
+          const msk = mArr[s];
+          let addPay = 0;
+          let addUnit = 0;
+          let addClip = 0;
+          if (msk !== 0) {
+            if ((msk & (msk - 1)) === 0) {
+              const j = 31 - Math.clz32(msk);
+              addPay = oPay[j];
+              if (!metricsOnly) {
+                addUnit = oUnit[j];
+                addClip = oClip[j];
+              }
+            } else {
+              let v = msk;
+              while (v !== 0) {
+                const lsb = v & -v;
+                const j = 31 - Math.clz32(lsb);
+                addPay += oPay[j];
+                if (!metricsOnly) {
+                  addUnit += oUnit[j];
+                  addClip += oClip[j];
+                }
+                v &= v - 1;
+              }
+            }
+          }
+          const totPay = accPay + addPay;
+          if (totPay <= 0) continue;
+          const lp = curProb * pArr[s];
+          if (totPay < globalMinWinCents) globalMinWinCents = totPay;
+          if (totPay > globalMaxWinCents) globalMaxWinCents = totPay;
+          const b =
+            totPay < totalCostCents
+              ? Math.min(47, (totPay * invCostScale) | 0)
+              : (48 +
+                  Math.min(
+                    47,
+                    Math.log1p((totPay - totalCostCents) * 0.01) * 6.0
+                  )) |
+                0;
+          bProb[b] += lp;
+          bExpPay[b] += lp * totPay;
+          if (totPay < bMinC[b]) bMinC[b] = totPay;
+          if (totPay > bMaxC[b]) bMaxC[b] = totPay;
+          if (!metricsOnly) {
+            bExpUnit[b] += lp * (accUnit + addUnit);
+            bExpClip[b] += lp * (accClip + addClip);
+            if (lp > bBestP[b]) {
+              bBestP[b] = lp;
+              const baseOff = b * M;
+              for (let q = 0; q < M - 1; q++) bRepS[baseOff + q] = chosenS[q];
+              bRepS[baseOff + M - 1] = s;
+            }
+          }
+        }
+        return;
+      }
+
+      for (let s = 0; s < sLen; s++) {
+        const msk = mArr[s];
+        let addPay = 0;
+        let addUnit = 0;
+        let addClip = 0;
+        if (msk !== 0) {
+          if ((msk & (msk - 1)) === 0) {
+            const j = 31 - Math.clz32(msk);
+            addPay = oPay[j];
+            if (!metricsOnly) {
+              addUnit = oUnit[j];
+              addClip = oClip[j];
+            }
+          } else {
+            let v = msk;
+            while (v !== 0) {
+              const lsb = v & -v;
+              const j = 31 - Math.clz32(lsb);
+              addPay += oPay[j];
+              if (!metricsOnly) {
+                addUnit += oUnit[j];
+                addClip += oClip[j];
+              }
+              v &= v - 1;
+            }
+          }
+        }
+        curMask[m] = msk;
+        if (!metricsOnly) chosenS[m] = s;
+        walkScalar(
+          m + 1,
+          curProb * pArr[s],
+          accPay + addPay,
+          accUnit + addUnit,
+          accClip + addClip
+        );
+      }
+    };
+
+    walkScalar(0, 1, 0, 0, 0);
+
+    let bIdx = 0;
+    for (let b = 0; b < BINS; b++) {
+      const prob = bProb[b];
+      if (!(prob > 0 && bMaxC[b] > 0)) continue;
+      const isSingleton = bMinC[b] === bMaxC[b];
+      const totalPayout = isSingleton
+        ? bMinC[b] / 100
+        : bExpPay[b] / prob / 100;
+      const isUnderwater = b < 48;
+      if (metricsOnly) {
+        metricTiers.push({ prob, totalPayout, isUnderwater });
+      } else {
+        const baseOff = b * M;
+        const winIndices = [];
+        for (let k = 0; k < K; k++) {
+          let hit = true;
+          for (let m = 0; m < M; m++) {
+            const jIdx = ticketOptIdx[k * M + m];
+            if (jIdx >= 0) {
+              const repStateIdx = bRepS[baseOff + m];
+              if (
+                repStateIdx < 0 ||
+                (stateMasks[m][repStateIdx] & (1 << jIdx)) === 0
+              ) {
+                hit = false;
+                break;
+              }
+            }
+          }
+          if (hit) winIndices.push(k);
+        }
+        if (winIndices.length > 0) {
+          combos.push(
+            formatBucketCombo(winIndices, prob, bIdx++, {
+              totalPayout,
+              unitPayout: bExpUnit[b] / prob / 100,
+              cappedClipped: bExpClip[b] / prob / 100,
+              isUnderwater,
+              minCents: bMinC[b],
+              maxCents: bMaxC[b],
+            })
+          );
+        }
+      }
+    }
+  } else if (K <= 32) {
     const fullMask = K === 32 ? -1 : (1 << K) - 1;
     const compatMask = evalQuotient.map((qStates, m) => {
       const arr = new Int32Array(qStates.length);
@@ -5824,12 +6134,10 @@ export function computeTruthReport(
   const totalCost = betCount * 2 * multiple;
 
   const ticketRows = rawTickets.map((t, idx) => {
-    const legCount = t.legs.length;
-    const cap = statutorySingleBetCap(legCount);
+    const legOdds = t.legs.map((it) => it.odds);
+    const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
     const prob = t.legs.reduce((acc, it) => acc * it.fairProb, 1);
-    const unitBeforeCap = bankerRoundParlayUnitPayout(
-      t.legs.map((it) => it.odds)
-    );
+    const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
     const unitCapped = Math.min(cap, unitBeforeCap);
     const cappedClipped = Math.max(0, (unitBeforeCap - unitCapped) * multiple);
     const totalPayout = Number((unitCapped * multiple).toFixed(2));
@@ -5965,7 +6273,16 @@ export function computeTruthReport(
       detail: `当前 ${modeLabel} 综合返还率跌至 ${(avgPayoutRatio * 100).toFixed(1)}%；建议在底栏「过关选择」改选 2关/3关 或 M串N 容错防黑单场。`,
     });
   }
-  const maxPassUsed = Math.max(...activePassSizes);
+  const maxPassUsed = ticketRows
+    .filter((c) => c.cappedClipped > 0)
+    .reduce(
+      (mx, c) =>
+        Math.max(
+          mx,
+          effectiveNonVoidLegCount((c.legs ?? []).map((g) => g.odds))
+        ),
+      Math.max(...activePassSizes)
+    );
   const maxTierCap = statutorySingleBetCap(maxPassUsed);
   const totalClipped = ticketRows.reduce((a, c) => a + c.cappedClipped, 0);
   if (totalClipped > 0 || multiple > 99) {
@@ -10222,7 +10539,8 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
     Array.isArray(manualReport?.tickets) && manualReport.tickets.length > 0
       ? manualReport.tickets
       : (manualReport?.combos ?? []);
-  if (!manualReport || baseRows.length === 0) return null;
+  if (!manualReport || baseRows.length === 0 || baseRows.length > 512)
+    return null;
 
   const sorted = [...baseRows].sort((a, b) => b.prob - a.prob);
   const k = sorted.length;
@@ -10255,14 +10573,22 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
     );
   });
   const cappedUnits = sorted.map((c, idx) => {
-    const legCount = c.legs?.length ?? manualReport.matchCount;
-    const cap = statutorySingleBetCap(legCount);
+    const legOdds = (c.legs ?? []).map((p) => Number(p.odds));
+    const cap = statutorySingleBetCap(
+      legOdds.length > 0
+        ? effectiveNonVoidLegCount(legOdds)
+        : manualReport.matchCount
+    );
     const raw = rawUnits[idx] > 0 ? rawUnits[idx] : c.unitPayout;
     return Math.min(cap, raw);
   });
   const isCapClipped = sorted.map((c, idx) => {
-    const legCount = c.legs?.length ?? manualReport.matchCount;
-    return rawUnits[idx] > statutorySingleBetCap(legCount);
+    const legOdds = (c.legs ?? []).map((p) => Number(p.odds));
+    const effLegs =
+      legOdds.length > 0
+        ? effectiveNonVoidLegCount(legOdds)
+        : manualReport.matchCount;
+    return rawUnits[idx] > statutorySingleBetCap(effLegs);
   });
   const hasUnclippedLine = isCapClipped.some((clipped) => !clipped);
 
@@ -10434,7 +10760,7 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
     },
   }[optMode];
 
-  return {
+  const outBonusPlan = {
     key: "max-profit-prob",
     available: true,
     shortTab: metaMap.shortTab,
@@ -10454,15 +10780,18 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
     reasons: [metaMap.reason],
     lines,
   };
+  TRUSTED_SERVER_BONUS_PLANS.add(outBonusPlan);
+  return outBonusPlan;
 }
 
 function isValidPlanObject(plan) {
+  const maxLines = plan && TRUSTED_SERVER_BONUS_PLANS.has(plan) ? 512 : 64;
   if (
     !plan ||
     typeof plan !== "object" ||
     !Array.isArray(plan.lines) ||
     plan.lines.length < 1 ||
-    plan.lines.length > 64
+    plan.lines.length > maxLines
   ) {
     return false;
   }
@@ -10527,10 +10856,9 @@ function scaleArchetypePlan(plan, rawScale) {
       Math.min(999, Math.round((Number(l.multiple) || 1) * scale))
     );
     const cost = mult * 2;
-    const cap = statutorySingleBetCap(l.legs.length);
-    const unitBeforeCap = bankerRoundParlayUnitPayout(
-      l.legs.map((g) => Number(g.odds))
-    );
+    const legOdds = l.legs.map((g) => Number(g.odds));
+    const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
+    const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
     const effectiveUnit = Math.min(cap, Number(l.unitPayout));
     const cappedClipped =
       unitBeforeCap > cap
@@ -10564,7 +10892,7 @@ function scaleArchetypePlan(plan, rawScale) {
     : returns.length
       ? Math.max(...returns)
       : 0;
-  return {
+  const scaledOut = {
     ...plan,
     totalCost,
     minReturn,
@@ -10574,6 +10902,10 @@ function scaleArchetypePlan(plan, rawScale) {
       : null,
     lines: scaledLines,
   };
+  if (TRUSTED_SERVER_BONUS_PLANS.has(plan)) {
+    TRUSTED_SERVER_BONUS_PLANS.add(scaledOut);
+  }
+  return scaledOut;
 }
 
 function buildSandboxAdjustedBundle(
@@ -10684,7 +11016,7 @@ function buildSandboxAdjustedPicks(
 function computeLineStatutoryPayout(legOdds, multiple) {
   const mult = Math.max(1, Math.min(999, Math.round(Number(multiple) || 1)));
   const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
-  const cap = statutorySingleBetCap(legOdds.length);
+  const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
   const unitPayout = Math.min(cap, unitBeforeCap);
   const cappedClipped = Math.max(
     0,
@@ -10932,6 +11264,9 @@ function applySandboxToPlan(
     vigPct,
     lines,
   };
+  if (TRUSTED_SERVER_BONUS_PLANS.has(basePlan)) {
+    TRUSTED_SERVER_BONUS_PLANS.add(outPlan);
+  }
   Object.defineProperty(outPlan, "_cachedJointEval", {
     value: {
       matchesRef: matches,
@@ -11101,7 +11436,11 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
   const maxClippedPassSize = physicalTickets
     .filter((c) => c.cappedClipped > 0)
     .reduce(
-      (mx, c) => Math.max(mx, c.legs?.length ?? 1),
+      (mx, c) =>
+        Math.max(
+          mx,
+          effectiveNonVoidLegCount((c.legs ?? []).map((g) => g.odds))
+        ),
       activeSizes[activeSizes.length - 1] ?? 1
     );
   const maxTierCap = statutorySingleBetCap(maxClippedPassSize);
