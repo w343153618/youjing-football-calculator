@@ -1,51 +1,145 @@
 /* 09 · 琉璃 Glass — visionOS. Frosted panes floating over a dim stadium-light field. */
 :root {
-  --page: #0B0E13; --bg: #0D1117;
-  --bg-img: radial-gradient(90% 55% at 12% 4%, rgba(46, 124, 98, 0.55) 0%, transparent 62%),
-            radial-gradient(80% 50% at 100% 38%, rgba(64, 72, 170, 0.42) 0%, transparent 64%),
-            radial-gradient(90% 60% at 30% 100%, rgba(28, 94, 120, 0.38) 0%, transparent 60%);
-  --text: #FFFFFF; --text-2: rgba(255, 255, 255, 0.74); --text-3: rgba(255, 255, 255, 0.46); --line: rgba(255, 255, 255, 0.10);
-  --accent: #FFFFFF; --mark: #FFFFFF; --live: #FF6B6B; --good: #4ADE80;
-  --h1-fw: 600; --tn-fw: 500; --num-fw: 500;
+  --page: #0b0e13;
+  --bg: #0d1117;
+  --bg-img:
+    radial-gradient(
+      90% 55% at 12% 4%,
+      rgba(46, 124, 98, 0.55) 0%,
+      transparent 62%
+    ),
+    radial-gradient(
+      80% 50% at 100% 38%,
+      rgba(64, 72, 170, 0.42) 0%,
+      transparent 64%
+    ),
+    radial-gradient(
+      90% 60% at 30% 100%,
+      rgba(28, 94, 120, 0.38) 0%,
+      transparent 60%
+    );
+  --text: #ffffff;
+  --text-2: rgba(255, 255, 255, 0.74);
+  --text-3: rgba(255, 255, 255, 0.46);
+  --line: rgba(255, 255, 255, 0.1);
+  --accent: #ffffff;
+  --mark: #ffffff;
+  --live: #ff6b6b;
+  --good: #4ade80;
+  --h1-fw: 600;
+  --tn-fw: 500;
+  --num-fw: 500;
 
-  --card: rgba(255, 255, 255, 0.075); --card-r: 26px; --card-border: none; --card-blur: blur(28px) saturate(1.6);
-  --card-sh: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 20px 40px -24px rgba(0, 0, 0, 0.6);
+  --card: rgba(255, 255, 255, 0.075);
+  --flip-face-bg: #151c28;
+  --card-r: 26px;
+  --card-border: none;
+  --card-blur: blur(28px) saturate(1.6);
+  --card-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.07),
+    0 20px 40px -24px rgba(0, 0, 0, 0.6);
 
-  --key: rgba(255, 255, 255, 0.09); --key-text: #FFFFFF; --key-r: 12px;
-  --key-sh: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
-  --key-down: rgba(255, 255, 255, 0.16); --key-down-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
-  --key-on: rgba(255, 255, 255, 0.94); --key-on-text: #0D1117; --key-on-sh: 0 6px 18px -6px rgba(255, 255, 255, 0.35); --key-on-sheen: none;
-  --key-on-down: rgba(255, 255, 255, 0.8); --key-on-down-sh: none;
-  --cell-sub: rgba(255, 255, 255, 0.46); --cell-sub-on: rgba(13, 17, 23, 0.52);
+  --key: rgba(255, 255, 255, 0.09);
+  --key-text: #ffffff;
+  --key-r: 12px;
+  --key-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --key-down: rgba(255, 255, 255, 0.16);
+  --key-down-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+  --key-on: rgba(255, 255, 255, 0.94);
+  --key-on-text: #0d1117;
+  --key-on-sh: 0 6px 18px -6px rgba(255, 255, 255, 0.35);
+  --key-on-sheen: none;
+  --key-on-down: rgba(255, 255, 255, 0.8);
+  --key-on-down-sh: none;
+  --cell-sub: rgba(255, 255, 255, 0.46);
+  --cell-sub-on: rgba(13, 17, 23, 0.52);
 
-  --track: rgba(255, 255, 255, 0.07); --track-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1); --track-r: 99px; --thumb-r: 99px;
-  --thumb: rgba(255, 255, 255, 0.22); --thumb-sh: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 12px -4px rgba(0, 0, 0, 0.4);
-  --seg-text: rgba(255, 255, 255, 0.55); --seg-on: #FFFFFF;
-  --sw-off: rgba(255, 255, 255, 0.14); --sw-off-sh: none; --sw-on: rgba(255, 255, 255, 0.9); --sw-on-sh: none;
-  --knob: #FFF; --knob-sh: 0 2px 6px rgba(0, 0, 0, 0.35);
+  --track: rgba(255, 255, 255, 0.07);
+  --track-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --track-r: 99px;
+  --thumb-r: 99px;
+  --thumb: rgba(255, 255, 255, 0.22);
+  --thumb-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 12px -4px rgba(0, 0, 0, 0.4);
+  --seg-text: rgba(255, 255, 255, 0.55);
+  --seg-on: #ffffff;
+  --sw-off: rgba(255, 255, 255, 0.14);
+  --sw-off-sh: none;
+  --sw-on: rgba(255, 255, 255, 0.9);
+  --sw-on-sh: none;
+  --knob: #fff;
+  --knob-sh: 0 2px 6px rgba(0, 0, 0, 0.35);
 
-  --slip: rgba(255, 255, 255, 0.13); --slip-r: 30px;
-  --slip-sh: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 0.5px rgba(255, 255, 255, 0.12), 0 20px 40px -16px rgba(0, 0, 0, 0.7);
+  --slip: rgba(255, 255, 255, 0.13);
+  --slip-r: 30px;
+  --slip-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 20px 40px -16px rgba(0, 0, 0, 0.7);
   --slip-sub: rgba(255, 255, 255, 0.62);
-  --slip-go: #FFFFFF; --slip-go-text: #0D1117; --slip-go-sh: 0 4px 14px -4px rgba(255, 255, 255, 0.4);
-  --slip-go-down: rgba(255, 255, 255, 0.82); --slip-go-down-sh: none;
-  --slip-trash: rgba(255, 255, 255, 0.08); --slip-trash-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
-  --dock: rgba(13, 17, 23, 0.42); --dock-line: rgba(255, 255, 255, 0.08); --dock-blur: blur(30px) saturate(1.6);
-  --puck: rgba(255, 255, 255, 0.14); --puck-sh: inset 0 1px 0 rgba(255, 255, 255, 0.18); --puck-r: 16px;
-  --nav-text: rgba(255, 255, 255, 0.45); --nav-on: #FFFFFF; --home-ind: rgba(255, 255, 255, 0.6);
-  --sheet: rgba(24, 30, 40, 0.78); --sheet-blur: blur(36px) saturate(1.7); --mask: rgba(0, 0, 0, 0.4); --grabber: rgba(255, 255, 255, 0.3);
-  --tile: rgba(255, 255, 255, 0.065); --tile-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
-  --chip: rgba(255, 255, 255, 0.9); --chip-text: #0D1117; --chip-sub: rgba(13, 17, 23, 0.5); --chip-sh: none; --chip-r: 10px;
-  --poster: linear-gradient(160deg, rgba(46, 124, 98, 0.65), rgba(30, 34, 80, 0.85));
-  --prob1: #FFFFFF; --prob2: rgba(255, 255, 255, 0.45); --prob3: rgba(255, 255, 255, 0.18); --prob-track: rgba(255, 255, 255, 0.06);
-  --crest-bg: rgba(255, 255, 255, 0.14); --crest-pad: 2px; --crest-filter: none;
-  --ava: rgba(255, 255, 255, 0.1); --ava-text: #FFF;
-  --orb: rgba(255, 255, 255, 0.08); --orb-sh: inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  --round-key: rgba(255, 255, 255, 0.09); --round-key-sh: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
-  --toast: rgba(255, 255, 255, 0.92); --toast-text: #0D1117; --dash: rgba(255, 255, 255, 0.2);
+  --slip-go: #ffffff;
+  --slip-go-text: #0d1117;
+  --slip-go-sh: 0 4px 14px -4px rgba(255, 255, 255, 0.4);
+  --slip-go-down: rgba(255, 255, 255, 0.82);
+  --slip-go-down-sh: none;
+  --slip-trash: rgba(255, 255, 255, 0.08);
+  --slip-trash-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --dock: rgba(13, 17, 23, 0.42);
+  --dock-line: rgba(255, 255, 255, 0.08);
+  --dock-blur: blur(30px) saturate(1.6);
+  --puck: rgba(255, 255, 255, 0.14);
+  --puck-sh: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  --puck-r: 16px;
+  --nav-text: rgba(255, 255, 255, 0.45);
+  --nav-on: #ffffff;
+  --home-ind: rgba(255, 255, 255, 0.6);
+  --sheet: rgba(24, 30, 40, 0.78);
+  --sheet-blur: blur(36px) saturate(1.7);
+  --mask: rgba(0, 0, 0, 0.4);
+  --grabber: rgba(255, 255, 255, 0.3);
+  --tile: rgba(255, 255, 255, 0.065);
+  --tile-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --chip: rgba(255, 255, 255, 0.9);
+  --chip-text: #0d1117;
+  --chip-sub: rgba(13, 17, 23, 0.5);
+  --chip-sh: none;
+  --chip-r: 10px;
+  --poster: linear-gradient(
+    160deg,
+    rgba(46, 124, 98, 0.65),
+    rgba(30, 34, 80, 0.85)
+  );
+  --prob1: #ffffff;
+  --prob2: rgba(255, 255, 255, 0.45);
+  --prob3: rgba(255, 255, 255, 0.18);
+  --prob-track: rgba(255, 255, 255, 0.06);
+  --crest-bg: rgba(255, 255, 255, 0.14);
+  --crest-pad: 2px;
+  --crest-filter: none;
+  --ava: rgba(255, 255, 255, 0.1);
+  --ava-text: #fff;
+  --orb: rgba(255, 255, 255, 0.08);
+  --orb-sh: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  --round-key: rgba(255, 255, 255, 0.09);
+  --round-key-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
+  --toast: rgba(255, 255, 255, 0.92);
+  --toast-text: #0d1117;
+  --dash: rgba(255, 255, 255, 0.2);
   --spring-press: 1100 52;
   --spring-release: 460 15;
 }
-.tag { background: rgba(255, 255, 255, 0.75); }
-.key.dark { background: #FFF; color: #0D1117; }
-.toast { backdrop-filter: blur(20px); }
+.tag {
+  background: rgba(255, 255, 255, 0.75);
+}
+.key.dark {
+  background: #fff;
+  color: #0d1117;
+}
+.toast {
+  backdrop-filter: blur(20px);
+}

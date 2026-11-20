@@ -1,7 +1,5 @@
 import type {
-  AppliedPlanSpec,
   MatchItem,
-  PassSelectionSpec,
   QuantWorkspaceParams,
   QuantWorkspaceResponse,
   SelectedPick,
@@ -735,7 +733,7 @@ export interface XiaoGaoComboReport {
   comboTag: string;
   summary: string;
   actuarySynergy?: string;
-  residualRisks?: string;
+  residualRisks?: string | string[];
   weakestLeg: string;
   structureAdvice: string;
   priceInVerdict: string;
@@ -757,21 +755,14 @@ export async function requestXiaoGaoDiagnosis(
   );
 }
 
-export async function requestXiaoGaoComboDiagnosis(params: {
-  sourceMode: "picked" | "custom";
-  matchIds: string[];
-  picks: SelectedPick[];
-  multiple: number;
-  passSpec: PassSelectionSpec;
-  planSpec: AppliedPlanSpec;
-  subjectiveDeltaPct?: number;
-  simVoidFirstMatch?: boolean;
-  anchorToRadarPicks?: boolean;
-  budget?: number;
-  stance?: "objective" | "home-lean" | "upset-watch";
-  unlockFullAgg?: boolean;
-  userNote?: string;
-}): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }> {
+export async function requestXiaoGaoComboDiagnosis(
+  params: Partial<QuantWorkspaceParams> & {
+    sourceMode: "picked" | "custom";
+    matchIds: string[];
+    picks: SelectedPick[];
+    userNote?: string;
+  }
+): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }> {
   return postEncryptedApi<{
     comboReport: XiaoGaoComboReport;
     aiRemaining?: number;

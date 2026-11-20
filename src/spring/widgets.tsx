@@ -560,7 +560,11 @@ export function TactileFlipCard({
       className={`tflip-scene ${isFlipped ? "is-flipped" : ""} ${className}`}
     >
       <div className="tflip-inner">
-        <div className="card tflip-face tflip-front" aria-hidden={isFlipped}>
+        <div
+          className="card tflip-face tflip-front"
+          aria-hidden={isFlipped}
+          inert={isFlipped || undefined}
+        >
           <div className="tflip-bar">
             <div className="tflip-title">{frontHeader}</div>
             <button
@@ -575,7 +579,11 @@ export function TactileFlipCard({
           {front}
         </div>
 
-        <div className="card tflip-face tflip-back" aria-hidden={!isFlipped}>
+        <div
+          className="card tflip-face tflip-back"
+          aria-hidden={!isFlipped}
+          inert={!isFlipped || undefined}
+        >
           <div className="tflip-bar">
             <div className="tflip-title">{backHeader ?? frontHeader}</div>
             <button

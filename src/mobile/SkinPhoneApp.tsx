@@ -176,16 +176,19 @@ export function SkinPhoneApp({
     () => !embedded && typeof window !== "undefined" && window.innerWidth >= 960
   );
   const [dkRightTab, setDkRightTab] = useState<"audit" | "ledger">("audit");
+  const [dkFocusStep, setDkFocusStep] = useState<1 | 2 | 3 | null>(null);
   const [customBudgetOpen, setCustomBudgetOpen] = useState<boolean>(false);
   const [customBudgetDraft, setCustomBudgetDraft] = useState<string>("100");
-  const [comboSortMode, setComboSortMode] =
-    useState<ComboSortMode>("loss-first");
+  const [userComboSort, setUserComboSort] = useState<ComboSortMode | null>(
+    null
+  );
   const [expandedComboIds, setExpandedComboIds] = useState<
     Record<string, boolean>
   >({});
   const [expandedIntelIds, setExpandedIntelIds] = useState<
     Record<string, boolean>
   >({});
+  const [perCardNotes, setPerCardNotes] = useState<Record<string, string>>({});
   const [handoffBanner, setHandoffBanner] = useState<{
     title: string;
     cost: number;
@@ -310,6 +313,8 @@ export function SkinPhoneApp({
   const slipRef = useRef<HTMLDivElement>(null);
   const slipAmtRef = useRef<HTMLSpanElement>(null);
   const auditCockpitRef = useRef<HTMLDivElement>(null);
+  const desktopMatchColRef = useRef<HTMLElement>(null);
+  const desktopArchColRef = useRef<HTMLElement>(null);
   const desktopAuditColRef = useRef<HTMLElement>(null);
   const underwaterTileRef = useRef<HTMLDivElement>(null);
   const demoBtnRef = useRef<HTMLButtonElement>(null);
@@ -1221,16 +1226,13 @@ export function SkinPhoneApp({
     setDiagnosingCombo(true);
     playTactileCue("radar-ping");
     try {
+      const wsParams = betCtrl.buildWorkspaceParams();
       const { comboReport: rep, aiRemaining } =
         await requestXiaoGaoComboDiagnosis({
+          ...wsParams,
           sourceMode,
           matchIds: targetList.map((m) => m.id),
           picks: sourceMode === "picked" ? picks : [],
-          multiple,
-          passSpec,
-          planSpec,
-          subjectiveDeltaPct,
-          simVoidFirstMatch,
           userNote: customIntelInput || undefined,
         });
       syncRemainingAiQuota(aiRemaining);
@@ -1763,6 +1765,13 @@ export function SkinPhoneApp({
             step={2}
             value={customBudgetDraft}
             onChange={(e) => setCustomBudgetDraft(e.target.value)}
+            onBlur={() => {
+              const norm = normalizeBudgetYuan(
+                Number(customBudgetDraft) || budget
+              );
+              setBudget(norm);
+              setCustomBudgetDraft(String(norm));
+            }}
             placeholder="输入 ¥10~¥20,000（按¥2整数注对齐）"
             className="ledger-input num"
           />
@@ -2251,10 +2260,19 @@ export function SkinPhoneApp({
     </>
   ) : null;
 
+  const comboSortMode: ComboSortMode =
+    userComboSort ??
+    (effectiveReport.underwaterCount > 0 ? "loss-first" : "prob-first");
+
   const sortedCombos = useMemo(
     () => sortComboRows(effectiveReport.combos, comboSortMode),
     [effectiveReport.combos, comboSortMode]
   );
+
+  const auditTicketCount =
+    appliedPlan?.lines.length ??
+    effectiveReport.tickets?.length ??
+    effectiveReport.betCount;
 
   const auditContent = (
     <>
@@ -2280,6 +2298,10 @@ export function SkinPhoneApp({
             data-spring="0.9"
             onClick={() => {
               setTab("archetypes");
+              if (isDesktop) {
+                setDkFocusStep(2);
+                triggerShimmerSweep(desktopArchColRef.current);
+              }
             }}
           >
             去 3+1 精算配单
@@ -2287,35 +2309,55 @@ export function SkinPhoneApp({
         </div>
       ) : (
         <>
-          {/* Step ② → Step ③ 方案移交感知横幅 */}
-          {(handoffBanner || appliedPlan) && (
-            <div
-              key={handoffBanner?.seq ?? appliedPlan?.key ?? "handoff"}
-              className="handoff-banner num"
-            >
-              <div>
-                <b>
-                  ✅ 当前正在审阅：
-                  {appliedPlan
-                    ? `【${appliedPlan.shortTab}】¥${effectiveReport.totalCost} 方案`
-                    : `精算配单【${handoffBanner?.title}】`}
-                </b>
-                <div className="small" style={{ marginTop: 1 }}>
-                  已载入实票拆解与五维风控透视 ·
-                  核对无误即可打开防错打票单或记账
-                </div>
+          {/* Step ③ 方案来源与移交感知横幅（支持 3+1 精算配单态 & 手动自选过关态） */}
+          <div
+            key={
+              handoffBanner?.seq ??
+              appliedPlan?.key ??
+              `manual-${effectiveReport.modeLabel}`
+            }
+            className={`handoff-banner num ${!appliedPlan && !handoffBanner ? "manual-src" : ""}`}
+          >
+            <div>
+              <b>
+                {appliedPlan || handoffBanner
+                  ? `✅ 当前正在审阅：${
+                      appliedPlan
+                        ? `【${appliedPlan.shortTab}】¥${effectiveReport.totalCost} 方案`
+                        : `精算配单【${handoffBanner?.title}】`
+                    }（共 ${auditTicketCount} 张实票）`
+                  : `📋 当前正在审阅：手动选单 · ${effectiveReport.modeLabel}（共 ${auditTicketCount} 注 · ¥${effectiveReport.totalCost}）`}
+              </b>
+              <div className="small" style={{ marginTop: 1 }}>
+                {appliedPlan
+                  ? "已完成不等倍精算拆票 · 可直接核对打票或微调沙盒"
+                  : "等倍手动选单 · 可点下方智能分倍或切往②3+1精算配单"}
               </div>
-              {appliedPlan && (
-                <button
-                  type="button"
-                  className="key mini"
-                  onClick={restoreEqualMultiple}
-                >
-                  还原等倍
-                </button>
-              )}
             </div>
-          )}
+            {appliedPlan ? (
+              <button
+                type="button"
+                className="key mini"
+                onClick={restoreEqualMultiple}
+              >
+                还原等倍
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => {
+                  setTab("archetypes");
+                  if (isDesktop) {
+                    setDkFocusStep(2);
+                    triggerShimmerSweep(desktopArchColRef.current);
+                  }
+                }}
+              >
+                ② 配单
+              </button>
+            )}
+          </div>
 
           {/* 外简内丰 3D 翻转：五维真相透视舱 + 三模智能奖金优化 */}
           <div ref={auditCockpitRef} className="yj-shimmer-host">
@@ -2792,7 +2834,7 @@ export function SkinPhoneApp({
                     className={`key mini ${comboSortMode === sm ? "on" : ""}`}
                     onClick={() => {
                       haptic(4);
-                      setComboSortMode(sm);
+                      setUserComboSort(sm);
                     }}
                   >
                     {sl}
@@ -2806,13 +2848,18 @@ export function SkinPhoneApp({
                 const bd = resolveComboTicketBreakdown(
                   c,
                   effectiveReport.tickets,
-                  effectiveReport.totalCost
+                  effectiveReport.totalCost,
+                  {
+                    matchCount: effectiveReport.matchCount,
+                    defaultMultiple: multiple,
+                    appliedLines: appliedPlan?.lines,
+                  }
                 );
                 const isExpanded = Boolean(expandedComboIds[c.id]);
                 return (
                   <div
                     key={c.id}
-                    className={`combo-card ${c.isUnderwater ? "uw" : ""}`}
+                    className={`combo-card sdrawer ${isExpanded ? "open" : ""} ${c.isUnderwater ? "uw" : ""}`}
                     onClick={() => {
                       if (bd.winningTicketCount > 0) {
                         haptic(4);
@@ -2824,26 +2871,43 @@ export function SkinPhoneApp({
                     }}
                   >
                     <div className="combo-card-top">
-                      <div className="combo-legs">
-                        {bd.legs.length > 0 ? (
-                          bd.legs.map((lg, lIdx) => (
-                            <span
-                              key={`${c.id}-${lg.matchId}-${lg.poolCode}-${lg.optionKey}-${lIdx}`}
-                              className="combo-leg-chip"
-                            >
-                              <b>
-                                {lg.matchNumStr
-                                  ? `${lg.matchNumStr.slice(-3)} `
-                                  : ""}
-                                {lg.home}
-                              </b>
-                              <span>{lg.optionLabel}</span>
-                              <i>@{lg.odds.toFixed(2)}</i>
-                            </span>
-                          ))
-                        ) : (
-                          <span className="combo-leg-chip">{c.desc}</span>
-                        )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          className="small"
+                          style={{
+                            margin: "0 0 4px",
+                            fontWeight: 600,
+                            color: "var(--text)",
+                          }}
+                        >
+                          {bd.scenarioLabel}
+                          {bd.winningTicketCount > 0
+                            ? ` · 命中 ${bd.winningTicketCount} 张实票`
+                            : ""}
+                        </div>
+                        <div className="combo-legs">
+                          {bd.legs.length > 0 ? (
+                            bd.legs.map((lg, lIdx) => (
+                              <span
+                                key={`${c.id}-${lg.matchId}-${lg.poolCode}-${lg.optionKey}-${lIdx}`}
+                                className="combo-leg-chip"
+                              >
+                                <b>
+                                  {lg.matchNumStr
+                                    ? `${lg.matchNumStr.slice(-3)} `
+                                    : ""}
+                                  {lg.home}
+                                </b>
+                                <span>
+                                  {lg.poolName}[{lg.optionLabel}]
+                                </span>
+                                <i>@{lg.odds.toFixed(2)}</i>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="combo-leg-chip">{c.desc}</span>
+                          )}
+                        </div>
                       </div>
                       <div
                         className={`cpnl ${c.isUnderwater || c.netProfit < 0 ? "neg" : "pos"}`}
@@ -2877,34 +2941,41 @@ export function SkinPhoneApp({
                       </span>
                       {bd.winningTicketCount > 0 && (
                         <span style={{ color: "var(--mark)", fontWeight: 600 }}>
-                          命中 {bd.winningTicketCount} 张实票{" "}
-                          {isExpanded ? "▴" : "▾"}
+                          查看中奖实票明细 {isExpanded ? "▴" : "▾"}
                         </span>
                       )}
                     </div>
 
-                    {isExpanded && bd.winningTicketCount > 0 && (
-                      <div className="combo-tickets-box">
-                        {bd.winningTickets.map((tk, tIdx) => (
-                          <div
-                            key={`${c.id}-tk-${tk.id}-${tIdx}`}
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 8,
-                            }}
-                          >
-                            <span>
-                              票#{tIdx + 1}：
-                              {tk.legs && tk.legs.length > 0
-                                ? tk.legs
-                                    .map((g) => `${g.home}[${g.optionLabel}]`)
-                                    .join(" × ")
-                                : tk.desc}
-                            </span>
-                            <b>实派 ¥{tk.totalPayout.toFixed(2)}</b>
+                    {bd.winningTicketCount > 0 && (
+                      <div className="sdrawer-body">
+                        <div className="sdrawer-inner">
+                          <div className="combo-tickets-box">
+                            {bd.winningTickets.map((tk) => (
+                              <div
+                                key={`${c.id}-tk-${tk.id}-${tk.ticketNo}`}
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: 8,
+                                  flexWrap: "wrap",
+                                }}
+                              >
+                                <span>
+                                  实票#{tk.ticketNo}（{tk.multiple}倍 · 单注¥
+                                  {tk.unitPayout.toFixed(2)}）：
+                                  {tk.legs && tk.legs.length > 0
+                                    ? tk.legs
+                                        .map(
+                                          (g) => `${g.home}[${g.optionLabel}]`
+                                        )
+                                        .join(" × ")
+                                    : tk.desc}
+                                </span>
+                                <b>派奖 ¥{tk.totalPayout.toFixed(2)}</b>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -3236,15 +3307,21 @@ export function SkinPhoneApp({
               <strong>💣 最需警惕短板场：</strong>
               {comboReport.weakestLeg}
             </div>
-            {Array.isArray(comboReport.residualRisks) &&
-              comboReport.residualRisks.length > 0 && (
+            {(() => {
+              const rList = Array.isArray(comboReport.residualRisks)
+                ? comboReport.residualRisks
+                : comboReport.residualRisks
+                  ? [comboReport.residualRisks]
+                  : [];
+              return rList.length > 0 ? (
                 <div style={{ marginTop: 4 }}>
                   <strong>⚡ 盘面未消化残余暗雷：</strong>
-                  {comboReport.residualRisks.map((rk, rIdx) => (
+                  {rList.map((rk, rIdx) => (
                     <div key={rIdx}>· {rk}</div>
                   ))}
                 </div>
-              )}
+              ) : null;
+            })()}
             <div style={{ marginTop: 4 }}>
               <strong>🛠️ 协同调仓与补防建议：</strong>
               {comboReport.structureAdvice}
@@ -3295,141 +3372,192 @@ export function SkinPhoneApp({
         </div>
       )}
 
-      {/* 单场深度情报流（0配额五池微精算底牌 + 勾选联合会诊 + 单场小高深挖合一） */}
+      {/* 单场深度情报流（已诊断场次自动置顶 + 0配额五池微精算底牌 + 一球卡盘温度计 + 卡内伤停补充输入） */}
       <div className="sec-lbl enter">
-        <span>全盘单场深度情报流 (点开查看水位异动与三池拆解)</span>
+        <span>全盘单场深度情报流 (已诊置顶 · 点开看水位异动与三池拆解)</span>
         <span className="num">共 {matches.length} 场</span>
       </div>
-      {matches.map((m, idx) => {
-        const digest = buildMatchIntelDigest(m);
-        const checked = comboSelectedIds.includes(m.id);
-        const isOpen =
-          expandedIntelIds[m.id] !== undefined
-            ? expandedIntelIds[m.id]
-            : Boolean(m.aiAlert) || idx === 0;
-        return (
-          <SpringCollapseDrawer
-            key={`intel-stream-${m.id}`}
-            open={isOpen}
-            onOpenChange={(next) =>
-              setExpandedIntelIds((prev) => ({ ...prev, [m.id]: next }))
-            }
-            title={
-              <>
-                <span>
-                  {m.matchNumStr} {m.home} vs {m.away}
-                </span>
-                {digest.aiAlert && (
-                  <span className="qpill warn">{digest.aiAlert.tag}</span>
-                )}
-              </>
-            }
-            summary={`${digest.kickoffLeague} · ${digest.xgSummary}`}
-            badge={
-              <span
-                role="button"
-                tabIndex={0}
-                className={`qpill num ${checked ? "hi" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  haptic(5);
-                  setComboSelectedIds((prev) =>
-                    prev.includes(m.id)
-                      ? prev.filter((id) => id !== m.id)
-                      : prev.length >= 8
-                        ? [...prev.slice(1), m.id]
-                        : [...prev, m.id]
-                  );
-                }}
-              >
-                {checked ? "✓ 已勾会诊" : "+ 勾会诊"}
-              </span>
-            }
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {/* 水位升降轨迹 */}
-              {digest.trendMovements.length > 0 && (
-                <div className="chips">
-                  {digest.trendMovements.map((tm, tIdx) => (
-                    <span
-                      key={`${m.id}-tr-${tIdx}`}
-                      className="chip num"
-                      title={tm.interpretation}
-                    >
-                      {tm.poolName}·{tm.optionLabel} @{tm.odds.toFixed(2)}
-                      <i>{tm.trend === -1 ? "▼绿降设防" : "▲红升散热"}</i>
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {/* 胜平负 / 让球 / 总进球 三池结构化实战拆解 */}
-              <div className="note-box" style={{ fontSize: 11.5 }}>
-                <div>
-                  <strong>① 胜平负：</strong>
-                  {digest.poolImpacts.had}
-                </div>
-                <div style={{ marginTop: 3 }}>
-                  <strong>② 让球盘：</strong>
-                  {digest.poolImpacts.hhad}
-                </div>
-                <div style={{ marginTop: 3 }}>
-                  <strong>③ 总进球：</strong>
-                  {digest.poolImpacts.ttg}
-                </div>
-                <div
-                  className="small"
-                  style={{ marginTop: 4, color: "var(--text-3)" }}
+      {[...matches]
+        .sort((a, b) => Number(Boolean(b.aiAlert)) - Number(Boolean(a.aiAlert)))
+        .map((m, idx) => {
+          const digest = buildMatchIntelDigest(m);
+          const checked = comboSelectedIds.includes(m.id);
+          const isOpen =
+            expandedIntelIds[m.id] !== undefined
+              ? expandedIntelIds[m.id]
+              : Boolean(m.aiAlert) || idx === 0;
+          const cardNote = perCardNotes[m.id] ?? "";
+          return (
+            <SpringCollapseDrawer
+              key={`intel-stream-${m.id}`}
+              open={isOpen}
+              onOpenChange={(next) =>
+                setExpandedIntelIds((prev) => ({ ...prev, [m.id]: next }))
+              }
+              title={
+                <>
+                  <span>
+                    {m.matchNumStr} {m.home} vs {m.away}
+                  </span>
+                  {digest.aiAlert && (
+                    <span className="qpill warn">{digest.aiAlert.tag}</span>
+                  )}
+                </>
+              }
+              summary={`${digest.kickoffLeague} · ${digest.xgSummary}`}
+              badge={
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className={`qpill num ${checked ? "hi" : ""}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    haptic(5);
+                    setComboSelectedIds((prev) =>
+                      prev.includes(m.id)
+                        ? prev.filter((id) => id !== m.id)
+                        : prev.length >= 8
+                          ? [...prev.slice(1), m.id]
+                          : [...prev, m.id]
+                    );
+                  }}
                 >
-                  跨盘扫描：{digest.alphaSummary}
-                </div>
-              </div>
+                  {checked ? "✓ 已勾会诊" : "+ 勾会诊"}
+                </span>
+              }
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {/* 水位升降轨迹 */}
+                {digest.trendMovements.length > 0 && (
+                  <div className="chips">
+                    {digest.trendMovements.map((tm, tIdx) => (
+                      <span
+                        key={`${m.id}-tr-${tIdx}`}
+                        className="chip num"
+                        title={tm.interpretation}
+                      >
+                        {tm.poolName}·{tm.optionLabel} @{tm.odds.toFixed(2)}
+                        <i>{tm.trend === -1 ? "▼绿降设防" : "▲红升散热"}</i>
+                      </span>
+                    ))}
+                  </div>
+                )}
 
-              {/* 扫地僧小高单场 AI 排雷结论（若已触发则合一展示） */}
-              {digest.aiAlert && (
-                <div className="note-box alert" style={{ margin: 0 }}>
-                  <strong>
-                    🧹 扫地僧小高单场深挖 · {digest.aiAlert.tag}：
-                  </strong>
-                  <div>{digest.aiAlert.summary}</div>
+                {/* 一球小胜卡盘温度计 */}
+                <div>
                   <div
                     className="small num"
-                    style={{ color: "var(--mark)", fontWeight: 600 }}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      margin: "0 0 3px",
+                    }}
                   >
-                    消息消化度：{digest.aiAlert.priceInStatus}
-                    {digest.aiAlert.suggestedDelta
-                      ? ` · ${digest.aiAlert.suggestedDelta}`
-                      : ""}
+                    <span>
+                      🌡️ 一球小胜卡盘温度计：{digest.cardPanAlert.tip}
+                    </span>
+                    <b
+                      style={{
+                        color:
+                          digest.cardPanAlert.level === "high"
+                            ? "var(--live)"
+                            : "var(--text)",
+                      }}
+                    >
+                      {digest.cardPanAlert.sharePct}%
+                    </b>
+                  </div>
+                  <div className="combo-pnl-bar">
+                    <i
+                      className={
+                        digest.cardPanAlert.level === "high"
+                          ? "loss"
+                          : digest.cardPanAlert.level === "warn"
+                            ? "breakeven"
+                            : "gain"
+                      }
+                      style={{
+                        width: `${Math.max(8, Math.min(100, digest.cardPanAlert.sharePct))}%`,
+                      }}
+                    />
                   </div>
                 </div>
-              )}
 
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <span className="small">{digest.steamSignal}</span>
-                <button
-                  type="button"
-                  data-spring="0.88"
-                  className="key mini dark"
-                  onClick={() =>
-                    void triggerXiaoGaoLive(m, customIntelInput || undefined)
-                  }
-                >
-                  {diagnosingMatchId === m.id
-                    ? "小高诊盘中..."
-                    : "🧹 请小高单场深挖"}
-                </button>
+                {/* 胜平负 / 让球 / 总进球 三池结构化实战拆解 */}
+                <div className="note-box" style={{ fontSize: 11.5 }}>
+                  <div>
+                    <strong>① 胜平负：</strong>
+                    {digest.poolImpacts.had}
+                  </div>
+                  <div style={{ marginTop: 3 }}>
+                    <strong>② 让球盘：</strong>
+                    {digest.poolImpacts.hhad}
+                  </div>
+                  <div style={{ marginTop: 3 }}>
+                    <strong>③ 总进球：</strong>
+                    {digest.poolImpacts.ttg}
+                  </div>
+                  <div
+                    className="small"
+                    style={{ marginTop: 4, color: "var(--text-3)" }}
+                  >
+                    跨盘扫描：{digest.alphaSummary}
+                  </div>
+                </div>
+
+                {/* 扫地僧小高单场 AI 排雷结论（若已触发则合一展示） */}
+                {digest.aiAlert && (
+                  <div className="note-box alert" style={{ margin: 0 }}>
+                    <strong>
+                      🧹 扫地僧小高单场深挖 · {digest.aiAlert.tag}：
+                    </strong>
+                    <div>{digest.aiAlert.summary}</div>
+                    <div
+                      className="small num"
+                      style={{ color: "var(--mark)", fontWeight: 600 }}
+                    >
+                      消息消化度：{digest.aiAlert.priceInStatus}
+                      {digest.aiAlert.suggestedDelta
+                        ? ` · ${digest.aiAlert.suggestedDelta}`
+                        : ""}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    type="text"
+                    value={cardNote}
+                    onChange={(e) =>
+                      setPerCardNotes((prev) => ({
+                        ...prev,
+                        [m.id]: e.target.value,
+                      }))
+                    }
+                    placeholder={`补充本场伤停/首发消息 (${digest.steamSignal.slice(0, 14)}...)`}
+                    className="ledger-input"
+                  />
+                  <button
+                    type="button"
+                    data-spring="0.88"
+                    className="key mini dark"
+                    style={{ flexShrink: 0 }}
+                    onClick={() =>
+                      void triggerXiaoGaoLive(
+                        m,
+                        cardNote || customIntelInput || undefined
+                      )
+                    }
+                  >
+                    {diagnosingMatchId === m.id
+                      ? "小高诊盘中..."
+                      : "🧹 请小高单场深挖"}
+                  </button>
+                </div>
               </div>
-            </div>
-          </SpringCollapseDrawer>
-        );
-      })}
+            </SpringCollapseDrawer>
+          );
+        })}
 
       {/* Daily Stop-Loss Guardrail Balance Card */}
       <div className="card bal enter">
@@ -4961,11 +5089,28 @@ export function SkinPhoneApp({
         style={{ flexShrink: 0 }}
         onClick={() => {
           setBarPopover(null);
-          if (effectiveReport.canCheckout) setSheet({ type: "poster" });
-          else setTab("match");
+          if (effectiveReport.canCheckout) {
+            setSheet({ type: "poster" });
+          } else if (
+            effectiveReport.matchCount === 1 &&
+            effectiveReport.syntheticRescuePicks &&
+            effectiveReport.syntheticRescuePicks.length > 0
+          ) {
+            void betCtrl.replacePicks(effectiveReport.syntheticRescuePicks);
+            playTactileCue("optimize-arpeggio");
+            showSpringToast(layerRef.current, "已一键切换为本场半全场合成单关");
+          } else {
+            setTab("match");
+          }
         }}
       >
-        {effectiveReport.canCheckout ? "打票核对" : "去凑场次"}
+        {effectiveReport.canCheckout
+          ? "打票核对"
+          : effectiveReport.matchCount === 1 &&
+              effectiveReport.syntheticRescuePicks &&
+              effectiveReport.syntheticRescuePicks.length > 0
+            ? "一键合成单关"
+            : "去凑场次"}
       </button>
     </div>
   ) : (
@@ -5231,12 +5376,9 @@ export function SkinPhoneApp({
     const step2Done = Boolean(appliedPlan);
     const step3Done =
       effectiveReport.matchCount > 0 && effectiveReport.canCheckout;
+    const autoStep: 1 | 2 | 3 = step2Done ? 3 : step1Done ? 2 : 1;
     const activeStep = isDesktop
-      ? step2Done
-        ? 3
-        : step1Done
-          ? 2
-          : 1
+      ? (dkFocusStep ?? autoStep)
       : tab === "archetypes"
         ? 2
         : tab === "audit"
@@ -5251,6 +5393,13 @@ export function SkinPhoneApp({
           onClick={() => {
             haptic(4);
             setTab("match");
+            if (isDesktop) {
+              setDkFocusStep(1);
+              desktopMatchColRef.current
+                ?.querySelector(".dk-col-scroll")
+                ?.scrollTo({ top: 0, behavior: "smooth" });
+              triggerShimmerSweep(desktopMatchColRef.current);
+            }
           }}
         >
           <span className="step-badge-num">{step1Done ? "✓" : "1"}</span>
@@ -5266,6 +5415,13 @@ export function SkinPhoneApp({
           onClick={() => {
             haptic(4);
             setTab("archetypes");
+            if (isDesktop) {
+              setDkFocusStep(2);
+              desktopArchColRef.current
+                ?.querySelector(".dk-col-scroll")
+                ?.scrollTo({ top: 0, behavior: "smooth" });
+              triggerShimmerSweep(desktopArchColRef.current);
+            }
           }}
         >
           <span className="step-badge-num">{step2Done ? "✓" : "2"}</span>
@@ -5277,7 +5433,16 @@ export function SkinPhoneApp({
           onClick={() => {
             haptic(4);
             setTab("audit");
-            if (isDesktop) setDkRightTab("audit");
+            if (isDesktop) {
+              setDkFocusStep(3);
+              setDkRightTab("audit");
+              desktopAuditColRef.current
+                ?.querySelector(".dk-col-scroll")
+                ?.scrollTo({ top: 0, behavior: "smooth" });
+              triggerShimmerSweep(
+                auditCockpitRef.current ?? desktopAuditColRef.current
+              );
+            }
           }}
         >
           <span className="step-badge-num">{step3Done ? "✓" : "3"}</span>
@@ -5365,7 +5530,7 @@ export function SkinPhoneApp({
           {/* 3-Column Simultaneous Desktop Workspace: Left ① 选球 -> Middle ② 配单 -> Right ③ 审单/情报 */}
           <div className="dk-workspace">
             {/* Column 1: ① 赛事雷达与全盘矩阵 */}
-            <section className="dk-col">
+            <section ref={desktopMatchColRef} className="dk-col">
               <div className="dk-col-head">
                 <div className="dk-col-head-row">
                   <span className="dk-col-title">
@@ -5398,7 +5563,7 @@ export function SkinPhoneApp({
             </section>
 
             {/* Column 2: ② 3+1 精算配单 */}
-            <section className="dk-col">
+            <section ref={desktopArchColRef} className="dk-col">
               <div className="dk-col-head">
                 <div className="dk-col-head-row">
                   <span className="dk-col-title">

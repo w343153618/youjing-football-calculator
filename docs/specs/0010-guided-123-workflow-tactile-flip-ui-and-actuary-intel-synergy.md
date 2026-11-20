@@ -1,6 +1,6 @@
 # Spec 0010: 全链路 1-2-3 向导动线、外简内丰翻转抽屉 UI 打磨与精算-情报双维协同升级（Guided 1-2-3 Workflow, Clean-Front Rich-Back Tactile UI & Dual-Lens Actuary-Intel Synergy）
 
-Status: `ready-for-agent`
+Status: `completed`
 Baseline Anchor: `docs/specs/0000-baseline-spec.md`, `docs/specs/0008-coherent-quant-and-pareto-portfolio.md` & `docs/specs/0009-red-team-remediation-and-real-oos-closure.md`
 Related ADRs: `ADR-0001`, `ADR-0002`, `ADR-0006`, `ADR-0008`, `ADR-0010`, `ADR-0011`
 Canonical Vocabulary: `GLOSSARY.md`
@@ -215,7 +215,7 @@ Canonical Vocabulary: `GLOSSARY.md`
   3. **Seam 3 · 双视口真实浏览器交互与零泄露生产构建接缝**（`pnpm build` + `ego-browser` 桌面 `1520×920` 与移动 `390×844` 实机核验）：
      - 验证生产混淆产物零 `.map` 文件且 `dist/assets/*.js` 零明文中文字符；
      - 在真实浏览器双视口下逐一核验：说明书搜「一球小胜卡盘」点黑按钮跳转成功、顶底紧凑无 `.home-ind` 假横条、Step ①→②→③ 顺次流转且移动端 Step ② 套用按钮零遮挡、`[1,2,3,4,5,10]` 倍数与 `[10,20,50,100,自定义]` 预算生效、倾向 `Δ` 微标、套用跳审单横幅动效、全赛果无 `...` 截断与展开实票、3D 翻转卡片（含 `swiss`/`glass` 皮肤不透字）与双维会诊情报流展示。
-- **先例参考**：延续 `tests/architectureDeepening.test.ts`、`tests/uiAndManual0008.test.ts` 与 `tests/redTeamRemediation0009.test.ts` 的无网络确定性测试架构，新增 `tests/linkageUiAndSynergy0010.test.ts`。
+- **先例参考**：延续 `tests/architectureDeepening.test.ts`、`tests/uiAndManual0008.test.ts` 与 `tests/redTeamRemediation0009.test.ts` 的无网络确定性测试架构，新增 `tests/linkageUiAndSynergy0010.test.ts`（`package.json` 测试入口使用 `--test-concurrency=1` 消除多进程 CPU 争用对第 3 层 `< 50ms` 延迟门禁的抖动干扰）。
 
 ---
 

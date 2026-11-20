@@ -2,52 +2,182 @@
 :root {
   --font-ui: "Helvetica Neue", Helvetica, "PingFang SC", sans-serif;
   --font-num: "Helvetica Neue", Helvetica, sans-serif;
-  --page: #EDEDED; --bg: #FFFFFF; --bg-img: none;
-  --text: #000; --text-2: #4A4A4A; --text-3: #8E8E8E; --line: #E8E8E8;
-  --accent: #000; --mark: #E30613; --live: #E30613;
-  --h1-fs: 30px; --h1-fw: 700; --h1-ls: -0.045em;
-  --tn-fs: 14.5px; --tn-fw: 500; --num-fw: 400; --big-fw: 500;
+  --page: #ededed;
+  --bg: #ffffff;
+  --bg-img: none;
+  --text: #000;
+  --text-2: #4a4a4a;
+  --text-3: #8e8e8e;
+  --line: #e8e8e8;
+  --accent: #000;
+  --mark: #e30613;
+  --live: #e30613;
+  --h1-fs: 30px;
+  --h1-fw: 700;
+  --h1-ls: -0.045em;
+  --tn-fs: 14.5px;
+  --tn-fw: 500;
+  --num-fw: 400;
+  --big-fw: 500;
 
-  --card: transparent; --card-r: 0; --card-sh: none; --card-pad: 14px 4px 16px; --card-gap: 0; --card-border: none;
-  --key: #FFFFFF; --key-text: #000; --key-r: 0; --key-border: 1px solid #E2E2E2; --key-sh: none;
-  --key-down: #F4F4F4; --key-down-sh: none;
-  --key-on: #000; --key-on-text: #FFF; --key-on-sh: none; --key-on-sheen: none; --key-on-down: #222; --key-on-down-sh: none;
-  --cell-sub: #8E8E8E; --cell-sub-on: rgba(255, 255, 255, 0.55);
+  --card: transparent;
+  --flip-face-bg: #ffffff;
+  --card-r: 0;
+  --card-sh: none;
+  --card-pad: 14px 4px 16px;
+  --card-gap: 0;
+  --card-border: none;
+  --key: #ffffff;
+  --key-text: #000;
+  --key-r: 0;
+  --key-border: 1px solid #e2e2e2;
+  --key-sh: none;
+  --key-down: #f4f4f4;
+  --key-down-sh: none;
+  --key-on: #000;
+  --key-on-text: #fff;
+  --key-on-sh: none;
+  --key-on-sheen: none;
+  --key-on-down: #222;
+  --key-on-down-sh: none;
+  --cell-sub: #8e8e8e;
+  --cell-sub-on: rgba(255, 255, 255, 0.55);
 
-  --track: transparent; --track-sh: inset 0 -1px 0 #E8E8E8; --track-r: 0; --thumb-r: 0;
-  --thumb: #000; --thumb-sh: none; --seg-text: #8E8E8E; --seg-on: #000;
-  --sw-off: #E6E6E6; --sw-off-sh: none; --sw-on: #000; --sw-on-sh: none; --knob: #FFF; --knob-sh: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --track: transparent;
+  --track-sh: inset 0 -1px 0 #e8e8e8;
+  --track-r: 0;
+  --thumb-r: 0;
+  --thumb: #000;
+  --thumb-sh: none;
+  --seg-text: #8e8e8e;
+  --seg-on: #000;
+  --sw-off: #e6e6e6;
+  --sw-off-sh: none;
+  --sw-on: #000;
+  --sw-on-sh: none;
+  --knob: #fff;
+  --knob-sh: 0 1px 2px rgba(0, 0, 0, 0.18);
 
-  --slip: #000; --slip-sh: none; --slip-r: 0; --slip-sub: rgba(255, 255, 255, 0.58);
-  --slip-go: #FFF; --slip-go-sh: none; --slip-go-down: #E6E6E6; --slip-go-down-sh: none;
-  --slip-trash: transparent; --slip-trash-sh: none; --slip-trash-text: rgba(255, 255, 255, 0.7);
-  --dock: #FFFFFF; --dock-line: #E8E8E8; --dock-blur: none;
-  --puck: #000; --puck-sh: none; --puck-r: 0; --nav-text: #AFAFAF; --nav-on: #000; --home-ind: #000;
-  --sheet: #FFF; --mask: rgba(0, 0, 0, 0.28); --grabber: #000;
-  --tile: #FFF; --tile-sh: inset 0 0 0 1px #E8E8E8;
-  --chip: #000; --chip-sh: none; --chip-r: 0; --chip-sub: rgba(255, 255, 255, 0.55);
+  --slip: #000;
+  --slip-sh: none;
+  --slip-r: 0;
+  --slip-sub: rgba(255, 255, 255, 0.58);
+  --slip-go: #fff;
+  --slip-go-sh: none;
+  --slip-go-down: #e6e6e6;
+  --slip-go-down-sh: none;
+  --slip-trash: transparent;
+  --slip-trash-sh: none;
+  --slip-trash-text: rgba(255, 255, 255, 0.7);
+  --dock: #ffffff;
+  --dock-line: #e8e8e8;
+  --dock-blur: none;
+  --puck: #000;
+  --puck-sh: none;
+  --puck-r: 0;
+  --nav-text: #afafaf;
+  --nav-on: #000;
+  --home-ind: #000;
+  --sheet: #fff;
+  --mask: rgba(0, 0, 0, 0.28);
+  --grabber: #000;
+  --tile: #fff;
+  --tile-sh: inset 0 0 0 1px #e8e8e8;
+  --chip: #000;
+  --chip-sh: none;
+  --chip-r: 0;
+  --chip-sub: rgba(255, 255, 255, 0.55);
   --poster: #000;
-  --prob1: #000; --prob2: #9B9B9B; --prob3: #E3E3E3; --prob-track: #F2F2F2;
+  --prob1: #000;
+  --prob2: #9b9b9b;
+  --prob3: #e3e3e3;
+  --prob-track: #f2f2f2;
   --crest-filter: none;
-  --ava: #F2F2F2; --ava-text: #000;
-  --orb: #F4F4F4; --orb-sh: none; --round-key: #FFF; --round-key-sh: none;
-  --toast: #000; --dash: #000;
+  --ava: #f2f2f2;
+  --ava-text: #000;
+  --orb: #f4f4f4;
+  --orb-sh: none;
+  --round-key: #fff;
+  --round-key-sh: none;
+  --toast: #000;
+  --dash: #000;
   --spring-press: 1200 60;
   --spring-release: 620 30;
 }
-.card { border-bottom: 1px solid var(--line); }
-.card.enter:last-child { border-bottom: 0; }
-.title-row { align-items: flex-end; margin-bottom: 14px; }
-.seg-track { padding: 0; }
-.seg-thumb { top: auto; bottom: 0; height: 2px; }
-.seg-btn { height: 32px; text-align: center; }
-.round-key { border-radius: 0; border: 1px solid #E2E2E2; }
-.colhead { padding: 4px 4px 2px; border-bottom: 1px solid #000; letter-spacing: 0.02em; color: #000; }
-.colhead span { padding-bottom: 6px; }
-.tag { width: 6px; height: 6px; border-radius: 0; }
-.qpill { border-radius: 0; }
-.nav-puck { top: 0; height: 2px; }
-.slip { left: 0; right: 0; bottom: 70px; height: 58px; padding: 0 10px 0 6px; }
-.slip-go { border-radius: 0; }
-.sheet, .poster, .toast, .switch, .knob, .sk i, .sk i::after, .prob, .prob i, .mini-prob, .fchip, .combo-item, .key.pillk { border-radius: 0; }
-.grabber i { height: 2px; border-radius: 0; width: 28px; }
+.card {
+  border-bottom: 1px solid var(--line);
+}
+.card.enter:last-child {
+  border-bottom: 0;
+}
+.title-row {
+  align-items: flex-end;
+  margin-bottom: 14px;
+}
+.seg-track {
+  padding: 0;
+}
+.seg-thumb {
+  top: auto;
+  bottom: 0;
+  height: 2px;
+}
+.seg-btn {
+  height: 32px;
+  text-align: center;
+}
+.round-key {
+  border-radius: 0;
+  border: 1px solid #e2e2e2;
+}
+.colhead {
+  padding: 4px 4px 2px;
+  border-bottom: 1px solid #000;
+  letter-spacing: 0.02em;
+  color: #000;
+}
+.colhead span {
+  padding-bottom: 6px;
+}
+.tag {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+}
+.qpill {
+  border-radius: 0;
+}
+.nav-puck {
+  top: 0;
+  height: 2px;
+}
+.slip {
+  left: 0;
+  right: 0;
+  bottom: 70px;
+  height: 58px;
+  padding: 0 10px 0 6px;
+}
+.slip-go {
+  border-radius: 0;
+}
+.sheet,
+.poster,
+.toast,
+.switch,
+.knob,
+.sk i,
+.sk i::after,
+.prob,
+.prob i,
+.mini-prob,
+.fchip,
+.combo-item,
+.key.pillk {
+  border-radius: 0;
+}
+.grabber i {
+  height: 2px;
+  border-radius: 0;
+  width: 28px;
+}

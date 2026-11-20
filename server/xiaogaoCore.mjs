@@ -635,39 +635,44 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
     const now = new Date();
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
-    const perMatch = Array.isArray(parsed.perMatch)
-      ? parsed.perMatch.map((pm, idx) => {
-          const srcItem =
-            items.find((it) => String(it.matchId) === String(pm?.matchId)) ||
-            items[idx];
-          return {
-            matchId: String(pm.matchId || srcItem?.matchId || ""),
-            matchTitle: redactModelLeak(
-              pm.matchTitle ||
-                (srcItem
-                  ? `${srcItem.matchNumStr} ${srcItem.home}vs${srcItem.away}`
-                  : "")
-            ),
-            tag: redactModelLeak(pm.tag || "联合排雷关注"),
-            note: redactModelLeak(
-              pm.note || "注意防范浅盘热度过高与一球小胜卡盘风险。"
-            ),
-            priceInStatus: redactModelLeak(
-              pm.priceInStatus || "当前水位已部分消化市场一致预期"
-            ),
-            poolImpact: redactModelLeak(
-              pm.poolImpact || buildDefaultPoolImpact(srcItem)
-            ),
-          };
-        })
-      : items.map((it) => ({
-          matchId: String(it.matchId),
-          matchTitle: `${it.matchNumStr} ${it.home}vs${it.away}`,
-          tag: "盘面重点核查",
-          note: "建议结合去水真实胜率与卡盘温度计控制串关风险。",
-          priceInStatus: "盘面水位已部分消化预期",
-          poolImpact: buildDefaultPoolImpact(it),
-        }));
+    const rawPerMatch = Array.isArray(parsed.perMatch) ? parsed.perMatch : [];
+    const knownIds = new Set(
+      items.flatMap((it) =>
+        [it.matchId, it.matchNumStr].filter(Boolean).map((v) => String(v))
+      )
+    );
+    const perMatch = items.map((srcItem, idx) => {
+      const byId = rawPerMatch.find(
+        (x) =>
+          String(x?.matchId) === String(srcItem.matchId) ||
+          (Boolean(srcItem.matchNumStr) &&
+            String(x?.matchId) === String(srcItem.matchNumStr))
+      );
+      const positional = rawPerMatch[idx];
+      const pm =
+        byId ??
+        (positional &&
+        (!positional.matchId || !knownIds.has(String(positional.matchId)))
+          ? positional
+          : null);
+      return {
+        matchId: String(srcItem.matchId),
+        matchTitle: redactModelLeak(
+          pm?.matchTitle ||
+            `${srcItem.matchNumStr} ${srcItem.home}vs${srcItem.away}`
+        ),
+        tag: redactModelLeak(pm?.tag || "联合排雷关注"),
+        note: redactModelLeak(
+          pm?.note || "建议结合去水真实胜率与卡盘温度计控制串关风险。"
+        ),
+        priceInStatus: redactModelLeak(
+          pm?.priceInStatus || "当前水位已部分消化市场一致预期"
+        ),
+        poolImpact: redactModelLeak(
+          pm?.poolImpact || buildDefaultPoolImpact(srcItem)
+        ),
+      };
+    });
 
     const defaultSynergy = actCtx.isOptimized
       ? `${actCtx.shieldSummary}。数学分倍层面已做好结构防护，无需重复拆改注单倍数。`

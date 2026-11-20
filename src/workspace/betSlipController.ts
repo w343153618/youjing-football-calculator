@@ -7,6 +7,7 @@ import {
   type EquivalentArbItem,
   type MatchItem,
   type PassSelectionSpec,
+  type PlanTicketLine,
   type PoolCode,
   type PortfolioKey,
   type QuantWorkspaceParams,
@@ -372,10 +373,16 @@ function buildPlanTicketSignature(plan?: ArchetypePlan | null): string {
 
 export type ComboSortMode = "loss-first" | "prob-first" | "profit-first";
 
+export interface AttributedWinningTicket extends ComboRow {
+  ticketNo: number;
+  multiple: number;
+}
+
 export interface ComboTicketBreakdown {
   isAggregateRange: boolean;
+  scenarioLabel: string;
   legs: SelectedPick[];
-  winningTickets: ComboRow[];
+  winningTickets: AttributedWinningTicket[];
   winningTicketCount: number;
   roiMultiple: number;
   barTone: "loss" | "breakeven" | "gain";
@@ -385,7 +392,12 @@ export interface ComboTicketBreakdown {
 export function resolveComboTicketBreakdown(
   combo: ComboRow,
   tickets: ComboRow[] | undefined,
-  totalCost: number
+  totalCost: number,
+  options?: {
+    matchCount?: number;
+    defaultMultiple?: number;
+    appliedLines?: PlanTicketLine[];
+  }
 ): ComboTicketBreakdown {
   const legs = Array.isArray(combo.legs) ? combo.legs : [];
   const isAggregateRange =
@@ -393,15 +405,38 @@ export function resolveComboTicketBreakdown(
   const legKeySet = new Set(
     legs.map((lg) => `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`)
   );
+  const totalM = options?.matchCount ?? legs.length;
+  const scenarioLabel = isAggregateRange
+    ? combo.desc
+    : totalM > 0 && legs.length >= totalM
+      ? `全中 (${legs.length}场)`
+      : `命中 ${legs.length}/${Math.max(legs.length, totalM)} 场`;
 
-  const winningTickets =
+  const defaultMult = Math.max(1, options?.defaultMultiple ?? 1);
+  const appliedLines = options?.appliedLines;
+
+  const winningTickets: AttributedWinningTicket[] =
     !isAggregateRange && Array.isArray(tickets)
-      ? tickets.filter((tk) => {
+      ? tickets.flatMap((tk, idx) => {
           const tLegs = Array.isArray(tk.legs) ? tk.legs : [];
-          if (tLegs.length === 0) return false;
-          return tLegs.every((tl) =>
+          if (tLegs.length === 0) return [];
+          const hit = tLegs.every((tl) =>
             legKeySet.has(`${tl.matchId}:${tl.poolCode}:${tl.optionKey}`)
           );
+          if (!hit) return [];
+          const matchedLine = appliedLines?.[idx];
+          const resolvedMult =
+            matchedLine?.multiple ??
+            (tk.unitPayout > 0
+              ? Math.max(1, Math.round(tk.totalPayout / tk.unitPayout))
+              : defaultMult);
+          return [
+            {
+              ...tk,
+              ticketNo: idx + 1,
+              multiple: resolvedMult,
+            },
+          ];
         })
       : [];
 
@@ -419,6 +454,7 @@ export function resolveComboTicketBreakdown(
 
   return {
     isAggregateRange,
+    scenarioLabel,
     legs,
     winningTickets,
     winningTicketCount: winningTickets.length,
@@ -530,14 +566,18 @@ export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
     : "胜平负暂未开售单关/串关固定奖池";
 
   const goalLine = match.pools.HHAD?.goalLine || "-1";
-  const sharePct = Math.round(mq.oneGoalShareOfWins);
+  const rawOneGoal = Number(mq.oneGoalShareOfWins) || 0;
+  const sharePct = Math.round(rawOneGoal <= 1 ? rawOneGoal * 100 : rawOneGoal);
   const hhadImpact =
     sharePct >= 46
       ? `让球[${goalLine}]高危预警：强队赢球时卡1球占比达 ${sharePct}%，直搏让胜极易卡盘，宜防让球平或改走胜平负`
       : `让球[${goalLine}]盘口评估：赢球时卡1球占比 ${sharePct}%，结合受让方赔付水位决定是否补防让球平`;
 
-  const [g1, g2, top2SumProb] = mq.topTwoGoals ?? ["2", "3", 45];
-  const ttgImpact = `总进球黄金区间落在 ${g1}球 / ${g2}球（合计真率 ${Math.round(top2SumProb)}% · ${mq.paceLabel}）`;
+  const [rawG1, rawG2, rawTop2Sum] = mq.topTwoGoals ?? ["2", "3", 0.45];
+  const g1 = String(rawG1).replace(/^s/i, "");
+  const g2 = String(rawG2).replace(/^s/i, "");
+  const top2Pct = Math.round(rawTop2Sum <= 1 ? rawTop2Sum * 100 : rawTop2Sum);
+  const ttgImpact = `总进球黄金区间落在 ${g1}球 / ${g2}球（合计真率 ${top2Pct}% · ${mq.paceLabel}）`;
 
   const cardLevel: "high" | "warn" | "safe" =
     sharePct >= 48 ? "high" : sharePct >= 38 ? "warn" : "safe";

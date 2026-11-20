@@ -210,26 +210,37 @@ describe("Spec 0010 · Seam 1B: Dual-Lens Actuary-Intel Synergy Diagnosis & Iron
             : "建议切至 ② 精算配单套用【稳健保本】或【容错缩水】消除裸串软肋。",
           priceInVerdict:
             "首关利好已被绿箭头降水充分消化，次关总进球盘尚存微幅滞后。",
-          perMatch: [
-            {
-              matchId: FALLBACK_MATCHES[0].id,
-              matchTitle: `${FALLBACK_MATCHES[0].matchNumStr} ${FALLBACK_MATCHES[0].home}vs${FALLBACK_MATCHES[0].away}`,
-              tag: "利好已入价",
-              note: "主胜连续压水防范，但净胜两球穿盘阻力增大。",
-              priceInStatus: "主胜水位已提前消化伤停利好",
-              poolImpact:
-                "胜平负主胜稳健但油水薄；让球(-1)需防让平卡盘；总进球倾向2~3球。",
-            },
-            {
-              matchId: FALLBACK_MATCHES[1].id,
-              matchTitle: `${FALLBACK_MATCHES[1].matchNumStr} ${FALLBACK_MATCHES[1].home}vs${FALLBACK_MATCHES[1].away}`,
-              tag: "防半场闷平",
-              note: "客队防守反击韧性足，上半场易僵持。",
-              priceInStatus: "让球盘水位平稳，未见过度透支",
-              poolImpact:
-                "胜平负宜防平局分流；让球受让方具韧性；总进球优先关注1~2球。",
-            },
-          ],
+          perMatch: isActuaryApplied
+            ? [
+                {
+                  matchId: FALLBACK_MATCHES[0].id,
+                  matchTitle: `${FALLBACK_MATCHES[0].matchNumStr} ${FALLBACK_MATCHES[0].home}vs${FALLBACK_MATCHES[0].away}`,
+                  tag: "利好已入价",
+                  note: "主胜连续压水防范，但净胜两球穿盘阻力增大。",
+                  priceInStatus: "主胜水位已提前消化伤停利好",
+                  poolImpact:
+                    "胜平负主胜稳健但油水薄；让球(-1)需防让平卡盘；总进球倾向2~3球。",
+                },
+                {
+                  matchId: FALLBACK_MATCHES[1].id,
+                  matchTitle: `${FALLBACK_MATCHES[1].matchNumStr} ${FALLBACK_MATCHES[1].home}vs${FALLBACK_MATCHES[1].away}`,
+                  tag: "防半场闷平",
+                  note: "客队防守反击韧性足，上半场易僵持。",
+                  priceInStatus: "让球盘水位平稳，未见过度透支",
+                  poolImpact:
+                    "胜平负宜防平局分流；让球受让方具韧性；总进球优先关注1~2球。",
+                },
+              ]
+            : [
+                // Intentionally return only the 2nd match to verify 100% deterministic backfill of the 1st match
+                {
+                  matchId: FALLBACK_MATCHES[1].id,
+                  matchTitle: `${FALLBACK_MATCHES[1].matchNumStr} ${FALLBACK_MATCHES[1].home}vs${FALLBACK_MATCHES[1].away}`,
+                  tag: "次关穿盘难",
+                  note: "客队防线紧凑，裸串防冷压力大。",
+                  priceInStatus: "让球水位平稳",
+                },
+              ],
         });
       },
     });
@@ -432,6 +443,32 @@ describe("Spec 0010 · Seam 1B: Dual-Lens Actuary-Intel Synergy Diagnosis & Iron
       assert.ok(
         synergyRes.comboReport.perMatch[0].poolImpact?.includes("胜平负"),
         "Expected perMatch[0].poolImpact to preserve multi-pool impact breakdown"
+      );
+
+      // 1b. Contrast against manual unoptimized slip (planSpec: null) + partial perMatch backfill
+      const manualRes = await postEnc("xiaogao/analyze-combo", {
+        sourceMode: "picked",
+        matchIds: [m0.id, m1.id],
+        picks: appliedPicks,
+        multiple: 5,
+        passSpec: { mode: "auto" },
+        planSpec: null,
+        budget: 100,
+        stance: "objective",
+      });
+      assert.ok(
+        manualRes.comboReport.planContextBadge?.includes("手动"),
+        `Expected manual slip badge to reflect manual mode, got: ${manualRes.comboReport.planContextBadge}`
+      );
+      assert.equal(
+        manualRes.comboReport.perMatch.length,
+        2,
+        "Even when upstream returns partial perMatch, all input matches must be backfilled"
+      );
+      assert.equal(manualRes.comboReport.perMatch[0].matchId, m0.id);
+      assert.equal(manualRes.comboReport.perMatch[1].matchId, m1.id);
+      assert.ok(
+        manualRes.comboReport.perMatch[0].poolImpact?.includes("胜平负")
       );
 
       // 2. Manual QA local 0ms KB hits for new Spec 0010 workflows & compound card-pan query
@@ -737,10 +774,25 @@ describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode
       4,
       "All 4 match legs must be preserved without any ellipsis truncation"
     );
+    assert.ok(
+      breakdown.scenarioLabel.includes("全中") &&
+        breakdown.scenarioLabel.includes("4场"),
+      `Expected scenarioLabel to describe 全中 (4场), got: ${breakdown.scenarioLabel}`
+    );
     assert.equal(
       breakdown.winningTicketCount,
       7,
       "All-4-hit outcome on [2关, 4关] must attribute C(4,2)+C(4,4)=7 winning physical tickets"
+    );
+    assert.ok(
+      breakdown.winningTickets.every(
+        (tk: any) =>
+          typeof tk.ticketNo === "number" &&
+          tk.ticketNo >= 1 &&
+          tk.multiple === 2 &&
+          tk.unitPayout > 0
+      ),
+      "Each attributed physical ticket must expose 1-based ticketNo, multiple, and unitPayout"
     );
     const sumAttributedPayout = Number(
       breakdown.winningTickets
@@ -761,9 +813,13 @@ describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode
     assert.ok(byProb[0].prob >= byProb[byProb.length - 1].prob);
     assert.ok(byProfit[0].netProfit >= byProfit[byProfit.length - 1].netProfit);
 
-    // 3. Zero-quota MatchIntelDigest for 情报账本
+    // 3. Zero-quota MatchIntelDigest for 情报账本 (verify [0,1] -> percentage scaling & clean TTG labels)
     const digest = buildMatchIntelDigest(FALLBACK_MATCHES[0] as any);
     assert.equal(digest.matchId, FALLBACK_MATCHES[0].id);
+    assert.ok(
+      digest.cardPanAlert.sharePct >= 10 && digest.cardPanAlert.sharePct <= 100,
+      `oneGoalShareOfWins [0,1] fraction must scale to real percentage (10..100), got ${digest.cardPanAlert.sharePct}`
+    );
     assert.ok(
       digest.xgSummary.includes("xG") || digest.xgSummary.includes("总预期")
     );
@@ -773,6 +829,11 @@ describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode
         digest.poolImpacts.hhad.includes("让球")
     );
     assert.ok(digest.poolImpacts.ttg.includes("球"));
+    assert.equal(
+      /s\d球/i.test(digest.poolImpacts.ttg),
+      false,
+      `TTG pool impact must strip internal 's' prefix (e.g. '2球 / 3球'), got: ${digest.poolImpacts.ttg}`
+    );
     assert.ok(Array.isArray(digest.trendMovements));
   });
 });
@@ -891,12 +952,27 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
       "core.css must remove single-line ellipsis truncation on .combo-item .cdesc b"
     );
     assert.ok(
-      widgetsSrc.includes("export function TactileFlipCard"),
-      "widgets.tsx must export TactileFlipCard"
+      widgetsSrc.includes("export function TactileFlipCard") &&
+        widgetsSrc.includes("inert="),
+      "widgets.tsx must export TactileFlipCard with inert focus isolation on hidden faces"
     );
     assert.ok(
       widgetsSrc.includes("export function SpringCollapseDrawer"),
       "widgets.tsx must export SpringCollapseDrawer"
+    );
+    for (const skinFile of ["core.css", "swiss.css", "glass.css", "dial.css"]) {
+      const skinCss = fs.readFileSync(
+        path.join(repoRoot, "public/skins", skinFile),
+        "utf8"
+      );
+      assert.ok(
+        skinCss.includes("--flip-face-bg"),
+        `${skinFile} must define opaque --flip-face-bg token for 3D flip surfaces`
+      );
+    }
+    assert.ok(
+      coreCss.includes("background: var(--flip-face-bg)"),
+      "core.css .tflip-face must bind background: var(--flip-face-bg)"
     );
     assert.ok(
       coreCss.includes("prefers-reduced-motion: reduce"),
@@ -913,9 +989,12 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
     );
     assert.ok(
       appSrc.includes("actuarySynergy") &&
-        appSrc.includes("residualRisks") &&
-        appSrc.includes("buildMatchIntelDigest"),
-      "SkinPhoneApp must render Dual-Lens actuarySynergy/residualRisks and zero-quota MatchIntelDigest"
+        appSrc.includes("[comboReport.residualRisks]") &&
+        appSrc.includes("...wsParams") &&
+        appSrc.includes("buildMatchIntelDigest") &&
+        appSrc.includes("一球小胜卡盘温度计") &&
+        appSrc.includes("一键合成单关"),
+      "SkinPhoneApp must render string/array residualRisks, forward workspace params to analyze-combo, show card-pan thermometer, and expose Step 3 single-match synthesis CTA"
     );
   });
 });
