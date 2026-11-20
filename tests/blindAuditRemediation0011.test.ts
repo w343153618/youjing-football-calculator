@@ -14,12 +14,14 @@ import {
   generateParetoPortfolio,
   parseSportteryRawJson,
 } from "../server/quantEngine.mjs";
+import { createLedgerManager } from "../server/ledgerManager.mjs";
+import { createBetSlipController } from "../src/workspace/betSlipController.ts";
 import type {
   ArchetypePlan,
   MatchItem,
   PoolCode,
   SelectedPick,
-} from "../src/prototype/quantTypes.js";
+} from "../src/prototype/quantTypes.ts";
 
 const REAL_OOS_PATH = path.resolve(
   process.cwd(),
@@ -933,6 +935,285 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     assert.ok(
       Math.abs(actualUtil - bestFeasibleUtil) < 1e-12,
       `Slot ② integer split (${ln0.multiple}, ${ln1.multiple}) utility ${actualUtil} missed exact integer optimum ${bestFeasibleUtil}`
+    );
+  });
+
+  it("Slice 04 · Seam 2 & UI Contracts: blocks >512-bet bonus opt honestly, calibrates hedge2 preset + reduce-loss UI, auto-dutches 2-pick equivalent swaps with single guard, clamps slider to [-15,15], and reports dual-sided paper ledger stats", async () => {
+    const oos = loadOosMatches(16);
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      computeWorkspace: async (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    const baseMatches = FALLBACK_MATCHES as MatchItem[];
+    ctrl.applyAuthenticatedBundle({
+      matches: baseMatches,
+      initialPicks: [],
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: [],
+          multiple: 5,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: baseMatches.slice(0, 2).map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        baseMatches
+      ),
+    });
+
+    // 1. P2-4a & P0-3c: Built-in "hedge2" preset selects a single-eligible late match with positive lock-profit!
+    ctrl.loadPresetScenario("hedge2");
+    await ctrl.flush();
+    const hedge2Ws = ctrl.getState().workspace;
+    assert.equal(
+      hedge2Ws.insights.hedge.available,
+      true,
+      `Preset hedge2 must be genuinely single-eligible and available, got reason: ${hedge2Ws.insights.hedge.reason}`
+    );
+    assert.equal(hedge2Ws.insights.hedge.hedgeMode, "lock-profit");
+    assert.ok(
+      hedge2Ws.insights.hedge.lockedNetProfit > 0,
+      `Preset hedge2 must lock positive net profit, got ${hedge2Ws.insights.hedge.lockedNetProfit}`
+    );
+
+    // 2. P2-4b: Symmetric [-15, +15] subjectiveDeltaPct clamp in controller & server workspace
+    ctrl.setSubjectiveDeltaPct(20);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().subjectiveDeltaPct, 15);
+    const evAt15 = ctrl.getState().workspace.subjectiveEVPct;
+    const rawWsAt20 = evaluateQuantWorkspace(
+      {
+        ...ctrl.getState(),
+        subjectiveDeltaPct: 20,
+      },
+      baseMatches
+    );
+    assert.ok(
+      Math.abs(rawWsAt20.subjectiveEVPct - evAt15) < 1e-12,
+      "Server evaluateQuantWorkspace must also clamp subjectiveDeltaPct at +15%"
+    );
+    ctrl.setSubjectiveDeltaPct(-25);
+    assert.equal(ctrl.getState().subjectiveDeltaPct, -15);
+    ctrl.setSubjectiveDeltaPct(0);
+    await ctrl.flush();
+
+    // 3. P1-2: >512-bet duplex (700 bets: 8 matches x 5 TTG in 2串1) blocks applyBonusOptimization with explicit reason!
+    const m8 = oos.slice(0, 8);
+    const picks700 = m8.flatMap((m) =>
+      ["s0", "s1", "s2", "s3", "s4"].map((k) => makePick(m, "TTG", k))
+    );
+    ctrl.applyAuthenticatedBundle({
+      matches: m8,
+      initialPicks: picks700,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: picks700,
+          multiple: 1,
+          passSpec: { mode: "free", passSizes: [2] },
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: m8.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        m8
+      ),
+    });
+    // Lock 2串1 pass so betCount === 700 (> 512, <= 2,048)
+    ctrl.toggleFreePassSize(2);
+    await ctrl.flush();
+    if (ctrl.getState().workspace.manualReport.betCount !== 700) {
+      // Ensure exact [2] pass
+      for (const fp of ctrl
+        .getState()
+        .workspace.manualReport.availableFreePasses.filter(
+          (f) => f.active && f.size !== 2
+        )) {
+        ctrl.toggleFreePassSize(fp.size);
+      }
+      if (
+        !ctrl
+          .getState()
+          .workspace.manualReport.availableFreePasses.find((f) => f.size === 2)
+          ?.active
+      ) {
+        ctrl.toggleFreePassSize(2);
+      }
+      await ctrl.flush();
+    }
+    assert.equal(ctrl.getState().workspace.manualReport.betCount, 700);
+    const blockedBonusRes = ctrl.applyBonusOptimization("equal") as {
+      ok: boolean;
+      blockedReason?: string;
+    };
+    assert.equal(blockedBonusRes.ok, false);
+    assert.ok(
+      blockedBonusRes.blockedReason &&
+        blockedBonusRes.blockedReason.includes("512"),
+      `Expected explicit >512 blockedReason, got: ${blockedBonusRes.blockedReason}`
+    );
+    assert.equal(ctrl.getState().planSpec, null);
+
+    // 4. P2-3a & P2-3b: Single-match checkout guard on activeSwapTip / applyEquivalentSwap, AND auto-dutching on valid 2-pick swap!
+    const hhadSingleHadNotMatch: MatchItem = {
+      ...baseMatches[0],
+      id: "swap-guard-m",
+      pools: {
+        ...baseMatches[0].pools,
+        HAD: {
+          ...baseMatches[0].pools.HAD,
+          single: false, // NOT single-eligible!
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 1.95, trend: 0, fairProb: 0.46 },
+            { key: "d", label: "平", odds: 3.6, trend: 0, fairProb: 0.25 },
+            { key: "a", label: "客胜", odds: 3.8, trend: 0, fairProb: 0.29 },
+          ],
+        },
+        HHAD: {
+          ...baseMatches[0].pools.HHAD,
+          single: true, // Single-eligible!
+          selling: true,
+          goalLine: "-1",
+          options: [
+            { key: "hh", label: "让胜", odds: 3.5, trend: 0, fairProb: 0.25 },
+            { key: "hd", label: "让平", odds: 3.45, trend: 0, fairProb: 0.26 },
+            { key: "ha", label: "让负", odds: 1.72, trend: 0, fairProb: 0.49 },
+          ],
+        },
+      },
+    };
+    const oneSinglePick = [makePick(hhadSingleHadNotMatch, "HHAD", "ha")];
+    const ws1Single = evaluateQuantWorkspace(
+      {
+        picks: oneSinglePick,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: [hhadSingleHadNotMatch.id],
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [hhadSingleHadNotMatch]
+    );
+    assert.equal(ws1Single.manualReport.canCheckout, true);
+    assert.equal(
+      ws1Single.insights.activeSwapTip,
+      null,
+      "Must NOT offer activeSwapTip into non-single HAD[d+a] when current slip is a 1-match single"
+    );
+
+    // On a 2-match parlay, HAD[d+a] swap IS legal AND applyEquivalentSwap must auto-enable equal bonus dutching!
+    const parlaySwapMatches = [hhadSingleHadNotMatch, baseMatches[1]];
+    const parlaySwapPicks = [
+      makePick(hhadSingleHadNotMatch, "HHAD", "ha"),
+      makePick(baseMatches[1], "HAD", "h"),
+    ];
+    ctrl.applyAuthenticatedBundle({
+      matches: parlaySwapMatches,
+      initialPicks: parlaySwapPicks,
+      workspace: evaluateQuantWorkspace(
+        {
+          picks: parlaySwapPicks,
+          multiple: 5,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: parlaySwapMatches.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        parlaySwapMatches
+      ),
+    });
+    const tip2M = ctrl.getState().workspace.insights.activeSwapTip;
+    assert.notEqual(tip2M, null);
+    assert.equal(tip2M!.betterPicks.length, 2);
+    const swapped = ctrl.applyEquivalentSwap(tip2M!);
+    assert.equal(swapped, true);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().planSpec?.kind, "bonus");
+    assert.equal(
+      (ctrl.getState().planSpec as { kind: "bonus"; optMode: string }).optMode,
+      "equal"
+    );
+    assert.equal(ctrl.getState().workspace.effectiveReport.underwaterCount, 0);
+
+    // 5. P1-6: Dual-sided paper ledger stats (paperLostCount & paperWonCount alongside paperSavedAmount)
+    const ledgerMgr = createLedgerManager({ nowFn: () => 1_763_640_000_000 });
+    const addLost = ledgerMgr.mutateUserLedger("u-audit", {
+      action: "add-entry",
+      kind: "paper",
+      title: "模拟单#1",
+      modeLabel: "2串1",
+      betCount: 1,
+      paperRefCost: 80,
+      minPayout: 180,
+      maxPayout: 180,
+    });
+    const addWon = ledgerMgr.mutateUserLedger("u-audit", {
+      action: "add-entry",
+      kind: "paper",
+      title: "模拟单#2",
+      modeLabel: "2串1",
+      betCount: 1,
+      paperRefCost: 60,
+      minPayout: 150,
+      maxPayout: 150,
+    });
+    ledgerMgr.mutateUserLedger("u-audit", {
+      action: "settle-entry",
+      entryId: addLost.entry.id,
+      status: "lost",
+    });
+    const snapAfter = ledgerMgr.mutateUserLedger("u-audit", {
+      action: "settle-entry",
+      entryId: addWon.entry.id,
+      status: "won",
+    }).ledger;
+    assert.equal(snapAfter.stats.paperCount, 2);
+    assert.equal(snapAfter.stats.paperLostCount, 1);
+    assert.equal(snapAfter.stats.paperWonCount, 1);
+    assert.equal(snapAfter.stats.paperSavedAmount, 80);
+
+    // 6. UI source contracts on SkinPhoneApp.tsx
+    const uiSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      !uiSrc.includes("max={20}"),
+      "Slider max={20} must be replaced by symmetric max={15}"
+    );
+    assert.ok(
+      uiSrc.includes("max={15}"),
+      "Slider must enforce symmetric max={15}"
+    );
+    assert.ok(
+      !uiSrc.includes("保本锁回"),
+      "Forbidden misleading hedge copy 保本锁回 must be removed"
+    );
+    assert.ok(
+      uiSrc.includes("锁死少亏"),
+      "Negative-profit hedge UI must render honest 锁死少亏 warning"
+    );
+    assert.ok(
+      uiSrc.includes("模拟命中(未实买)"),
+      "Won paper ledger entry must render 🎯模拟命中(未实买)"
+    );
+    assert.ok(
+      uiSrc.includes("paperWonCount"),
+      "Ledger stats tile must display dual-sided paperWonCount"
     );
   });
 });

@@ -10980,6 +10980,17 @@ export function computeProOrderInsights(
     const mpicks = effectivePicks.filter((p) => p.matchId === m.id);
     const mq = analyzeMatchMicroQuant(m);
     const matchedArb = mq.arbitrages.find((arb) => {
+      if (
+        pickedMatches.length === 1 &&
+        report?.canCheckout === true &&
+        !arb.betterPicks.every(
+          (bp) =>
+            m.pools?.[bp.poolCode]?.selling !== false &&
+            m.pools?.[bp.poolCode]?.single === true
+        )
+      ) {
+        return false;
+      }
       const hasAllWorse =
         arb.worsePicks.length > 0 &&
         arb.worsePicks.every((wp) =>
@@ -12138,7 +12149,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
   const passSpec = params?.passSpec ?? { mode: "auto" };
   const subjectiveDeltaPct = Math.max(
     -15,
-    Math.min(20, Number(params?.subjectiveDeltaPct) || 0)
+    Math.min(15, Number(params?.subjectiveDeltaPct) || 0)
   );
   const simVoidFirstMatch = Boolean(params?.simVoidFirstMatch);
   const planSpec = params?.planSpec ?? null;

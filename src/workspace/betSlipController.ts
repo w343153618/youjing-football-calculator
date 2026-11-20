@@ -796,13 +796,38 @@ function buildPresetPicks(
   const mEarly = matches[0];
   const mLate =
     matches.find(
+      (x) =>
+        x.id !== mEarly?.id &&
+        (x.kickoff.startsWith("03:") || x.kickoff.startsWith("07:")) &&
+        (x.pools.HAD.single || x.pools.HHAD.single)
+    ) ??
+    matches.find(
+      (x) => x.id !== mEarly?.id && (x.pools.HAD.single || x.pools.HHAD.single)
+    ) ??
+    matches.find(
       (x) => x.kickoff.startsWith("03:") || x.kickoff.startsWith("07:")
-    ) ?? matches[matches.length - 1];
+    ) ??
+    matches[matches.length - 1];
   if (!mEarly || !mLate) return { multiple: 15, picks: [] };
   const picks = [mEarly, mLate]
-    .map((m): SelectedPick | null => {
-      const pCode: PoolCode = m.pools.HAD.options.length > 0 ? "HAD" : "HHAD";
-      const o = m.pools[pCode].options[0];
+    .map((m, idx): SelectedPick | null => {
+      const pCode: PoolCode =
+        idx === 1
+          ? m.pools.HAD.single && m.pools.HAD.options.length > 0
+            ? "HAD"
+            : m.pools.HHAD.single && m.pools.HHAD.options.length > 0
+              ? "HHAD"
+              : m.pools.HAD.options.length > 0
+                ? "HAD"
+                : "HHAD"
+          : m.pools.HAD.options.length > 0
+            ? "HAD"
+            : "HHAD";
+      const opts = m.pools[pCode].options;
+      const o =
+        idx === 1 && opts.length > 1
+          ? opts.reduce((best, cur) => (cur.odds < best.odds ? cur : best))
+          : opts[0];
       if (!o) return null;
       return {
         matchId: m.id,
@@ -1624,9 +1649,20 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     applyBonusOptimization(optMode: BonusOptMode): {
       ok: boolean;
       modeTitle?: string;
+      blockedReason?: string;
     } {
-      if (state.workspace.manualReport.combos.length === 0)
+      const manualRep = state.workspace.manualReport;
+      if (manualRep.combos.length === 0 && manualRep.betCount === 0) {
         return { ok: false };
+      }
+      const lineCount = manualRep.tickets?.length ?? manualRep.betCount;
+      if (lineCount > 512) {
+        return {
+          ok: false,
+          blockedReason:
+            "当前复式超出 512 注线下逐票分倍上限，请精简包号或改用【3+1 精算配单】",
+        };
+      }
       state = {
         ...state,
         planSpec: { kind: "bonus", optMode, scaleMultiple: 1 },
@@ -1761,9 +1797,27 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         });
       }
       const nextPicks = [...cleaned, ...additions];
+      const prevMatchSet = new Set(state.picks.map((p) => p.matchId));
+      const nextMatchSet = new Set(nextPicks.map((p) => p.matchId));
+      if (
+        prevMatchSet.size === 1 &&
+        nextMatchSet.size === 1 &&
+        state.picks.length > 0 &&
+        state.picks.every((p) => p.singleAllowed) &&
+        nextPicks.some((p) => !p.singleAllowed)
+      ) {
+        return false;
+      }
+      const estBetCount =
+        Math.max(1, state.workspace.manualReport.betCount || 1) *
+        Math.max(1, arb.betterPicks.length);
+      const nextPlanSpec: AppliedPlanSpec =
+        arb.betterPicks.length >= 2 && estBetCount <= 512
+          ? { kind: "bonus", optMode: "equal", scaleMultiple: 1 }
+          : null;
       state = {
         ...state,
-        planSpec: null,
+        planSpec: nextPlanSpec,
         picks: nextPicks,
         ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
@@ -1868,7 +1922,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     setSubjectiveDeltaPct(val: number) {
-      state = { ...state, subjectiveDeltaPct: val };
+      const clamped = Math.max(-15, Math.min(15, Math.round(Number(val) || 0)));
+      state = { ...state, subjectiveDeltaPct: clamped };
       emit();
       void scheduleRefresh();
     },

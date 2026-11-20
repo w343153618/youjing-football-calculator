@@ -311,9 +311,17 @@ export function buildComboDiagnosisContext({
       );
     }
     const hedgeHint = insights?.hedge?.available
-      ? `早晚场开球间隔 ${insights.hedge.gapText}，首关红单后可补买 ${insights.hedge.oppositeLabel}@${Number(
-          insights.hedge.oppositeOdds
-        ).toFixed(2)}（约¥${insights.hedge.hedgeCost}）执行时间差锁利`
+      ? insights.hedge.hedgeMode === "reduce-loss"
+        ? `早晚场开球间隔 ${insights.hedge.gapText}，首关红单后单关补买 ${insights.hedge.oppositeLabel}@${Number(
+            insights.hedge.oppositeOdds
+          ).toFixed(
+            2
+          )}（约¥${insights.hedge.hedgeCost}）仅属减损止血（锁死少亏 -¥${Math.abs(
+            Number(insights.hedge.lockedNetProfit) || 0
+          ).toFixed(2)}）`
+        : `早晚场开球间隔 ${insights.hedge.gapText}，首关红单后可单关补买 ${insights.hedge.oppositeLabel}@${Number(
+            insights.hedge.oppositeOdds
+          ).toFixed(2)}（约¥${insights.hedge.hedgeCost}）执行时间差对冲`
       : null;
     if (hedgeHint) shieldParts.push(hedgeHint);
 
@@ -350,7 +358,9 @@ export function buildComboDiagnosisContext({
       shieldParts.push(`手动双选覆盖：${dualCoveredMatches.join("、")}`);
     }
     const hedgeHint = insights?.hedge?.available
-      ? `早晚场间隔 ${insights.hedge.gapText} 支持首关红单后晚场反向对冲锁利`
+      ? insights.hedge.hedgeMode === "reduce-loss"
+        ? `早晚场间隔 ${insights.hedge.gapText}，首关红单后单关反向补单仅属减损止血（非正收益）`
+        : `早晚场间隔 ${insights.hedge.gapText} 支持首关红单后晚场单关反向对冲`
       : null;
 
     actuaryContext = {

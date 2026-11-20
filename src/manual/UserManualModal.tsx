@@ -691,7 +691,7 @@ export function UserManualModal({
               <div className="manual-diagram-card">
                 <div className="manual-diag-title">
                   🎚️ 重点图解：「主观胜率信心微调沙盒 (-15% ～
-                  +20%)」到底该往左拉还是往右拉？
+                  +15%)」到底该往左拉还是往右拉？
                 </div>
                 <svg viewBox="0 0 760 198" className="manual-svg">
                   {/* Track */}
@@ -787,7 +787,7 @@ export function UserManualModal({
                     fontSize="12.5"
                     fontWeight="700"
                   >
-                    往右拉（+1% ～ +20%）：额外利好看好加码 ➡️
+                    往右拉（+1% ～ +15%）：额外利好看好加码 ➡️
                   </text>
                   <text
                     x="583"

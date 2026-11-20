@@ -882,18 +882,26 @@ export function SkinPhoneApp({
   const applyBonusOptimization = (
     optMode: BonusOptMode,
     triggerEl?: HTMLElement | null
-  ) => {
+  ): boolean => {
     const res = betCtrl.applyBonusOptimization(optMode);
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (res.blockedReason) {
+        haptic(12);
+        showSpringToast(layerRef.current, res.blockedReason);
+      }
+      return false;
+    }
     playTactileCue("optimize-arpeggio");
     triggerShimmerSweep(auditCockpitRef.current);
     burstCelebrationSparks(triggerEl ?? auditCockpitRef.current, 22);
     showSpringToast(layerRef.current, `已启用 · ${res.modeTitle}`);
+    return true;
   };
 
   const upgradeToZeroUnderwater = (triggerEl?: HTMLElement | null) => {
-    applyBonusOptimization("equal", triggerEl);
-    playTactileCue("defuse-celebrate");
+    if (applyBonusOptimization("equal", triggerEl)) {
+      playTactileCue("defuse-celebrate");
+    }
   };
 
   const applyDirectMultiple = (nextRaw: number) => {
@@ -2477,6 +2485,10 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
+                        disabled={
+                          (manualReport.tickets?.length ??
+                            manualReport.betCount) > 512
+                        }
                         className={`key mini ${appliedPlan?.shortTab === "平均优化" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("equal", e.currentTarget)
@@ -2487,6 +2499,10 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
+                        disabled={
+                          (manualReport.tickets?.length ??
+                            manualReport.betCount) > 512
+                        }
                         className={`key mini ${appliedPlan?.shortTab === "博热保本" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("hot-first", e.currentTarget)
@@ -2497,6 +2513,10 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
+                        disabled={
+                          (manualReport.tickets?.length ??
+                            manualReport.betCount) > 512
+                        }
                         className={`key mini ${appliedPlan?.shortTab === "博冷高弹" ? "on" : ""}`}
                         onClick={(e) =>
                           applyBonusOptimization("cold-first", e.currentTarget)
@@ -2505,6 +2525,20 @@ export function SkinPhoneApp({
                         ③ 博冷高弹
                       </button>
                     </div>
+                    {(manualReport.tickets?.length ?? manualReport.betCount) >
+                      512 && (
+                      <div
+                        className="small"
+                        style={{
+                          width: "100%",
+                          marginTop: 4,
+                          color: "var(--warn)",
+                        }}
+                      >
+                        ⚠️ 当前共 {manualReport.betCount} 注，超出 512
+                        注线下逐票分倍上限，请精简包号或改用【3+1 精算配单】
+                      </div>
+                    )}
                   </div>
                 </>
               }
@@ -2590,6 +2624,10 @@ export function SkinPhoneApp({
                       <button
                         type="button"
                         data-spring="0.88"
+                        disabled={
+                          (manualReport.tickets?.length ??
+                            manualReport.betCount) > 512
+                        }
                         className="key mini dark"
                         onClick={(e) =>
                           upgradeToZeroUnderwater(e.currentTarget)
@@ -3002,15 +3040,30 @@ export function SkinPhoneApp({
               subjectiveDeltaPct !== 0 ||
               simVoidFirstMatch
             }
-            title="⏰ 早晚场对冲锁利 & 主观信心/腰斩沙盒"
+            title={
+              insights.hedge.available &&
+              insights.hedge.hedgeMode === "reduce-loss"
+                ? "⚠️ 早场红单减损补单 & 主观信心/腰斩沙盒"
+                : "⏰ 早晚场对冲锁利 & 主观信心/腰斩沙盒"
+            }
             summary={
               insights.hedge.available
-                ? `可锁利！${insights.hedge.earlyKickoff} 串 ${insights.hedge.lateKickoff}（间隔 ${insights.hedge.gapText}）`
+                ? insights.hedge.hedgeMode === "reduce-loss"
+                  ? `早场红单减损补单：锁死少亏 -¥${Math.abs(insights.hedge.lockedNetProfit).toFixed(2)}（间隔 ${insights.hedge.gapText}）`
+                  : insights.hedge.hedgeMode === "break-even"
+                    ? `零损锁回本金！${insights.hedge.earlyKickoff} 串 ${insights.hedge.lateKickoff}（间隔 ${insights.hedge.gapText}）`
+                    : `可锁利 +¥${insights.hedge.lockedNetProfit.toFixed(2)}！${insights.hedge.earlyKickoff} 串 ${insights.hedge.lateKickoff}（间隔 ${insights.hedge.gapText}）`
                 : `${insights.hedge.reason} · 点此微调主观胜率或预演首场腰斩`
             }
             badge={
               insights.hedge.available ? (
-                <span className="qpill hi num">可对冲</span>
+                insights.hedge.hedgeMode === "reduce-loss" ? (
+                  <span className="qpill num" style={{ color: "var(--warn)" }}>
+                    仅减损
+                  </span>
+                ) : (
+                  <span className="qpill hi num">可对冲</span>
+                )
               ) : (
                 <span className="qpill num">沙盒</span>
               )
@@ -3023,7 +3076,10 @@ export function SkinPhoneApp({
                     className="lbl"
                     style={{ fontWeight: 600, color: "var(--text)" }}
                   >
-                    ⏰ 早晚场时间差对冲锁利
+                    {insights.hedge.available &&
+                    insights.hedge.hedgeMode === "reduce-loss"
+                      ? "⚠️ 早场红单减损补单（非正收益）"
+                      : "⏰ 早晚场时间差对冲锁利"}
                   </div>
                   <div className="small num">
                     {insights.hedge.available
@@ -3041,7 +3097,7 @@ export function SkinPhoneApp({
               {insights.hedge.available && simHedgeHit && (
                 <>
                   <div className="row num" style={{ fontSize: 12 }}>
-                    <span className="lbl">假设早场已红，晚场反向补单</span>
+                    <span className="lbl">假设早场已红，晚场单关反向补单</span>
                     <b>
                       {insights.hedge.oppositeLabel} @
                       {insights.hedge.oppositeOdds.toFixed(2)}
@@ -3053,10 +3109,21 @@ export function SkinPhoneApp({
                   </div>
                   <div className="row num" style={{ fontSize: 12 }}>
                     <span className="lbl">无视凌晨赛果 100% 锁死结果</span>
-                    <b style={{ color: "var(--good)" }}>
-                      {insights.hedge.lockedNetProfit >= 0
+                    <b
+                      style={{
+                        color:
+                          insights.hedge.lockedNetProfit > 0
+                            ? "var(--good)"
+                            : insights.hedge.lockedNetProfit === 0
+                              ? "var(--text)"
+                              : "var(--warn)",
+                      }}
+                    >
+                      {insights.hedge.lockedNetProfit > 0
                         ? `稳赚净利 +¥${insights.hedge.lockedNetProfit.toFixed(2)}`
-                        : `保本锁回 ¥${(effectiveReport.totalCost + insights.hedge.lockedNetProfit).toFixed(0)}`}
+                        : insights.hedge.lockedNetProfit === 0
+                          ? `零损锁回本金 ¥${(effectiveReport.totalCost + insights.hedge.hedgeCost).toFixed(2)}`
+                          : `锁死少亏 -¥${Math.abs(insights.hedge.lockedNetProfit).toFixed(2)}（拿回 ¥${(effectiveReport.totalCost + insights.hedge.hedgeCost + insights.hedge.lockedNetProfit).toFixed(2)}）`}
                     </b>
                   </div>
                 </>
@@ -3113,7 +3180,7 @@ export function SkinPhoneApp({
                 <input
                   type="range"
                   min={-15}
-                  max={20}
+                  max={15}
                   step={1}
                   value={subjectiveDeltaPct}
                   onChange={(e) => {
@@ -3670,7 +3737,10 @@ export function SkinPhoneApp({
           >
             ¥{ledger.stats.paperSavedAmount.toFixed(0)}
           </b>
-          <span>模拟单累计免损</span>
+          <span>
+            模拟未中免损 ({ledger.stats.paperLostCount ?? 0}未中/
+            {ledger.stats.paperWonCount ?? 0}命中)
+          </span>
         </div>
       </div>
 
@@ -3709,7 +3779,7 @@ export function SkinPhoneApp({
                   : `🔴中奖 -¥${Math.abs(it.netProfit).toFixed(2)}`;
               badgeCls = `ledger-badge num ${it.netProfit >= 0 ? "won" : "lost"}`;
             } else {
-              badgeText = "🎯观察命中";
+              badgeText = "🎯模拟命中(未实买)";
               badgeCls = "ledger-badge num won";
             }
           } else if (it.status === "lost") {

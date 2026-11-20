@@ -78,6 +78,8 @@ export interface LedgerStats {
   liveNetProfit: number;
   liveRoiPct: number;
   paperCount: number;
+  paperLostCount?: number;
+  paperWonCount?: number;
   paperSavedAmount: number;
 }
 
@@ -284,6 +286,8 @@ export function createEmptyLedgerSnapshot(
       liveNetProfit: 0,
       liveRoiPct: 0,
       paperCount: 0,
+      paperLostCount: 0,
+      paperWonCount: 0,
       paperSavedAmount: 0,
     },
   };

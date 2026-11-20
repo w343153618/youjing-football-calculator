@@ -9,6 +9,7 @@ import {
   archetypeToReport,
   bankerRoundParlayUnitPayout,
   calibrateMatchCoherentModel,
+  computeProOrderInsights,
   computeTruthReport,
   devigPoolProbabilities,
   evaluateQuantWorkspace,
@@ -1070,6 +1071,113 @@ export function runLayer2AxiomaticInvariantsBenchmark(opts = {}) {
   }
   const avgEightMatch247WorkspaceMs = (performance.now() - lat247Start) / runs;
 
+  // Spec 0011 P0 Guardrails: (a) >131k-state exact realProfitProb on 6x7 TTG 2串1 (8^6 = 262,144 states, 735 bets),
+  // (b) M=2 single-cushion non-summing floor bound, and (c) statutory single-eligibility gate on staggered kickoff hedge
+  const sixTtgMatches = parsedMatches.slice(0, 6);
+  const ttg7Keys = ["s0", "s1", "s2", "s3", "s4", "s5", "s6"];
+  const sixTtgPicks = sixTtgMatches.flatMap((m) =>
+    ttg7Keys.map((k) => makePickFromMatch(m, "TTG", k))
+  );
+  const rep6x7 = computeTruthReport(sixTtgPicks, 1, sixTtgMatches, {
+    mode: "free",
+    passSizes: [2],
+  });
+  let exact6x7ProfitProb = 0;
+  const stProbs6 = sixTtgMatches.map((m) => {
+    const ps = ttg7Keys.map(
+      (k) => m.pools.TTG.options.find((o) => o.key === k).fairProb
+    );
+    return [...ps, Math.max(0, 1 - ps.reduce((a, b) => a + b, 0))];
+  });
+  const pair6Cents = Array.from({ length: 6 }, () =>
+    Array.from({ length: 6 }, () =>
+      Array.from({ length: 8 }, () => new Array(8).fill(0))
+    )
+  );
+  for (let i = 0; i < 6; i++) {
+    for (let j = i + 1; j < 6; j++) {
+      for (let a = 0; a < 7; a++) {
+        const oa = sixTtgMatches[i].pools.TTG.options.find(
+          (o) => o.key === ttg7Keys[a]
+        ).odds;
+        for (let b = 0; b < 7; b++) {
+          const ob = sixTtgMatches[j].pools.TTG.options.find(
+            (o) => o.key === ttg7Keys[b]
+          ).odds;
+          pair6Cents[i][j][a][b] = Math.round(
+            Math.min(200_000, bankerRoundParlayUnitPayout([oa, ob])) * 100
+          );
+        }
+      }
+    }
+  }
+  const cost6Cents = Math.round(rep6x7.totalCost * 100);
+  const ch6 = new Int32Array(6);
+  const walk6 = (d, p, pay) => {
+    if (d === 5) {
+      const p5 = stProbs6[5];
+      for (let s = 0; s < 8; s++) {
+        let add = 0;
+        if (s < 7) {
+          for (let prev = 0; prev < 5; prev++) {
+            if (ch6[prev] < 7) add += pair6Cents[prev][5][ch6[prev]][s];
+          }
+        }
+        if (pay + add >= cost6Cents) exact6x7ProfitProb += p * p5[s];
+      }
+      return;
+    }
+    const pd = stProbs6[d];
+    for (let s = 0; s < 8; s++) {
+      ch6[d] = s;
+      let add = 0;
+      if (s < 7) {
+        for (let prev = 0; prev < d; prev++) {
+          if (ch6[prev] < 7) add += pair6Cents[prev][d][ch6[prev]][s];
+        }
+      }
+      walk6(d + 1, p * pd[s], pay + add);
+    }
+  };
+  walk6(0, 1, 0);
+  const highStateProfitProbError = Math.abs(
+    rep6x7.realProfitProb - exact6x7ProfitProb
+  );
+
+  const nonSingleHedgePicks = [
+    makePickFromMatch(FALLBACK_MATCHES[0], "HAD", "h"),
+    makePickFromMatch(FALLBACK_MATCHES[2], "HAD", "h"),
+  ];
+  const nonSingleHedgeRep = computeTruthReport(
+    nonSingleHedgePicks,
+    5,
+    FALLBACK_MATCHES
+  );
+  const nonSingleHedgeIns = computeProOrderInsights(
+    nonSingleHedgePicks,
+    nonSingleHedgeRep,
+    FALLBACK_MATCHES
+  );
+  const statutoryHedgeSingleGatePassed =
+    nonSingleHedgeIns.hedge.available === false;
+
+  let m2NonSummingCushionPassed = true;
+  for (let k = 0; k < 16 && k + 1 < parsedMatches.length; k += 2) {
+    const pair = [parsedMatches[k], parsedMatches[k + 1]];
+    const s3 = generateParetoPortfolio(pair, 100, "objective", false, [])[2];
+    for (const missed of pair) {
+      const surv = s3.lines.filter(
+        (l) => !l.legs.some((g) => g.matchId === missed.id)
+      );
+      if (surv.length > 0) {
+        const minBranch = Math.min(...surv.map((l) => l.returnPayout));
+        if ((s3.missOneReturn ?? 0) > minBranch + 1e-6) {
+          m2NonSummingCushionPassed = false;
+        }
+      }
+    }
+  }
+
   return {
     checkedMatchesCount: allMatches.length,
     portfolioScenariosChecked,
@@ -1079,6 +1187,9 @@ export function runLayer2AxiomaticInvariantsBenchmark(opts = {}) {
     maxLinearEvError,
     maxBruteForceDiff,
     highStateSpaceEvError,
+    highStateProfitProbError,
+    statutoryHedgeSingleGatePassed,
+    m2NonSummingCushionPassed,
     combinatorialExplosionGatePassed,
     cacheMutationSensitivityPassed,
     statutoryRoundingAndCapErrors,
@@ -2441,6 +2552,9 @@ export function assembleQuantBenchmarkReport({
     layer2.maxLinearEvError < 1e-9 &&
     layer2.maxBruteForceDiff < 1e-9 &&
     layer2.highStateSpaceEvError < 1e-12 &&
+    layer2.highStateProfitProbError < 1e-12 &&
+    layer2.statutoryHedgeSingleGatePassed === true &&
+    layer2.m2NonSummingCushionPassed === true &&
     layer2.combinatorialExplosionGatePassed === true &&
     layer2.cacheMutationSensitivityPassed === true &&
     layer2.statutoryRoundingAndCapErrors === 0 &&
