@@ -7217,21 +7217,38 @@ export function computeTruthReport(
   const effectiveOdds = invTicketOddsSum > 0 ? 1 / invTicketOddsSum : 0;
 
   let breakevenUpgradeCost = null;
-  if (underwaterCount > 0 && effectiveOdds > 1.03 && ticketRows.length <= 24) {
-    for (
-      let targetNotes = betCount * multiple;
-      targetNotes <= betCount * multiple + 15;
-      targetNotes++
-    ) {
-      const budget = targetNotes * 2;
-      const neededNotes = ticketRows.reduce(
-        (acc, c) => acc + Math.ceil(budget / c.unitPayout),
-        0
-      );
-      if (neededNotes <= targetNotes) {
-        breakevenUpgradeCost = neededNotes * 2;
+  if (
+    underwaterCount > 0 &&
+    !activeComboCode &&
+    activePassSizes.length === 1 &&
+    effectiveOdds > 1.005 &&
+    ticketRows.length <= 512
+  ) {
+    // Knaster-Tarski monotone fixed-point iteration: finds exact minimum integer N* in <= ~20 steps (<0.05ms for K<=512)
+    let curN = Math.max(betCount, betCount * multiple);
+    for (let step = 0; step < 64 && curN <= 10_000; step++) {
+      const budgetC = curN * 2;
+      let needed = 0;
+      let infeasible = false;
+      for (let i = 0; i < ticketRows.length; i++) {
+        const u = ticketRows[i].unitPayout;
+        if (!(u > 2.001)) {
+          infeasible = true;
+          break;
+        }
+        const mReq = Math.max(1, Math.ceil((budgetC - 1e-9) / u));
+        if (mReq > 999) {
+          infeasible = true;
+          break;
+        }
+        needed += mReq;
+      }
+      if (infeasible) break;
+      if (needed <= curN) {
+        breakevenUpgradeCost = (step === 0 ? needed : curN) * 2;
         break;
       }
+      curN = needed;
     }
   }
 
@@ -7432,16 +7449,23 @@ function makeLeg(
   };
 }
 
-function repairUnderwaterMultiples(initialMults, unitPayouts, shouldRepair) {
+function repairUnderwaterMultiples(
+  initialMults,
+  unitPayouts,
+  shouldRepair,
+  maxTotalNotes = Infinity
+) {
   const mults = initialMults.map((m) =>
-    Math.max(1, Math.min(99, Math.round(m)))
+    Math.max(1, Math.min(999, Math.round(m)))
   );
   if (!shouldRepair) return mults;
 
   for (let guard = 0; guard < 64; guard++) {
-    const curCost = mults.reduce((a, m) => a + m * 2, 0);
+    const curNotes = mults.reduce((a, m) => a + m, 0);
+    if (curNotes >= maxTotalNotes) break;
+    const curCost = curNotes * 2;
     const uwIdx = unitPayouts.findIndex(
-      (u, i) => u * mults[i] < curCost && mults[i] < 99 && u > 2.01
+      (u, i) => u * mults[i] < curCost && mults[i] < 999 && u > 2.01
     );
     if (uwIdx === -1) break;
     mults[uwIdx] += 1;
@@ -12126,8 +12150,84 @@ export function computeProOrderInsights(
   };
 }
 
-/** 4. 三模智能奖金优化深模块（支持多串实票逐张分倍） */
-export function optimizeBonusPlan(manualReport, matches, optMode) {
+function consolidateCloseMultiples(
+  mults,
+  cappedUnits,
+  isCapClipped,
+  passLengths,
+  totalCost
+) {
+  const k = mults.length;
+  if (k < 2) return mults;
+  const out = [...mults];
+  const byPass = new Map();
+  for (let i = 0; i < k; i++) {
+    if (isCapClipped[i]) continue;
+    const plen = passLengths[i] || 1;
+    const arr = byPass.get(plen) ?? [];
+    arr.push(i);
+    byPass.set(plen, arr);
+  }
+
+  for (const idxs of byPass.values()) {
+    if (idxs.length < 2) continue;
+    idxs.sort((a, b) => out[b] - out[a] || cappedUnits[a] - cappedUnits[b]);
+    let cursor = 0;
+    while (cursor < idxs.length) {
+      let bestEnd = cursor;
+      for (let end = idxs.length - 1; end > cursor; end--) {
+        const sub = idxs.slice(cursor, end + 1);
+        const mHi = out[sub[0]];
+        const mLo = out[sub[sub.length - 1]];
+        if (mHi > Math.ceil(mLo * 1.35) + 1) continue;
+        const noteSum = sub.reduce((a, ii) => a + out[ii], 0);
+        const L = sub.length;
+        const oldMinPay = Math.min(
+          ...sub.map((ii) => out[ii] * cappedUnits[ii])
+        );
+        const wasZeroUw = oldMinPay >= totalCost - 1e-9;
+
+        // Try uniform multiple first when divisible, else at most 2 adjacent multiples
+        const candMults = new Array(L);
+        const baseAvg = Math.floor(noteSum / L);
+        const rem = noteSum - baseAvg * L;
+        const rankedByUnitAsc = sub
+          .map((ii, pos) => ({ ii, pos, u: cappedUnits[ii] }))
+          .sort((a, b) => a.u - b.u);
+        for (let r = 0; r < L; r++) {
+          const item = rankedByUnitAsc[r];
+          candMults[item.pos] = Math.min(999, baseAvg + (r < rem ? 1 : 0));
+        }
+        if (candMults.reduce((a, b) => a + b, 0) !== noteSum) continue;
+        const newMinPay = Math.min(
+          ...sub.map((ii, pos) => candMults[pos] * cappedUnits[ii])
+        );
+        if (wasZeroUw && newMinPay < totalCost - 1e-9) continue;
+        if (newMinPay < oldMinPay * 0.94 - 1e-9) continue;
+
+        const oldDistinct = new Set(sub.map((ii) => out[ii])).size;
+        const newDistinct = new Set(candMults).size;
+        if (newDistinct < oldDistinct) {
+          for (let pos = 0; pos < L; pos++) {
+            out[sub[pos]] = candMults[pos];
+          }
+          bestEnd = end;
+          break;
+        }
+      }
+      cursor = bestEnd + 1;
+    }
+  }
+  return out;
+}
+
+/** 4. 三模智能奖金优化深模块（严格预算主权守恒 + 999倍逻辑分倍 + M串N联合状态保底 + 显式保本门槛升级 + 合票压缩） */
+export function optimizeBonusPlan(
+  manualReport,
+  matches,
+  optMode,
+  options = {}
+) {
   const baseRows =
     Array.isArray(manualReport?.tickets) && manualReport.tickets.length > 0
       ? manualReport.tickets
@@ -12135,14 +12235,22 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
   if (!manualReport || baseRows.length === 0 || baseRows.length > 512)
     return null;
 
+  const upgradeToBreakeven = Boolean(options?.upgradeToBreakeven);
+  const consolidateTickets = Boolean(options?.consolidateTickets);
+
   const sorted = [...baseRows].sort((a, b) => b.prob - a.prob);
   const k = sorted.length;
-  const baseBudget = Math.max(
-    manualReport.totalCost,
-    manualReport.breakevenUpgradeCost ?? manualReport.totalCost,
-    k * 6
+  const strictBaseCost = Math.max(
+    k * 2,
+    Math.round((Number(manualReport.totalCost) || k * 2) / 2) * 2
   );
-  const totalTickets = Math.max(k + 2, Math.round(baseBudget / 2));
+  const targetBudgetCost =
+    upgradeToBreakeven &&
+    typeof manualReport.breakevenUpgradeCost === "number" &&
+    manualReport.breakevenUpgradeCost > strictBaseCost
+      ? Math.min(20_000, manualReport.breakevenUpgradeCost)
+      : strictBaseCost;
+  const totalTickets = Math.max(k, Math.floor(targetBudgetCost / 2));
   const targetStake = totalTickets * 2;
 
   const matchMap = new Map();
@@ -12185,63 +12293,272 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
   });
   const hasUnclippedLine = isCapClipped.some((clipped) => !clipped);
 
-  let mults = [];
-  if (optMode === "equal" || k === 1) {
-    const invSum = cappedUnits.reduce(
-      (acc, u) => acc + 1 / Math.max(0.5, u),
-      0
-    );
-    mults = cappedUnits.map((u, idx) =>
-      isCapClipped[idx] && hasUnclippedLine
-        ? 1
-        : Math.max(
-            1,
-            Math.round((totalTickets * (1 / Math.max(0.5, u))) / invSum)
-          )
-    );
-  } else if (optMode === "hot-first") {
-    mults = cappedUnits.map((u, idx) =>
-      idx === 0 ? 1 : Math.max(1, Math.ceil(targetStake / Math.max(2.02, u)))
-    );
-    const shieldSum = mults.slice(1).reduce((a, m) => a + m, 0);
-    mults[0] =
+  const reusableHitMatrix = manualReport?._reusableHitMatrix?.isBaselineAtomic
+    ? manualReport._reusableHitMatrix
+    : (manualReport?._reusableHitMatrix ?? null);
+  const isMultiPassOverlap =
+    Boolean(reusableHitMatrix) &&
+    reusableHitMatrix.K === k &&
+    (Boolean(manualReport.activeComboCode) ||
+      (Array.isArray(manualReport.activePassSizes) &&
+        manualReport.activePassSizes.length > 1));
+
+  let mults = new Array(k).fill(1);
+
+  if (isMultiPassOverlap && k >= 2) {
+    // Non-disjoint M串N / multi-pass joint hit-bucket optimizer (strictly <= totalTickets)
+    const origToSorted = new Int16Array(k).fill(-1);
+    let mappingValid = true;
+    for (let idx = 0; idx < k; idx++) {
+      const sig = canonicalTicketLegSig(sorted[idx].legs);
+      const origK = reusableHitMatrix.sigToOrigIdx.get(sig);
+      if (origK === undefined || origToSorted[origK] !== -1) {
+        mappingValid = false;
+        break;
+      }
+      origToSorted[origK] = idx;
+    }
+
+    if (mappingValid && reusableHitMatrix.bucketHits.length > 0) {
+      const B = reusableHitMatrix.bucketHits.length;
+      const bucketSortedHits = new Array(B);
+      const bucketsOfLine = Array.from({ length: k }, () => []);
+      const bucketPay = new Float64Array(B);
+      for (let b = 0; b < B; b++) {
+        const rawHits = reusableHitMatrix.bucketHits[b];
+        const mapped = new Int16Array(rawHits.length);
+        let sumU = 0;
+        for (let j = 0; j < rawHits.length; j++) {
+          const sIdx = origToSorted[rawHits[j]];
+          mapped[j] = sIdx;
+          bucketsOfLine[sIdx].push(b);
+          sumU += cappedUnits[sIdx];
+        }
+        bucketSortedHits[b] = mapped;
+        bucketPay[b] = sumU;
+      }
+
+      let rem = totalTickets - k;
+      while (rem > 0) {
+        let bMin = 0;
+        for (let b = 1; b < B; b++) {
+          if (bucketPay[b] < bucketPay[bMin]) bMin = b;
+        }
+        const allCleared = bucketPay[bMin] >= targetStake - 1e-9;
+        if (allCleared && optMode !== "equal") {
+          const prefIdx =
+            optMode === "hot-first"
+              ? isCapClipped.findIndex((cl) => !cl)
+              : (() => {
+                  for (let r = k - 1; r >= 0; r--) {
+                    if (!isCapClipped[r]) return r;
+                  }
+                  return 0;
+                })();
+          const tgt = prefIdx >= 0 && mults[prefIdx] < 999 ? prefIdx : -1;
+          if (tgt >= 0) {
+            const add = Math.min(rem, 999 - mults[tgt]);
+            mults[tgt] += add;
+            const bList = bucketsOfLine[tgt];
+            const deltaPay = add * cappedUnits[tgt];
+            for (let q = 0; q < bList.length; q++) {
+              bucketPay[bList[q]] += deltaPay;
+            }
+            rem -= add;
+            continue;
+          }
+        }
+
+        const candLines = bucketSortedHits[bMin];
+        let bestIdx = -1;
+        let bestU = -Infinity;
+        let bestEv = -Infinity;
+        for (let j = 0; j < candLines.length; j++) {
+          const sIdx = candLines[j];
+          if (mults[sIdx] >= 999) continue;
+          if (isCapClipped[sIdx] && hasUnclippedLine) continue;
+          const u = cappedUnits[sIdx];
+          const ev = (sorted[sIdx].prob || 0) * u;
+          if (
+            u > bestU + 1e-9 ||
+            (Math.abs(u - bestU) <= 1e-9 && ev > bestEv)
+          ) {
+            bestU = u;
+            bestEv = ev;
+            bestIdx = sIdx;
+          }
+        }
+        if (bestIdx === -1) {
+          bestIdx = mults.findIndex(
+            (m, i) => m < 999 && (!isCapClipped[i] || !hasUnclippedLine)
+          );
+          if (bestIdx === -1) break;
+        }
+        const step = Math.min(
+          rem,
+          999 - mults[bestIdx],
+          rem > 96 ? Math.max(1, Math.floor(rem / 48)) : 1
+        );
+        mults[bestIdx] += step;
+        const bList = bucketsOfLine[bestIdx];
+        const deltaPay = step * cappedUnits[bestIdx];
+        for (let q = 0; q < bList.length; q++) {
+          bucketPay[bList[q]] += deltaPay;
+        }
+        rem -= step;
+      }
+    }
+  } else if (k === 1) {
+    mults = [
       isCapClipped[0] && hasUnclippedLine
         ? 1
-        : Math.max(
-            Math.ceil(((shieldSum + 2) * 2) / Math.max(2.02, cappedUnits[0])) +
-              2,
-            totalTickets - shieldSum
-          );
+        : Math.max(1, Math.min(999, totalTickets)),
+    ];
   } else {
-    mults = cappedUnits.map((u, idx) =>
-      idx === k - 1
+    const reqMult = cappedUnits.map((u, idx) =>
+      isCapClipped[idx] && hasUnclippedLine
         ? 1
-        : Math.max(1, Math.ceil(targetStake / Math.max(2.02, u)))
+        : Math.min(
+            999,
+            Math.max(1, Math.ceil((targetStake - 1e-9) / Math.max(0.5, u)))
+          )
     );
-    const shieldSum = mults.slice(0, k - 1).reduce((a, m) => a + m, 0);
-    if (isCapClipped[k - 1] && hasUnclippedLine) {
-      mults[k - 1] = 1;
-      const unclippedIdx = isCapClipped.findIndex((clipped) => !clipped);
-      const rem = Math.max(0, totalTickets - shieldSum - 1);
-      if (unclippedIdx >= 0 && rem > 0) {
-        mults[unclippedIdx] = Math.min(99, mults[unclippedIdx] + rem);
+    const sumReq = reqMult.reduce((a, b) => a + b, 0);
+    const waterFillNotes = (arr, remNotes) => {
+      let rem = remNotes;
+      if (rem > 64) {
+        let invUnclipped = 0;
+        for (let i = 0; i < k; i++) {
+          if (!(isCapClipped[i] && hasUnclippedLine) && arr[i] < 999) {
+            invUnclipped += 1 / Math.max(0.5, cappedUnits[i]);
+          }
+        }
+        if (invUnclipped > 0) {
+          const targetTotal = arr.reduce((a, b) => a + b, 0) + rem;
+          for (let i = 0; i < k && rem > 16; i++) {
+            if (isCapClipped[i] && hasUnclippedLine) continue;
+            const ideal = Math.floor(
+              (targetTotal * (1 / Math.max(0.5, cappedUnits[i]))) / invUnclipped
+            );
+            const jump = Math.min(
+              rem - 8,
+              999 - arr[i],
+              Math.max(0, ideal - arr[i])
+            );
+            if (jump > 0) {
+              arr[i] += jump;
+              rem -= jump;
+            }
+          }
+        }
+      }
+      while (rem > 0) {
+        let bestI = -1;
+        let lowestPay = Infinity;
+        let bestEv = -Infinity;
+        for (let i = 0; i < k; i++) {
+          if (arr[i] >= 999) continue;
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const curPay = arr[i] * cappedUnits[i];
+          const ev = (sorted[i].prob || 0) * cappedUnits[i];
+          if (
+            curPay < lowestPay - 1e-9 ||
+            (Math.abs(curPay - lowestPay) <= 1e-9 && ev > bestEv)
+          ) {
+            lowestPay = curPay;
+            bestEv = ev;
+            bestI = i;
+          }
+        }
+        if (bestI === -1) break;
+        arr[bestI] += 1;
+        rem -= 1;
+      }
+    };
+
+    if (sumReq <= totalTickets) {
+      mults = [...reqMult];
+      let rem = totalTickets - sumReq;
+      if (optMode === "equal") {
+        waterFillNotes(mults, rem);
+      } else if (optMode === "hot-first") {
+        for (let i = 0; i < k && rem > 0; i++) {
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const add = Math.min(rem, 999 - mults[i]);
+          mults[i] += add;
+          rem -= add;
+        }
+      } else {
+        for (let i = k - 1; i >= 0 && rem > 0; i--) {
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const add = Math.min(rem, 999 - mults[i]);
+          mults[i] += add;
+          rem -= add;
+        }
       }
     } else {
-      mults[k - 1] = Math.max(
-        Math.ceil(((shieldSum + 2) * 2) / Math.max(2.02, cappedUnits[k - 1])) +
-          2,
-        totalTickets - shieldSum
-      );
+      // Strict Budget Sovereignty: totalTickets < sumReq -> never inflate user stake!
+      mults = new Array(k).fill(1);
+      let rem = Math.max(0, totalTickets - k);
+      if (optMode === "equal") {
+        waterFillNotes(mults, rem);
+      } else if (optMode === "hot-first") {
+        for (let i = 0; i < k && rem > 0; i++) {
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const need = Math.max(0, reqMult[i] - 1);
+          if (need > 0 && need <= rem) {
+            mults[i] += need;
+            rem -= need;
+          }
+        }
+        for (let i = 0; i < k && rem > 0; i++) {
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const add = Math.min(rem, 999 - mults[i]);
+          mults[i] += add;
+          rem -= add;
+        }
+      } else {
+        const coldIdx = (() => {
+          for (let r = k - 1; r >= 0; r--) {
+            if (!(isCapClipped[r] && hasUnclippedLine)) return r;
+          }
+          return k - 1;
+        })();
+        const reserveCold = rem >= 2 ? 1 : 0;
+        let shieldBudget = Math.max(0, rem - reserveCold);
+        for (let i = 0; i < k && shieldBudget > 0; i++) {
+          if (i === coldIdx) continue;
+          if (isCapClipped[i] && hasUnclippedLine) continue;
+          const need = Math.max(0, reqMult[i] - 1);
+          if (need > 0 && need <= shieldBudget) {
+            mults[i] += need;
+            shieldBudget -= need;
+            rem -= need;
+          }
+        }
+        if (rem > 0 && mults[coldIdx] < 999) {
+          const add = Math.min(rem, 999 - mults[coldIdx]);
+          mults[coldIdx] += add;
+          rem -= add;
+        }
+        if (rem > 0) waterFillNotes(mults, rem);
+      }
     }
   }
 
-  mults = repairUnderwaterMultiples(
-    mults,
-    cappedUnits,
-    manualReport.effectiveOdds > 1.02
-  );
   if (hasUnclippedLine) {
     mults = mults.map((m, idx) => (isCapClipped[idx] ? 1 : m));
+  }
+
+  if (consolidateTickets && k >= 2) {
+    const preCost = mults.reduce((a, m) => a + m * 2, 0);
+    mults = consolidateCloseMultiples(
+      mults,
+      cappedUnits,
+      isCapClipped,
+      sorted.map((c) => (c.legs ?? []).length || 1),
+      preCost
+    );
   }
 
   const lines = sorted.map((c, idx) => {
@@ -12332,26 +12649,60 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
   );
   const { vigPct } = computeCapitalWeightedVig(lines, matches);
 
+  const uwCount = jointEval.underwaterCount;
+  const totalScenarios = Math.max(1, jointEval.tiers?.length ?? k);
+  const rawUpgradeCost =
+    typeof manualReport.breakevenUpgradeCost === "number" &&
+    manualReport.breakevenUpgradeCost > actualTotal
+      ? manualReport.breakevenUpgradeCost
+      : null;
+
   const metaMap = {
     equal: {
       shortTab: "平均优化",
-      badge: "⚖️ 平均优化（均衡派奖）",
-      title: "反比例均注 · 全选项均衡稳赚",
-      reason: "按每注返奖额反比例精密分配整数倍，彻底消灭假中奖倒贴",
+      badge:
+        uwCount > 0 ? "⚖️ 平均优化（预算内减损）" : "⚖️ 平均优化（均衡派奖）",
+      title:
+        uwCount > 0
+          ? "严守当前预算 · 最优均衡减损配比"
+          : "反比例均注 · 全选项均衡稳赚",
+      reason:
+        uwCount > 0
+          ? `严守当前本金上限 ¥${actualTotal}（绝不暗自加注），受离散凑整限制仍有 ${uwCount}/${totalScenarios} 种命中场景属局部回血`
+          : "按每注返奖额反比例精密分配整数倍，彻底消灭假中奖倒贴",
     },
     "hot-first": {
       shortTab: "博热保本",
-      badge: "🔥 博热保本优化",
-      title: "次选回本护盾 + 第一主攻利润最大化",
-      reason: "防冷次选仅配保本倍数，省下筹码集中放大最高概率主方向收益",
+      badge: uwCount > 0 ? "🔥 博热减损（主攻倾斜）" : "🔥 博热保本优化",
+      title:
+        uwCount > 0
+          ? "严守当前预算 · 主攻优先减损配比"
+          : "次选回本护盾 + 第一主攻利润最大化",
+      reason:
+        uwCount > 0
+          ? `严守当前本金上限 ¥${actualTotal} 优先抬高高概率正路回血，仍有 ${uwCount}/${totalScenarios} 种场景属局部回血`
+          : "防冷次选仅配保本倍数，省下筹码集中放大最高概率主方向收益",
     },
     "cold-first": {
       shortTab: "博冷高弹",
-      badge: "⚡ 博冷高弹优化",
-      title: "正路免单兜底 + 高赔冷门暴击放大",
-      reason: "大热方向锁住保本回血线，溢价倍数倾斜博取高赔冷门超额回报",
+      badge: uwCount > 0 ? "⚡ 博冷减损（冷门倾斜）" : "⚡ 博冷高弹优化",
+      title:
+        uwCount > 0
+          ? "严守当前预算 · 博冷倾斜减损配比"
+          : "正路免单兜底 + 高赔冷门暴击放大",
+      reason:
+        uwCount > 0
+          ? `严守当前本金上限 ¥${actualTotal} 兼顾正路缓冲与高赔冷门弹性，仍有 ${uwCount}/${totalScenarios} 种场景属局部回血`
+          : "大热方向锁住保本回血线，溢价倍数倾斜博取高赔冷门超额回报",
     },
   }[optMode];
+
+  const bonusReasons = [metaMap.reason];
+  if (uwCount > 0 && rawUpgradeCost) {
+    bonusReasons.push(
+      `若需 100% 清零假中奖倒贴，可点击「一键加至最低保本门槛 ¥${rawUpgradeCost}」显式授权扩充本金`
+    );
+  }
 
   const outBonusPlan = {
     key: "max-profit-prob",
@@ -12367,10 +12718,12 @@ export function optimizeBonusPlan(manualReport, matches, optMode) {
     winProb: jointEval.anyWinProb,
     profitProb: jointEval.realProfitProb,
     expectedValueRate: jointEval.expectedValueRate,
-    underwaterCount: jointEval.underwaterCount,
+    underwaterCount: uwCount,
+    breakevenUpgradeCost: uwCount > 0 ? rawUpgradeCost : null,
+    consolidateTickets,
     missOneReturn: null,
     vigPct,
-    reasons: [metaMap.reason],
+    reasons: bonusReasons,
     lines,
   };
   TRUSTED_SERVER_BONUS_PLANS.add(outBonusPlan);
@@ -13017,10 +13370,25 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
   const maxLineMult = Math.max(
     ...plan.lines.map((l) => Number(l.multiple) || 1)
   );
-  const consolidatedTickets = plan.lines.reduce(
-    (a, l) => a + Math.max(1, Math.ceil((Number(l.multiple) || 1) / 99)),
-    0
-  );
+  const consolidatedTickets = plan.consolidateTickets
+    ? (() => {
+        const batchCounts = new Map();
+        for (const l of plan.lines) {
+          const m = Math.max(1, Number(l.multiple) || 1);
+          const bk = `${(l.legs ?? []).length}:${m}`;
+          batchCounts.set(bk, (batchCounts.get(bk) ?? 0) + 1);
+        }
+        let sumSheets = 0;
+        for (const [bk, cnt] of batchCounts.entries()) {
+          const m = Number(bk.split(":")[1]) || 1;
+          sumSheets += Math.ceil(cnt / 4) * Math.max(1, Math.ceil(m / 99));
+        }
+        return Math.max(1, sumSheets);
+      })()
+    : plan.lines.reduce(
+        (a, l) => a + Math.max(1, Math.ceil((Number(l.multiple) || 1) / 99)),
+        0
+      );
   const totalClipped = physicalTickets.reduce((a, c) => a + c.cappedClipped, 0);
   const maxClippedPassSize = physicalTickets
     .filter((c) => c.cappedClipped > 0)
@@ -13141,7 +13509,14 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
           ? 44
           : 26,
     effectiveOdds: harmonicEffOdds,
-    breakevenUpgradeCost: null,
+    breakevenUpgradeCost:
+      jointEval.underwaterCount > 0
+        ? (plan.breakevenUpgradeCost ??
+          (fallbackManual?.breakevenUpgradeCost &&
+          fallbackManual.breakevenUpgradeCost > plan.totalCost
+            ? fallbackManual.breakevenUpgradeCost
+            : null))
+        : null,
     consolidatedTickets,
     syntheticHint: `已启用【${plan.badge}】：${plan.tagline}`,
     syntheticRescuePicks: null,
@@ -13277,7 +13652,10 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         )
       : manualReport;
     const baseAppliedPlan = scaleArchetypePlan(
-      optimizeBonusPlan(baselineManualForOpt, matches, mode),
+      optimizeBonusPlan(baselineManualForOpt, matches, mode, {
+        upgradeToBreakeven: Boolean(planSpec.upgradeToBreakeven),
+        consolidateTickets: Boolean(planSpec.consolidateTickets),
+      }),
       planSpec.scaleMultiple
     );
     appliedPlan = applySandboxToPlan(
@@ -13302,10 +13680,38 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         ? liveCandidate
         : null;
     const basePlan = validSnap ?? usableLive;
-    const baseAppliedPlan = scaleArchetypePlan(
-      basePlan,
-      planSpec.scaleMultiple
-    );
+    const scaledBasePlan = scaleArchetypePlan(basePlan, planSpec.scaleMultiple);
+    const baseAppliedPlan =
+      scaledBasePlan &&
+      planSpec.consolidateTickets &&
+      scaledBasePlan.lines.length >= 2
+        ? (() => {
+            const cMults = consolidateCloseMultiples(
+              scaledBasePlan.lines.map((l) => Number(l.multiple) || 1),
+              scaledBasePlan.lines.map((l) => Number(l.unitPayout) || 2),
+              scaledBasePlan.lines.map((l) => (l.cappedClipped ?? 0) > 0),
+              scaledBasePlan.lines.map((l) => (l.legs ?? []).length || 1),
+              scaledBasePlan.totalCost
+            );
+            const cLines = scaledBasePlan.lines.map((l, idx) => {
+              const m = cMults[idx];
+              const cost = m * 2;
+              const ret = Number((l.unitPayout * m).toFixed(2));
+              return {
+                ...l,
+                multiple: m,
+                cost,
+                returnPayout: ret,
+                netProfit: Number((ret - scaledBasePlan.totalCost).toFixed(2)),
+              };
+            });
+            return {
+              ...scaledBasePlan,
+              consolidateTickets: true,
+              lines: cLines,
+            };
+          })()
+        : scaledBasePlan;
     appliedPlan = applySandboxToPlan(
       baseAppliedPlan,
       matches,

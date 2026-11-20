@@ -240,6 +240,8 @@ export interface ArchetypePlan {
   zeroPayoutProb?: number | null;
   wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
+  breakevenUpgradeCost?: number | null;
+  consolidateTickets?: boolean;
   vigPct: number;
   reasons: string[];
   lines: PlanTicketLine[];
@@ -279,12 +281,19 @@ export interface ProOrderInsights {
 
 export type AppliedPlanSpec =
   | null
-  | { kind: "bonus"; optMode: BonusOptMode; scaleMultiple?: number }
+  | {
+      kind: "bonus";
+      optMode: BonusOptMode;
+      scaleMultiple?: number;
+      upgradeToBreakeven?: boolean;
+      consolidateTickets?: boolean;
+    }
   | {
       kind: "archetype";
       key: ArchetypeKey;
       snapshotPlan?: ArchetypePlan;
       scaleMultiple?: number;
+      consolidateTickets?: boolean;
     };
 
 export interface QuantWorkspaceParams {

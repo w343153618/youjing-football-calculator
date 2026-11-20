@@ -5,6 +5,7 @@ import {
   calibrateMatchCoherentModel,
   computeTruthReport,
   evaluateQuantWorkspace,
+  optimizeBonusPlan,
   parseSportteryRawJson,
 } from "../server/quantEngine.mjs";
 import type {
@@ -440,6 +441,323 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       singleCrsRep.warnings.some((w) => w.id === "parlay-vig"),
       false,
       "1-leg single CRS ticket must not emit parlay-vig warning"
+    );
+  });
+
+  it("Slice 02 · Seam 1: enforces strict budget sovereignty on Three-Mode Bonus Optimization, unlocks 999x logical multiples without [99,99] truncation, supports explicit upgradeToBreakeven (<=512 bets), optimizes M串N joint floor, and consolidates shop tickets", () => {
+    // 1. ¥1,000 (250x) 2-pick single slip [1.35, 4.75]: fixes [99, 99] truncation bug!
+    const highBudgetMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "s2-1000-single",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 1.35, trend: 0, fairProb: 0.66 },
+            { key: "d", label: "平", odds: 4.75, trend: 0, fairProb: 0.19 },
+            { key: "a", label: "客胜", odds: 6.8, trend: 0, fairProb: 0.15 },
+          ],
+        },
+      },
+    };
+    const picks1000 = [
+      makePick(highBudgetMatch, "HAD", "h"),
+      makePick(highBudgetMatch, "HAD", "d"),
+    ];
+    const manual1000 = computeTruthReport(picks1000, 250, [highBudgetMatch]);
+    assert.equal(manual1000.totalCost, 1000);
+    const eq1000 = optimizeBonusPlan(manual1000, [highBudgetMatch], "equal")!;
+    assert.equal(
+      eq1000.totalCost,
+      1000,
+      `Expected exact ¥1,000 budget preserved, got ¥${eq1000.totalCost}`
+    );
+    assert.equal(
+      eq1000.underwaterCount,
+      0,
+      `Expected 0 underwater on ¥1,000 [1.35, 4.75] Dutching, got ${eq1000.underwaterCount}`
+    );
+    const favLine1000 = eq1000.lines.find((l) => l.legs[0].optionKey === "h")!;
+    assert.ok(
+      favLine1000.multiple >= 371 && favLine1000.multiple <= 999,
+      `Favorite @1.35 must receive >=371 logical multiples (not clamped at 99!), got ${favLine1000.multiple}`
+    );
+    const ws1000 = evaluateQuantWorkspace(
+      {
+        picks: picks1000,
+        multiple: 250,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: "bonus", optMode: "equal", scaleMultiple: 1 },
+        targetIds: [highBudgetMatch.id],
+        budget: 1000,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [highBudgetMatch]
+    );
+    assert.ok(
+      ws1000.effectiveReport.consolidatedTickets >= 6,
+      `Expected 99x physical shop ticket split >= 6, got ${ws1000.effectiveReport.consolidatedTickets}`
+    );
+
+    // 2. 27-bet 3串1 HAD box at 1x (¥54):
+    //    1/2.15 + 1/3.60 + 1/4.60 = 0.960 -> effOdds = 1.13 > 1.03, while 2.15^3 * 2 = ¥19.88 < ¥54 at 1x!
+    const three27Feasible: MatchItem[] = [0, 1, 2].map((idx) => ({
+      ...(FALLBACK_MATCHES[idx] as MatchItem),
+      id: `s2-feas27-${idx}`,
+      pools: {
+        ...(FALLBACK_MATCHES[idx] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[idx] as MatchItem).pools.HAD,
+          selling: true,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: 2.15, trend: 0, fairProb: 0.43 },
+            { key: "d", label: "平", odds: 3.6, trend: 0, fairProb: 0.29 },
+            { key: "a", label: "客胜", odds: 4.6, trend: 0, fairProb: 0.28 },
+          ],
+        },
+      },
+    }));
+    const feas27Picks = three27Feasible.flatMap((m) =>
+      m.pools.HAD.options.map((o) => makePick(m, "HAD", o.key))
+    );
+    const manualFeas27 = computeTruthReport(feas27Picks, 1, three27Feasible, {
+      mode: "free",
+      passSizes: [3],
+    });
+    assert.equal(manualFeas27.betCount, 27);
+    assert.equal(manualFeas27.totalCost, 54);
+    assert.ok(
+      typeof manualFeas27.breakevenUpgradeCost === "number" &&
+        manualFeas27.breakevenUpgradeCost > 54 &&
+        manualFeas27.breakevenUpgradeCost <= 500,
+      `Expected exact breakevenUpgradeCost on 27-bet slip (>24 bets!), got ${manualFeas27.breakevenUpgradeCost}`
+    );
+
+    for (const mode of ["equal", "hot-first", "cold-first"] as const) {
+      const wsLocked = evaluateQuantWorkspace(
+        {
+          picks: feas27Picks,
+          multiple: 1,
+          passSpec: { mode: "free", passSizes: [3] },
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: { kind: "bonus", optMode: mode, scaleMultiple: 1 },
+          targetIds: three27Feasible.map((m) => m.id),
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        three27Feasible
+      );
+      assert.ok(
+        wsLocked.effectiveReport.totalCost <= 54,
+        `Mode ${mode} MUST strictly obey user's ¥54 budget by default, got ¥${wsLocked.effectiveReport.totalCost}`
+      );
+      assert.ok(wsLocked.effectiveReport.underwaterCount > 0);
+      assert.ok(
+        !wsLocked.appliedPlan!.title.includes("稳赚") &&
+          !wsLocked.appliedPlan!.reasons.some((r) =>
+            r.includes("彻底消灭假中奖倒贴")
+          ),
+        `Mode ${mode} must NOT claim 稳赚 / 彻底消灭假中奖倒贴 when underwaterCount > 0: title=${wsLocked.appliedPlan!.title}`
+      );
+    }
+
+    const wsUpgraded = evaluateQuantWorkspace(
+      {
+        picks: feas27Picks,
+        multiple: 1,
+        passSpec: { mode: "free", passSizes: [3] },
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "bonus",
+          optMode: "equal",
+          scaleMultiple: 1,
+          upgradeToBreakeven: true,
+        } as any,
+        targetIds: three27Feasible.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      three27Feasible
+    );
+    assert.equal(
+      wsUpgraded.effectiveReport.totalCost,
+      manualFeas27.breakevenUpgradeCost
+    );
+    assert.equal(
+      wsUpgraded.effectiveReport.underwaterCount,
+      0,
+      "Explicit upgradeToBreakeven: true must eliminate 100% of underwater outcomes"
+    );
+
+    // 3. Non-disjoint M串N (asymmetric 3串3 on [1.40, 1.80, 2.80] at 5x = ¥30):
+    //    Equal 5x has [5,5,5] where 1.40*1.80*2*5 = ¥25.20 < ¥30 (1 underwater scenario);
+    //    Joint-bucket optimizeBonusPlan(..., "equal") reallocates within exact ¥30 (e.g. [7,5,3]) -> 0 underwater!
+    const asym3x3Matches: MatchItem[] = [
+      [1.4, 4.1, 6.2, 0.64],
+      [1.8, 3.4, 3.9, 0.49],
+      [2.8, 3.1, 2.35, 0.32],
+    ].map(([oh, od, oa, ph], idx) => ({
+      ...(FALLBACK_MATCHES[idx] as MatchItem),
+      id: `s2-asym3x3-${idx}`,
+      pools: {
+        ...(FALLBACK_MATCHES[idx] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[idx] as MatchItem).pools.HAD,
+          selling: true,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: oh, trend: 0, fairProb: ph },
+            {
+              key: "d",
+              label: "平",
+              odds: od,
+              trend: 0,
+              fairProb: (1 - ph) * 0.5,
+            },
+            {
+              key: "a",
+              label: "客胜",
+              odds: oa,
+              trend: 0,
+              fairProb: (1 - ph) * 0.5,
+            },
+          ],
+        },
+      },
+    }));
+    const asym3x3Picks = asym3x3Matches.map((m) => makePick(m, "HAD", "h"));
+    const manualAsym3x3 = computeTruthReport(asym3x3Picks, 5, asym3x3Matches, {
+      mode: "combo",
+      comboCode: "3x3",
+    });
+    assert.equal(manualAsym3x3.totalCost, 30);
+    assert.equal(manualAsym3x3.underwaterCount, 1);
+
+    const wsAsym3x3Opt = evaluateQuantWorkspace(
+      {
+        picks: asym3x3Picks,
+        multiple: 5,
+        passSpec: { mode: "combo", comboCode: "3x3" },
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: { kind: "bonus", optMode: "equal", scaleMultiple: 1 },
+        targetIds: asym3x3Matches.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      asym3x3Matches
+    );
+    assert.equal(wsAsym3x3Opt.effectiveReport.totalCost, 30);
+    assert.equal(
+      wsAsym3x3Opt.effectiveReport.underwaterCount,
+      0,
+      `Joint-bucket 3串3 bonus optimization within ¥30 must lift worst miss-1 payout >= ¥30, got minPayout=${wsAsym3x3Opt.effectiveReport.minPayout}`
+    );
+
+    // 4. Smart ticket consolidation (consolidateTickets: true): clusters close-multiple lines into fewer batches while preserving exact totalCost & zero underwater
+    const closeMultMatchA: MatchItem = {
+      ...(FALLBACK_MATCHES[0] as MatchItem),
+      id: "s2-cons-a",
+      pools: {
+        ...(FALLBACK_MATCHES[0] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAD,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.2, trend: 0, fairProb: 0.41 },
+            { key: "d", label: "平", odds: 2.32, trend: 0, fairProb: 0.39 },
+            { key: "a", label: "客胜", odds: 4.9, trend: 0, fairProb: 0.2 },
+          ],
+        },
+      },
+    };
+    const closeMultMatchB: MatchItem = {
+      ...(FALLBACK_MATCHES[2] as MatchItem),
+      id: "s2-cons-b",
+      pools: {
+        ...(FALLBACK_MATCHES[2] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[2] as MatchItem).pools.HAD,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.25, trend: 0, fairProb: 0.4 },
+            { key: "d", label: "平", odds: 2.36, trend: 0, fairProb: 0.38 },
+            { key: "a", label: "客胜", odds: 4.8, trend: 0, fairProb: 0.22 },
+          ],
+        },
+      },
+    };
+    const close4Picks = [
+      makePick(closeMultMatchA, "HAD", "h"),
+      makePick(closeMultMatchA, "HAD", "d"),
+      makePick(closeMultMatchB, "HAD", "h"),
+      makePick(closeMultMatchB, "HAD", "d"),
+    ];
+    const wsExact4 = evaluateQuantWorkspace(
+      {
+        picks: close4Picks,
+        multiple: 15, // 4 bets * 15x = 60 notes = ¥120
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "bonus",
+          optMode: "equal",
+          scaleMultiple: 1,
+          consolidateTickets: false,
+        } as any,
+        targetIds: [closeMultMatchA.id, closeMultMatchB.id],
+        budget: 120,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [closeMultMatchA, closeMultMatchB]
+    );
+    const wsCons4 = evaluateQuantWorkspace(
+      {
+        picks: close4Picks,
+        multiple: 15,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "bonus",
+          optMode: "equal",
+          scaleMultiple: 1,
+          consolidateTickets: true,
+        } as any,
+        targetIds: [closeMultMatchA.id, closeMultMatchB.id],
+        budget: 120,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [closeMultMatchA, closeMultMatchB]
+    );
+    assert.equal(wsCons4.effectiveReport.totalCost, 120);
+    assert.equal(wsCons4.effectiveReport.underwaterCount, 0);
+    const exactDistinctMults = new Set(
+      wsExact4.appliedPlan!.lines.map((l) => l.multiple)
+    ).size;
+    const consDistinctMults = new Set(
+      wsCons4.appliedPlan!.lines.map((l) => l.multiple)
+    ).size;
+    assert.ok(
+      consDistinctMults < exactDistinctMults,
+      `Expected consolidateTickets: true to merge close multiples into fewer batches (${consDistinctMults} < ${exactDistinctMults})`
+    );
+    assert.ok(
+      wsCons4.effectiveReport.consolidatedTickets <
+        wsExact4.effectiveReport.consolidatedTickets,
+      `Expected consolidated shop ticket count (${wsCons4.effectiveReport.consolidatedTickets}) < unmerged (${wsExact4.effectiveReport.consolidatedTickets})`
     );
   });
 });
