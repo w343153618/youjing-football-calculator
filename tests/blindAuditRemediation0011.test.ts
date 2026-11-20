@@ -626,4 +626,313 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       `Expected weakestLink.afterRemoveProfitProb=${repAfterExact.realProfitProb}, got ${ins3Before.weakestLink!.afterRemoveProfitProb}`
     );
   });
+
+  it("Slice 03 · Seam 1: fixes M=2 mutually exclusive cushion summing & blind-spot disclosure, enforces t>=2 covering wheel taxonomy + weighted 3-opt CVaR, and optimizes Slot ① hybrid single+2串1 & Slot ② exact log-wealth split", () => {
+    const oos = loadOosMatches(40);
+
+    // 1. P0-2a: M=2 on two non-single main-pool OOS matches (must use HAFU single cushions, NEVER sum same-match cushions, and disclose ¥0 reversal blind spot + zeroPayoutProb)
+    const nonSinglePair = oos
+      .filter((m) => !m.pools.HAD.single && !m.pools.HHAD.single)
+      .slice(0, 2);
+    assert.equal(nonSinglePair.length, 2);
+    const plans2NonSingle = generateParetoPortfolio(
+      nonSinglePair,
+      100,
+      "objective",
+      false,
+      []
+    ) as ArchetypePlan[];
+    const slot3NonSingle = plans2NonSingle[2];
+    assert.equal(slot3NonSingle.key, "max-cvar-wheel");
+    assert.equal(slot3NonSingle.available, true);
+
+    // Compute true maximum achievable single-match cushion payout when exactly 1 match misses:
+    // Within any single match's single-leg cushions in the same pool, options are mutually exclusive so at most ONE line can pay!
+    const trueSurvivingByMissed = nonSinglePair.map((missedM) => {
+      const survLines = slot3NonSingle.lines.filter(
+        (l) => !l.legs.some((g) => g.matchId === missedM.id)
+      );
+      if (survLines.length === 0) return 0;
+      // Since M=2 and missedM missed, all survLines belong to the single surviving match!
+      // Mutually exclusive options in the same pool CANNOT both hit; guaranteed floor on covered cushion branches is min, and max is max (never sum!).
+      return Math.min(...survLines.map((l) => l.returnPayout));
+    });
+    const exactGuaranteedCushionFloor = Math.min(...trueSurvivingByMissed);
+    assert.ok(
+      Math.abs(
+        (slot3NonSingle.missOneReturn ?? 0) - exactGuaranteedCushionFloor
+      ) < 1e-9,
+      `M=2 missOneReturn (${slot3NonSingle.missOneReturn}) must equal guaranteed single-branch floor (${exactGuaranteedCushionFloor}), never summing mutually exclusive cushions!`
+    );
+    assert.ok(
+      typeof slot3NonSingle.zeroPayoutProb === "number" &&
+        Math.abs(slot3NonSingle.zeroPayoutProb - (1 - slot3NonSingle.winProb)) <
+          1e-9,
+      `Expected zeroPayoutProb = 1 - winProb (${1 - slot3NonSingle.winProb}), got ${slot3NonSingle.zeroPayoutProb}`
+    );
+    assert.ok(
+      slot3NonSingle.tagline.includes("死角") ||
+        slot3NonSingle.reasons.some((r) => r.includes("死角")),
+      `Expected M=2 HAFU cushion plan to disclose half-time reversal ¥0 blind spot, got tagline="${slot3NonSingle.tagline}"`
+    );
+
+    // Sandbox slider must ALSO preserve non-summing missOneReturn on M=2!
+    const wsSandboxed2 = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 1,
+        subjectiveDeltaPct: 5,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-cvar-wheel",
+          snapshotPlan: slot3NonSingle,
+        },
+        targetIds: nonSinglePair.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      nonSinglePair
+    );
+    assert.ok(
+      Math.abs(
+        (wsSandboxed2.appliedPlan?.missOneReturn ?? 0) -
+          exactGuaranteedCushionFloor
+      ) < 1e-9,
+      `Sandboxed M=2 missOneReturn (${wsSandboxed2.appliedPlan?.missOneReturn}) must not sum mutually exclusive cushions`
+    );
+
+    // P0-2b: M=2 on two single-open matches (FALLBACK_MATCHES[1] & [3]) uses main-pool single cushions with 100% consensus coverage (zero reversal blind spot!)
+    const singlePair = [
+      FALLBACK_MATCHES[1] as MatchItem,
+      FALLBACK_MATCHES[3] as MatchItem,
+    ];
+    const slot3SinglePair = generateParetoPortfolio(
+      singlePair,
+      100,
+      "objective",
+      false,
+      []
+    )[2] as ArchetypePlan;
+    assert.ok(
+      slot3SinglePair.lines
+        .filter((l) => l.legs.length === 1)
+        .every(
+          (l) => l.legs[0].poolCode === "HAD" || l.legs[0].poolCode === "HHAD"
+        ),
+      "Single-open M=2 pair must use main-pool HAD/HHAD single cushions without HAFU reversal blind spot"
+    );
+    assert.ok(!slot3SinglePair.tagline.includes("逆转死角"));
+
+    // 2. P1-4: Across all M=5..8 slates in OOS, "旋转矩阵缩水" ONLY appears when sub-blocks cover 100% of match pairs (t >= 2)!
+    const checkPairCoverage = (
+      mIds: string[],
+      lines: ArchetypePlan["lines"]
+    ) => {
+      const v = mIds.length;
+      const subBlocks = lines
+        .filter((l) => l.legs.length < v)
+        .map((l) => new Set(l.legs.map((g) => g.matchId)));
+      if (subBlocks.length === 0) return false;
+      for (let i = 0; i < v; i++) {
+        for (let j = i + 1; j < v; j++) {
+          const covered = subBlocks.some(
+            (s) => s.has(mIds[i]) && s.has(mIds[j])
+          );
+          if (!covered) return false;
+        }
+      }
+      return true;
+    };
+
+    for (const v of [5, 6, 7, 8]) {
+      for (let offset = 0; offset <= 24; offset += 8) {
+        const slate = oos.slice(offset, offset + v);
+        if (slate.length < v) continue;
+        const s3 = generateParetoPortfolio(
+          slate,
+          200,
+          "objective",
+          false,
+          []
+        )[2] as ArchetypePlan;
+        const hasWheelName = s3.title.includes("旋转矩阵缩水");
+        const isPairCover = checkPairCoverage(
+          slate.map((m) => m.id),
+          s3.lines
+        );
+        if (hasWheelName) {
+          assert.equal(
+            isPairCover,
+            true,
+            `False "旋转矩阵缩水" label on non-t=2 design: ${s3.title}`
+          );
+        } else {
+          assert.ok(
+            s3.title.includes("独立分块容错串") ||
+              new RegExp(`${v}串\\d+`).test(s3.title),
+            `Non-t=2 M=${v} design must use honest "独立分块容错串" or official "${v}串N", got: ${s3.title}`
+          );
+        }
+        assert.ok(
+          typeof s3.zeroPayoutProb === "number" &&
+            Math.abs(s3.zeroPayoutProb - (1 - s3.winProb)) < 1e-9
+        );
+      }
+    }
+
+    // 3. P1-5a: Slot ① on mixed single + non-single 2-match slate beats BOTH pure 1-match single AND pure 2串1 via hybrid [single + 2串1] zero-underwater knapsack!
+    const mixed2M: MatchItem[] = [
+      FALLBACK_MATCHES[3] as MatchItem, // 威尔士 vs 葡萄牙: HAD.single=true (4.50 / 3.55 / 1.66, p = 0.21 / 0.25 / 0.54)
+      FALLBACK_MATCHES[2] as MatchItem, // 波兰 vs 瑞典: HAD.single=false (2.38 / 3.15 / 2.58, p = 0.38 / 0.27 / 0.35)
+    ];
+    const slot1Mixed = generateParetoPortfolio(
+      mixed2M,
+      100,
+      "objective",
+      false,
+      []
+    )[0] as ArchetypePlan;
+    const pure1MSlot1 = generateParetoPortfolio(
+      [mixed2M[0]],
+      100,
+      "objective",
+      false,
+      []
+    )[0] as ArchetypePlan;
+    assert.equal(slot1Mixed.underwaterCount, 0);
+    assert.ok(
+      slot1Mixed.profitProb > pure1MSlot1.profitProb + 0.05 &&
+        slot1Mixed.profitProb > 0.85,
+      `Expected hybrid single + 2串1 zero-underwater Slot ① profitProb (${(slot1Mixed.profitProb * 100).toFixed(2)}%) > pure 1-match single (${(pure1MSlot1.profitProb * 100).toFixed(2)}%) + 5pp and > 85%`
+    );
+    assert.ok(
+      slot1Mixed.lines.some((l) => l.legs.length === 1) &&
+        slot1Mixed.lines.some((l) => l.legs.length === 2),
+      "Expected Slot ① on mixed single/non-single pair to use genuine hybrid [1-leg single + 2串1] lines"
+    );
+
+    // Break-even note check: construct 1-match single where exact breakeven line (netProfit === 0) occurs at ¥20 budget (10 notes, odds 2.00 -> unitPayout 4.00, 5*4=20 -> netProfit=0)
+    const exactBreakEvenMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "be-single-m",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.0, trend: 0, fairProb: 0.45 },
+            { key: "d", label: "平", odds: 2.0, trend: 0, fairProb: 0.44 },
+            { key: "a", label: "客胜", odds: 7.5, trend: 0, fairProb: 0.11 },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.TTG,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.CRS,
+          selling: false,
+        },
+      },
+    };
+    const slot1Be = generateParetoPortfolio(
+      [exactBreakEvenMatch],
+      20,
+      "objective",
+      false,
+      []
+    )[0] as ArchetypePlan;
+    if (slot1Be.lines.some((l) => Math.abs(l.netProfit) < 1e-9)) {
+      assert.ok(
+        slot1Be.reasons.some(
+          (r) => r.includes("退回本金") || r.includes("保本")
+        ) && !slot1Be.tagline.includes("100% 净赚"),
+        `Break-even line must not be described as 100% 净赚 without disclosure: tagline=${slot1Be.tagline}`
+      );
+    }
+
+    // 4. P1-5b: Slot ② on 1-match single-spear + cover achieves exact integer-optimal log-wealth utility (GAMMA=0.65) over all zero-underwater splits!
+    const logOptMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "log-opt-1m",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.35, trend: 0, fairProb: 0.4 },
+            { key: "d", label: "平", odds: 2.65, trend: 0, fairProb: 0.35 },
+            { key: "a", label: "客胜", odds: 3.6, trend: 0, fairProb: 0.25 },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.TTG,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.CRS,
+          selling: false,
+        },
+      },
+    };
+    const slot2Opt = generateParetoPortfolio(
+      [logOptMatch],
+      100,
+      "objective",
+      false,
+      []
+    )[1] as ArchetypePlan;
+    assert.equal(slot2Opt.lines.length, 2);
+    const cTot = slot2Opt.totalCost;
+    const nTot = cTot / 2;
+    const refW = Math.max(2, 100, cTot);
+    const GAMMA = 0.65;
+    const [ln0, ln1] = slot2Opt.lines;
+    const pMiss = Math.max(0, 1 - ln0.prob - ln1.prob);
+    const utilOf = (m0: number, m1: number) =>
+      ln0.prob *
+        Math.log(
+          Math.max(1e-6, 1 + (GAMMA * (m0 * ln0.unitPayout - cTot)) / refW)
+        ) +
+      ln1.prob *
+        Math.log(
+          Math.max(1e-6, 1 + (GAMMA * (m1 * ln1.unitPayout - cTot)) / refW)
+        ) +
+      pMiss * Math.log(Math.max(1e-6, 1 - (GAMMA * cTot) / refW));
+    const actualUtil = utilOf(ln0.multiple, ln1.multiple);
+    const minM0 = Math.ceil((cTot - 1e-12) / ln0.unitPayout);
+    const minM1 = Math.ceil((cTot - 1e-12) / ln1.unitPayout);
+    let bestFeasibleUtil = -Infinity;
+    for (let m0 = minM0; m0 <= nTot - minM1; m0++) {
+      const m1 = nTot - m0;
+      if (m0 < m1) continue; // spear-primary domain
+      bestFeasibleUtil = Math.max(bestFeasibleUtil, utilOf(m0, m1));
+    }
+    assert.ok(
+      Math.abs(actualUtil - bestFeasibleUtil) < 1e-12,
+      `Slot ② integer split (${ln0.multiple}, ${ln1.multiple}) utility ${actualUtil} missed exact integer optimum ${bestFeasibleUtil}`
+    );
+  });
 });

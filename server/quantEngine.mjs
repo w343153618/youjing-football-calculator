@@ -6689,13 +6689,71 @@ function buildDisjointPartitionDesigns(v, wheelLegs, poolCap) {
   return out;
 }
 
+function isGenuinePairCoveringDesign(v, blocks) {
+  if (
+    v < 3 ||
+    !Array.isArray(blocks) ||
+    blocks.length < 2 ||
+    blocks.some((b) => !Array.isArray(b) || b.length < 2 || b.length >= v)
+  ) {
+    return false;
+  }
+  for (let i = 0; i < v; i++) {
+    for (let j = i + 1; j < v; j++) {
+      let covered = false;
+      for (let b = 0; b < blocks.length; b++) {
+        if (blocks[b].includes(i) && blocks[b].includes(j)) {
+          covered = true;
+          break;
+        }
+      }
+      if (!covered) return false;
+    }
+  }
+  return true;
+}
+
+function computeSurvivingMissOneFloor(lines, matchIds) {
+  if (!Array.isArray(lines) || lines.length === 0) return 0;
+  if (!Array.isArray(matchIds) || matchIds.length < 2) {
+    return Math.min(...lines.map((l) => l.returnPayout));
+  }
+  const perMissed = matchIds.map((missedId) => {
+    const surv = lines.filter(
+      (l) => !l.legs.some((g) => g.matchId === missedId)
+    );
+    if (surv.length === 0) return 0;
+    let multiSum = 0;
+    const singlePoolGroups = new Map();
+    for (let i = 0; i < surv.length; i++) {
+      const ln = surv[i];
+      if (ln.legs.length >= 2) {
+        multiSum += ln.returnPayout;
+      } else if (ln.legs.length === 1) {
+        const g = ln.legs[0];
+        const gk = `${g.matchId}:${g.poolCode}`;
+        const arr = singlePoolGroups.get(gk) ?? [];
+        arr.push(ln.returnPayout);
+        singlePoolGroups.set(gk, arr);
+      }
+    }
+    let singleGuaranteedSum = 0;
+    for (const arr of singlePoolGroups.values()) {
+      singleGuaranteedSum += Math.min(...arr);
+    }
+    return Number((multiSum + singleGuaranteedSum).toFixed(2));
+  });
+  return Math.min(...perMissed);
+}
+
 function allocateWheelMeanCvar(
   blockSpecs,
   kickerSpec,
   matchIds,
   targetBudgetYuan,
   exactNotesOnly = false,
-  condMissWeights = null
+  condMissWeights = null,
+  missSceneProbs = null
 ) {
   const allSpecs = kickerSpec ? [...blockSpecs, kickerSpec] : [...blockSpecs];
   const K = allSpecs.length;
@@ -6718,8 +6776,22 @@ function allocateWheelMeanCvar(
       matchIds.map((mid) => (!sp.legs.some((g) => g.matchId === mid) ? 1 : 0))
     );
 
+  // Normalize conditional miss-1 probability weights w_x (proportional to (1 - p_x) / p_x)
+  let sceneProbs = null;
+  if (Array.isArray(missSceneProbs) && missSceneProbs.length === v) {
+    const sumW = missSceneProbs.reduce((a, w) => a + Math.max(0, w), 0);
+    if (sumW > 0) {
+      sceneProbs = Float64Array.from(
+        missSceneProbs,
+        (w) => Math.max(0, w) / sumW
+      );
+    }
+  }
+
   const vec = new Float64Array(v);
+  const ordIdx = Array.from({ length: v }, (_, i) => i);
   const evalCandidateMults = (candMults) => {
+    let floorVal = Infinity;
     for (let x = 0; x < v; x++) {
       let s = 0;
       for (let b = 0; b < B; b++) {
@@ -6727,11 +6799,33 @@ function allocateWheelMeanCvar(
         if (w > 0) s += candMults[b] * units[b] * w;
       }
       vec[x] = s;
+      if (s < floorVal) floorVal = s;
     }
-    vec.sort();
-    const tailLen = Math.max(1, Math.ceil(v * 0.5));
-    let tailSum = 0;
-    for (let t = 0; t < tailLen; t++) tailSum += vec[t];
+    let tailAvg = 0;
+    if (sceneProbs) {
+      for (let i = 0; i < v; i++) ordIdx[i] = i;
+      ordIdx.sort((a, b) => vec[a] - vec[b]);
+      let remMass = 0.5;
+      let weightedSum = 0;
+      for (let r = 0; r < v && remMass > 1e-15; r++) {
+        const idx = ordIdx[r];
+        const take = Math.min(remMass, sceneProbs[idx]);
+        weightedSum += take * vec[idx];
+        remMass -= take;
+      }
+      const wCvar = weightedSum / 0.5;
+      // Blend Rockafellar-Uryasev weighted CVaR_0.5 with worst-case floor & uniform tail so both probability-weighted and worst-case axes stay sharp
+      const tailLen = Math.max(1, Math.ceil(v * 0.5));
+      let uSum = 0;
+      for (let t = 0; t < tailLen; t++) uSum += vec[ordIdx[t]];
+      tailAvg = 0.65 * wCvar + 0.35 * (uSum / tailLen);
+    } else {
+      vec.sort();
+      const tailLen = Math.max(1, Math.ceil(v * 0.5));
+      let tailSum = 0;
+      for (let t = 0; t < tailLen; t++) tailSum += vec[t];
+      tailAvg = tailSum / tailLen;
+    }
     let minLinePay = Infinity;
     let expRet = 0;
     let notes = 0;
@@ -6744,9 +6838,9 @@ function allocateWheelMeanCvar(
     }
     const cost = notes * 2;
     return {
-      floorVal: vec[0],
-      tailAvg: tailSum / tailLen,
-      tailRatio: tailSum / tailLen / cost,
+      floorVal: floorVal < Infinity ? floorVal : 0,
+      tailAvg,
+      tailRatio: tailAvg / cost,
       floorRatio: (minLinePay - cost) / cost,
       evRate: (expRet - cost) / cost,
     };
@@ -6832,6 +6926,61 @@ function allocateWheelMeanCvar(
       if (!improved) break;
     }
 
+    // 3-way integer neighborhood polish ((+2,-1,-1) and (+1,+1,-2)) to escape 2-opt integer plateaus
+    const isBetterMetrics = (nxt, cur) =>
+      (nxt.tailAvg >= cur.tailAvg - 1e-9 &&
+        nxt.floorRatio >= cur.floorRatio - 1e-9 &&
+        nxt.evRate >= cur.evRate - 1e-9 &&
+        (nxt.tailAvg > cur.tailAvg + 1e-6 ||
+          nxt.floorRatio > cur.floorRatio + 1e-6 ||
+          nxt.evRate > cur.evRate + 1e-6)) ||
+      (nxt.tailAvg > cur.tailAvg + 1e-6 && nxt.floorVal >= cur.floorVal - 1e-9);
+    if (!exactNotesOnly && B >= 3 && B <= 7 && v <= 7) {
+      for (let pass = 0; pass < 2; pass++) {
+        let improved3 = false;
+        let cur = evalCandidateMults(mults);
+        for (let a = 0; a < B; a++) {
+          for (let b = 0; b < B; b++) {
+            if (b === a) continue;
+            for (let c = b + 1; c < B; c++) {
+              if (c === a) continue;
+              // Move (+2, -1, -1)
+              if (mults[a] + 2 <= 999 && mults[b] >= 2 && mults[c] >= 2) {
+                mults[a] += 2;
+                mults[b] -= 1;
+                mults[c] -= 1;
+                const nxt = evalCandidateMults(mults);
+                if (isBetterMetrics(nxt, cur)) {
+                  cur = nxt;
+                  improved3 = true;
+                } else {
+                  mults[a] -= 2;
+                  mults[b] += 1;
+                  mults[c] += 1;
+                }
+              }
+              // Move (-2, +1, +1)
+              if (mults[a] >= 3 && mults[b] + 1 <= 999 && mults[c] + 1 <= 999) {
+                mults[a] -= 2;
+                mults[b] += 1;
+                mults[c] += 1;
+                const nxt = evalCandidateMults(mults);
+                if (isBetterMetrics(nxt, cur)) {
+                  cur = nxt;
+                  improved3 = true;
+                } else {
+                  mults[a] += 2;
+                  mults[b] -= 1;
+                  mults[c] -= 1;
+                }
+              }
+            }
+          }
+        }
+        if (!improved3) break;
+      }
+    }
+
     return { mults, metrics: evalCandidateMults(mults) };
   };
 
@@ -6867,18 +7016,7 @@ function allocateWheelMeanCvar(
   )[0];
 
   const lines = materializePlanLines(allSpecs, chosen.mults);
-  const missPayouts = matchIds.map((mid) =>
-    Number(
-      lines
-        .filter((l) => !l.legs.some((g) => g.matchId === mid))
-        .reduce((a, l) => a + l.returnPayout, 0)
-        .toFixed(2)
-    )
-  );
-  const missOneReturn =
-    v >= 2
-      ? Math.min(...missPayouts)
-      : Math.min(...lines.map((l) => l.returnPayout));
+  const missOneReturn = computeSurvivingMissOneFloor(lines, matchIds);
   return { lines, missOneReturn };
 }
 
@@ -7519,40 +7657,55 @@ function allocateSpearAndExactShield(
     } else if (spearsLocal.length === 2) {
       const sp0 = spearsLocal[0];
       const sp1 = spearsLocal[1];
-      const min0 = Math.ceil(finalStake / sp0.unitPayout);
-      const min1 = Math.ceil(finalStake / sp1.unitPayout);
+      const min0 = Math.ceil((finalStake - 1e-12) / sp0.unitPayout);
+      const min1 = Math.ceil((finalStake - 1e-12) / sp1.unitPayout);
       if (min0 + min1 <= attackNotes) {
-        const wBase = 2 * finalStake;
-        const pMiss = Math.max(
-          0,
-          1 - sp0.prob - sp1.prob - (cleanShield ? cleanShield.prob : 0)
-        );
-        let bestM0 = attackNotes - min1;
-        let bestUtil = -Infinity;
+        const refWealth = Math.max(2, targetBudgetYuan, finalStake);
+        const GAMMA = 0.65;
+        const pShield = cleanShield ? cleanShield.prob : 0;
+        const uShieldTerm = cleanShield
+          ? pShield *
+            Math.log(
+              Math.max(
+                1e-6,
+                1 +
+                  (GAMMA *
+                    (cleanShield.exactMult * cleanShield.unitPayout -
+                      finalStake)) /
+                    refWealth
+              )
+            )
+          : 0;
+        const pMiss = Math.max(0, 1 - sp0.prob - sp1.prob - pShield);
+        const missTerm =
+          pMiss *
+          Math.log(Math.max(1e-6, 1 - (GAMMA * finalStake) / refWealth));
+        const lo0 = cleanShield
+          ? min0
+          : Math.max(min0, Math.ceil(attackNotes / 2));
         const hi0 = attackNotes - min1;
-        const step = Math.max(1, Math.floor((hi0 - min0) / 64));
-        const evalM0 = (m0) => {
+        let bestM0 = hi0;
+        let bestUtil = -Infinity;
+        for (let m0 = Math.min(lo0, hi0); m0 <= hi0; m0++) {
           const m1 = attackNotes - m0;
-          return (
-            sp0.prob * Math.log(Math.max(1, wBase + m0 * sp0.unitPayout)) +
-            sp1.prob * Math.log(Math.max(1, wBase + m1 * sp1.unitPayout)) +
-            pMiss * Math.log(Math.max(1, wBase))
-          );
-        };
-        for (let m0 = min0; m0 <= hi0; m0 += step) {
-          const u = evalM0(m0);
-          if (u > bestUtil) {
-            bestUtil = u;
-            bestM0 = m0;
-          }
-        }
-        for (
-          let m0 = Math.max(min0, bestM0 - step);
-          m0 <= Math.min(hi0, bestM0 + step);
-          m0++
-        ) {
-          const u = evalM0(m0);
-          if (u > bestUtil) {
+          const u =
+            sp0.prob *
+              Math.log(
+                Math.max(
+                  1e-6,
+                  1 + (GAMMA * (m0 * sp0.unitPayout - finalStake)) / refWealth
+                )
+              ) +
+            sp1.prob *
+              Math.log(
+                Math.max(
+                  1e-6,
+                  1 + (GAMMA * (m1 * sp1.unitPayout - finalStake)) / refWealth
+                )
+              ) +
+            uShieldTerm +
+            missTerm;
+          if (u > bestUtil + 1e-15) {
             bestUtil = u;
             bestM0 = m0;
           }
@@ -7978,6 +8131,7 @@ export function generateParetoPortfolio(
         profitProb: 0,
         expectedValueRate: 0,
         underwaterCount: 0,
+        zeroPayoutProb: null,
         missOneReturn: null,
         wipeoutMiss2Prob: null,
         vigPct: 0,
@@ -8030,6 +8184,7 @@ export function generateParetoPortfolio(
       profitProb: jointEval.realProfitProb,
       expectedValueRate: jointEval.expectedValueRate,
       underwaterCount: jointEval.underwaterCount,
+      zeroPayoutProb: Math.max(0, 1 - jointEval.anyWinProb),
       missOneReturn,
       ...(wipeoutMiss2Prob !== null ? { wipeoutMiss2Prob } : {}),
       vigPct,
@@ -8448,6 +8603,75 @@ export function generateParetoPortfolio(
       }
     }
 
+    // Hybrid [Single on single-open Match S + 2串1 on complement x Partner Match P] pairwise-disjoint groups on M = 2 (ADR-0012 / Spec 0011)
+    if (selected.length === 2) {
+      for (let i = 0; i < 2; i++) {
+        const j = 1 - i;
+        const mS = selected[i];
+        const mP = selected[j];
+        for (const cS of ["HAD", "HHAD"]) {
+          const pS = mS.pools[cS];
+          if (
+            !pS ||
+            pS.selling === false ||
+            !pS.single ||
+            !Array.isArray(pS.options) ||
+            pS.options.length < 2
+          ) {
+            continue;
+          }
+          const legsS = pS.options
+            .map((o) => legOf(mS, cS, o.key))
+            .filter(Boolean);
+          if (legsS.length < 2) continue;
+          for (const cP of ["HAD", "HHAD"]) {
+            const pP = mP.pools[cP];
+            if (
+              !pP ||
+              pP.selling === false ||
+              !Array.isArray(pP.options) ||
+              pP.options.length === 0
+            ) {
+              continue;
+            }
+            const legsP = pP.options
+              .map((o) => legOf(mP, cP, o.key))
+              .filter(Boolean);
+            if (legsP.length === 0) continue;
+            const fullMask = (1 << legsS.length) - 1;
+            for (let sMask = 1; sMask < fullMask; sMask++) {
+              const hybridSpecs = [];
+              let hIdx = 1;
+              for (let a = 0; a < legsS.length; a++) {
+                if ((sMask & (1 << a)) !== 0) {
+                  hybridSpecs.push({
+                    id: `mp-hyb-${i}-${j}-${cS}-${cP}-${sMask}-${hIdx++}`,
+                    roleLabel:
+                      hIdx === 2 ? "单关稳健主干" : `单关保本盾#${hIdx - 2}`,
+                    legs: [legsS[a]],
+                  });
+                }
+              }
+              for (let a = 0; a < legsS.length; a++) {
+                if ((sMask & (1 << a)) === 0) {
+                  for (let b = 0; b < legsP.length; b++) {
+                    hybridSpecs.push({
+                      id: `mp-hyb-${i}-${j}-${cS}-${cP}-${sMask}-${hIdx++}`,
+                      roleLabel: `跨场2串1保本盾#${hIdx - 1}`,
+                      legs: [legsS[a], legsP[b]],
+                    });
+                  }
+                }
+              }
+              if (hybridSpecs.length >= 2) {
+                candidateSpecGroups.push(hybridSpecs);
+              }
+            }
+          }
+        }
+      }
+    }
+
     const primPools = selected.map((m) => primaryPoolOf(m));
     const passCap = Math.min(
       selected.length,
@@ -8621,11 +8845,20 @@ export function generateParetoPortfolio(
       l.legs.some((g) => g.poolCode !== "HAD" && g.poolCode !== "HHAD")
     );
 
+  const slot1BreakEvenCount = slot1Lines.filter(
+    (l) => Math.abs(l.netProfit) < 1e-9
+  ).length;
+  const slot1StrictNetGainProb = slot1Lines
+    .filter((l) => l.netProfit > 1e-9)
+    .reduce((a, l) => a + l.prob, 0);
+
   const slot1Reasons = [
     slot1SyntheticUsed
       ? "主盘未开单关，已自动跨盘比选最低等效抽水的合成单关入口并执行精确 0-1 背包配平"
       : "基于精确整数 0-1 背包动态规划（Exact Knapsack Dutching）求解零倒贴真赚钱率全局最优解",
-    "施加覆盖态 100% 零假中奖硬约束，命中覆盖集合内任一赛果确保净赚不倒贴",
+    slot1BreakEvenCount > 0
+      ? `施加覆盖态零假中奖约束（含 ${slot1BreakEvenCount} 张刚好退回本金净赚 ¥0.00 的保本回笼支，严格净赚率 ${(slot1StrictNetGainProb * 100).toFixed(1)}%）`
+      : "施加覆盖态 100% 零假中奖硬约束，命中覆盖集合内任一赛果确保净赚不倒贴",
   ];
   if (slot1AnchoredTwoMatchNote) slot1Reasons.push(slot1AnchoredTwoMatchNote);
 
@@ -8634,7 +8867,10 @@ export function generateParetoPortfolio(
     shortTab: "🛡️ 稳健保本",
     badge: "🛡️ 稳健保本极值",
     title: "覆盖态零假中奖 · 真赚钱率最大化",
-    tagline: "覆盖范围内命中任一组合 100% 净赚 · 彻底杜绝中奖倒贴",
+    tagline:
+      slot1BreakEvenCount > 0
+        ? "覆盖范围内 100% 保本不亏（含刚退本金保护支）· 彻底杜绝中奖倒贴"
+        : "覆盖范围内命中任一组合 100% 净赚 · 彻底杜绝中奖倒贴",
     lines: slot1Lines,
     reasons: slot1Reasons,
   });
@@ -8996,13 +9232,29 @@ export function generateParetoPortfolio(
         evPrimaryLegOf(em) ??
         legOf(em, mainCode, em.pools[mainCode].options[0].key);
       const sec = secondaryDisjointLegInPool(em, prim);
-      slot2Lines = allocateSpearAndExactShield(
+      const minShieldLines = allocateSpearAndExactShield(
         [{ id: "ev-sp1", roleLabel: "主攻高性价比箭", legs: [prim] }],
         sec
           ? { id: "ev-sh", roleLabel: "最小整数倍回本盾", legs: [sec] }
           : null,
         cleanBudget
       );
+      const exactLogSplitLines = sec
+        ? allocateSpearAndExactShield(
+            [
+              { id: "ev-sp1", roleLabel: "主攻高性价比箭", legs: [prim] },
+              { id: "ev-sp2", roleLabel: "对数效用协同副箭", legs: [sec] },
+            ],
+            null,
+            cleanBudget
+          )
+        : [];
+      slot2Lines =
+        exactLogSplitLines.length > 0 &&
+        evalLogWealthUtility(exactLogSplitLines, true) >
+          evalLogWealthUtility(minShieldLines, true) + 1e-12
+          ? exactLogSplitLines
+          : minShieldLines;
     } else {
       const { dir, hafuCompatLegs, crsCompatLegs } =
         resolveDirectionSingleBundles(em);
@@ -9367,6 +9619,10 @@ export function generateParetoPortfolio(
     return preferredPrimaryLeg(m);
   };
 
+  let slot3HasPartialCushionBlindSpot = false;
+  let slot3UsesSubPoolCushion = false;
+  let slot3MinCushionCondCov = 1;
+
   if (selected.length === 1) {
     const m1 = selected[0];
     const anc = anchorsByMatch.get(m1.id) ?? [];
@@ -9511,117 +9767,171 @@ export function generateParetoPortfolio(
     const [mA, mB] = selected;
     const legA = preferredHighProbMainLeg(mA);
     const legB = preferredHighProbMainLeg(mB);
-    const expandSyntheticSingleCushions = (m, mIdx, primarySgl) => {
-      if (!primarySgl || !m.pools[primarySgl.poolCode]?.single) return [];
-      if (primarySgl.poolCode !== "HAFU" || anchorsByMatch.has(m.id))
-        return [primarySgl];
-      const alts = (m.pools.HAFU.options ?? [])
-        .filter((o) => o.key !== primarySgl.optionKey)
-        .map((o) => legOf(m, "HAFU", o.key))
-        .filter((g) => g && getLegCondPair(mIdx, g)[0] >= 0.2)
-        .sort(
-          (a, b) =>
-            getLegCondPair(mIdx, b)[0] * b.odds -
-            getLegCondPair(mIdx, a)[0] * a.odds
-        );
-      return alts[0] ? [primarySgl, alts[0]] : [primarySgl];
+
+    const pickOneSingleCushion = (m, mIdx, consLeg) => {
+      const anc = anchorsByMatch.get(m.id) ?? [];
+      if (anc.length === 0 && consLeg) {
+        if (
+          m.pools[consLeg.poolCode]?.selling !== false &&
+          m.pools[consLeg.poolCode]?.single
+        ) {
+          return consLeg;
+        }
+        for (const mainCode of ["HAD", "HHAD"]) {
+          const pool = m.pools[mainCode];
+          if (
+            pool?.selling !== false &&
+            pool?.single &&
+            Array.isArray(pool.options)
+          ) {
+            const fullCover = pool.options
+              .map((o) => legOf(m, mainCode, o.key))
+              .find((g) => g && getLegCondPair(mIdx, g)[0] >= 0.999);
+            if (fullCover) return fullCover;
+          }
+        }
+      }
+      const sgl = singleCushionLegOf(m);
+      return sgl && m.pools[sgl.poolCode]?.single ? sgl : null;
     };
-    const sglsA = expandSyntheticSingleCushions(mA, 0, singleCushionLegOf(mA));
-    const sglsB = expandSyntheticSingleCushions(mB, 1, singleCushionLegOf(mB));
-    const blockSpecs = [];
-    sglsA.forEach((g, idx) =>
-      blockSpecs.push({
-        id: `cw-2-s1-${idx + 1}`,
-        roleLabel: `防错回血垫①${sglsA.length > 1 ? `·${g.optionLabel}` : ""} (${mA.matchNumStr}单关)`,
-        legs: [g],
-      })
-    );
-    sglsB.forEach((g, idx) =>
-      blockSpecs.push({
-        id: `cw-2-s2-${idx + 1}`,
-        roleLabel: `防错回血垫②${sglsB.length > 1 ? `·${g.optionLabel}` : ""} (${mB.matchNumStr}单关)`,
-        legs: [g],
-      })
-    );
+
+    const sglA1 = pickOneSingleCushion(mA, 0, legA);
+    const sglB1 = pickOneSingleCushion(mB, 1, legB);
+    const sglA2 = singleCushionLegOf(mA);
+    const sglB2 = singleCushionLegOf(mB);
+    const validSglA2 = sglA2 && mA.pools[sglA2.poolCode]?.single ? sglA2 : null;
+    const validSglB2 = sglB2 && mB.pools[sglB2.poolCode]?.single ? sglB2 : null;
     const mainKicker = {
       id: "cw-2-all",
       roleLabel: "连红主干·2串1",
       legs: [legA, legB],
     };
-    // Allocate ~40% to 2串1 kicker and ~60% equalized across single cushions for strong miss-1 floor + upside
-    const totalNotes = Math.max(
-      blockSpecs.length + 1,
-      Math.floor(cleanBudget / 2)
-    );
-    if (blockSpecs.length > 0) {
-      const allSpecs = [mainKicker, ...blockSpecs];
-      const cond2Weights = blockSpecs.map((sp) =>
-        selected.map((_, x) =>
-          sp.legs.reduce((acc, g) => {
-            const gi = selected.findIndex((sm) => sm.id === g.matchId);
-            const pr = gi >= 0 ? getLegCondPair(gi, g) : [1, 0];
-            return acc * (gi === x ? pr[1] : pr[0]);
-          }, 1)
-        )
-      );
-      const minNotes = Math.max(allSpecs.length, Math.floor(totalNotes * 0.9));
+    const rawPairs = [
+      [sglA1, sglB1],
+      [validSglA2, validSglB2],
+      [sglA1, validSglB2],
+      [validSglA2, sglB1],
+    ];
+    const seenPairSigs = new Set();
+    const groupConfigs = [];
+    for (const [ga, gb] of rawPairs) {
+      const sig = `${ga ? `${ga.poolCode}:${ga.optionKey}` : "none"}|${gb ? `${gb.poolCode}:${gb.optionKey}` : "none"}`;
+      if (!seenPairSigs.has(sig) && (ga || gb)) {
+        seenPairSigs.add(sig);
+        groupConfigs.push([ga ? [ga] : [], gb ? [gb] : []]);
+      }
+    }
+    const totalNotes = Math.max(3, Math.floor(cleanBudget / 2));
+    if (groupConfigs.length > 0) {
+      const matchIdList = selected.map((m) => m.id);
       const twoMatchCands = [];
-      for (let candN = totalNotes; candN >= minNotes; candN--) {
-        const kickerSet = new Set([
-          1,
-          2,
-          3,
-          4,
-          5,
-          6,
-          Math.max(1, Math.round(candN * 0.08)),
-          Math.max(1, Math.round(candN * 0.14)),
-          Math.max(1, Math.round(candN * 0.22)),
-        ]);
-        for (const kNotes of kickerSet) {
-          if (kNotes + blockSpecs.length > candN) continue;
-          const cushionBudget = (candN - kNotes) * 2;
-          const solvedCushions = allocateWheelMeanCvar(
-            blockSpecs,
-            null,
-            selected.map((m) => m.id),
-            cushionBudget,
-            true,
-            cond2Weights
-          );
-          const candLines = materializePlanLines(allSpecs, [
-            kNotes,
-            ...solvedCushions.lines.map((l) => l.multiple),
-          ]);
-          const missPayouts = selected.map((m) =>
-            Number(
-              candLines
-                .filter((l) => !l.legs.some((g) => g.matchId === m.id))
-                .reduce((a, l) => a + l.returnPayout, 0)
-                .toFixed(2)
-            )
-          );
-          const missOne = Math.min(...missPayouts);
-          twoMatchCands.push({
-            lines: candLines,
-            missOneReturn: missOne,
-            obj: evalLines4DObj(candLines),
-          });
+      for (const [grpA, grpB] of groupConfigs) {
+        const blockSpecs = [];
+        grpA.forEach((g, idx) =>
+          blockSpecs.push({
+            id: `cw-2-s1-${idx + 1}`,
+            roleLabel: `防错回血垫①${grpA.length > 1 ? `·${g.optionLabel}` : ""} (${mA.matchNumStr}单关)`,
+            legs: [g],
+          })
+        );
+        grpB.forEach((g, idx) =>
+          blockSpecs.push({
+            id: `cw-2-s2-${idx + 1}`,
+            roleLabel: `防错回血垫②${grpB.length > 1 ? `·${g.optionLabel}` : ""} (${mB.matchNumStr}单关)`,
+            legs: [g],
+          })
+        );
+        if (blockSpecs.length === 0) continue;
+        const allSpecs = [mainKicker, ...blockSpecs];
+        const cond2Weights = blockSpecs.map((sp) =>
+          selected.map((_, x) =>
+            sp.legs.reduce((acc, g) => {
+              const gi = selected.findIndex((sm) => sm.id === g.matchId);
+              const pr = gi >= 0 ? getLegCondPair(gi, g) : [1, 0];
+              return acc * (gi === x ? pr[1] : pr[0]);
+            }, 1)
+          )
+        );
+        const minNotes = Math.max(
+          allSpecs.length,
+          Math.floor(totalNotes * 0.9)
+        );
+        for (let candN = totalNotes; candN >= minNotes; candN--) {
+          const kickerSet =
+            candN >= 10
+              ? new Set([
+                  Math.max(2, Math.round(candN * 0.18)),
+                  Math.max(2, Math.round(candN * 0.24)),
+                  Math.max(2, Math.round(candN * 0.3)),
+                ])
+              : new Set([1, 2]);
+          for (const kNotes of kickerSet) {
+            if (kNotes + blockSpecs.length > candN) continue;
+            const cushionBudget = (candN - kNotes) * 2;
+            const solvedCushions = allocateWheelMeanCvar(
+              blockSpecs,
+              null,
+              matchIdList,
+              cushionBudget,
+              true,
+              cond2Weights
+            );
+            const candLines = materializePlanLines(allSpecs, [
+              kNotes,
+              ...solvedCushions.lines.map((l) => l.multiple),
+            ]);
+            const missOne = computeSurvivingMissOneFloor(
+              candLines,
+              matchIdList
+            );
+            twoMatchCands.push({
+              lines: candLines,
+              missOneReturn: missOne,
+              obj: evalLines4DObj(candLines),
+            });
+          }
         }
       }
       const nonDom2 = filterNonDominatedCandidates(twoMatchCands);
       const pool2 = nonDom2.length > 0 ? nonDom2 : twoMatchCands;
       pool2.sort(
         (a, b) =>
-          0.55 * b.obj.missOneCvarRatio +
-          0.25 * b.obj.profitProb +
+          0.48 * b.obj.missOneCvarRatio +
+          0.32 * b.obj.profitProb +
           0.2 * b.obj.evRate -
-          (0.55 * a.obj.missOneCvarRatio +
-            0.25 * a.obj.profitProb +
+          (0.48 * a.obj.missOneCvarRatio +
+            0.32 * a.obj.profitProb +
             0.2 * a.obj.evRate)
       );
       slot3Lines = pool2[0].lines;
       slot3MissOneReturn = pool2[0].missOneReturn;
+      const chosenSglsA = slot3Lines
+        .filter((l) => l.legs.length === 1 && l.legs[0].matchId === mA.id)
+        .map((l) => l.legs[0]);
+      const chosenSglsB = slot3Lines
+        .filter((l) => l.legs.length === 1 && l.legs[0].matchId === mB.id)
+        .map((l) => l.legs[0]);
+      const covA =
+        chosenSglsA.length === 0
+          ? 0
+          : Math.min(
+              1,
+              chosenSglsA.reduce((acc, g) => acc + getLegCondPair(0, g)[0], 0)
+            );
+      const covB =
+        chosenSglsB.length === 0
+          ? 0
+          : Math.min(
+              1,
+              chosenSglsB.reduce((acc, g) => acc + getLegCondPair(1, g)[0], 0)
+            );
+      slot3MinCushionCondCov = Math.min(covA, covB);
+      slot3UsesSubPoolCushion = [...chosenSglsA, ...chosenSglsB].some(
+        (g) => g.poolCode !== "HAD" && g.poolCode !== "HHAD"
+      );
+      slot3HasPartialCushionBlindSpot =
+        (chosenSglsA.length > 0 || chosenSglsB.length > 0) &&
+        slot3MinCushionCondCov < 0.999;
     } else {
       slot3Lines = materializePlanLines([mainKicker], [totalNotes]);
       slot3MissOneReturn = 0;
@@ -9637,6 +9947,11 @@ export function generateParetoPortfolio(
       const condPairs = wheelLegs.map((lg, idx) => getLegCondPair(idx, lg));
       const legGivenHit = condPairs.map((p) => p[0]);
       const legGivenMiss = condPairs.map((p) => p[1]);
+      // Conditional miss-1 probability weights w_x proportional to (1 - p_x) / p_x
+      const missSceneProbs = wheelLegs.map((g) => {
+        const p = Math.min(0.995, Math.max(0.02, g.fairProb));
+        return (1 - p) / p;
+      });
       const geomLegProb = Math.pow(
         wheelLegs.reduce((acc, g) => acc * Math.max(0.05, g.fairProb), 1),
         1 / Math.max(1, v)
@@ -9701,12 +10016,15 @@ export function generateParetoPortfolio(
           matchIds,
           cleanBudget,
           false,
-          condMissWeights
+          condMissWeights,
+          missSceneProbs
         );
         const totalC = cand.lines.reduce((a, l) => a + l.cost, 0);
         if (totalC <= 0) continue;
         const obj = evalLines4DObj(cand.lines);
-        const score = scoreWheelCandidate(obj, cand.missOneReturn, totalC);
+        const score =
+          scoreWheelCandidate(obj, cand.missOneReturn, totalC) +
+          (isGenuinePairCoveringDesign(v, subBlocks) ? 0.02 : 0);
         wheelCands.push({
           lines: cand.lines,
           missOneReturn: cand.missOneReturn,
@@ -9717,16 +10035,17 @@ export function generateParetoPortfolio(
         });
       }
 
-      // 2. Genuine C(v, k, t) covering-wheel designs (v >= k >= t = 2) + disjoint block / dual-complement reduced wheels
+      // 2. Genuine C(v, k, t) covering-wheel designs (t >= 2) vs honest disjoint/sub-t=2 block partitions (ADR-0012 / Spec 0011)
       const allReducedDesigns = [
         ...(COVERING_WHEEL_DESIGNS[v] ?? []),
         ...buildDisjointPartitionDesigns(v, wheelLegs, poolCap),
       ].filter((d) => d.maxK <= poolCap && d.blocks.length <= 10);
 
       for (const d of allReducedDesigns) {
+        const isPairCover = isGenuinePairCoveringDesign(v, d.blocks);
         const blockSpecs = d.blocks.map((idxs, bIdx) => ({
           id: `cw-${bIdx + 1}`,
-          roleLabel: `缩水组#${bIdx + 1} (${idxs.map((i) => `第${i + 1}场`).join("×")})`,
+          roleLabel: `${isPairCover ? "缩水组" : "容错分块"}#${bIdx + 1} (${idxs.map((i) => `第${i + 1}场`).join("×")})`,
           legs: idxs.map((i) => wheelLegs[i]),
         }));
         const condMissWeights = d.blocks.map((idxs) =>
@@ -9753,17 +10072,24 @@ export function generateParetoPortfolio(
             matchIds,
             cleanBudget,
             false,
-            condMissWeights
+            condMissWeights,
+            missSceneProbs
           );
           const totalC = cand.lines.reduce((a, l) => a + l.cost, 0);
           if (totalC <= 0) continue;
           const obj = evalLines4DObj(cand.lines);
-          const score = scoreWheelCandidate(obj, cand.missOneReturn, totalC);
+          const score =
+            scoreWheelCandidate(obj, cand.missOneReturn, totalC) +
+            (isPairCover ? 0.02 : 0);
+          const cleanDesignBase = d.name.replace(/独立分块$/, "");
+          const designLabel = isPairCover
+            ? `${d.name}${kicker ? `+${v}串1` : ""} 旋转矩阵缩水 (${cand.lines.length}张实票)`
+            : `${cleanDesignBase}${kicker ? `+${v}串1` : ""} 独立分块容错串 (${cand.lines.length}张实票)`;
           wheelCands.push({
             lines: cand.lines,
             missOneReturn: cand.missOneReturn,
-            designLabel: `${d.name}${kicker ? `+${v}串1` : ""} 旋转矩阵缩水 (${cand.lines.length}张实票)`,
-            isCoveringWheel: true,
+            designLabel,
+            isCoveringWheel: isPairCover,
             obj,
             score,
           });
@@ -9804,12 +10130,13 @@ export function generateParetoPortfolio(
   const slot3Reasons = [
     selected.length >= 3
       ? slot3IsCoveringWheel
-        ? `采用组合覆盖设计 ${slot3DesignLabel}（严控 ≤ 10 张独立实票），省去冗余全包注数并锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
-        : `采用中国体彩${slot3DesignLabel}标准容错结构（严控 ≤ 10 张独立实票），锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
-      : "配置低抽水缓冲回血垫，最大化逆境尾部条件保底回报（Mean-CVaR）",
-    slot3WipeoutMiss2Prob !== null
-      ? `风险诚实披露：主干错 ≥ 2 场击穿率 ${(slot3WipeoutMiss2Prob * 100).toFixed(1)}%（错 1 场属局部回血缓冲，非全额无损保本）`
-      : "全中时多张覆盖子票叠加派奖，兼顾防黑韧性与满贯上限",
+        ? `采用组合覆盖设计 ${slot3DesignLabel}（满足任意两场全覆盖 t≥2，严控 ≤ 10 张实票），锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
+        : `采用中国体彩 ${slot3DesignLabel} 结构（严控 ≤ 10 张独立实票），锁定错 1 场保底回血 ¥${slot3MissOneReturn.toFixed(2)}`
+      : slot3HasPartialCushionBlindSpot
+        ? slot3UsesSubPoolCushion
+          ? `借道半全场/局部单关构建回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出半场逆转等未覆盖死角派奖为 ¥0`
+          : `采用让球单关构建高赔回血垫（覆盖正路 ${(slot3MinCushionCondCov * 100).toFixed(0)}%），若踢出一球卡盘未覆盖死角派奖为 ¥0`
+        : "配置无死角主盘单关回血垫，最大化错 1 场保底回血与连红上限",
   ];
 
   const slot3Plan = packSlot({
@@ -9829,10 +10156,27 @@ export function generateParetoPortfolio(
     reasons: slot3Reasons,
   });
   if (slot3Plan.available) {
+    const zProb =
+      slot3Plan.zeroPayoutProb ?? Math.max(0, 1 - slot3Plan.winProb);
+    if (slot3WipeoutMiss2Prob !== null) {
+      slot3Plan.reasons.push(
+        `风险诚实披露：整单真实全黑归零率 ${(zProb * 100).toFixed(1)}% · 主干错 ≥ 2 场率 ${(slot3WipeoutMiss2Prob * 100).toFixed(1)}%（错 1 场属局部回血缓冲，非全额无损保本）`
+      );
+    } else {
+      slot3Plan.reasons.push(
+        "全中时多张覆盖子票叠加派奖，兼顾防黑韧性与满贯上限"
+      );
+    }
     slot3Plan.tagline =
-      selected.length >= 2
+      selected.length >= 3
         ? `黑掉1场保底拿回 ¥${slot3MissOneReturn.toFixed(1)} · 全中叠加拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
-        : `命中缓冲网保底拿回 ¥${slot3Plan.minReturn.toFixed(1)} ~ 最高 ¥${slot3Plan.maxReturn.toFixed(1)}`;
+        : selected.length === 2
+          ? slot3HasPartialCushionBlindSpot
+            ? slot3UsesSubPoolCushion
+              ? `命中回血垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（半场逆转死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+              : `命中让球垫保底拿回 ¥${slot3MissOneReturn.toFixed(1)}（一球卡盘死角 ¥0） · 全中拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+            : `黑掉1场保底拿回 ¥${slot3MissOneReturn.toFixed(1)} · 全中叠加拿回 ¥${slot3Plan.maxReturn.toFixed(1)}`
+          : `命中缓冲网保底拿回 ¥${slot3Plan.minReturn.toFixed(1)} ~ 最高 ¥${slot3Plan.maxReturn.toFixed(1)}`;
   }
 
   // =========================================================================
@@ -11382,14 +11726,30 @@ function applySandboxToPlan(
   if (hasMissOne) {
     const distinctMids = Array.from(planMatchIds);
     if (distinctMids.length >= 2) {
-      const missPayouts = distinctMids.map((missedId) =>
-        Number(
-          lines
-            .filter((l) => !l.legs.some((g) => g.matchId === missedId))
-            .reduce((a, l) => a + l.returnPayout, 0)
-            .toFixed(2)
-        )
-      );
+      const missPayouts = distinctMids.map((missedId) => {
+        const surv = lines.filter(
+          (l) => !l.legs.some((g) => g.matchId === missedId)
+        );
+        if (surv.length === 0) return 0;
+        let multiSum = 0;
+        const singlePoolGroups = new Map();
+        for (const ln of surv) {
+          if (ln.legs.length >= 2) {
+            multiSum += ln.returnPayout;
+          } else if (ln.legs.length === 1) {
+            const g = ln.legs[0];
+            const gk = `${g.matchId}:${g.poolCode}`;
+            const arr = singlePoolGroups.get(gk) ?? [];
+            arr.push(ln.returnPayout);
+            singlePoolGroups.set(gk, arr);
+          }
+        }
+        let singleGuaranteed = 0;
+        for (const arr of singlePoolGroups.values()) {
+          singleGuaranteed += Math.min(...arr);
+        }
+        return Number((multiSum + singleGuaranteed).toFixed(2));
+      });
       const posMiss = missPayouts.filter((v) => v > 0);
       missOneReturn =
         posMiss.length > 0 ? Math.min(...posMiss) : jointEval.minPayout;
@@ -11417,6 +11777,7 @@ function applySandboxToPlan(
     profitProb,
     expectedValueRate: jointEval.expectedValueRate,
     underwaterCount: jointEval.underwaterCount,
+    zeroPayoutProb: Math.max(0, 1 - winProb),
     missOneReturn,
     vigPct,
     lines,

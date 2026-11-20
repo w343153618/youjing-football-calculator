@@ -1177,6 +1177,49 @@ function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
       }
     }
   }
+  // Hybrid [single on single-open Match i + 2串1 on complement x Match j] pairwise-disjoint sets on M = 2
+  if (matches.length === 2) {
+    for (let i = 0; i < 2; i++) {
+      const j = 1 - i;
+      for (const cS of ["HAD", "HHAD"]) {
+        const pS = matches[i].pools[cS];
+        if (!pS || pS.selling === false || !pS.single || pS.options.length < 2)
+          continue;
+        for (const cP of ["HAD", "HHAD"]) {
+          const pP = matches[j].pools[cP];
+          if (!pP || pP.selling === false || pP.options.length === 0) continue;
+          const fullMask = (1 << pS.options.length) - 1;
+          for (let sMask = 1; sMask < fullMask; sMask++) {
+            const set = [];
+            for (let a = 0; a < pS.options.length; a++) {
+              const oS = pS.options[a];
+              if ((sMask & (1 << a)) !== 0) {
+                set.push({
+                  prob: oS.fairProb,
+                  unitPayout: Math.min(
+                    100_000,
+                    bankerRoundParlayUnitPayout([oS.odds])
+                  ),
+                });
+              } else {
+                for (const oP of pP.options) {
+                  set.push({
+                    prob: oS.fairProb * oP.fairProb,
+                    unitPayout: Math.min(
+                      200_000,
+                      bankerRoundParlayUnitPayout([oS.odds, oP.odds])
+                    ),
+                  });
+                }
+              }
+            }
+            const p = solveSet(set);
+            if (p > bestGlobal) bestGlobal = p;
+          }
+        }
+      }
+    }
+  }
   return bestGlobal;
 }
 

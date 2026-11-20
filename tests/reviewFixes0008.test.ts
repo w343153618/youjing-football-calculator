@@ -694,13 +694,16 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
         );
       }
       const isWheelTitle = s3.title.includes("旋转矩阵缩水");
+      const isPartitionTitle =
+        s3.title.includes("独立分块容错串") &&
+        !s3.title.includes("旋转矩阵缩水");
       const isOfficialTitle =
         new RegExp(`${v}串\\d+`).test(s3.title) &&
         !s3.title.includes("旋转矩阵缩水");
       assert.equal(
-        isWheelTitle || isOfficialTitle,
+        isWheelTitle || isPartitionTitle || isOfficialTitle,
         true,
-        `v=${v} Slot ③ title must be either reduced 旋转矩阵缩水 or honest ${v}串N, got: ${s3.title}`
+        `v=${v} Slot ③ title must be genuine 旋转矩阵缩水, honest 独立分块容错串, or official ${v}串N, got: ${s3.title}`
       );
     }
   });

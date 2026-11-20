@@ -234,6 +234,7 @@ export interface ArchetypePlan {
   profitProb: number;
   expectedValueRate: number;
   underwaterCount: number;
+  zeroPayoutProb?: number | null;
   wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
   vigPct: number;
