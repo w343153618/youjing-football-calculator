@@ -7272,7 +7272,7 @@ export function generateParetoPortfolio(
   anchorPicks = []
 ) {
   const cleanBudget = Math.max(
-    20,
+    10,
     Math.round((Number(budgetYuan) || 100) / 2) * 2
   );
   if (!Array.isArray(targetMatches) || targetMatches.length === 0) return [];
@@ -11287,7 +11287,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
   const planSpec = params?.planSpec ?? null;
   const targetIds = Array.isArray(params?.targetIds) ? params.targetIds : [];
   const anchorToRadarPicks = Boolean(params?.anchorToRadarPicks);
-  const budget = Math.max(20, Math.min(20_000, Number(params?.budget) || 100));
+  const budget = Math.max(10, Math.min(20_000, Number(params?.budget) || 100));
   const stance =
     params?.stance === "home-lean" || params?.stance === "upset-watch"
       ? params.stance

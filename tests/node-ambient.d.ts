@@ -77,6 +77,16 @@ declare module "node:fs" {
   export const mkdirSync: (path: string, options?: any) => void;
 }
 
+declare module "node:fs/promises" {
+  const fsp: {
+    mkdir(path: string, options?: any): Promise<string | undefined>;
+    writeFile(path: string, data: any, options?: any): Promise<void>;
+    rename(oldPath: string, newPath: string): Promise<void>;
+    unlink(path: string): Promise<void>;
+  };
+  export default fsp;
+}
+
 declare module "node:path" {
   const path: {
     join(...paths: string[]): string;

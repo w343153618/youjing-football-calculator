@@ -5,13 +5,13 @@ import type {
   QuantWorkspaceParams,
   QuantWorkspaceResponse,
   SelectedPick,
-} from '../prototype/quantTypes';
-import type { ManualSectionId } from '../manual/UserManualModal';
+} from "../prototype/quantTypes";
+import type { ManualSectionId } from "../manual/UserManualModal";
 import {
   getCrossBrowserHardwareFingerprint,
   registerShieldSessionGetter,
   triggerSecurityMeltdown,
-} from './antiReverseShield.ts';
+} from "./antiReverseShield.ts";
 
 interface EncryptedEnvelope {
   iv: string;
@@ -36,8 +36,8 @@ export interface PublicAccountUser {
   id: string;
   username: string;
   note: string;
-  role: 'superadmin' | 'member';
-  status: 'active' | 'disabled' | 'expired' | 'locked_violation';
+  role: "superadmin" | "member";
+  status: "active" | "disabled" | "expired" | "locked_violation";
   lockedReason: string | null;
   createdAt: number;
   durationHours: number | null;
@@ -57,7 +57,7 @@ export interface PublicAccountUser {
 
 export interface LedgerEntry {
   id: string;
-  kind: 'live' | 'paper';
+  kind: "live" | "paper";
   title: string;
   modeLabel: string;
   betCount: number;
@@ -65,7 +65,7 @@ export interface LedgerEntry {
   paperRefCost: number;
   minPayout: number;
   maxPayout: number;
-  status: 'pending' | 'won' | 'lost';
+  status: "pending" | "won" | "lost";
   settledReturn: number;
   netProfit: number;
   createdAt: number;
@@ -93,10 +93,10 @@ export interface UserLedgerSnapshot {
 }
 
 export type LedgerMutatePayload =
-  | { action: 'set-daily-limit'; dailyLimit: number }
+  | { action: "set-daily-limit"; dailyLimit: number }
   | {
-      action: 'add-entry';
-      kind: 'live' | 'paper';
+      action: "add-entry";
+      kind: "live" | "paper";
       title: string;
       modeLabel: string;
       betCount: number;
@@ -107,12 +107,12 @@ export type LedgerMutatePayload =
       forceConfirmed?: boolean;
     }
   | {
-      action: 'settle-entry';
+      action: "settle-entry";
       entryId: string;
-      status: 'pending' | 'won' | 'lost';
+      status: "pending" | "won" | "lost";
       settledReturn?: number;
     }
-  | { action: 'delete-entry'; entryId: string };
+  | { action: "delete-entry"; entryId: string };
 
 export type LedgerMutateResponse =
   | {
@@ -123,7 +123,7 @@ export type LedgerMutateResponse =
     }
   | {
       ok: false;
-      code: 'STOP_LOSS_EXCEEDED';
+      code: "STOP_LOSS_EXCEEDED";
       dailyRemaining: number;
       dailyLimit: number;
       overBy: number;
@@ -151,7 +151,7 @@ export type BootstrapResult =
 
 export interface ManualAskResponse {
   ok: boolean;
-  source: 'local-kb' | 'grounded-ai' | 'iron-cage-guard' | 'local-fallback';
+  source: "local-kb" | "grounded-ai" | "iron-cage-guard" | "local-fallback";
   matchedTitle?: string;
   jumpSection?: ManualSectionId;
   warningStrike?: number;
@@ -187,8 +187,8 @@ export class AuthLoginError extends Error {
   }
 }
 
-const WECHAT_AUTH_STORAGE_KEY = 'yj_wechat_auth_v1';
-const LEDGER_CACHE_PREFIX = 'yj_ledger_cache_v1_';
+const WECHAT_AUTH_STORAGE_KEY = "yj_wechat_auth_v1";
+const LEDGER_CACHE_PREFIX = "yj_ledger_cache_v1_";
 
 interface PersistedWechatAuth {
   authToken: string;
@@ -198,11 +198,11 @@ interface PersistedWechatAuth {
 
 function resolveLocalStorage(): Storage | null {
   try {
-    if (typeof window !== 'undefined' && window.localStorage) {
+    if (typeof window !== "undefined" && window.localStorage) {
       return window.localStorage;
     }
-    const desc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    if (desc && 'value' in desc && desc.value) {
+    const desc = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    if (desc && "value" in desc && desc.value) {
       return desc.value as Storage;
     }
   } catch {
@@ -217,7 +217,9 @@ let authRevokedHandler: ((reason: string) => void) | null = null;
 
 registerShieldSessionGetter(() => activeSession?.sid ?? null);
 
-export function registerAuthRevokedHandler(fn: ((reason: string) => void) | null): void {
+export function registerAuthRevokedHandler(
+  fn: ((reason: string) => void) | null
+): void {
   authRevokedHandler = fn;
 }
 
@@ -227,7 +229,11 @@ export function readPersistedWechatAuth(): PersistedWechatAuth | null {
     const raw = store?.getItem(WECHAT_AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedWechatAuth;
-    if (parsed && typeof parsed.authToken === 'string' && parsed.cachedUser?.id) {
+    if (
+      parsed &&
+      typeof parsed.authToken === "string" &&
+      parsed.cachedUser?.id
+    ) {
       return parsed;
     }
   } catch {
@@ -236,7 +242,10 @@ export function readPersistedWechatAuth(): PersistedWechatAuth | null {
   return null;
 }
 
-export function writePersistedWechatAuth(authToken: string, user: PublicAccountUser): void {
+export function writePersistedWechatAuth(
+  authToken: string,
+  user: PublicAccountUser
+): void {
   try {
     const store = resolveLocalStorage();
     if (!store) return;
@@ -259,7 +268,9 @@ export function clearPersistedWechatAuth(): void {
   }
 }
 
-export function createEmptyLedgerSnapshot(dailyLimit = 300): UserLedgerSnapshot {
+export function createEmptyLedgerSnapshot(
+  dailyLimit = 300
+): UserLedgerSnapshot {
   const bjDate = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
   return {
     dailyLimit,
@@ -280,19 +291,23 @@ export function createEmptyLedgerSnapshot(dailyLimit = 300): UserLedgerSnapshot 
   };
 }
 
-export function readCachedUserLedger(userId: string): UserLedgerSnapshot | null {
+export function readCachedUserLedger(
+  userId: string
+): UserLedgerSnapshot | null {
   try {
-    const cleanId = String(userId || '').trim();
+    const cleanId = String(userId || "").trim();
     if (!cleanId) return null;
-    const raw = resolveLocalStorage()?.getItem(`${LEDGER_CACHE_PREFIX}${cleanId}`);
+    const raw = resolveLocalStorage()?.getItem(
+      `${LEDGER_CACHE_PREFIX}${cleanId}`
+    );
     if (!raw) return null;
     const parsed = JSON.parse(raw) as UserLedgerSnapshot;
     if (
       parsed &&
-      typeof parsed.dailyLimit === 'number' &&
+      typeof parsed.dailyLimit === "number" &&
       Array.isArray(parsed.entries) &&
       parsed.stats &&
-      typeof parsed.stats === 'object'
+      typeof parsed.stats === "object"
     ) {
       return parsed;
     }
@@ -302,9 +317,12 @@ export function readCachedUserLedger(userId: string): UserLedgerSnapshot | null 
   return null;
 }
 
-export function writeCachedUserLedger(userId: string, snapshot: UserLedgerSnapshot): void {
+export function writeCachedUserLedger(
+  userId: string,
+  snapshot: UserLedgerSnapshot
+): void {
   try {
-    const cleanId = String(userId || '').trim();
+    const cleanId = String(userId || "").trim();
     const store = resolveLocalStorage();
     if (!cleanId || !store || !snapshot) return;
     store.setItem(`${LEDGER_CACHE_PREFIX}${cleanId}`, JSON.stringify(snapshot));
@@ -314,18 +332,18 @@ export function writeCachedUserLedger(userId: string, snapshot: UserLedgerSnapsh
 }
 
 function detectReadableDeviceLabel(): string {
-  if (typeof navigator === 'undefined') return 'Web 终端';
-  const ua = navigator.userAgent || '';
-  if (/iPhone/i.test(ua)) return 'iPhone 手机端';
-  if (/iPad/i.test(ua)) return 'iPad 平板端';
-  if (/Android/i.test(ua)) return 'Android 手机端';
-  if (/Macintosh/i.test(ua)) return 'Mac 电脑端';
-  if (/Windows/i.test(ua)) return 'Windows 电脑端';
-  return '浏览器终端';
+  if (typeof navigator === "undefined") return "Web 终端";
+  const ua = navigator.userAgent || "";
+  if (/iPhone/i.test(ua)) return "iPhone 手机端";
+  if (/iPad/i.test(ua)) return "iPad 平板端";
+  if (/Android/i.test(ua)) return "Android 手机端";
+  if (/Macintosh/i.test(ua)) return "Mac 电脑端";
+  if (/Windows/i.test(ua)) return "Windows 电脑端";
+  return "浏览器终端";
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  let bin = '';
+  let bin = "";
   for (let i = 0; i < bytes.length; i++) {
     bin += String.fromCharCode(bytes[i]);
   }
@@ -342,35 +360,51 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 function bytesToHex(bytes: Uint8Array): string {
-  let out = '';
+  let out = "";
   for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i].toString(16).padStart(2, '0');
+    out += bytes[i].toString(16).padStart(2, "0");
   }
   return out;
 }
 
 function getBaseUrl(): string {
-  const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
-  return metaEnv?.BASE_URL || '/';
+  const metaEnv = (import.meta as unknown as { env?: { BASE_URL?: string } })
+    .env;
+  return metaEnv?.BASE_URL || "/";
 }
 
-async function deriveSubkeyBuffer(masterBytes: Uint8Array, label: string): Promise<ArrayBuffer> {
+async function deriveSubkeyBuffer(
+  masterBytes: Uint8Array,
+  label: string
+): Promise<ArrayBuffer> {
   const suffix = new TextEncoder().encode(label);
   const combined = new Uint8Array(masterBytes.length + suffix.length);
   combined.set(masterBytes, 0);
   combined.set(suffix, masterBytes.length);
-  return crypto.subtle.digest('SHA-256', combined as BufferSource);
+  return crypto.subtle.digest("SHA-256", combined as BufferSource);
 }
 
-async function importSessionKeys(sid: string, keyB64: string): Promise<SessionState> {
+async function importSessionKeys(
+  sid: string,
+  keyB64: string
+): Promise<SessionState> {
   const masterBytes = base64ToBytes(keyB64);
   const [aesRaw, hmacRaw] = await Promise.all([
-    deriveSubkeyBuffer(masterBytes, ':aes-256-gcm'),
-    deriveSubkeyBuffer(masterBytes, ':hmac-sha256'),
+    deriveSubkeyBuffer(masterBytes, ":aes-256-gcm"),
+    deriveSubkeyBuffer(masterBytes, ":hmac-sha256"),
   ]);
   const [aesKey, hmacKey] = await Promise.all([
-    crypto.subtle.importKey('raw', aesRaw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']),
-    crypto.subtle.importKey('raw', hmacRaw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']),
+    crypto.subtle.importKey("raw", aesRaw, { name: "AES-GCM" }, false, [
+      "encrypt",
+      "decrypt",
+    ]),
+    crypto.subtle.importKey(
+      "raw",
+      hmacRaw,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    ),
   ]);
   return { sid, aesKey, hmacKey };
 }
@@ -390,7 +424,7 @@ async function sealPayload(
 
   const plainBytes = new TextEncoder().encode(JSON.stringify(data));
   const cipherBuf = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
+    { name: "AES-GCM", iv: iv as BufferSource },
     sess.aesKey,
     plainBytes
   );
@@ -400,19 +434,19 @@ async function sealPayload(
   const sigMsg = new TextEncoder().encode(
     `${sess.sid}.${endpoint}.${ts}.${nonce}.${ivB64}.${dB64}`
   );
-  const sigBuf = await crypto.subtle.sign('HMAC', sess.hmacKey, sigMsg);
+  const sigBuf = await crypto.subtle.sign("HMAC", sess.hmacKey, sigMsg);
   const sigHex = bytesToHex(new Uint8Array(sigBuf));
 
   const persisted = readPersistedWechatAuth();
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-YJ-Sid': sess.sid,
-    'X-YJ-Ts': ts,
-    'X-YJ-Nonce': nonce,
-    'X-YJ-Sig': sigHex,
+    "Content-Type": "application/json",
+    "X-YJ-Sid": sess.sid,
+    "X-YJ-Ts": ts,
+    "X-YJ-Nonce": nonce,
+    "X-YJ-Sig": sigHex,
   };
   if (persisted?.authToken) {
-    headers['X-YJ-Auth'] = persisted.authToken;
+    headers["X-YJ-Auth"] = persisted.authToken;
   }
 
   return {
@@ -421,11 +455,14 @@ async function sealPayload(
   };
 }
 
-async function unsealPayload<T>(sess: SessionState, env: EncryptedEnvelope): Promise<T> {
+async function unsealPayload<T>(
+  sess: SessionState,
+  env: EncryptedEnvelope
+): Promise<T> {
   const iv = base64ToBytes(env.iv);
   const cipherBytes = base64ToBytes(env.d);
   const plainBuf = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv as BufferSource },
+    { name: "AES-GCM", iv: iv as BufferSource },
     sess.aesKey,
     cipherBytes as BufferSource
   );
@@ -433,7 +470,9 @@ async function unsealPayload<T>(sess: SessionState, env: EncryptedEnvelope): Pro
   return JSON.parse(jsonText) as T;
 }
 
-export async function bootstrapSecureWorkspace(forceReset = false): Promise<BootstrapResult> {
+export async function bootstrapSecureWorkspace(
+  forceReset = false
+): Promise<BootstrapResult> {
   if (forceReset) activeSession = null;
   if (pendingBootstrap) return pendingBootstrap;
 
@@ -441,36 +480,39 @@ export async function bootstrapSecureWorkspace(forceReset = false): Promise<Boot
     const hwFp = await getCrossBrowserHardwareFingerprint();
     const persisted = readPersistedWechatAuth();
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'X-YJ-Hw': hwFp,
+      "Content-Type": "application/json",
+      "X-YJ-Hw": hwFp,
     };
     if (persisted?.authToken) {
-      headers['X-YJ-Auth'] = persisted.authToken;
+      headers["X-YJ-Auth"] = persisted.authToken;
     }
 
     const res = await fetch(`${getBaseUrl()}api/security/bootstrap`, {
-      method: 'POST',
+      method: "POST",
       headers,
       body: JSON.stringify({
         v: 1,
-        tz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+        tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
         hwFp,
       }),
     });
 
     const json = await res.json();
     if (res.status === 403 && json?.fused) {
-      triggerSecurityMeltdown('bootstrap-fused', json.unlockAt);
-      throw new Error('Fused');
+      triggerSecurityMeltdown("bootstrap-fused", json.unlockAt);
+      throw new Error("Fused");
     }
     if (!res.ok || !json?.ok || !json?.sid || !json?.k || !json?.payload) {
       // Transient 5xx/429 does NOT clear persisted WeChat login!
-      throw new Error(json?.error || '安全通道握手失败');
+      throw new Error(json?.error || "安全通道握手失败");
     }
 
     const sess = await importSessionKeys(json.sid, json.k);
     activeSession = sess;
-    const unsealed = await unsealPayload<BootstrapResult>(sess, json.payload as EncryptedEnvelope);
+    const unsealed = await unsealPayload<BootstrapResult>(
+      sess,
+      json.payload as EncryptedEnvelope
+    );
 
     if (unsealed.authenticated) {
       writePersistedWechatAuth(unsealed.authToken, unsealed.user);
@@ -503,10 +545,10 @@ export async function postEncryptedApi<T>(
   const sess = activeSession!;
   const { envelope, headers } = await sealPayload(sess, pathAfterApi, bodyObj);
   const hwFp = await getCrossBrowserHardwareFingerprint();
-  headers['X-YJ-Hw'] = hwFp;
+  headers["X-YJ-Hw"] = hwFp;
 
   const res = await fetch(`${getBaseUrl()}api/${pathAfterApi}`, {
-    method: 'POST',
+    method: "POST",
     headers,
     body: JSON.stringify(envelope),
   });
@@ -517,15 +559,15 @@ export async function postEncryptedApi<T>(
   if (res.status === 403 && json?.accountLocked) {
     clearPersistedWechatAuth();
     if (json?.fused) {
-      triggerSecurityMeltdown('qa-violation-lock', json.unlockAt);
+      triggerSecurityMeltdown("qa-violation-lock", json.unlockAt);
     }
-    authRevokedHandler?.(json?.error || '账号因违规操作已被系统自动锁死');
-    throw new Error(json?.error || '账号已被系统自动锁死');
+    authRevokedHandler?.(json?.error || "账号因违规操作已被系统自动锁死");
+    throw new Error(json?.error || "账号已被系统自动锁死");
   }
 
   if (res.status === 403 && json?.fused) {
-    triggerSecurityMeltdown('api-fused', json.unlockAt);
-    throw new Error('Fused');
+    triggerSecurityMeltdown("api-fused", json.unlockAt);
+    throw new Error("Fused");
   }
 
   // Ephemeral AES session expired -> silently re-bootstrap once with stored WeChat token!
@@ -535,22 +577,22 @@ export async function postEncryptedApi<T>(
   }
 
   // Explicit account revocation / expiration / admin disable (not a network blip!)
-  if (json?.authRequired && pathAfterApi !== 'auth/login') {
+  if (json?.authRequired && pathAfterApi !== "auth/login") {
     clearPersistedWechatAuth();
-    authRevokedHandler?.(json?.error || '登录授权已到期或变更，请重新登录');
-    throw new Error(json?.error || '登录已失效');
+    authRevokedHandler?.(json?.error || "登录授权已到期或变更，请重新登录");
+    throw new Error(json?.error || "登录已失效");
   }
 
-  if (pathAfterApi === 'auth/login' && (!res.ok || !json?.ok)) {
+  if (pathAfterApi === "auth/login" && (!res.ok || !json?.ok)) {
     throw new AuthLoginError(
-      json?.error || '账号或密码不正确',
+      json?.error || "账号或密码不正确",
       res.status,
       Number(json?.lockedRemainingSec || 0)
     );
   }
 
   if (!res.ok || !json?.ok || !json?.payload) {
-    throw new Error(json?.error || '安全接口响应异常');
+    throw new Error(json?.error || "安全接口响应异常");
   }
   return unsealPayload<T>(sess, json.payload as EncryptedEnvelope);
 }
@@ -560,12 +602,15 @@ export async function loginWithPassword(
   password: string
 ): Promise<AuthenticatedWorkspaceBundle> {
   const hwFp = await getCrossBrowserHardwareFingerprint();
-  const bundle = await postEncryptedApi<AuthenticatedWorkspaceBundle>('auth/login', {
-    username: username.trim(),
-    password,
-    hwFp,
-    deviceLabel: detectReadableDeviceLabel(),
-  });
+  const bundle = await postEncryptedApi<AuthenticatedWorkspaceBundle>(
+    "auth/login",
+    {
+      username: username.trim(),
+      password,
+      hwFp,
+      deviceLabel: detectReadableDeviceLabel(),
+    }
+  );
   writePersistedWechatAuth(bundle.authToken, bundle.user);
   if (bundle.ledger) {
     writeCachedUserLedger(bundle.user.id, bundle.ledger);
@@ -576,7 +621,10 @@ export async function loginWithPassword(
 export async function mutateServerLedger(
   payload: LedgerMutatePayload
 ): Promise<LedgerMutateResponse> {
-  const res = await postEncryptedApi<LedgerMutateResponse>('ledger/mutate', payload);
+  const res = await postEncryptedApi<LedgerMutateResponse>(
+    "ledger/mutate",
+    payload
+  );
   const uid = readPersistedWechatAuth()?.cachedUser?.id;
   if (uid && res?.ledger) {
     writeCachedUserLedger(uid, res.ledger);
@@ -586,7 +634,7 @@ export async function mutateServerLedger(
 
 export async function logoutSession(): Promise<void> {
   try {
-    await postEncryptedApi<{ loggedOut: boolean }>('auth/logout', {});
+    await postEncryptedApi<{ loggedOut: boolean }>("auth/logout", {});
   } catch {
     // ignore network error on logout
   } finally {
@@ -594,12 +642,14 @@ export async function logoutSession(): Promise<void> {
   }
 }
 
-export async function askManualAssistant(question: string): Promise<ManualAskResponse> {
-  return postEncryptedApi<ManualAskResponse>('manual/ask', { question });
+export async function askManualAssistant(
+  question: string
+): Promise<ManualAskResponse> {
+  return postEncryptedApi<ManualAskResponse>("manual/ask", { question });
 }
 
 export async function adminFetchOverview(): Promise<AdminOverviewResponse> {
-  return postEncryptedApi<AdminOverviewResponse>('admin/overview', {});
+  return postEncryptedApi<AdminOverviewResponse>("admin/overview", {});
 }
 
 export async function adminCreateUser(params: {
@@ -612,47 +662,57 @@ export async function adminCreateUser(params: {
   dailyAiLimit: number;
 }): Promise<{ user: PublicAccountUser; plainPassword: string }> {
   return postEncryptedApi<{ user: PublicAccountUser; plainPassword: string }>(
-    'admin/create-user',
+    "admin/create-user",
     params
   );
 }
 
 export async function adminUpdateUser(
   payload: Record<string, unknown>
-): Promise<{ user: PublicAccountUser; newPassword?: string; selfAuthToken?: string }> {
+): Promise<{
+  user: PublicAccountUser;
+  newPassword?: string;
+  selfAuthToken?: string;
+}> {
   const res = await postEncryptedApi<{
     user: PublicAccountUser;
     newPassword?: string;
     selfAuthToken?: string;
-  }>('admin/update-user', payload);
+  }>("admin/update-user", payload);
   if (res.selfAuthToken) {
     writePersistedWechatAuth(res.selfAuthToken, res.user);
   }
   return res;
 }
 
-export async function adminDeleteUser(userId: string): Promise<{ ok: boolean }> {
-  return postEncryptedApi<{ ok: boolean }>('admin/delete-user', { userId });
+export async function adminDeleteUser(
+  userId: string
+): Promise<{ ok: boolean }> {
+  return postEncryptedApi<{ ok: boolean }>("admin/delete-user", { userId });
 }
 
 export async function requestServerQuantCompute(
   params: QuantWorkspaceParams
 ): Promise<QuantWorkspaceResponse> {
-  return postEncryptedApi<QuantWorkspaceResponse>('quant/compute', params);
+  return postEncryptedApi<QuantWorkspaceResponse>("quant/compute", params);
 }
 
 export async function requestServerMatchesSync(
   workspaceParams: QuantWorkspaceParams
-): Promise<{ matches: MatchItem[]; syncNote: string; workspace: QuantWorkspaceResponse }> {
+): Promise<{
+  matches: MatchItem[];
+  syncNote: string;
+  workspace: QuantWorkspaceResponse;
+}> {
   return postEncryptedApi<{
     matches: MatchItem[];
     syncNote: string;
     workspace: QuantWorkspaceResponse;
-  }>('quant/sync', { workspaceParams });
+  }>("quant/sync", { workspaceParams });
 }
 
 export interface XiaoGaoAlert {
-  level: 'high' | 'medium';
+  level: "high" | "medium";
   tag: string;
   summary: string;
   priceInStatus: string;
@@ -666,12 +726,16 @@ export interface XiaoGaoComboPerMatch {
   tag: string;
   note: string;
   priceInStatus: string;
+  poolImpact?: string;
 }
 
 export interface XiaoGaoComboReport {
-  level: 'high' | 'medium' | 'low';
+  level: "high" | "medium" | "low";
+  planContextBadge?: string;
   comboTag: string;
   summary: string;
+  actuarySynergy?: string;
+  residualRisks?: string;
   weakestLeg: string;
   structureAdvice: string;
   priceInVerdict: string;
@@ -684,14 +748,17 @@ export async function requestXiaoGaoDiagnosis(
   matchId: string,
   userNote?: string
 ): Promise<{ alert: XiaoGaoAlert; aiRemaining?: number }> {
-  return postEncryptedApi<{ alert: XiaoGaoAlert; aiRemaining?: number }>('xiaogao/analyze', {
-    matchId,
-    userNote,
-  });
+  return postEncryptedApi<{ alert: XiaoGaoAlert; aiRemaining?: number }>(
+    "xiaogao/analyze",
+    {
+      matchId,
+      userNote,
+    }
+  );
 }
 
 export async function requestXiaoGaoComboDiagnosis(params: {
-  sourceMode: 'picked' | 'custom';
+  sourceMode: "picked" | "custom";
   matchIds: string[];
   picks: SelectedPick[];
   multiple: number;
@@ -699,10 +766,14 @@ export async function requestXiaoGaoComboDiagnosis(params: {
   planSpec: AppliedPlanSpec;
   subjectiveDeltaPct?: number;
   simVoidFirstMatch?: boolean;
+  anchorToRadarPicks?: boolean;
+  budget?: number;
+  stance?: "objective" | "home-lean" | "upset-watch";
+  unlockFullAgg?: boolean;
   userNote?: string;
 }): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }> {
-  return postEncryptedApi<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }>(
-    'xiaogao/analyze-combo',
-    params
-  );
+  return postEncryptedApi<{
+    comboReport: XiaoGaoComboReport;
+    aiRemaining?: number;
+  }>("xiaogao/analyze-combo", params);
 }

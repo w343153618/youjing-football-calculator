@@ -17,7 +17,8 @@ How the engineering skills consume this repo's domain documentation when explori
   - `docs/adr/0008-deep-bet-slip-state-seam-unified-runtime-and-server-xiaogao-context.md` — headless `BetSlipController` seam & `createYouJingRuntime` assembly
   - `docs/adr/0009-shin-dixon-coles-coherent-calibration-and-pareto-3plus1-portfolio.md` — `Shin/Power` de-vigging, 5-pool coherent calibration & `3+1` Pareto portfolio
   - `docs/adr/0010-partition-consistent-kl-calibration-and-exact-milp-portfolio.md` — partition-consistent KL/IPF projection, exact 0-1 knapsack/LP portfolio & real Sporttery OOS gate
-- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0008-coherent-quant-and-pareto-portfolio.md`, `0009-red-team-remediation-and-real-oos-closure.md`) when reviewing or extending a specific feature.
+  - `docs/adr/0011-guided-123-workflow-and-dual-lens-actuary-intel-synergy.md` — guided `1-2-3` workflow, step-adaptive single Primary CTA bar & read-only actuary-to-intel dual-lens synergy
+- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0009-red-team-remediation-and-real-oos-closure.md`, `0010-guided-123-workflow-tactile-flip-ui-and-actuary-intel-synergy.md`) when reviewing or extending a specific feature.
 
 ## Use the glossary's vocabulary
 
