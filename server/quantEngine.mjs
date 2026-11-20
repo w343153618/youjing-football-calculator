@@ -589,7 +589,8 @@ function buildPool(
   rawOptions,
   updateTime = "17:45:21",
   goalLine,
-  selling = true
+  selling = true,
+  updateDate = undefined
 ) {
   const valid = selling ? rawOptions.filter((o) => o.odds > 0) : [];
   const isSelling = Boolean(selling && valid.length > 0);
@@ -605,6 +606,7 @@ function buildPool(
     payoutRatio,
     vig,
     updateTime,
+    ...(updateDate ? { updateDate } : {}),
     options: valid.map((o) => ({
       key: o.key,
       label: o.label,
@@ -614,6 +616,52 @@ function buildPool(
       fairProb: invSum > 0 ? 1 / o.odds / invSum : 0,
     })),
   };
+}
+
+function parsePoolTimestampMinutes(pool) {
+  if (!pool || typeof pool.updateTime !== "string") return null;
+  const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(pool.updateTime.trim());
+  if (!tm) return null;
+  const hh = Number(tm[1]);
+  const mm = Number(tm[2]);
+  const ss = Number(tm[3] || 0);
+  if (!(hh >= 0 && hh < 24 && mm >= 0 && mm < 60 && ss >= 0 && ss < 60)) {
+    return null;
+  }
+  const todMin = hh * 60 + mm + ss / 60;
+  if (typeof pool.updateDate === "string") {
+    const dm = /^(20\d{2})-(\d{2})-(\d{2})$/.exec(pool.updateDate.trim());
+    if (dm) {
+      const baseUtcMin = Math.round(
+        Date.UTC(Number(dm[1]), Number(dm[2]) - 1, Number(dm[3])) / 60_000
+      );
+      if (Number.isFinite(baseUtcMin)) return baseUtcMin + todMin;
+    }
+  }
+  return todMin;
+}
+
+function resolveNormalizedMatchPoolTimestamps(pools) {
+  const codes = ["HAD", "HHAD", "HAFU", "TTG", "CRS"];
+  const raw = {};
+  let hasExplicitDate = false;
+  let hasLateEvening = false;
+  for (const c of codes) {
+    const p = pools?.[c];
+    const v = parsePoolTimestampMinutes(p);
+    raw[c] = v;
+    if (p?.updateDate) hasExplicitDate = true;
+    if (v !== null && v >= 16 * 60 && v < 24 * 60) hasLateEvening = true;
+  }
+  if (!hasExplicitDate && hasLateEvening) {
+    // Sporttery daily selling window spans 11:00 -> 01:00/03:00 (+1d); wrap post-midnight times when updateDate is absent
+    for (const c of codes) {
+      if (raw[c] !== null && raw[c] < 7 * 60) {
+        raw[c] += 1440;
+      }
+    }
+  }
+  return raw;
 }
 
 const DC_MAX_GOALS = 14;
@@ -1467,6 +1515,78 @@ export function calibrateMatchCoherentModel(match) {
           ]);
         }
       }
+    } else if (tHad && tHhad && Math.abs(goalLine) >= 2) {
+      // Generalized subset-monotonicity reconciliation for deep integer handicaps (goalLine = ±2, ±3, ...):
+      // Preserve market-implied bridge mass P(1 <= |d| < |goalLine|) = P(win) - P(bigWin) whenever valid,
+      // and smoothly reconcile ONLY when vig distortion causes subset inversion (P(bigWin) + minBridge > P(win)).
+      const mHhad = hhadTarget.multProbs;
+      const sHhad = hhadTarget.probs;
+      const absGl = Math.abs(goalLine);
+      let qBridge = 0;
+      for (let i = 0; i < atomicLen; i++) {
+        const d = ATOMIC_TEMPLATES[i].goalDiff;
+        if (goalLine < 0 ? d >= 1 && d < absGl : d <= -1 && d > -absGl) {
+          qBridge += priorAtomic[i];
+        }
+      }
+      const minBridgeFloor = Math.max(0.015, 0.25 * qBridge);
+      if (goalLine < 0) {
+        const splitBigWin =
+          0.5 * (sHhad[0] + sHhad[1]) + 0.5 * (mHhad[0] + mHhad[1]);
+        const excess = splitBigWin + minBridgeFloor - tHad[0];
+        if (excess > 0) {
+          const alpha = Math.min(1, excess / 0.06);
+          const pHCons = Math.min(
+            0.995,
+            Math.max(0.02, tHad[0] + 0.35 * Math.min(0.12, excess))
+          );
+          const bigWinCons = Math.max(
+            0.005,
+            pHCons - Math.max(minBridgeFloor, 0.6 * qBridge)
+          );
+          const pDaCons = 1 - pHCons;
+          const daSum = Math.max(1e-12, tHad[1] + tHad[2]);
+          const hhSum = Math.max(1e-12, mHhad[0] + mHhad[1]);
+          tHad = new Float64Array([
+            (1 - alpha) * tHad[0] + alpha * pHCons,
+            (1 - alpha) * tHad[1] + alpha * pDaCons * (tHad[1] / daSum),
+            (1 - alpha) * tHad[2] + alpha * pDaCons * (tHad[2] / daSum),
+          ]);
+          tHhad = new Float64Array([
+            (1 - alpha) * tHhad[0] + alpha * bigWinCons * (mHhad[0] / hhSum),
+            (1 - alpha) * tHhad[1] + alpha * bigWinCons * (mHhad[1] / hhSum),
+            (1 - alpha) * tHhad[2] + alpha * (1 - bigWinCons),
+          ]);
+        }
+      } else {
+        const splitBigAway =
+          0.5 * (sHhad[1] + sHhad[2]) + 0.5 * (mHhad[1] + mHhad[2]);
+        const excess = splitBigAway + minBridgeFloor - tHad[2];
+        if (excess > 0) {
+          const alpha = Math.min(1, excess / 0.06);
+          const pACons = Math.min(
+            0.995,
+            Math.max(0.02, tHad[2] + 0.35 * Math.min(0.12, excess))
+          );
+          const bigAwayCons = Math.max(
+            0.005,
+            pACons - Math.max(minBridgeFloor, 0.6 * qBridge)
+          );
+          const pHdCons = 1 - pACons;
+          const hdSum = Math.max(1e-12, tHad[0] + tHad[1]);
+          const haSum = Math.max(1e-12, mHhad[1] + mHhad[2]);
+          tHad = new Float64Array([
+            (1 - alpha) * tHad[0] + alpha * pHdCons * (tHad[0] / hdSum),
+            (1 - alpha) * tHad[1] + alpha * pHdCons * (tHad[1] / hdSum),
+            (1 - alpha) * tHad[2] + alpha * pACons,
+          ]);
+          tHhad = new Float64Array([
+            (1 - alpha) * tHhad[0] + alpha * (1 - bigAwayCons),
+            (1 - alpha) * tHhad[1] + alpha * bigAwayCons * (mHhad[1] / haSum),
+            (1 - alpha) * tHhad[2] + alpha * bigAwayCons * (mHhad[2] / haSum),
+          ]);
+        }
+      }
     }
 
     const huberNormalize = (arr) => {
@@ -1483,12 +1603,64 @@ export function calibrateMatchCoherentModel(match) {
         ? priorVal - tol + 0.15 * (rawVal - (priorVal - tol))
         : rawVal;
 
+    // Timestamp-verified cross-pool anti-hallucination (Spec 0012 / ADR-0013):
+    // When explicit updateDate + updateTime show CRS is fresher than TTG (>15m) and its exact goal-sum
+    // partition contradicts Poisson prior, cap TTG's reference prior at CRS's exact partition sum.
+    const normTs = resolveNormalizedMatchPoolTimestamps(rawPools);
+    const hasExplicitDate = Boolean(
+      rawPools.HAD?.updateDate ||
+      rawPools.HHAD?.updateDate ||
+      rawPools.TTG?.updateDate ||
+      rawPools.CRS?.updateDate
+    );
+    const ttgTs = ttgTarget ? normTs.TTG : null;
+    const crsTs = crsTarget ? normTs.CRS : null;
+    const hadTs = hadTarget ? normTs.HAD : null;
+    const hhadTs = hhadTarget ? normTs.HHAD : null;
+    const mainRefTs =
+      hadTs !== null && hhadTs !== null
+        ? Math.max(hadTs, hhadTs)
+        : (hadTs ?? hhadTs);
+
+    let crsExactTtgSum = null;
+    if (
+      hasExplicitDate &&
+      crsTarget &&
+      ttgTarget &&
+      crsTs !== null &&
+      ttgTs !== null &&
+      crsTs > ttgTs + 15
+    ) {
+      crsExactTtgSum = new Float64Array(6);
+      for (let i = 0; i < 31; i++) {
+        const lbl = CRS_LABEL_ORDER[i];
+        if (!lbl.includes(":")) continue;
+        const [hx, ay] = lbl.split(":").map(Number);
+        const tot = hx + ay;
+        if (tot >= 0 && tot <= 5) {
+          crsExactTtgSum[tot] += crsTarget.powerProbs[i];
+        }
+      }
+    }
+    const ttgMovedAfterMain =
+      hasExplicitDate &&
+      ttgTs !== null &&
+      mainRefTs !== null &&
+      ttgTs > mainRefTs + 15;
+
     const tTtg = ttgTarget
       ? huberNormalize(
           Float64Array.from(ttgTarget.probs, (v, j) => {
             const rawBlended = 0.65 * v + 0.35 * ttgTarget.powerProbs[j];
+            if (ttgMovedAfterMain) {
+              return 0.97 * rawBlended + 0.03 * qTtg[j];
+            }
+            const refPrior =
+              crsExactTtgSum && j <= 5 && crsExactTtgSum[j] < qTtg[j] - 0.015
+                ? crsExactTtgSum[j]
+                : qTtg[j];
             return (
-              0.97 * huberLagCap(rawBlended, qTtg[j], 0.032) + 0.03 * qTtg[j]
+              0.97 * huberLagCap(rawBlended, refPrior, 0.032) + 0.03 * qTtg[j]
             );
           })
         )
@@ -1870,6 +2042,8 @@ function computeMatchPoolsFingerprint(match) {
       (0x200 + c) | ((p.single ? 1 : 0) << 12) | ((opts.length & 0xff) << 16)
     );
     mixFloat(Number.isFinite(glNum) ? glNum : 0);
+    mixStr(String(p.updateDate ?? ""));
+    mixStr(String(p.updateTime ?? ""));
     len += opts.length;
     for (let i = 0; i < opts.length; i++) {
       const o = opts[i];
@@ -5158,6 +5332,46 @@ function scanMatchAlphaCandidates(
     }
   }
 
+  const poolTsMap = resolveNormalizedMatchPoolTimestamps(cal.pools);
+  const hadTs = poolTsMap.HAD;
+  const hhadTs = poolTsMap.HHAD;
+  const hafuTs = poolTsMap.HAFU;
+  const ttgTs = poolTsMap.TTG;
+  const crsTs = poolTsMap.CRS;
+  const validTsAll = [hadTs, hhadTs, hafuTs, ttgTs, crsTs].filter(
+    (t) => t !== null
+  );
+  const hasRealTsSpread =
+    validTsAll.length >= 2 &&
+    Math.max(...validTsAll) - Math.min(...validTsAll) >= 0.5;
+  const mainLatestTs =
+    hadTs !== null && hhadTs !== null
+      ? Math.max(hadTs, hhadTs)
+      : (hadTs ?? hhadTs);
+
+  // Standalone power-devigged CRS exact goal-sum probabilities for k in {0..5} (anti-Poisson-artifact check)
+  let crsStandaloneTtg = null;
+  const rawCrsPool = cal.pools?.CRS;
+  if (
+    rawCrsPool &&
+    rawCrsPool.selling !== false &&
+    Array.isArray(rawCrsPool.options) &&
+    rawCrsPool.options.length >= 28
+  ) {
+    const crsPower = devigPoolProbabilities(rawCrsPool.options, "power").probs;
+    crsStandaloneTtg = new Float64Array(6);
+    for (let i = 0; i < rawCrsPool.options.length; i++) {
+      const lbl =
+        rawCrsPool.options[i].label || rawCrsPool.options[i].key || "";
+      if (!lbl.includes(":")) continue;
+      const [hx, ay] = lbl.split(":").map(Number);
+      const tot = hx + ay;
+      if (tot >= 0 && tot <= 5) {
+        crsStandaloneTtg[tot] += crsPower[i] ?? 0;
+      }
+    }
+  }
+
   const candidates = [];
   let maxExpectedReturn = 0;
   let maxDelta = -Infinity;
@@ -5173,6 +5387,18 @@ function scanMatchAlphaCandidates(
       continue;
     }
     const isMainPool = poolCode === "HAD" || poolCode === "HHAD";
+    const curPoolTs = poolTsMap[poolCode] ?? null;
+    // Sub-pool updated strictly AFTER main pool (>1 min) moved first in live trading — not a stale lag candidate
+    if (
+      !isMainPool &&
+      hasRealTsSpread &&
+      curPoolTs !== null &&
+      mainLatestTs !== null &&
+      curPoolTs > mainLatestTs + 1
+    ) {
+      continue;
+    }
+
     for (const opt of pool.options) {
       if (!(Number.isFinite(opt.odds) && opt.odds > 1.01)) continue;
       if (ancMask) {
@@ -5209,6 +5435,30 @@ function scanMatchAlphaCandidates(
         const sh = computeOptionShrunkAlpha(opt.odds, dcProb, shinProb);
         pShrunk = sh.pShrunk;
         expectedReturn = sh.expectedReturn;
+      }
+
+      // Cross-pool exact partition anti-hallucination gate on TTG s0..s5:
+      // When CRS is fresher than TTG (>5m) and its exact goal-sum partition contradicts +EV (< 1.0), block Poisson artifact!
+      if (poolCode === "TTG" && crsStandaloneTtg) {
+        const kGoal = Number(String(opt.key).replace(/^s/, ""));
+        const crsFresherThanTtg =
+          hasRealTsSpread &&
+          curPoolTs !== null &&
+          crsTs !== null &&
+          crsTs > curPoolTs + 5;
+        if (
+          Number.isInteger(kGoal) &&
+          kGoal >= 0 &&
+          kGoal <= 5 &&
+          crsFresherThanTtg &&
+          opt.odds * crsStandaloneTtg[kGoal] < 1.0
+        ) {
+          expectedReturn = Math.min(
+            expectedReturn,
+            opt.odds * crsStandaloneTtg[kGoal]
+          );
+          pShrunk = expectedReturn / opt.odds;
+        }
       }
 
       const posEdge = expectedReturn - 1.0;
@@ -6093,7 +6343,8 @@ export function parseSportteryRawJson(json) {
             ],
             hadRaw.updateTime || "实时",
             undefined,
-            isSelling("HAD")
+            isSelling("HAD"),
+            hadRaw.updateDate || undefined
           ),
           HHAD: buildPool(
             "HHAD",
@@ -6121,7 +6372,8 @@ export function parseSportteryRawJson(json) {
             ],
             hhadRaw.updateTime || "实时",
             hhadRaw.goalLine || "-1",
-            isSelling("HHAD")
+            isSelling("HHAD"),
+            hhadRaw.updateDate || undefined
           ),
           HAFU: buildPool(
             "HAFU",
@@ -6145,7 +6397,8 @@ export function parseSportteryRawJson(json) {
             })),
             hafuRaw.updateTime || "实时",
             undefined,
-            isSelling("HAFU")
+            isSelling("HAFU"),
+            hafuRaw.updateDate || undefined
           ),
           TTG: buildPool(
             "TTG",
@@ -6159,7 +6412,8 @@ export function parseSportteryRawJson(json) {
             })),
             ttgRaw.updateTime || "实时",
             undefined,
-            isSelling("TTG")
+            isSelling("TTG"),
+            ttgRaw.updateDate || undefined
           ),
           CRS: buildPool(
             "CRS",
@@ -6173,7 +6427,8 @@ export function parseSportteryRawJson(json) {
             })),
             crsRaw.updateTime || "实时",
             undefined,
-            isSelling("CRS")
+            isSelling("CRS"),
+            crsRaw.updateDate || undefined
           ),
         },
       });
@@ -7032,7 +7287,7 @@ export function computeTruthReport(
         "同一场比赛勾选了两个已开单关玩法，按中国体彩规则仅支持【单关】独立计奖，不可参与串关。",
     });
   }
-  if (avgPassLen >= 4 || avgPayoutRatio < 0.65) {
+  if (avgPassLen >= 2 && (avgPassLen >= 4 || avgPayoutRatio < 0.72)) {
     warnings.push({
       id: "parlay-vig",
       severity: "danger",
