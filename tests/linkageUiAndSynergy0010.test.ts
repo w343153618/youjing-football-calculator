@@ -19,6 +19,7 @@ import {
   deriveSessionSubkeys,
   encryptEnvelope,
 } from "../server/securityShield.mjs";
+import * as betSlipModule from "../src/workspace/betSlipController.ts";
 
 describe("Spec 0010 · Seam 1A: ¥10 Minimum Budget Floor & Ban Persistence Concurrency Guard", () => {
   it("Slice 1: accepts ¥10 minimum budget (5 notes) and rounds odd custom budgets to ¥2 bet units while guarding concurrent ban persistence against stale overwrite", async () => {
@@ -493,5 +494,285 @@ describe("Spec 0010 · Seam 1B: Dual-Lens Actuary-Intel Synergy Diagnosis & Iron
       runtime.dispose();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Spec 0010 · Seam 2A: Manual Tokenized Search & Unblocked Section Jump State Machine", () => {
+  it("Slice 3: matches compound query '一球小胜卡盘' across relevant manual chapters and immediately jumps/scrolls to target chapter even when search query is non-empty or unmatched", () => {
+    const matchManualTopics = (betSlipModule as any).matchManualTopics;
+    const resolveManualNavigation = (betSlipModule as any)
+      .resolveManualNavigation;
+    assert.equal(
+      typeof matchManualTopics,
+      "function",
+      "Expected matchManualTopics to be exported on workspace seam"
+    );
+    assert.equal(
+      typeof resolveManualNavigation,
+      "function",
+      "Expected resolveManualNavigation to be exported on workspace seam"
+    );
+
+    // 1. Compound search "一球小胜卡盘" MUST hit glossary (and not return empty [])
+    const matched = matchManualTopics("一球小胜卡盘");
+    const matchedIds = matched.map((t: any) => t.id);
+    assert.ok(
+      matchedIds.includes("glossary"),
+      `Expected '一球小胜卡盘' to match 'glossary', got [${matchedIds.join(", ")}]`
+    );
+    assert.ok(
+      matchedIds.includes("sandbox") || matchedIds.includes("quickstart"),
+      `Expected '一球小胜卡盘' to also match secondary chapters, got [${matchedIds.join(", ")}]`
+    );
+
+    // 2. Even if user typed an unmatched query in top search bar and stayed on 'qa',
+    // clicking '📖 跳转查看该功能完整矢量图解 ›' (jumpSection = 'glossary') or clicking a chapter tab
+    // MUST immediately switch currentTopic to 'glossary', clear blocking query, bump scrollSeq, and set highlightSec!
+    const stuckState = {
+      activeSec: "qa" as const,
+      query: "一球小胜卡盘怎么买最稳xyz",
+      scrollSeq: 0,
+      highlightSec: null,
+    };
+    const afterJump = resolveManualNavigation(stuckState, {
+      type: "jump",
+      targetSec: "glossary",
+    });
+    assert.equal(afterJump.activeSec, "glossary");
+    assert.equal(
+      afterJump.currentTopic.id,
+      "glossary",
+      "currentTopic must never be locked back to 'qa' by residual search query"
+    );
+    assert.ok(
+      afterJump.scrollSeq > stuckState.scrollSeq,
+      "Jumping to diagram section must increment scrollSeq to scroll .manual-body to top"
+    );
+    assert.equal(
+      afterJump.highlightSec,
+      "glossary",
+      "Jumping from Q&A card must set highlightSec for visual diagram focus pulse"
+    );
+
+    // 3. Manual tab click while a completely non-matching query is present also unlocks and switches immediately
+    const unmatchedSearchState = resolveManualNavigation(afterJump, {
+      type: "search",
+      query: "完全不存在的乱码词999",
+    });
+    const afterTabClick = resolveManualNavigation(unmatchedSearchState, {
+      type: "select-tab",
+      targetSec: "sandbox",
+    });
+    assert.equal(afterTabClick.activeSec, "sandbox");
+    assert.equal(afterTabClick.currentTopic.id, "sandbox");
+    assert.equal(
+      afterTabClick.query,
+      "",
+      "Selecting a non-matching tab clears stale blocking filter query"
+    );
+    assert.ok(afterTabClick.scrollSeq > unmatchedSearchState.scrollSeq);
+  });
+});
+
+describe("Spec 0010 · Seam 2B: Auto-Sync Radar Anchor, ¥10~¥20000 Even-Unit Budget & Stance Δ Summary", () => {
+  it("Slice 4: auto-syncs radar picks to Step 2 pool by default (with clean manual override pause/resume), normalizes custom budget to ¥2 units in [10, 20000], and computes transparent stance Δ summary", async () => {
+    const normalizeBudgetYuan = (betSlipModule as any).normalizeBudgetYuan;
+    assert.equal(
+      typeof normalizeBudgetYuan,
+      "function",
+      "Expected normalizeBudgetYuan helper on workspace seam"
+    );
+    assert.equal(normalizeBudgetYuan(9), 10);
+    assert.equal(normalizeBudgetYuan(10), 10);
+    assert.equal(normalizeBudgetYuan(15), 16);
+    assert.equal(normalizeBudgetYuan(25000), 20000);
+
+    const ctrl = betSlipModule.createBetSlipController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params as any, matches as any),
+    } as any);
+
+    const m0 = FALLBACK_MATCHES[0] as any;
+    const m1 = FALLBACK_MATCHES[1] as any;
+    const m2 = FALLBACK_MATCHES[2] as any;
+    ctrl.applyAuthenticatedBundle({
+      matches: FALLBACK_MATCHES as any,
+      initialPicks: [],
+      workspace: evaluateQuantWorkspace(
+        { picks: [], multiple: 5 },
+        FALLBACK_MATCHES as any
+      ) as any,
+    });
+
+    // 1. Picking matches in Step 1 auto-syncs targetIds + anchorToRadarPicks = true without manual sync click
+    ctrl.togglePick(m0, "HAD", "h");
+    ctrl.togglePick(m1, "HAD", "h");
+    await ctrl.flush();
+    assert.deepEqual(ctrl.getState().targetIds, [m0.id, m1.id]);
+    assert.equal(ctrl.getState().anchorToRadarPicks, true);
+    assert.equal(ctrl.isRadarSyncCurrent(), true);
+
+    // 2. Budget normalization via setBudget
+    ctrl.setBudget(15);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().budget, 16);
+    ctrl.setBudget(100);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().budget, 100);
+
+    // 3. Stance Δ summary when anchored to radar picks
+    ctrl.setStance("home-lean");
+    await ctrl.flush();
+    const getStanceDeltaSummary = (ctrl as any).getStanceDeltaSummary;
+    assert.equal(
+      typeof getStanceDeltaSummary,
+      "function",
+      "Expected ctrl.getStanceDeltaSummary(slotKey) on controller"
+    );
+    const anchoredDelta = getStanceDeltaSummary("max-ev-utility");
+    assert.equal(anchoredDelta.stance, "home-lean");
+    assert.equal(anchoredDelta.hasBaseline, true);
+    assert.ok(anchoredDelta.ruleNote.includes("偏主队"));
+    assert.ok(anchoredDelta.instantRecalcNote.includes("实时重算"));
+    assert.ok(
+      anchoredDelta.anchorLockNote &&
+        anchoredDelta.anchorLockNote.includes("锚定"),
+      "When anchorToRadarPicks is active, anchorLockNote must explain why team picks stay locked"
+    );
+    assert.equal(typeof anchoredDelta.deltaProfitProbPct, "number");
+    assert.equal(typeof anchoredDelta.deltaEvPct, "number");
+    assert.equal(typeof anchoredDelta.ticketsChanged, "boolean");
+
+    // 4. Manual override pause: toggling target match or turning off anchorToRadarPicks pauses auto-sync
+    ctrl.toggleTargetMatch(m2.id);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().anchorToRadarPicks, false);
+    const freeDelta = getStanceDeltaSummary("max-ev-utility");
+    assert.equal(
+      freeDelta.anchorLockNote,
+      null,
+      "When anchorToRadarPicks is off, anchorLockNote should be null"
+    );
+
+    // Further radar toggle does NOT clobber user's manual targetIds while paused
+    ctrl.togglePick(m1, "HAD", "d");
+    await ctrl.flush();
+    assert.equal(ctrl.getState().anchorToRadarPicks, false);
+    assert.ok(ctrl.getState().targetIds.includes(m2.id));
+
+    // Re-clicking syncRadarPicksToArchetypes resumes auto-sync!
+    ctrl.syncRadarPicksToArchetypes();
+    await ctrl.flush();
+    assert.equal(ctrl.getState().anchorToRadarPicks, true);
+    assert.deepEqual(ctrl.getState().targetIds, [m0.id, m1.id]);
+
+    // Clearing all picks resets anchor cleanly
+    ctrl.clearPicks();
+    await ctrl.flush();
+    assert.equal(ctrl.getState().anchorToRadarPicks, false);
+  });
+});
+
+describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode P&L Sorting & Zero-Quota Match Intel Digest", () => {
+  it("Slice 5: preserves all legs without truncation on 4-match combos, attributes exact winning physical tickets per outcome bucket, sorts P&L by 3 modes, and builds rich 3-pool match intel digests", () => {
+    const resolveComboTicketBreakdown = (betSlipModule as any)
+      .resolveComboTicketBreakdown;
+    const sortComboRows = (betSlipModule as any).sortComboRows;
+    const buildMatchIntelDigest = (betSlipModule as any).buildMatchIntelDigest;
+
+    assert.equal(typeof resolveComboTicketBreakdown, "function");
+    assert.equal(typeof sortComboRows, "function");
+    assert.equal(typeof buildMatchIntelDigest, "function");
+
+    // 1. Evaluate a 4-match combo pass (e.g. 4串11 or free [2, 3, 4]) and verify full 4-leg preservation + exact ticket attribution
+    const fourPicks = FALLBACK_MATCHES.slice(0, 4).map((m: any) => {
+      const o = m.pools.HAD.options[0];
+      return {
+        matchId: m.id,
+        matchNumStr: m.matchNumStr,
+        home: m.home,
+        away: m.away,
+        poolCode: "HAD",
+        poolName: m.pools.HAD.name,
+        singleAllowed: m.pools.HAD.single,
+        optionKey: o.key,
+        optionLabel: o.label,
+        odds: o.odds,
+        fairProb: o.fairProb,
+      };
+    });
+    const ws4 = evaluateQuantWorkspace(
+      {
+        picks: fourPicks,
+        multiple: 2,
+        passSpec: { mode: "free", passSizes: [2, 4] },
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: FALLBACK_MATCHES.slice(0, 4).map((m: any) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      } as any,
+      FALLBACK_MATCHES as any
+    );
+
+    const rep4 = ws4.effectiveReport;
+    assert.ok(rep4.combos.length >= 2);
+    // Find the 4-leg all-hit combo bucket: it hits C(4,2)=6 two-leg tickets + 1 four-leg ticket = 7 physical tickets!
+    const fullHitCombo = rep4.combos.find(
+      (c: any) => Array.isArray(c.legs) && c.legs.length === 4
+    );
+    assert.ok(fullHitCombo, "Must find 4-match outcome bucket");
+
+    const breakdown = resolveComboTicketBreakdown(
+      fullHitCombo,
+      rep4.tickets,
+      rep4.totalCost
+    );
+    assert.equal(
+      breakdown.legs.length,
+      4,
+      "All 4 match legs must be preserved without any ellipsis truncation"
+    );
+    assert.equal(
+      breakdown.winningTicketCount,
+      7,
+      "All-4-hit outcome on [2关, 4关] must attribute C(4,2)+C(4,4)=7 winning physical tickets"
+    );
+    const sumAttributedPayout = Number(
+      breakdown.winningTickets
+        .reduce((acc: number, tk: any) => acc + tk.totalPayout, 0)
+        .toFixed(2)
+    );
+    assert.equal(
+      sumAttributedPayout,
+      fullHitCombo.totalPayout,
+      "Sum of attributed physical ticket payouts must equal exact combo bucket totalPayout"
+    );
+
+    // 2. Sorting modes: loss-first, prob-first, profit-first
+    const byLoss = sortComboRows(rep4.combos, "loss-first");
+    const byProb = sortComboRows(rep4.combos, "prob-first");
+    const byProfit = sortComboRows(rep4.combos, "profit-first");
+    assert.ok(byLoss[0].netProfit <= byLoss[byLoss.length - 1].netProfit);
+    assert.ok(byProb[0].prob >= byProb[byProb.length - 1].prob);
+    assert.ok(byProfit[0].netProfit >= byProfit[byProfit.length - 1].netProfit);
+
+    // 3. Zero-quota MatchIntelDigest for 情报账本
+    const digest = buildMatchIntelDigest(FALLBACK_MATCHES[0] as any);
+    assert.equal(digest.matchId, FALLBACK_MATCHES[0].id);
+    assert.ok(
+      digest.xgSummary.includes("xG") || digest.xgSummary.includes("总预期")
+    );
+    assert.ok(digest.poolImpacts.had.length > 0);
+    assert.ok(
+      digest.poolImpacts.hhad.includes("卡1球") ||
+        digest.poolImpacts.hhad.includes("让球")
+    );
+    assert.ok(digest.poolImpacts.ttg.includes("球"));
+    assert.ok(Array.isArray(digest.trendMovements));
   });
 });

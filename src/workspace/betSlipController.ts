@@ -3,18 +3,567 @@ import {
   type AppliedPlanSpec,
   type ArchetypePlan,
   type BonusOptMode,
+  type ComboRow,
   type EquivalentArbItem,
   type MatchItem,
   type PassSelectionSpec,
   type PoolCode,
+  type PortfolioKey,
   type QuantWorkspaceParams,
   type QuantWorkspaceResponse,
   type SelectedPick,
   type UserStance,
-} from '../prototype/quantTypes.ts';
+} from "../prototype/quantTypes.ts";
 
-export type MatchMode = 'mix' | 'spf' | 'bf' | 'zjq' | 'bqc' | 'single';
-export type PresetScenarioKind = 'underwater' | 'synthetic' | 'parlay4' | 'hedge2';
+export type MatchMode = "mix" | "spf" | "bf" | "zjq" | "bqc" | "single";
+export type PresetScenarioKind =
+  "underwater" | "synthetic" | "parlay4" | "hedge2";
+
+export type ManualSectionId =
+  | "qa"
+  | "quickstart"
+  | "sandbox"
+  | "optimizer"
+  | "archetypes"
+  | "glossary"
+  | "hedge"
+  | "xiaogao";
+
+export interface ManualTopic {
+  id: ManualSectionId;
+  shortTitle: string;
+  badge: string;
+  title: string;
+  subtitle: string;
+  keywords: string[];
+}
+
+export const MANUAL_TOPICS: ManualTopic[] = [
+  {
+    id: "qa",
+    shortTitle: "💬 智能提问",
+    badge: "00 · 说明书专属问答助手",
+    title: "看不懂某个按钮或名词？直接点选或输入提问",
+    subtitle:
+      "100% 基于本计算器真实功能通俗举例作答（仅限说明书范畴，严禁探底与无关闲聊）",
+    keywords: ["提问", "问答", "不懂", "怎么用", "什么意思", "助手"],
+  },
+  {
+    id: "quickstart",
+    shortTitle: "快速上手&箭头",
+    badge: "01 · 1-2-3三步向导与盘面符号",
+    title: "30 秒看懂「优竞体育内部专用」1-2-3 精算闭环与红绿箭头",
+    subtitle:
+      "从①选球定方向、②精算配单、③审单锁利，看懂红升 ▲ 绿降 ▼ 箭头与去水真率",
+    keywords: [
+      "入门",
+      "流程",
+      "1-2-3",
+      "三步",
+      "向导",
+      "同步",
+      "红绿箭头",
+      "红箭头",
+      "绿箭头",
+      "单关",
+      "混合过关",
+      "卡盘",
+    ],
+  },
+  {
+    id: "sandbox",
+    shortTitle: "滑块沙盒&6仪表",
+    badge: "02 · 每一个滑块与数字逐个拆解",
+    title: "主观胜率滑块往左拉还是往右拉？五维透视舱 6 块仪表怎么读？",
+    subtitle:
+      "手把手拆解信心微调百分比、期望 EV 正负临界点、首场腰斩按 1.0 预演与六大核心指标",
+    keywords: [
+      "主观胜率",
+      "信心微调",
+      "沙盒",
+      "往左拉",
+      "往右拉",
+      "EV",
+      "期望",
+      "腰斩",
+      "延期",
+      "1.0",
+      "五维",
+      "危险分",
+      "保底奖金",
+      "一球",
+      "小胜",
+    ],
+  },
+  {
+    id: "optimizer",
+    shortTitle: "三种奖金优化",
+    badge: "03 · 核心分倍引擎详解",
+    title: "平均优化 / 博热保本 / 博冷高弹到底怎么分钱？我该选哪个？",
+    subtitle:
+      "用 ¥100 真金算账对比「官方等倍复式」为什么会中奖亏钱，以及三档智能分倍如何救命增收",
+    keywords: [
+      "平均优化",
+      "博热保本",
+      "博冷高弹",
+      "奖金优化",
+      "分倍",
+      "等倍",
+      "假中奖",
+      "保本",
+    ],
+  },
+  {
+    id: "archetypes",
+    shortTitle: "3+1精算配单",
+    badge: "04 · 帕累托精算配单矩阵",
+    title: "自由圈定 1～8 场心仪比赛后，3+1 精算配单四档方案分别适合什么战况？",
+    subtitle:
+      "稳健保本 · 期望效用 · 容错缩水（旋转矩阵） · 错价雷达（宁缺毋滥·无洼地空仓）",
+    keywords: [
+      "精算配单",
+      "3+1",
+      "五流派",
+      "8场",
+      "多场",
+      "稳健保本",
+      "期望效用",
+      "容错缩水",
+      "旋转矩阵",
+      "错价雷达",
+      "空仓",
+      "36%",
+      "轻仓",
+      "10元",
+      "预算",
+      "直觉倾向",
+      "偏主队",
+      "防爆冷",
+    ],
+  },
+  {
+    id: "glossary",
+    shortTitle: "精算名词词典",
+    badge: "05 · 专有名词大白话图解",
+    title:
+      "Shin+五池联合校准、返还率、泊松xG、一球卡盘、同义差价、合成单关全解",
+    subtitle: "把跨盘联合校准与体彩精算数学翻译成菜市场算账一样直白的图文案例",
+    keywords: [
+      "Shin",
+      "五池联合校准",
+      "跨盘联合校准",
+      "比赛节奏",
+      "返还率",
+      "抽水",
+      "去水",
+      "真率",
+      "xG",
+      "预期进球",
+      "卡盘",
+      "一球",
+      "一球卡盘",
+      "一球小胜卡盘",
+      "小胜卡盘",
+      "同义",
+      "差价",
+      "合成单关",
+      "四舍六入五成双",
+      "封顶",
+    ],
+  },
+  {
+    id: "hedge",
+    shortTitle: "早晚场锁利",
+    badge: "06 · 实战进阶稳赚武器",
+    title: "早晚场时间差 100% 锁利对冲四步法 & 串关“拖油瓶”剔除体检",
+    subtitle:
+      "利用 ≥110 分钟开球时间差在半夜睡觉前锁死确定性纯利，一键砍掉高抽水拖累腿场次",
+    keywords: ["对冲", "时间差", "早晚场", "锁利", "补单", "拖油瓶", "砍掉"],
+  },
+  {
+    id: "xiaogao",
+    shortTitle: "小高双模&消化度",
+    badge: "07 · 单场点诊 + 双维协同会诊 + Price-In",
+    title: "扫地僧小高单场点诊 vs 双维协同串关会诊 & 消息入价消化度图解",
+    subtitle:
+      "深度盘面情报流展开 + 精算防线与残余暗雷双维客观会诊，三秒识破“已消化接盘旧闻”",
+    keywords: [
+      "扫地僧小高",
+      "排雷",
+      "联合会诊",
+      "协同会诊",
+      "双维",
+      "多场诊断",
+      "单场",
+      "Price-In",
+      "消化度",
+      "消息入价",
+      "模拟单",
+      "止损",
+    ],
+  },
+];
+
+function extractSearchBigrams(text: string): string[] {
+  const cjk = text.replace(/[^\u4e00-\u9fa5]/g, "");
+  const out = new Set<string>();
+  for (let i = 0; i < cjk.length - 1; i++) {
+    out.add(cjk.slice(i, i + 2));
+  }
+  return Array.from(out);
+}
+
+export function matchManualTopics(
+  rawQuery: string,
+  topics: ManualTopic[] = MANUAL_TOPICS
+): ManualTopic[] {
+  const trimmed = String(rawQuery || "")
+    .trim()
+    .toLowerCase();
+  if (!trimmed) return topics;
+
+  const tokens = trimmed
+    .split(/[\s,，、/·?？!！:：]+/)
+    .filter((tk) => tk.length > 0);
+  const bigrams = extractSearchBigrams(trimmed);
+
+  const scored: Array<{ topic: ManualTopic; score: number }> = [];
+  for (const t of topics) {
+    const titleLo = t.title.toLowerCase();
+    const subLo = t.subtitle.toLowerCase();
+    const shortLo = t.shortTitle.toLowerCase();
+    const haystack = `${shortLo} ${titleLo} ${subLo} ${t.keywords.join(" ").toLowerCase()}`;
+
+    let score = 0;
+    if (titleLo.includes(trimmed) || shortLo.includes(trimmed)) score += 14;
+    if (subLo.includes(trimmed)) score += 9;
+
+    for (const kw of t.keywords) {
+      const kwLo = kw.toLowerCase();
+      if (kwLo === trimmed) score += 16;
+      else if (kwLo.includes(trimmed)) score += 10;
+      else if (kwLo.length >= 2 && trimmed.includes(kwLo)) {
+        score += kwLo.length >= 4 ? 7 : 3;
+      }
+    }
+
+    for (const tk of tokens) {
+      if (tk.length >= 2 && haystack.includes(tk)) {
+        score += 4;
+      }
+    }
+
+    if (bigrams.length >= 2) {
+      let bigramHits = 0;
+      for (const bg of bigrams) {
+        if (haystack.includes(bg)) bigramHits += 1;
+      }
+      if (bigramHits >= 2) {
+        score += bigramHits * 2;
+      }
+    }
+
+    if (score > 0) {
+      scored.push({ topic: t, score });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.topic);
+}
+
+export interface ManualNavigationState {
+  activeSec: ManualSectionId;
+  query: string;
+  scrollSeq: number;
+  highlightSec: ManualSectionId | null;
+}
+
+export type ManualNavigationAction =
+  | { type: "search"; query: string }
+  | { type: "clear-search" }
+  | { type: "jump"; targetSec: ManualSectionId }
+  | { type: "select-tab"; targetSec: ManualSectionId };
+
+export function resolveManualNavigation(
+  prev: ManualNavigationState,
+  action: ManualNavigationAction,
+  topics: ManualTopic[] = MANUAL_TOPICS
+): ManualNavigationState & {
+  matchedTopics: ManualTopic[];
+  currentTopic: ManualTopic;
+} {
+  let nextActive = prev.activeSec;
+  let nextQuery = prev.query;
+  let nextScrollSeq = prev.scrollSeq;
+  let nextHighlight: ManualSectionId | null = prev.highlightSec;
+
+  if (action.type === "clear-search") {
+    nextQuery = "";
+    nextHighlight = null;
+  } else if (action.type === "search") {
+    nextQuery = action.query;
+    const hits = matchManualTopics(nextQuery, topics);
+    if (nextQuery.trim().length > 0 && hits.length > 0) {
+      if (!hits.some((h) => h.id === prev.activeSec)) {
+        nextActive = hits[0].id;
+        nextScrollSeq += 1;
+      }
+    }
+    nextHighlight = null;
+  } else {
+    nextActive = action.targetSec;
+    const currentHits = matchManualTopics(prev.query, topics);
+    if (
+      prev.query.trim().length > 0 &&
+      !currentHits.some((h) => h.id === nextActive)
+    ) {
+      nextQuery = "";
+    }
+    nextScrollSeq += 1;
+    nextHighlight = action.type === "jump" ? nextActive : null;
+  }
+
+  const matchedTopics = matchManualTopics(nextQuery, topics);
+  const currentTopic = topics.find((t) => t.id === nextActive) ?? topics[0];
+
+  return {
+    activeSec: nextActive,
+    query: nextQuery,
+    scrollSeq: nextScrollSeq,
+    highlightSec: nextHighlight,
+    matchedTopics,
+    currentTopic,
+  };
+}
+
+export interface StanceDeltaSummary {
+  stance: UserStance;
+  hasBaseline: boolean;
+  ruleNote: string;
+  instantRecalcNote: string;
+  anchorLockNote: string | null;
+  deltaProfitProbPct: number;
+  deltaEvPct: number;
+  ticketsChanged: boolean;
+}
+
+export function normalizeBudgetYuan(rawBudget: number): number {
+  const num = Number(rawBudget);
+  if (!Number.isFinite(num)) return 10;
+  const clamped = Math.max(10, Math.min(20000, num));
+  return Math.max(10, Math.min(20000, Math.round(clamped / 2) * 2));
+}
+
+function buildPlanTicketSignature(plan?: ArchetypePlan | null): string {
+  if (!plan || plan.available === false || !Array.isArray(plan.lines))
+    return "";
+  return plan.lines
+    .map(
+      (l) =>
+        `${l.modeLabel}:${l.multiple}:${l.legs
+          .map((lg) => `${lg.matchId}.${lg.poolCode}.${lg.optionKey}`)
+          .sort()
+          .join("+")}`
+    )
+    .sort()
+    .join(";");
+}
+
+export type ComboSortMode = "loss-first" | "prob-first" | "profit-first";
+
+export interface ComboTicketBreakdown {
+  isAggregateRange: boolean;
+  legs: SelectedPick[];
+  winningTickets: ComboRow[];
+  winningTicketCount: number;
+  roiMultiple: number;
+  barTone: "loss" | "breakeven" | "gain";
+  barFillPct: number;
+}
+
+export function resolveComboTicketBreakdown(
+  combo: ComboRow,
+  tickets: ComboRow[] | undefined,
+  totalCost: number
+): ComboTicketBreakdown {
+  const legs = Array.isArray(combo.legs) ? combo.legs : [];
+  const isAggregateRange =
+    combo.desc.startsWith("派奖区间") || legs.length === 0;
+  const legKeySet = new Set(
+    legs.map((lg) => `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`)
+  );
+
+  const winningTickets =
+    !isAggregateRange && Array.isArray(tickets)
+      ? tickets.filter((tk) => {
+          const tLegs = Array.isArray(tk.legs) ? tk.legs : [];
+          if (tLegs.length === 0) return false;
+          return tLegs.every((tl) =>
+            legKeySet.has(`${tl.matchId}:${tl.poolCode}:${tl.optionKey}`)
+          );
+        })
+      : [];
+
+  const safeCost = Math.max(1, Number(totalCost) || 1);
+  const roiMultiple =
+    totalCost > 0 ? Number((combo.totalPayout / safeCost).toFixed(2)) : 0;
+  const barTone: "loss" | "breakeven" | "gain" =
+    combo.isUnderwater || combo.netProfit < 0
+      ? "loss"
+      : combo.netProfit === 0
+        ? "breakeven"
+        : "gain";
+  const rawPct = Math.round((Math.abs(combo.netProfit) / safeCost) * 100);
+  const barFillPct = Math.max(8, Math.min(100, rawPct));
+
+  return {
+    isAggregateRange,
+    legs,
+    winningTickets,
+    winningTicketCount: winningTickets.length,
+    roiMultiple,
+    barTone,
+    barFillPct,
+  };
+}
+
+export function sortComboRows(
+  combos: ComboRow[],
+  sortMode: ComboSortMode
+): ComboRow[] {
+  const copy = [...combos];
+  if (sortMode === "loss-first") {
+    copy.sort((a, b) => {
+      if (a.isUnderwater !== b.isUnderwater) {
+        return a.isUnderwater ? -1 : 1;
+      }
+      if (a.netProfit !== b.netProfit) {
+        return a.netProfit - b.netProfit;
+      }
+      return b.prob - a.prob;
+    });
+    return copy;
+  }
+  if (sortMode === "prob-first") {
+    copy.sort((a, b) => {
+      if (b.prob !== a.prob) return b.prob - a.prob;
+      return b.netProfit - a.netProfit;
+    });
+    return copy;
+  }
+  copy.sort((a, b) => {
+    if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
+    return b.prob - a.prob;
+  });
+  return copy;
+}
+
+export interface MatchTrendMovement {
+  poolCode: PoolCode;
+  poolName: string;
+  optionLabel: string;
+  odds: number;
+  trend: -1 | 1;
+  interpretation: string;
+}
+
+export interface MatchIntelDigest {
+  matchId: string;
+  matchTitle: string;
+  kickoffLeague: string;
+  steamSignal: string;
+  trendMovements: MatchTrendMovement[];
+  xgSummary: string;
+  cardPanAlert: {
+    sharePct: number;
+    level: "high" | "warn" | "safe";
+    tip: string;
+  };
+  alphaSummary: string;
+  poolImpacts: {
+    had: string;
+    hhad: string;
+    ttg: string;
+  };
+  arbitrages: EquivalentArbItem[];
+  aiAlert: MatchItem["aiAlert"] | null;
+}
+
+export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
+  const mq = match.microQuant;
+  const trendMovements: MatchTrendMovement[] = [];
+  const poolOrder: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+
+  for (const pCode of poolOrder) {
+    const pool = match.pools[pCode];
+    if (!pool || !Array.isArray(pool.options)) continue;
+    for (const opt of pool.options) {
+      if (opt.trend === -1 || opt.trend === 1) {
+        trendMovements.push({
+          poolCode: pCode,
+          poolName: pool.name,
+          optionLabel: opt.label,
+          odds: opt.odds,
+          trend: opt.trend,
+          interpretation:
+            opt.trend === -1
+              ? "绿降▼ 机构下调赔付设防"
+              : "红升▲ 抬高赔付散热预警",
+        });
+      }
+    }
+  }
+
+  const hadOpts = [...(match.pools.HAD?.options ?? [])].sort(
+    (a, b) => b.fairProb - a.fairProb
+  );
+  const topHad = hadOpts[0];
+  const hadTrendTag =
+    topHad?.trend === 1
+      ? "（热门红升▲散热，慎做裸胆）"
+      : topHad?.trend === -1
+        ? "（绿降▼设防加固）"
+        : "";
+  const hadImpact = topHad
+    ? `胜平负首推关注「${topHad.label} @${topHad.odds.toFixed(2)}」（五池去水真率 ${(topHad.fairProb * 100).toFixed(0)}%）${hadTrendTag}`
+    : "胜平负暂未开售单关/串关固定奖池";
+
+  const goalLine = match.pools.HHAD?.goalLine || "-1";
+  const sharePct = Math.round(mq.oneGoalShareOfWins);
+  const hhadImpact =
+    sharePct >= 46
+      ? `让球[${goalLine}]高危预警：强队赢球时卡1球占比达 ${sharePct}%，直搏让胜极易卡盘，宜防让球平或改走胜平负`
+      : `让球[${goalLine}]盘口评估：赢球时卡1球占比 ${sharePct}%，结合受让方赔付水位决定是否补防让球平`;
+
+  const [g1, g2, top2SumProb] = mq.topTwoGoals ?? ["2", "3", 45];
+  const ttgImpact = `总进球黄金区间落在 ${g1}球 / ${g2}球（合计真率 ${Math.round(top2SumProb)}% · ${mq.paceLabel}）`;
+
+  const cardLevel: "high" | "warn" | "safe" =
+    sharePct >= 48 ? "high" : sharePct >= 38 ? "warn" : "safe";
+
+  return {
+    matchId: match.id,
+    matchTitle: `${match.matchNumStr} ${match.home} vs ${match.away}`,
+    kickoffLeague: `${match.league} · ${match.kickoff}`,
+    steamSignal: mq.steamSignal,
+    trendMovements: trendMovements.slice(0, 6),
+    xgSummary: `五池反推 xG 主 ${mq.homeXG.toFixed(2)} : 客 ${mq.awayXG.toFixed(2)}（总预期 ${mq.totalXG.toFixed(2)} 球 · ${mq.paceLabel}）`,
+    cardPanAlert: {
+      sharePct,
+      level: cardLevel,
+      tip: mq.cardPanTip,
+    },
+    alphaSummary: mq.alphaScanSummary,
+    poolImpacts: {
+      had: hadImpact,
+      hhad: hhadImpact,
+      ttg: ttgImpact,
+    },
+    arbitrages: mq.arbitrages ?? [],
+    aiAlert: match.aiAlert ?? null,
+  };
+}
 
 export interface BetSlipState {
   matches: MatchItem[];
@@ -27,19 +576,21 @@ export interface BetSlipState {
   simVoidFirstMatch: boolean;
   targetIds: string[];
   anchorToRadarPicks: boolean;
+  manualPoolOverride: boolean;
   syncedRadarSig: string;
   budget: number;
   stance: UserStance;
   unlockFullAgg: boolean;
   workspace: QuantWorkspaceResponse;
+  objectivePortfolioPlans: ArchetypePlan[];
 }
 
 export interface TogglePickVerdict {
   ok: boolean;
-  action?: 'added' | 'removed';
+  action?: "added" | "removed";
   optionLabel?: string;
   odds?: number;
-  autoLockedSingleReason?: 'dual-single' | 'over-8-matches';
+  autoLockedSingleReason?: "dual-single" | "over-8-matches";
   blockedReason?: string;
 }
 
@@ -49,6 +600,7 @@ export interface BetSlipControllerOptions {
     matches: MatchItem[]
   ) => QuantWorkspaceResponse | Promise<QuantWorkspaceResponse>;
   debounceMs?: number;
+  autoSyncRadar?: boolean;
   onOfflineNetworkError?: () => void;
   onComputeSuccess?: () => void;
 }
@@ -57,7 +609,7 @@ export function buildRadarSignature(picks: SelectedPick[]): string {
   return picks
     .map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
     .sort()
-    .join('|');
+    .join("|");
 }
 
 function trimToSinglePoolPerMatch(picks: SelectedPick[]): {
@@ -82,32 +634,37 @@ function buildInitialState(): BetSlipState {
   return {
     matches: [],
     picks: [],
-    mode: 'mix',
+    mode: "mix",
     multiple: 5,
-    passSpec: { mode: 'auto' },
+    passSpec: { mode: "auto" },
     planSpec: null,
     subjectiveDeltaPct: 0,
     simVoidFirstMatch: false,
     targetIds: [],
     anchorToRadarPicks: false,
-    syncedRadarSig: '',
+    manualPoolOverride: false,
+    syncedRadarSig: "",
     budget: 100,
-    stance: 'objective',
+    stance: "objective",
     unlockFullAgg: false,
     workspace: EMPTY_WORKSPACE_RESPONSE,
+    objectivePortfolioPlans: [],
   };
 }
 
-function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
+function buildPresetPicks(
+  matches: MatchItem[],
+  kind: PresetScenarioKind
+): {
   multiple: number;
   picks: SelectedPick[];
 } {
-  if (kind === 'underwater') {
+  if (kind === "underwater") {
     const m1 = matches[0];
-    const m2 = matches.find((x) => x.kickoff.startsWith('03:')) ?? matches[1];
+    const m2 = matches.find((x) => x.kickoff.startsWith("03:")) ?? matches[1];
     const out: SelectedPick[] = [];
     if (m1) {
-      for (const k of ['hh', 'dh', 'dd', 'ah']) {
+      for (const k of ["hh", "dh", "dd", "ah"]) {
         const o = m1.pools.HAFU.options.find((x) => x.key === k);
         if (o) {
           out.push({
@@ -115,7 +672,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
             matchNumStr: m1.matchNumStr,
             home: m1.home,
             away: m1.away,
-            poolCode: 'HAFU',
+            poolCode: "HAFU",
             poolName: m1.pools.HAFU.name,
             singleAllowed: true,
             optionKey: o.key,
@@ -134,7 +691,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
           matchNumStr: m2.matchNumStr,
           home: m2.home,
           away: m2.away,
-          poolCode: 'HAD',
+          poolCode: "HAD",
           poolName: m2.pools.HAD.name,
           singleAllowed: m2.pools.HAD.single,
           optionKey: o.key,
@@ -147,10 +704,10 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
     return { multiple: 5, picks: out };
   }
 
-  if (kind === 'synthetic') {
+  if (kind === "synthetic") {
     const m = matches.find((x) => !x.pools.HAD.single) ?? matches[0];
     if (!m) return { multiple: 10, picks: [] };
-    const picks = ['hh', 'dh']
+    const picks = ["hh", "dh"]
       .map((k) => {
         const o = m.pools.HAFU.options.find((x) => x.key === k);
         if (!o) return null;
@@ -159,7 +716,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
           matchNumStr: m.matchNumStr,
           home: m.home,
           away: m.away,
-          poolCode: 'HAFU' as PoolCode,
+          poolCode: "HAFU" as PoolCode,
           poolName: m.pools.HAFU.name,
           singleAllowed: true,
           optionKey: o.key,
@@ -172,7 +729,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
     return { multiple: 10, picks };
   }
 
-  if (kind === 'parlay4') {
+  if (kind === "parlay4") {
     const picks = matches
       .slice(0, 4)
       .map((m) => {
@@ -183,7 +740,7 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
           matchNumStr: m.matchNumStr,
           home: m.home,
           away: m.away,
-          poolCode: 'HAD' as PoolCode,
+          poolCode: "HAD" as PoolCode,
           poolName: m.pools.HAD.name,
           singleAllowed: m.pools.HAD.single,
           optionKey: o.key,
@@ -198,12 +755,13 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
 
   const mEarly = matches[0];
   const mLate =
-    matches.find((x) => x.kickoff.startsWith('03:') || x.kickoff.startsWith('07:')) ??
-    matches[matches.length - 1];
+    matches.find(
+      (x) => x.kickoff.startsWith("03:") || x.kickoff.startsWith("07:")
+    ) ?? matches[matches.length - 1];
   if (!mEarly || !mLate) return { multiple: 15, picks: [] };
   const picks = [mEarly, mLate]
     .map((m): SelectedPick | null => {
-      const pCode: PoolCode = m.pools.HAD.options.length > 0 ? 'HAD' : 'HHAD';
+      const pCode: PoolCode = m.pools.HAD.options.length > 0 ? "HAD" : "HHAD";
       const o = m.pools[pCode].options[0];
       if (!o) return null;
       return {
@@ -229,17 +787,53 @@ function buildPresetPicks(matches: MatchItem[], kind: PresetScenarioKind): {
  */
 export function createBetSlipController(options: BetSlipControllerOptions) {
   const debounceMs = options.debounceMs ?? 18;
+  const autoSyncRadar = options.autoSyncRadar ?? false;
   const listeners = new Set<() => void>();
   let bootstrapped = false;
   let computeSeq = 0;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingResolvers: Array<() => void> = [];
   let inFlightPromise: Promise<void> | null = null;
+  let baselineCacheKey = "";
+  let baselineCachePlans: ArchetypePlan[] = [];
 
   let state: BetSlipState = buildInitialState();
 
   function emit() {
     for (const fn of listeners) fn();
+  }
+
+  function makeBaselineKey(p: QuantWorkspaceParams): string {
+    return `${p.targetIds.join(",")}|${p.anchorToRadarPicks ? "1" : "0"}|${p.budget}|${p.unlockFullAgg ? "1" : "0"}|${p.anchorToRadarPicks ? buildRadarSignature(p.picks) : ""}`;
+  }
+
+  function syncAutoRadarFields(
+    nextPicks: SelectedPick[],
+    currentMatches: MatchItem[],
+    prevState: BetSlipState
+  ): Pick<BetSlipState, "targetIds" | "anchorToRadarPicks" | "syncedRadarSig"> {
+    if (!autoSyncRadar || prevState.manualPoolOverride) {
+      return {
+        targetIds: prevState.targetIds,
+        anchorToRadarPicks: prevState.anchorToRadarPicks,
+        syncedRadarSig: prevState.syncedRadarSig,
+      };
+    }
+    if (nextPicks.length > 0) {
+      const pickedIds = Array.from(
+        new Set(nextPicks.map((p) => p.matchId))
+      ).slice(0, 8);
+      return {
+        targetIds: pickedIds,
+        anchorToRadarPicks: true,
+        syncedRadarSig: buildRadarSignature(nextPicks),
+      };
+    }
+    return {
+      targetIds: currentMatches.slice(0, 2).map((m) => m.id),
+      anchorToRadarPicks: false,
+      syncedRadarSig: "",
+    };
   }
 
   function settlePendingResolvers() {
@@ -258,7 +852,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   }
 
   function buildWorkspaceParams(s: BetSlipState = state): QuantWorkspaceParams {
-    const clientAlerts: Record<string, NonNullable<MatchItem['aiAlert']>> = {};
+    const clientAlerts: Record<string, NonNullable<MatchItem["aiAlert"]>> = {};
     for (const m of s.matches) {
       if (m.aiAlert) clientAlerts[m.id] = m.aiAlert;
     }
@@ -280,13 +874,52 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
   function executeComputeNow(): Promise<void> {
     const seq = ++computeSeq;
+    const paramsSnapshot = buildWorkspaceParams(state);
+    const matchesSnapshot = state.matches;
+    const bKey = makeBaselineKey(paramsSnapshot);
+    const needsObjectiveFetch =
+      paramsSnapshot.stance !== "objective" &&
+      (baselineCacheKey !== bKey || baselineCachePlans.length === 0);
+
     try {
-      const maybePromise = options.computeWorkspace(buildWorkspaceParams(state), state.matches);
-      if (maybePromise && typeof (maybePromise as Promise<QuantWorkspaceResponse>).then === 'function') {
-        const p = (maybePromise as Promise<QuantWorkspaceResponse>)
-          .then((ws) => {
+      const maybeMain = options.computeWorkspace(
+        paramsSnapshot,
+        matchesSnapshot
+      );
+      const maybeObj = needsObjectiveFetch
+        ? options.computeWorkspace(
+            { ...paramsSnapshot, stance: "objective" },
+            matchesSnapshot
+          )
+        : null;
+
+      const isAsync =
+        (maybeMain &&
+          typeof (maybeMain as Promise<QuantWorkspaceResponse>).then ===
+            "function") ||
+        (maybeObj &&
+          typeof (maybeObj as Promise<QuantWorkspaceResponse>).then ===
+            "function");
+
+      if (isAsync) {
+        const p = Promise.all([
+          Promise.resolve(maybeMain),
+          maybeObj ? Promise.resolve(maybeObj) : Promise.resolve(null),
+        ])
+          .then(([ws, objWs]) => {
             if (seq === computeSeq) {
-              state = { ...state, workspace: ws };
+              if (paramsSnapshot.stance === "objective") {
+                baselineCacheKey = bKey;
+                baselineCachePlans = ws.portfolioPlans;
+              } else if (objWs) {
+                baselineCacheKey = bKey;
+                baselineCachePlans = objWs.portfolioPlans;
+              }
+              state = {
+                ...state,
+                workspace: ws,
+                objectivePortfolioPlans: baselineCachePlans,
+              };
               options.onComputeSuccess?.();
               emit();
             }
@@ -302,8 +935,22 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         inFlightPromise = p;
         return p;
       }
+
       if (seq === computeSeq) {
-        state = { ...state, workspace: maybePromise as QuantWorkspaceResponse };
+        const ws = maybeMain as QuantWorkspaceResponse;
+        const objWs = maybeObj as QuantWorkspaceResponse | null;
+        if (paramsSnapshot.stance === "objective") {
+          baselineCacheKey = bKey;
+          baselineCachePlans = ws.portfolioPlans;
+        } else if (objWs) {
+          baselineCacheKey = bKey;
+          baselineCachePlans = objWs.portfolioPlans;
+        }
+        state = {
+          ...state,
+          workspace: ws,
+          objectivePortfolioPlans: baselineCachePlans,
+        };
         options.onComputeSuccess?.();
         emit();
       }
@@ -336,12 +983,21 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   function isAuthoritativePickSingle(pk: SelectedPick): boolean {
     const fm = state.matches.find((x) => x.id === pk.matchId);
     const pool = fm?.pools[pk.poolCode];
-    return pool ? Boolean(pk.singleAllowed) && Boolean(pool.single) : Boolean(pk.singleAllowed);
+    return pool
+      ? Boolean(pk.singleAllowed) && Boolean(pool.single)
+      : Boolean(pk.singleAllowed);
   }
 
-  function isPicked(matchId: string, poolCode: PoolCode, optKey: string): boolean {
+  function isPicked(
+    matchId: string,
+    poolCode: PoolCode,
+    optKey: string
+  ): boolean {
     return state.picks.some(
-      (p) => p.matchId === matchId && p.poolCode === poolCode && p.optionKey === optKey
+      (p) =>
+        p.matchId === matchId &&
+        p.poolCode === poolCode &&
+        p.optionKey === optKey
     );
   }
 
@@ -350,9 +1006,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     if (sameMatch.length === 0) return false;
     const otherPools = sameMatch.filter((p) => p.poolCode !== poolCode);
     if (otherPools.length === 0) return false;
-    if (state.mode !== 'spf' && state.mode !== 'single') return true;
-    if (poolCode !== 'HAD' && poolCode !== 'HHAD') return true;
-    if (otherPools.some((p) => p.poolCode !== 'HAD' && p.poolCode !== 'HHAD')) return true;
+    if (state.mode !== "spf" && state.mode !== "single") return true;
+    if (poolCode !== "HAD" && poolCode !== "HHAD") return true;
+    if (otherPools.some((p) => p.poolCode !== "HAD" && p.poolCode !== "HHAD"))
+      return true;
     const candPool = m.pools[poolCode];
     if (!candPool?.single) return true;
     return !state.picks.every(isAuthoritativePickSingle);
@@ -366,18 +1023,90 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     cancelPendingTimer();
     bootstrapped = true;
     computeSeq += 1;
+    const baseState = buildInitialState();
+    const radarSync = syncAutoRadarFields(bundle.initialPicks, bundle.matches, {
+      ...baseState,
+      targetIds: bundle.matches.slice(0, 2).map((m) => m.id),
+    });
     state = {
-      ...buildInitialState(),
+      ...baseState,
       matches: bundle.matches,
       picks: bundle.initialPicks,
-      targetIds: bundle.matches.slice(0, 2).map((m) => m.id),
+      ...radarSync,
       workspace: bundle.workspace,
+      objectivePortfolioPlans: bundle.workspace.portfolioPlans ?? [],
     };
+    baselineCacheKey = makeBaselineKey(buildWorkspaceParams(state));
+    baselineCachePlans = bundle.workspace.portfolioPlans ?? [];
     emit();
+  }
+
+  function getStanceDeltaSummary(slotKey: PortfolioKey): StanceDeltaSummary {
+    const activePlan =
+      state.workspace.portfolioPlans.find((p) => p.key === slotKey) ??
+      state.workspace.portfolioPlans[0];
+    const basePlan =
+      state.objectivePortfolioPlans.find((p) => p.key === slotKey) ??
+      state.objectivePortfolioPlans[0];
+
+    const ruleNote =
+      state.stance === "home-lean"
+        ? "偏主队倾向：在不违背已选方向前提下温和上调主场胜率权重，纯盘面自由选池下优先向主场优势倾斜配单。"
+        : state.stance === "upset-watch"
+          ? "防爆冷倾向：温和下调大热正路权重并抬升受让/冷平防线权重，辅助识别大热暗雷与防冷分倍。"
+          : "纯客观基准：100% 采用五池联合校准去水真率评估，不叠加主观冷热倾向。";
+
+    const instantRecalcNote =
+      "点选即实时重算下方四档方案，无需额外组合其他按钮。";
+    const anchorLockNote = state.anchorToRadarPicks
+      ? "当前球队方向已由赛事雷达选单锚定锁定；切换倾向不会强改已选球队，主要微调真赚钱率评估与分倍权重。"
+      : null;
+
+    const hasBaseline = Boolean(
+      activePlan &&
+      basePlan &&
+      activePlan.available !== false &&
+      basePlan.available !== false
+    );
+
+    const deltaProfitProbPct =
+      hasBaseline && state.stance !== "objective"
+        ? Number(
+            (
+              (activePlan!.profitProb ?? 0) - (basePlan!.profitProb ?? 0)
+            ).toFixed(1)
+          )
+        : 0;
+    const deltaEvPct =
+      hasBaseline && state.stance !== "objective"
+        ? Number(
+            (
+              (activePlan!.expectedValueRate ?? 0) -
+              (basePlan!.expectedValueRate ?? 0)
+            ).toFixed(1)
+          )
+        : 0;
+    const ticketsChanged =
+      hasBaseline && state.stance !== "objective"
+        ? buildPlanTicketSignature(activePlan) !==
+          buildPlanTicketSignature(basePlan)
+        : false;
+
+    return {
+      stance: state.stance,
+      hasBaseline,
+      ruleNote,
+      instantRecalcNote,
+      anchorLockNote,
+      deltaProfitProbPct,
+      deltaEvPct,
+      ticketsChanged,
+    };
   }
 
   return {
     getState: () => state,
+    getStanceDeltaSummary,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -404,7 +1133,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
     isRadarSyncCurrent(): boolean {
       const sig = buildRadarSignature(state.picks);
-      return state.anchorToRadarPicks && sig.length > 0 && state.syncedRadarSig === sig;
+      return (
+        state.anchorToRadarPicks &&
+        sig.length > 0 &&
+        state.syncedRadarSig === sig
+      );
     },
 
     applyAuthenticatedBundle,
@@ -424,7 +1157,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
     },
 
-    applyMatchesSync(res: { matches: MatchItem[]; workspace: QuantWorkspaceResponse }) {
+    applyMatchesSync(res: {
+      matches: MatchItem[];
+      workspace: QuantWorkspaceResponse;
+    }) {
       cancelPendingTimer();
       bootstrapped = true;
       computeSeq += 1;
@@ -443,7 +1179,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         .filter((m) => state.targetIds.includes(m.id))
         .map((m) => m.id);
       const nextTargets =
-        validTargets.length >= 1 ? validTargets : mergedMatches.slice(0, 2).map((m) => m.id);
+        validTargets.length >= 1
+          ? validTargets
+          : mergedMatches.slice(0, 2).map((m) => m.id);
 
       let picksRemapped = false;
       const syncedPicks = state.picks
@@ -453,13 +1191,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
               m.id === pk.matchId ||
               (Boolean(m.matchNumStr) && m.matchNumStr === pk.matchNumStr)
           );
-          const uo = um?.pools[pk.poolCode]?.options.find((o) => o.key === pk.optionKey);
+          const uo = um?.pools[pk.poolCode]?.options.find(
+            (o) => o.key === pk.optionKey
+          );
           if (!um || !uo) {
             picksRemapped = true;
             return null;
           }
           const nextSingle = um.pools[pk.poolCode].single;
-          if (um.id !== pk.matchId || uo.odds !== pk.odds || nextSingle !== pk.singleAllowed) {
+          if (
+            um.id !== pk.matchId ||
+            uo.odds !== pk.odds ||
+            nextSingle !== pk.singleAllowed
+          ) {
             picksRemapped = true;
           }
           return {
@@ -490,7 +1234,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
     },
 
-    async applyMatchAiAlert(matchId: string, alert: NonNullable<MatchItem['aiAlert']>) {
+    async applyMatchAiAlert(
+      matchId: string,
+      alert: NonNullable<MatchItem["aiAlert"]>
+    ) {
       state = {
         ...state,
         matches: state.matches.map((item) =>
@@ -502,7 +1249,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     async applyComboAiReport(rep: {
-      level: 'high' | 'medium' | 'low';
+      level: "high" | "medium" | "low";
       source: string;
       perMatch: Array<{
         matchId: string;
@@ -521,14 +1268,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
               x.matchId === item.id ||
               (Boolean(item.matchNumStr) && x.matchId === item.matchNumStr) ||
               Boolean(
-                item.matchNumStr && x.matchTitle && x.matchTitle.includes(item.matchNumStr)
+                item.matchNumStr &&
+                x.matchTitle &&
+                x.matchTitle.includes(item.matchNumStr)
               )
           );
           if (!pm) return item;
           return {
             ...item,
             aiAlert: {
-              level: rep.level === 'high' ? 'high' : 'medium',
+              level: rep.level === "high" ? "high" : "medium",
               tag: pm.tag,
               summary: pm.note,
               priceInStatus: pm.priceInStatus,
@@ -541,24 +1290,38 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       await scheduleRefresh();
     },
 
-    togglePick(m: MatchItem, poolCode: PoolCode, optKey: string): TogglePickVerdict {
+    togglePick(
+      m: MatchItem,
+      poolCode: PoolCode,
+      optKey: string
+    ): TogglePickVerdict {
       const currentlyOn = isPicked(m.id, poolCode, optKey);
       if (currentlyOn) {
         const prevPick = state.picks.find(
-          (p) => p.matchId === m.id && p.poolCode === poolCode && p.optionKey === optKey
+          (p) =>
+            p.matchId === m.id &&
+            p.poolCode === poolCode &&
+            p.optionKey === optKey
+        );
+        const nextPicks = state.picks.filter(
+          (p) =>
+            !(
+              p.matchId === m.id &&
+              p.poolCode === poolCode &&
+              p.optionKey === optKey
+            )
         );
         state = {
           ...state,
           planSpec: null,
-          picks: state.picks.filter(
-            (p) => !(p.matchId === m.id && p.poolCode === poolCode && p.optionKey === optKey)
-          ),
+          picks: nextPicks,
+          ...syncAutoRadarFields(nextPicks, state.matches, state),
         };
         emit();
         void scheduleRefresh();
         return {
           ok: true,
-          action: 'removed',
+          action: "removed",
           optionLabel: prevPick?.optionLabel,
           odds: prevPick?.odds,
         };
@@ -566,8 +1329,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
       const pool = m.pools[poolCode];
       const opt = pool?.options.find((o) => o.key === optKey);
-      if (!pool || pool.selling === false || pool.options.length === 0 || !opt || opt.odds <= 0) {
-        return { ok: false, blockedReason: '该玩法或选项当前暂未开售' };
+      if (
+        !pool ||
+        pool.selling === false ||
+        pool.options.length === 0 ||
+        !opt ||
+        opt.odds <= 0
+      ) {
+        return { ok: false, blockedReason: "该玩法或选项当前暂未开售" };
       }
 
       const byMatchPools = new Map<string, Set<PoolCode>>();
@@ -576,7 +1345,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         s.add(p.poolCode);
         byMatchPools.set(p.matchId, s);
       }
-      const existingHasCrossPool = Array.from(byMatchPools.values()).some((s) => s.size > 1);
+      const existingHasCrossPool = Array.from(byMatchPools.values()).some(
+        (s) => s.size > 1
+      );
       const existingDistinctCount = byMatchPools.size;
       const allSingleWithCand =
         state.picks.every(isAuthoritativePickSingle) && Boolean(pool.single);
@@ -584,68 +1355,75 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       if ((existingHasCrossPool || existingDistinctCount > 8) && !pool.single) {
         return {
           ok: false,
-          blockedReason: '当前选单已锁定【单关】模式，无法混入未开单关的选项！',
+          blockedReason: "当前选单已锁定【单关】模式，无法混入未开单关的选项！",
         };
       }
 
       let nextPassSpec = state.passSpec;
-      let autoLockedSingleReason: TogglePickVerdict['autoLockedSingleReason'];
+      let autoLockedSingleReason: TogglePickVerdict["autoLockedSingleReason"];
 
       const sameMatchOther = state.picks.filter(
         (p) => p.matchId === m.id && p.poolCode !== poolCode
       );
       if (sameMatchOther.length > 0) {
         const isSpfDualSinglePair =
-          (state.mode === 'spf' || state.mode === 'single') &&
+          (state.mode === "spf" || state.mode === "single") &&
           allSingleWithCand &&
-          (poolCode === 'HAD' || poolCode === 'HHAD') &&
-          sameMatchOther.every((p) => p.poolCode === 'HAD' || p.poolCode === 'HHAD');
+          (poolCode === "HAD" || poolCode === "HHAD") &&
+          sameMatchOther.every(
+            (p) => p.poolCode === "HAD" || p.poolCode === "HHAD"
+          );
 
         if (!isSpfDualSinglePair) {
           return {
             ok: false,
             blockedReason:
-              '同一场比赛只能选择一种玩法进行串关计算；如需改选其他玩法，请先取消本场已选项',
+              "同一场比赛只能选择一种玩法进行串关计算；如需改选其他玩法，请先取消本场已选项",
           };
         }
-        nextPassSpec = { mode: 'free', passSizes: [1] };
-        autoLockedSingleReason = 'dual-single';
+        nextPassSpec = { mode: "free", passSizes: [1] };
+        autoLockedSingleReason = "dual-single";
       } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 15) {
-        return { ok: false, blockedReason: '单次选单最多不能超过 15 场赛事' };
+        return { ok: false, blockedReason: "单次选单最多不能超过 15 场赛事" };
       } else if (!byMatchPools.has(m.id) && existingDistinctCount >= 8) {
-        if ((state.mode !== 'spf' && state.mode !== 'single') || !allSingleWithCand) {
-          return { ok: false, blockedReason: '过关数量不能超过 8 场赛事' };
+        if (
+          (state.mode !== "spf" && state.mode !== "single") ||
+          !allSingleWithCand
+        ) {
+          return { ok: false, blockedReason: "过关数量不能超过 8 场赛事" };
         }
-        nextPassSpec = { mode: 'free', passSizes: [1] };
-        autoLockedSingleReason = 'over-8-matches';
+        nextPassSpec = { mode: "free", passSizes: [1] };
+        autoLockedSingleReason = "over-8-matches";
       }
 
+      const nextPicks: SelectedPick[] = [
+        ...state.picks,
+        {
+          matchId: m.id,
+          matchNumStr: m.matchNumStr,
+          home: m.home,
+          away: m.away,
+          poolCode,
+          poolName: pool.name,
+          singleAllowed: pool.single,
+          optionKey: opt.key,
+          optionLabel: opt.label,
+          odds: opt.odds,
+          fairProb: opt.fairProb,
+        },
+      ];
       state = {
         ...state,
         planSpec: null,
         passSpec: nextPassSpec,
-        picks: [
-          ...state.picks,
-          {
-            matchId: m.id,
-            matchNumStr: m.matchNumStr,
-            home: m.home,
-            away: m.away,
-            poolCode,
-            poolName: pool.name,
-            singleAllowed: pool.single,
-            optionKey: opt.key,
-            optionLabel: opt.label,
-            odds: opt.odds,
-            fairProb: opt.fairProb,
-          },
-        ],
+        picks: nextPicks,
+        ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
       emit();
       void scheduleRefresh();
       return {
         ok: true,
-        action: 'added',
+        action: "added",
         optionLabel: opt.label,
         odds: opt.odds,
         autoLockedSingleReason,
@@ -657,12 +1435,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       let nextPassSpec = state.passSpec;
       let trimmed = false;
 
-      if (nextMode !== 'spf' && nextMode !== 'single') {
+      if (nextMode !== "spf" && nextMode !== "single") {
         const res = trimToSinglePoolPerMatch(state.picks);
         nextPicks = res.cleaned;
         trimmed = res.trimmed;
         if (trimmed) {
-          nextPassSpec = { mode: 'auto' };
+          nextPassSpec = { mode: "auto" };
         }
       }
 
@@ -671,6 +1449,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         mode: nextMode,
         picks: nextPicks,
         passSpec: nextPassSpec,
+        ...(trimmed
+          ? syncAutoRadarFields(nextPicks, state.matches, state)
+          : {}),
       };
       emit();
       if (trimmed) void scheduleRefresh();
@@ -678,21 +1459,27 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     clearPicks() {
+      const resetOverrideState = { ...state, manualPoolOverride: false };
       state = {
-        ...state,
+        ...resetOverrideState,
         picks: [],
         planSpec: null,
-        passSpec: { mode: 'auto' },
+        passSpec: { mode: "auto" },
+        ...(autoSyncRadar
+          ? syncAutoRadarFields([], state.matches, resetOverrideState)
+          : {}),
       };
       emit();
       void scheduleRefresh();
     },
 
     removeMatchFromSlip(matchId: string) {
+      const nextPicks = state.picks.filter((p) => p.matchId !== matchId);
       state = {
         ...state,
         planSpec: null,
-        picks: state.picks.filter((p) => p.matchId !== matchId),
+        picks: nextPicks,
+        ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
       emit();
       void scheduleRefresh();
@@ -702,8 +1489,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: 'auto' },
+        passSpec: { mode: "auto" },
         picks: nextPicks,
+        ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
       emit();
       void scheduleRefresh();
@@ -713,7 +1501,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: 'auto' },
+        passSpec: { mode: "auto" },
       };
       emit();
       void scheduleRefresh();
@@ -739,14 +1527,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       const manualReport = state.workspace.manualReport;
       const opt = manualReport.availableFreePasses.find((f) => f.size === size);
       if (!opt || !opt.enabled) {
-        return { ok: false, reason: opt?.disabledReason || '当前选单不满足该过关条件' };
+        return {
+          ok: false,
+          reason: opt?.disabledReason || "当前选单不满足该过关条件",
+        };
       }
       const currentActive = manualReport.activeComboCode
         ? []
-        : manualReport.availableFreePasses.filter((f) => f.active).map((f) => f.size);
+        : manualReport.availableFreePasses
+            .filter((f) => f.active)
+            .map((f) => f.size);
       const exists = currentActive.includes(size);
       if (exists && currentActive.length <= 1) {
-        return { ok: false, reason: '至少需保留一种过关方式' };
+        return { ok: false, reason: "至少需保留一种过关方式" };
       }
       const nextSizes = exists
         ? currentActive.filter((s) => s !== size)
@@ -754,7 +1547,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: 'free', passSizes: nextSizes },
+        passSpec: { mode: "free", passSizes: nextSizes },
       };
       emit();
       void scheduleRefresh();
@@ -763,12 +1556,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
     selectComboPass(code: string): { ok: boolean; reason?: string } {
       const manualReport = state.workspace.manualReport;
-      const opt = manualReport.availableComboPasses.find((c) => c.code === code);
+      const opt = manualReport.availableComboPasses.find(
+        (c) => c.code === code
+      );
       if (!opt || !opt.enabled) {
-        return { ok: false, reason: opt?.disabledReason || '当前选单不可选该多串组合' };
+        return {
+          ok: false,
+          reason: opt?.disabledReason || "当前选单不可选该多串组合",
+        };
       }
       const nextSpec: PassSelectionSpec =
-        manualReport.activeComboCode === code ? { mode: 'auto' } : { mode: 'combo', comboCode: code };
+        manualReport.activeComboCode === code
+          ? { mode: "auto" }
+          : { mode: "combo", comboCode: code };
       state = {
         ...state,
         planSpec: null,
@@ -779,21 +1579,34 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       return { ok: true };
     },
 
-    applyBonusOptimization(optMode: BonusOptMode): { ok: boolean; modeTitle?: string } {
-      if (state.workspace.manualReport.combos.length === 0) return { ok: false };
+    applyBonusOptimization(optMode: BonusOptMode): {
+      ok: boolean;
+      modeTitle?: string;
+    } {
+      if (state.workspace.manualReport.combos.length === 0)
+        return { ok: false };
       state = {
         ...state,
-        planSpec: { kind: 'bonus', optMode, scaleMultiple: 1 },
+        planSpec: { kind: "bonus", optMode, scaleMultiple: 1 },
       };
       emit();
       void scheduleRefresh();
       const modeTitle =
-        optMode === 'equal' ? '平均优化' : optMode === 'hot-first' ? '博热保本' : '博冷高弹';
+        optMode === "equal"
+          ? "平均优化"
+          : optMode === "hot-first"
+            ? "博热保本"
+            : "博冷高弹";
       return { ok: true, modeTitle };
     },
 
     applyArchetype(plan: ArchetypePlan): boolean {
-      if (!plan || plan.available === false || !Array.isArray(plan.lines) || plan.lines.length === 0) {
+      if (
+        !plan ||
+        plan.available === false ||
+        !Array.isArray(plan.lines) ||
+        plan.lines.length === 0
+      ) {
         return false;
       }
       const primaryPoolByMatch = new Map<string, PoolCode>();
@@ -828,7 +1641,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       });
       state = {
         ...state,
-        planSpec: { kind: 'archetype', key: plan.key, snapshotPlan: plan, scaleMultiple: 1 },
+        planSpec: {
+          kind: "archetype",
+          key: plan.key,
+          snapshotPlan: plan,
+          scaleMultiple: 1,
+        },
         simVoidFirstMatch: false,
         subjectiveDeltaPct: 0,
         picks: orderedPicks,
@@ -869,14 +1687,18 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             p.matchId === fm.id &&
             (!targetPools.has(p.poolCode) ||
               arb.worsePicks.some(
-                (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
+                (wp) =>
+                  wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
               ))
           )
       );
       const additions: SelectedPick[] = [];
       for (const bp of arb.betterPicks) {
         const already = cleaned.some(
-          (p) => p.matchId === fm.id && p.poolCode === bp.poolCode && p.optionKey === bp.optionKey
+          (p) =>
+            p.matchId === fm.id &&
+            p.poolCode === bp.poolCode &&
+            p.optionKey === bp.optionKey
         );
         if (already) continue;
         const pool = fm.pools[bp.poolCode];
@@ -896,10 +1718,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           fairProb: opt.fairProb,
         });
       }
+      const nextPicks = [...cleaned, ...additions];
       state = {
         ...state,
         planSpec: null,
-        picks: [...cleaned, ...additions],
+        picks: nextPicks,
+        ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
       emit();
       void scheduleRefresh();
@@ -914,6 +1738,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         ...state,
         targetIds: syncedIds,
         anchorToRadarPicks: true,
+        manualPoolOverride: false,
         syncedRadarSig: buildRadarSignature(state.picks),
       };
       emit();
@@ -928,15 +1753,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       let nextTargets: string[];
       if (valid.includes(matchId)) {
         if (valid.length <= 1) {
-          return { ok: false, reason: '至少保留 1 场目标比赛' };
+          return { ok: false, reason: "至少保留 1 场目标比赛" };
         }
         nextTargets = valid.filter((k) => k !== matchId);
       } else {
-        nextTargets = valid.length >= 8 ? [...valid.slice(1), matchId] : [...valid, matchId];
+        nextTargets =
+          valid.length >= 8
+            ? [...valid.slice(1), matchId]
+            : [...valid, matchId];
       }
       state = {
         ...state,
         anchorToRadarPicks: false,
+        manualPoolOverride: true,
         targetIds: nextTargets,
       };
       emit();
@@ -948,22 +1777,40 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         anchorToRadarPicks: false,
-        targetIds: state.matches.slice(0, Math.max(1, Math.min(8, count))).map((x) => x.id),
+        manualPoolOverride: true,
+        targetIds: state.matches
+          .slice(0, Math.max(1, Math.min(8, count)))
+          .map((x) => x.id),
       };
       emit();
       void scheduleRefresh();
     },
 
     setAnchorToRadarPicks(val: boolean) {
-      state = { ...state, anchorToRadarPicks: val };
+      const pickedIds = Array.from(
+        new Set(state.picks.map((p) => p.matchId))
+      ).slice(0, 8);
+      state = {
+        ...state,
+        anchorToRadarPicks: val,
+        manualPoolOverride: !val,
+        ...(val && pickedIds.length > 0
+          ? {
+              targetIds: pickedIds,
+              syncedRadarSig: buildRadarSignature(state.picks),
+            }
+          : {}),
+      };
       emit();
       void scheduleRefresh();
     },
 
-    setBudget(nextBudget: number) {
-      state = { ...state, budget: nextBudget };
+    setBudget(nextBudget: number): number {
+      const normalized = normalizeBudgetYuan(nextBudget);
+      state = { ...state, budget: normalized };
       emit();
       void scheduleRefresh();
+      return normalized;
     },
 
     setStance(nextStance: UserStance) {
@@ -995,11 +1842,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: 'auto' },
+        passSpec: { mode: "auto" },
         simVoidFirstMatch: false,
         subjectiveDeltaPct: 0,
         multiple: built.multiple,
         picks: built.picks,
+        ...syncAutoRadarFields(built.picks, state.matches, state),
       };
       emit();
       void scheduleRefresh();

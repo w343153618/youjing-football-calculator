@@ -1,34 +1,34 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   askManualAssistant,
   type ManualAskResponse,
 } from "../security/secureClient";
 import { playTactileCue } from "../spring/tactileSymphony";
+import {
+  MANUAL_TOPICS,
+  matchManualTopics,
+  resolveManualNavigation,
+  type ManualNavigationState,
+  type ManualSectionId,
+  type PresetScenarioKind,
+} from "../workspace/betSlipController";
 
-export type ManualSectionId =
-  | "qa"
-  | "quickstart"
-  | "sandbox"
-  | "optimizer"
-  | "archetypes"
-  | "glossary"
-  | "hedge"
-  | "xiaogao";
+export { MANUAL_TOPICS, type ManualSectionId };
 
-interface ManualTopic {
-  id: ManualSectionId;
-  shortTitle: string;
-  badge: string;
-  title: string;
-  subtitle: string;
-  keywords: string[];
-}
+const MANUAL_TAB_META: Partial<
+  Record<ManualSectionId, { shortTitle: string }>
+> = {
+  archetypes: { shortTitle: "3+1精算配单" },
+};
 
 const QUICK_QA_PILLS = [
   "3+1 精算配单四档方案有什么区别？",
   "为什么错价雷达会显示空仓？",
   "什么是旋转矩阵缩水？",
   "什么是跨盘联合校准？",
+  "10元预算怎么配单？",
+  "看球直觉倾向偏主队改变了什么？",
+  "联合会诊和精算配单怎么协同？",
   "精算配单里的「🎯 一键匹配赛事雷达已选球队」有什么用？",
   "为什么同一场比赛选了胜平负后，不能再点让球平？",
   "底部常驻「过关选择」里的自由过关和 3串4/4串11 有什么区别？",
@@ -42,169 +42,26 @@ const QUICK_QA_PILLS = [
   "扫地僧小高怎么同时诊断我买的 3 场串关？",
 ];
 
-export const MANUAL_TOPICS: ManualTopic[] = [
-  {
-    id: "qa",
-    shortTitle: "💬 智能提问",
-    badge: "00 · 说明书专属问答助手",
-    title: "看不懂某个按钮或名词？直接点选或输入提问",
-    subtitle:
-      "100% 基于本计算器真实功能通俗举例作答（仅限说明书范畴，严禁探底与无关闲聊）",
-    keywords: ["提问", "问答", "不懂", "怎么用", "什么意思", "助手"],
-  },
-  {
-    id: "quickstart",
-    shortTitle: "快速上手&箭头",
-    badge: "01 · 入门全流程与盘面符号",
-    title: "30 秒看懂「优竞体育内部专用」五步精算闭环与红绿箭头",
-    subtitle:
-      "从同步实盘水位、看懂红升 ▲ 绿降 ▼ 箭头与去水真率，到店面防错打票的完整闭环",
-    keywords: [
-      "入门",
-      "流程",
-      "同步",
-      "红绿箭头",
-      "红箭头",
-      "绿箭头",
-      "单关",
-      "混合过关",
-    ],
-  },
-  {
-    id: "sandbox",
-    shortTitle: "滑块沙盒&6仪表",
-    badge: "02 · 每一个滑块与数字逐个拆解",
-    title: "主观胜率滑块往左拉还是往右拉？五维透视舱 6 块仪表怎么读？",
-    subtitle:
-      "手把手拆解信心微调百分比、期望 EV 正负临界点、首场腰斩按 1.0 预演与六大核心指标",
-    keywords: [
-      "主观胜率",
-      "信心微调",
-      "沙盒",
-      "往左拉",
-      "往右拉",
-      "EV",
-      "期望",
-      "腰斩",
-      "延期",
-      "1.0",
-      "五维",
-      "危险分",
-      "保底奖金",
-    ],
-  },
-  {
-    id: "optimizer",
-    shortTitle: "三种奖金优化",
-    badge: "03 · 核心分倍引擎详解",
-    title: "平均优化 / 博热保本 / 博冷高弹到底怎么分钱？我该选哪个？",
-    subtitle:
-      "用 ¥100 真金算账对比「官方等倍复式」为什么会中奖亏钱，以及三档智能分倍如何救命增收",
-    keywords: [
-      "平均优化",
-      "博热保本",
-      "博冷高弹",
-      "奖金优化",
-      "分倍",
-      "等倍",
-      "假中奖",
-      "保本",
-    ],
-  },
-  {
-    id: "archetypes",
-    shortTitle: "3+1精算配单",
-    badge: "04 · 帕累托精算配单矩阵",
-    title: "自由圈定 1～8 场心仪比赛后，3+1 精算配单四档方案分别适合什么战况？",
-    subtitle:
-      "稳健保本 · 期望效用 · 容错缩水（旋转矩阵） · 错价雷达（宁缺毋滥·无洼地空仓）",
-    keywords: [
-      "精算配单",
-      "3+1",
-      "五流派",
-      "8场",
-      "多场",
-      "稳健保本",
-      "期望效用",
-      "容错缩水",
-      "旋转矩阵",
-      "错价雷达",
-      "空仓",
-      "36%",
-      "轻仓",
-    ],
-  },
-  {
-    id: "glossary",
-    shortTitle: "精算名词词典",
-    badge: "05 · 专有名词大白话图解",
-    title:
-      "Shin+五池联合校准、返还率、泊松xG、一球卡盘、同义差价、合成单关全解",
-    subtitle: "把跨盘联合校准与体彩精算数学翻译成菜市场算账一样直白的图文案例",
-    keywords: [
-      "Shin",
-      "五池联合校准",
-      "跨盘联合校准",
-      "比赛节奏",
-      "返还率",
-      "抽水",
-      "去水",
-      "真率",
-      "xG",
-      "预期进球",
-      "卡盘",
-      "一球",
-      "同义",
-      "差价",
-      "合成单关",
-      "四舍六入五成双",
-      "封顶",
-    ],
-  },
-  {
-    id: "hedge",
-    shortTitle: "早晚场锁利",
-    badge: "06 · 实战进阶稳赚武器",
-    title: "早晚场时间差 100% 锁利对冲四步法 & 串关“拖油瓶”剔除体检",
-    subtitle:
-      "利用 ≥110 分钟开球时间差在半夜睡觉前锁死确定性纯利，一键砍掉高抽水拖累腿场次",
-    keywords: ["对冲", "时间差", "早晚场", "锁利", "补单", "拖油瓶", "砍掉"],
-  },
-  {
-    id: "xiaogao",
-    shortTitle: "小高双模&消化度",
-    badge: "07 · 单场点诊 + 多场串关会诊 + Price-In",
-    title: "扫地僧小高单场点诊 vs 多场串关联合会诊 & 消息入价消化度图解",
-    subtitle:
-      "不买也能单点看排雷，买了 3 场可一键联合会诊找短板，三秒识破“已消化接盘旧闻”",
-    keywords: [
-      "扫地僧小高",
-      "排雷",
-      "联合会诊",
-      "多场诊断",
-      "单场",
-      "Price-In",
-      "消化度",
-      "消息入价",
-      "模拟单",
-      "止损",
-    ],
-  },
-];
-
 export function UserManualModal({
   open,
   initialSection = "sandbox",
   onClose,
   onQuotaUpdate,
+  onLoadPresetScenario,
 }: {
   open: boolean;
   initialSection?: ManualSectionId;
   onClose: () => void;
   onQuotaUpdate?: (remaining?: number) => void;
+  onLoadPresetScenario?: (kind: PresetScenarioKind) => void;
 }) {
-  const [activeSec, setActiveSec] = useState<ManualSectionId>(initialSection);
-  const [query, setQuery] = useState("");
+  const [navState, setNavState] = useState<ManualNavigationState>({
+    activeSec: initialSection,
+    query: "",
+    scrollSeq: 0,
+    highlightSec: null,
+  });
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   // Manual Q&A state
   const [askInput, setAskInput] = useState("");
@@ -216,34 +73,55 @@ export function UserManualModal({
 
   useEffect(() => {
     if (open && initialSection) {
-      setActiveSec(initialSection);
+      setNavState((prev) => ({
+        ...prev,
+        activeSec: initialSection,
+        scrollSeq: prev.scrollSeq + 1,
+        highlightSec: null,
+      }));
     }
   }, [open, initialSection]);
 
+  useEffect(() => {
+    if (!open || !bodyRef.current) return;
+    bodyRef.current.scrollTo({ top: 0, behavior: "smooth" });
+  }, [open, navState.scrollSeq]);
+
+  useEffect(() => {
+    if (!navState.highlightSec) return;
+    const timer = window.setTimeout(() => {
+      setNavState((prev) => ({ ...prev, highlightSec: null }));
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [navState.highlightSec, navState.scrollSeq]);
+
   if (!open) return null;
 
-  const trimmed = query.trim().toLowerCase();
-  const matchedTopics = trimmed
-    ? MANUAL_TOPICS.filter(
-        (t) =>
-          t.title.toLowerCase().includes(trimmed) ||
-          t.subtitle.toLowerCase().includes(trimmed) ||
-          t.shortTitle.toLowerCase().includes(trimmed) ||
-          t.keywords.some((k) => k.toLowerCase().includes(trimmed))
-      )
-    : MANUAL_TOPICS;
-
+  const matchedTopics = matchManualTopics(navState.query, MANUAL_TOPICS);
   const currentTopic =
-    matchedTopics.find((t) => t.id === activeSec) ??
-    matchedTopics[0] ??
-    MANUAL_TOPICS[0];
+    MANUAL_TOPICS.find((t) => t.id === navState.activeSec) ?? MANUAL_TOPICS[0];
+
+  const handleJumpSection = (
+    targetSec: ManualSectionId,
+    fromJumpBtn = false
+  ) => {
+    playTactileCue("tap-on");
+    setNavState((prev) =>
+      resolveManualNavigation(prev, {
+        type: fromJumpBtn ? "jump" : "select-tab",
+        targetSec,
+      })
+    );
+  };
 
   const submitManualQuestion = async (rawQ: string) => {
     const clean = rawQ.trim();
     if (!clean || asking) return;
     setAsking(true);
     setQaError(null);
-    setActiveSec("qa");
+    setNavState((prev) =>
+      resolveManualNavigation(prev, { type: "select-tab", targetSec: "qa" })
+    );
     playTactileCue("radar-ping");
     try {
       const res = await askManualAssistant(clean);
@@ -314,26 +192,29 @@ export function UserManualModal({
             </svg>
             <input
               type="text"
-              value={query}
+              value={navState.query}
               onChange={(e) => {
-                setQuery(e.target.value);
-                const q = e.target.value.trim().toLowerCase();
-                if (q) {
-                  const hit = MANUAL_TOPICS.find(
-                    (t) =>
-                      t.title.toLowerCase().includes(q) ||
-                      t.keywords.some((k) => k.toLowerCase().includes(q))
-                  );
-                  if (hit) setActiveSec(hit.id);
-                }
+                const nextQuery = e.target.value;
+                setNavState((prev) =>
+                  resolveManualNavigation(prev, {
+                    type: "search",
+                    query: nextQuery,
+                  })
+                );
               }}
-              placeholder="快速搜章节：3+1精算配单、旋转矩阵、错价雷达空仓、五池联合校准、主观胜率滑块、Price-In..."
+              placeholder="快速搜章节：一球小胜卡盘、3+1精算配单、旋转矩阵、错价雷达空仓、10元预算..."
             />
-            {query && (
+            {navState.query && (
               <button
                 type="button"
                 className="manual-clear"
-                onClick={() => setQuery("")}
+                onClick={() =>
+                  setNavState((prev) =>
+                    resolveManualNavigation(prev, {
+                      type: "clear-search",
+                    })
+                  )
+                }
               >
                 清空
               </button>
@@ -347,10 +228,10 @@ export function UserManualModal({
                 <button
                   key={t.id}
                   type="button"
-                  onClick={() => setActiveSec(t.id)}
+                  onClick={() => handleJumpSection(t.id, false)}
                   className={`manual-tab ${currentTopic.id === t.id ? "on" : ""} ${!isHit ? "dim" : ""}`}
                 >
-                  {t.shortTitle}
+                  {MANUAL_TAB_META[t.id]?.shortTitle ?? t.shortTitle}
                 </button>
               );
             })}
@@ -358,8 +239,14 @@ export function UserManualModal({
         </div>
 
         {/* Rich Illustrated Content Body */}
-        <div className="manual-body">
-          <div className="manual-hero-banner">
+        <div className="manual-body" ref={bodyRef}>
+          <div
+            className={`manual-hero-banner ${
+              navState.highlightSec === currentTopic.id
+                ? "jump-focus-pulse"
+                : ""
+            }`}
+          >
             <span className="manual-sec-badge">{currentTopic.badge}</span>
             <h3>{currentTopic.title}</h3>
             <p>{currentTopic.subtitle}</p>
@@ -478,7 +365,9 @@ export function UserManualModal({
                       <button
                         type="button"
                         className="key mini dark"
-                        onClick={() => setActiveSec(item.res.jumpSection!)}
+                        onClick={() =>
+                          handleJumpSection(item.res.jumpSection!, true)
+                        }
                       >
                         📖 跳转查看该功能完整矢量图解 ›
                       </button>
@@ -634,6 +523,49 @@ export function UserManualModal({
                   ))}
                 </svg>
               </div>
+
+              {onLoadPresetScenario && (
+                <div className="manual-card" style={{ marginBottom: 12 }}>
+                  <h4 style={{ marginTop: 0 }}>
+                    🎬 经典精算教学牌例（一键载入到③审单台实操体验）
+                  </h4>
+                  <p style={{ marginBottom: 10 }}>
+                    把首屏空间留给真实选球，教学演示统一收纳于此；点任一牌例立即载入对应典型对阵并进入审单锁利：
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    <button
+                      type="button"
+                      className="key sm"
+                      onClick={() => {
+                        onLoadPresetScenario("underwater");
+                        onClose();
+                      }}
+                    >
+                      ⚠️ 演练：等倍复式「假中奖倒贴」陷阱
+                    </button>
+                    <button
+                      type="button"
+                      className="key sm"
+                      onClick={() => {
+                        onLoadPresetScenario("hedge2");
+                        onClose();
+                      }}
+                    >
+                      ⏰ 演练：早晚场时间差对冲锁利
+                    </button>
+                    <button
+                      type="button"
+                      className="key sm"
+                      onClick={() => {
+                        onLoadPresetScenario("parlay4");
+                        onClose();
+                      }}
+                    >
+                      📉 演练：4串1连乘抽水雪崩效应
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="manual-grid-2">
                 <div className="manual-card">
@@ -2036,7 +1968,7 @@ export function UserManualModal({
               <button
                 type="button"
                 className="key sm"
-                onClick={() => setActiveSec("qa")}
+                onClick={() => handleJumpSection("qa", false)}
               >
                 💬 还有疑问？点此智能提问
               </button>
