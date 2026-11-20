@@ -177,11 +177,18 @@ export interface TruthReport {
   likelyRange: [number, number];
   anyWinProb: number;
   realProfitProb: number;
+  strictNetGainProb: number;
+  breakEvenProb: number;
   underwaterCount: number;
   underwaterShareOfWins: number;
   avgPayoutRatio: number;
   avgVigLossPer100: number;
   expectedValueRate: number;
+  objectiveEVRate: number;
+  objectiveProfitProb: number;
+  objectiveStrictNetGainProb: number;
+  subjectiveProjectedEVRate?: number | null;
+  subjectiveProjectedProfitProb?: number | null;
   dangerScore: number;
   effectiveOdds: number;
   breakevenUpgradeCost: number | null;
@@ -235,7 +242,14 @@ export interface ArchetypePlan {
   maxReturn: number;
   winProb: number;
   profitProb: number;
+  strictNetGainProb?: number;
+  breakEvenProb?: number;
   expectedValueRate: number;
+  objectiveEVRate?: number;
+  objectiveProfitProb?: number;
+  objectiveStrictNetGainProb?: number;
+  subjectiveProjectedEVRate?: number | null;
+  subjectiveProjectedProfitProb?: number | null;
   underwaterCount: number;
   zeroPayoutProb?: number | null;
   wipeoutMiss2Prob?: number | null;
@@ -343,11 +357,18 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   likelyRange: [0, 0],
   anyWinProb: 0,
   realProfitProb: 0,
+  strictNetGainProb: 0,
+  breakEvenProb: 0,
   underwaterCount: 0,
   underwaterShareOfWins: 0,
   avgPayoutRatio: 0,
   avgVigLossPer100: 0,
   expectedValueRate: 0,
+  objectiveEVRate: 0,
+  objectiveProfitProb: 0,
+  objectiveStrictNetGainProb: 0,
+  subjectiveProjectedEVRate: null,
+  subjectiveProjectedProfitProb: null,
   dangerScore: 0,
   effectiveOdds: 0,
   breakevenUpgradeCost: null,

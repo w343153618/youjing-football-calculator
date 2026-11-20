@@ -1225,71 +1225,122 @@ function kCombinations(n, k) {
  * verifies zero optimality gap for Slot ① (max-profit-prob).
  */
 function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
-  const maxNotes = Math.max(1, Math.floor(budgetYuan / 2));
-  const solveSet = (cands) => {
+  const maxNotes = Math.max(1, Math.min(500, Math.floor(budgetYuan / 2)));
+  const M = matches.length;
+  const fullMask = (1 << M) - 1;
+  const maxLinesCap = 64;
+
+  const solveSet = (cands, requireFullSlate = true) => {
     let best = 0;
+    const sorted = [...cands]
+      .filter((c) => c.unitPayout > 2.0 && c.prob > 0)
+      .sort(
+        (a, b) =>
+          b.prob - a.prob || b.prob * b.unitPayout - a.prob * a.unitPayout
+      );
+    if (sorted.length === 0) return 0;
+
     for (let N = 1; N <= maxNotes; N++) {
       const cost = 2 * N - 1e-12;
-      const dp = new Float64Array(N + 1).fill(-1);
-      dp[0] = 0;
-      for (let i = 0; i < cands.length; i++) {
-        const w = Math.max(1, Math.ceil(cost / cands[i].unitPayout));
-        if (w > N) continue;
-        const p = cands[i].prob;
-        for (let cap = N; cap >= w; cap--) {
-          if (dp[cap - w] >= 0 && dp[cap - w] + p > dp[cap]) {
-            dp[cap] = dp[cap - w] + p;
+      if (!requireFullSlate || cands.every((c) => c.mMask === fullMask)) {
+        const dp = new Float64Array(N + 1).fill(-1);
+        const cnt = new Int16Array(N + 1);
+        dp[0] = 0;
+        let w1Shown = 0;
+        for (let i = 0; i < sorted.length; i++) {
+          const w = Math.max(1, Math.ceil(cost / sorted[i].unitPayout));
+          if (w > N || w > 999) continue;
+          if (w === 1) {
+            if (w1Shown >= maxLinesCap) continue;
+            w1Shown++;
+          }
+          const p = sorted[i].prob;
+          for (let cap = N; cap >= w; cap--) {
+            if (
+              dp[cap - w] >= 0 &&
+              cnt[cap - w] + 1 <= maxLinesCap &&
+              dp[cap - w] + p > dp[cap] + 1e-15
+            ) {
+              dp[cap] = dp[cap - w] + p;
+              cnt[cap] = cnt[cap - w] + 1;
+            }
           }
         }
-      }
-      for (let cap = 1; cap <= N; cap++) {
-        if (dp[cap] > best) best = dp[cap];
+        for (let cap = 1; cap <= N; cap++) {
+          if (dp[cap] > best) best = dp[cap];
+        }
+      } else {
+        // Track exact match-coverage mask on M = 2 hybrid sets
+        const dpMask = Array.from({ length: fullMask + 1 }, () =>
+          new Float64Array(N + 1).fill(-1)
+        );
+        dpMask[0][0] = 0;
+        for (let i = 0; i < sorted.length; i++) {
+          const w = Math.max(1, Math.ceil(cost / sorted[i].unitPayout));
+          if (w > N || w > 999) continue;
+          const p = sorted[i].prob;
+          const mm = sorted[i].mMask;
+          for (let cap = N; cap >= w; cap--) {
+            for (let msk = fullMask; msk >= 0; msk--) {
+              const prev = dpMask[msk][cap - w];
+              if (prev >= 0) {
+                const nm = msk | mm;
+                if (prev + p > dpMask[nm][cap] + 1e-15) {
+                  dpMask[nm][cap] = prev + p;
+                }
+              }
+            }
+          }
+        }
+        for (let cap = 1; cap <= N; cap++) {
+          if (dpMask[fullMask][cap] > best) best = dpMask[fullMask][cap];
+        }
       }
     }
     return best;
   };
 
   let bestGlobal = 0;
-  for (const m of matches) {
+  if (M === 1) {
+    const m = matches[0];
     for (const code of ALL_POOL_CODES) {
       const pool = m.pools[code];
       if (!pool || pool.selling === false || !pool.single) continue;
       const set = pool.options.map((o) => ({
         prob: o.fairProb,
         unitPayout: Math.min(100_000, bankerRoundParlayUnitPayout([o.odds])),
+        mMask: 1,
       }));
-      const p = solveSet(set);
+      const p = solveSet(set, false);
       if (p > bestGlobal) bestGlobal = p;
     }
+    return bestGlobal;
   }
-  for (let i = 0; i < matches.length; i++) {
-    for (let j = i + 1; j < matches.length; j++) {
-      for (const c1 of ["HAD", "HHAD"]) {
-        const p1 = matches[i].pools[c1];
-        if (!p1 || p1.selling === false) continue;
-        for (const c2 of ["HAD", "HHAD"]) {
-          const p2 = matches[j].pools[c2];
-          if (!p2 || p2.selling === false) continue;
-          const set = [];
-          for (const o1 of p1.options) {
-            for (const o2 of p2.options) {
-              set.push({
-                prob: o1.fairProb * o2.fairProb,
-                unitPayout: Math.min(
-                  200_000,
-                  bankerRoundParlayUnitPayout([o1.odds, o2.odds])
-                ),
-              });
-            }
+
+  if (M === 2) {
+    for (const c1 of ["HAD", "HHAD"]) {
+      const p1 = matches[0].pools[c1];
+      if (!p1 || p1.selling === false) continue;
+      for (const c2 of ["HAD", "HHAD"]) {
+        const p2 = matches[1].pools[c2];
+        if (!p2 || p2.selling === false) continue;
+        const set = [];
+        for (const o1 of p1.options) {
+          for (const o2 of p2.options) {
+            set.push({
+              prob: o1.fairProb * o2.fairProb,
+              unitPayout: Math.min(
+                200_000,
+                bankerRoundParlayUnitPayout([o1.odds, o2.odds])
+              ),
+              mMask: 3,
+            });
           }
-          const p = solveSet(set);
-          if (p > bestGlobal) bestGlobal = p;
         }
+        const p = solveSet(set, true);
+        if (p > bestGlobal) bestGlobal = p;
       }
     }
-  }
-  // Hybrid [single on single-open Match i + 2串1 on complement x Match j] pairwise-disjoint sets on M = 2
-  if (matches.length === 2) {
     for (let i = 0; i < 2; i++) {
       const j = 1 - i;
       for (const cS of ["HAD", "HHAD"]) {
@@ -1299,8 +1350,8 @@ function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
         for (const cP of ["HAD", "HHAD"]) {
           const pP = matches[j].pools[cP];
           if (!pP || pP.selling === false || pP.options.length === 0) continue;
-          const fullMask = (1 << pS.options.length) - 1;
-          for (let sMask = 1; sMask < fullMask; sMask++) {
+          const fMask = (1 << pS.options.length) - 1;
+          for (let sMask = 1; sMask < fMask; sMask++) {
             const set = [];
             for (let a = 0; a < pS.options.length; a++) {
               const oS = pS.options[a];
@@ -1311,6 +1362,7 @@ function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
                     100_000,
                     bankerRoundParlayUnitPayout([oS.odds])
                   ),
+                  mMask: 1 << i,
                 });
               } else {
                 for (const oP of pP.options) {
@@ -1320,16 +1372,65 @@ function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
                       200_000,
                       bankerRoundParlayUnitPayout([oS.odds, oP.odds])
                     ),
+                    mMask: 3,
                   });
                 }
               }
             }
-            const p = solveSet(set);
+            const p = solveSet(set, true);
             if (p > bestGlobal) bestGlobal = p;
           }
         }
       }
     }
+    return bestGlobal;
+  }
+
+  const primPools = matches.map((m) =>
+    m.pools.HAD?.selling !== false && m.pools.HAD?.options?.length >= 2
+      ? "HAD"
+      : "HHAD"
+  );
+  const bestEffPools = matches.map((m) => {
+    const hadOk =
+      m.pools.HAD?.selling !== false && m.pools.HAD?.options?.length >= 2;
+    const hhadOk =
+      m.pools.HHAD?.selling !== false && m.pools.HHAD?.options?.length >= 2;
+    if (hadOk && hhadOk) {
+      return (m.pools.HHAD.payoutRatio ?? 0.88) >
+        (m.pools.HAD.payoutRatio ?? 0.88) + 0.005
+        ? "HHAD"
+        : "HAD";
+    }
+    return hadOk ? "HAD" : "HHAD";
+  });
+  const profiles = [primPools];
+  if (M <= 5 && bestEffPools.join(",") !== primPools.join(",")) {
+    profiles.push(bestEffPools);
+  }
+  const cap = statutorySingleBetCap(M);
+  for (const prof of profiles) {
+    let tuples = [{ prob: 1, odds: [] }];
+    for (let idx = 0; idx < M; idx++) {
+      const opts = matches[idx].pools[prof[idx]]?.options ?? [];
+      const next = [];
+      for (const prev of tuples) {
+        for (const o of opts) {
+          next.push({
+            prob: prev.prob * o.fairProb,
+            odds: [...prev.odds, o.odds],
+          });
+        }
+      }
+      tuples = next;
+    }
+    const set = tuples.map((t) => ({
+      prob: t.prob,
+      unitPayout: Math.min(cap, bankerRoundParlayUnitPayout(t.odds)),
+      mMask: fullMask,
+    }));
+    const p = solveSet(set, true);
+    if (p > bestGlobal) bestGlobal = p;
   }
   return bestGlobal;
 }
@@ -1701,6 +1802,45 @@ function evaluateSlateMonteCarloPareto(
     }
   }
 
+  const wordLen = Math.max(1, Math.ceil(S / 32));
+  const byteLen = wordLen * 4;
+  const blockProbTable = new Float64Array(byteLen * 256);
+  for (let b = 0; b < byteLen; b++) {
+    const sBase = b << 3;
+    const tBase = b << 8;
+    for (let bit = 0; bit < 8; bit++) {
+      const sIdx = sBase + bit;
+      if (sIdx >= S) break;
+      const p = stateProb[sIdx];
+      const step = 1 << bit;
+      for (let msk = step; msk < 256; msk = (msk + 1) | step) {
+        blockProbTable[tBase + msk] += p;
+      }
+    }
+  }
+  const ticketHitWords = new Array(K);
+  const unionWordsBuf = new Uint32Array(wordLen);
+  const unionBytesView = new Uint8Array(unionWordsBuf.buffer);
+  for (let k = 0; k < K; k++) {
+    const words = new Uint32Array(wordLen);
+    const bytes = new Uint8Array(words.buffer);
+    const hs = ticketHitStates[k];
+    for (let j = 0; j < hs.length; j++) {
+      const s = hs[j];
+      bytes[s >>> 3] |= 1 << (s & 7);
+    }
+    ticketHitWords[k] = words;
+  }
+
+  const sumUnionWordsProb = () => {
+    let sum = 0;
+    for (let b = 0; b < byteLen; b++) {
+      const msk = unionBytesView[b];
+      if (msk !== 0) sum += blockProbTable[(b << 8) + msk];
+    }
+    return sum;
+  };
+
   const payCentsBuf = new Int32Array(S);
   const touchedBuf = new Int32Array(S);
   const stampBuf = new Int32Array(S);
@@ -1729,16 +1869,25 @@ function evaluateSlateMonteCarloPareto(
   };
 
   // State-wise monotone 4D vector: (evRate, profitProb, fullDepthReturnRatio, missOneCvarRatio)
-  const evalMonotone4D = (activeIdx, activeMult, activeCount) => {
+  const evalMonotone4D = (
+    activeIdx,
+    activeMult,
+    activeCount,
+    linearBoundsForShortCircuit = null
+  ) => {
     let totalNotes = 0;
     let expReturn = 0;
     let fullDepthRet = 0;
+    let matchMask = 0;
+    let minTicketLen = M;
     missScratch.fill(0);
 
     for (let i = 0; i < activeCount; i++) {
       const k = activeIdx[i];
       const mult = activeMult[i];
       totalNotes += mult;
+      matchMask |= tickets[k].matchMask;
+      if (tickets[k].len < minTicketLen) minTicketLen = tickets[k].len;
       expReturn += mult * ticketExpectedReturn[k];
       fullDepthRet += mult * ticketFullDepthCondReturn[k];
       const baseOff = k * M;
@@ -1748,39 +1897,8 @@ function evaluateSlateMonteCarloPareto(
     }
 
     const costYuan = totalNotes * 2;
-    const costCents = totalNotes * 200;
-    let profitProb = 0;
-
-    if (arePairwiseDisjoint(activeIdx, activeCount)) {
-      for (let i = 0; i < activeCount; i++) {
-        const k = activeIdx[i];
-        const rc = activeMult[i] * ticketUnitCents[k];
-        if (rc >= costCents) profitProb += ticketHitProb[k];
-      }
-    } else {
-      curStamp += 1;
-      let tLen = 0;
-      for (let i = 0; i < activeCount; i++) {
-        const k = activeIdx[i];
-        const payCents = activeMult[i] * ticketUnitCents[k];
-        const hs = ticketHitStates[k];
-        for (let j = 0; j < hs.length; j++) {
-          const s = hs[j];
-          if (stampBuf[s] !== curStamp) {
-            stampBuf[s] = curStamp;
-            payCentsBuf[s] = payCents;
-            touchedBuf[tLen++] = s;
-          } else {
-            payCentsBuf[s] += payCents;
-          }
-        }
-      }
-      for (let j = 0; j < tLen; j++) {
-        const s = touchedBuf[j];
-        if (payCentsBuf[s] >= costCents) profitProb += stateProb[s];
-      }
-    }
-
+    const evRate = (expReturn - costYuan) / costYuan;
+    const fullDepthReturnRatio = fullDepthRet / costYuan;
     missScratch.sort();
     const tailLen = Math.max(1, Math.ceil(M * 0.5));
     let tailSum = 0;
@@ -1788,11 +1906,126 @@ function evaluateSlateMonteCarloPareto(
     const missSafety =
       (0.5 * missScratch[0] + 0.5 * (tailSum / tailLen)) / costYuan;
 
+    if (linearBoundsForShortCircuit) {
+      let canReachAnySlot = false;
+      for (let s = 0; s < 3; s++) {
+        if (s === 0 && matchMask !== fullSlateMask) continue;
+        const rm = linearBoundsForShortCircuit[s].metrics;
+        if (
+          evRate >= rm.evRate - 1e-9 &&
+          fullDepthReturnRatio >= rm.fullDepthReturnRatio - 1e-9 &&
+          missSafety >= rm.missOneCvarRatio - 1e-9
+        ) {
+          canReachAnySlot = true;
+          break;
+        }
+      }
+      if (!canReachAnySlot) {
+        return null;
+      }
+    }
+
+    const costCents = totalNotes * 200;
+    let profitProb = 0;
+    let hasUnderwater = false;
+
+    if (activeCount === 1) {
+      const k0 = activeIdx[0];
+      const rc0 = activeMult[0] * ticketUnitCents[k0];
+      if (rc0 >= costCents) profitProb = ticketHitProb[k0];
+      else if (rc0 > 0 && ticketHitProb[k0] > 0) hasUnderwater = true;
+    } else if (arePairwiseDisjoint(activeIdx, activeCount)) {
+      for (let i = 0; i < activeCount; i++) {
+        const k = activeIdx[i];
+        const rc = activeMult[i] * ticketUnitCents[k];
+        if (rc >= costCents) profitProb += ticketHitProb[k];
+        else if (rc > 0 && ticketHitProb[k] > 0) hasUnderwater = true;
+      }
+    } else {
+      let bigCount = 0;
+      let lastBigK = -1;
+      let smallSumCents = 0;
+      for (let i = 0; i < activeCount; i++) {
+        const k = activeIdx[i];
+        const rc = activeMult[i] * ticketUnitCents[k];
+        if (rc >= costCents) {
+          bigCount += 1;
+          lastBigK = k;
+        } else {
+          smallSumCents += rc;
+        }
+      }
+      if (bigCount === activeCount) {
+        unionWordsBuf.fill(0);
+        for (let i = 0; i < activeCount; i++) {
+          const wArr = ticketHitWords[activeIdx[i]];
+          for (let w = 0; w < wordLen; w++) unionWordsBuf[w] |= wArr[w];
+        }
+        profitProb = sumUnionWordsProb();
+      } else if (smallSumCents < costCents) {
+        if (bigCount === 0) {
+          profitProb = 0;
+          hasUnderwater = smallSumCents > 0;
+        } else {
+          let bigProb = 0;
+          if (bigCount === 1) {
+            bigProb = ticketHitProb[lastBigK];
+          } else {
+            unionWordsBuf.fill(0);
+            for (let i = 0; i < activeCount; i++) {
+              const k = activeIdx[i];
+              if (activeMult[i] * ticketUnitCents[k] >= costCents) {
+                const wArr = ticketHitWords[k];
+                for (let w = 0; w < wordLen; w++) unionWordsBuf[w] |= wArr[w];
+              }
+            }
+            bigProb = sumUnionWordsProb();
+          }
+          profitProb = bigProb;
+          if (matchMask === fullSlateMask) {
+            unionWordsBuf.fill(0);
+            for (let i = 0; i < activeCount; i++) {
+              const wArr = ticketHitWords[activeIdx[i]];
+              for (let w = 0; w < wordLen; w++) unionWordsBuf[w] |= wArr[w];
+            }
+            const anyProb = sumUnionWordsProb();
+            if (anyProb > bigProb + 1e-13) hasUnderwater = true;
+          }
+        }
+      } else {
+        curStamp += 1;
+        let tLen = 0;
+        for (let i = 0; i < activeCount; i++) {
+          const k = activeIdx[i];
+          const payCents = activeMult[i] * ticketUnitCents[k];
+          const hs = ticketHitStates[k];
+          for (let j = 0; j < hs.length; j++) {
+            const s = hs[j];
+            if (stampBuf[s] !== curStamp) {
+              stampBuf[s] = curStamp;
+              payCentsBuf[s] = payCents;
+              touchedBuf[tLen++] = s;
+            } else {
+              payCentsBuf[s] += payCents;
+            }
+          }
+        }
+        for (let j = 0; j < tLen; j++) {
+          const s = touchedBuf[j];
+          if (payCentsBuf[s] >= costCents) profitProb += stateProb[s];
+          else if (payCentsBuf[s] > 0 && stateProb[s] > 0) hasUnderwater = true;
+        }
+      }
+    }
+
     return {
       cost: costYuan,
-      evRate: (expReturn - costYuan) / costYuan,
+      matchMask,
+      minTicketLen,
+      hasUnderwater,
+      evRate,
       profitProb,
-      fullDepthReturnRatio: fullDepthRet / costYuan,
+      fullDepthReturnRatio,
       missOneCvarRatio: missSafety,
     };
   };
@@ -1885,11 +2118,23 @@ function evaluateSlateMonteCarloPareto(
     }
     activeMultBuf[rCount - 1] += rem;
 
-    const candMetrics = evalMonotone4D(activeIdxBuf, activeMultBuf, rCount);
+    const candMetrics = evalMonotone4D(
+      activeIdxBuf,
+      activeMultBuf,
+      rCount,
+      slotRefs
+    );
     samplesEvaluated += 1;
+    if (!candMetrics) continue;
 
-    // Compare every sampled portfolio directly against ALL 3 slots (zero pass-length or match-mask skip!)
+    // Compare every sampled portfolio directly against ALL 3 slots (Slot ① enforces Spec 0012 full-slate retention & zero-underwater constraint!)
     for (let s = 0; s < 3; s++) {
+      if (
+        s === 0 &&
+        (candMetrics.hasUnderwater || candMetrics.matchMask !== fullSlateMask)
+      ) {
+        continue;
+      }
       const rm = slotRefs[s].metrics;
       const geAll =
         candMetrics.evRate >= rm.evRate - 1e-9 &&

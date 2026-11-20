@@ -537,48 +537,41 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
         `Objective Slot ① profitProb (${s1.profitProb}) must never be dominated by Slot ② (${s2.profitProb}) or Slot ③ (${s3.profitProb}) on M=${mCount}`
       );
 
-      // Compare against best 1-match single & 2-match 2串1 exact 0-1 knapsack
-      let refBestAnyLegal = 0;
+      // Spec 0012 (superseding Spec 0009 silent match-drop): unanchored Slot ① retains ALL M matches while beating full-M box 0-1 knapsack!
+      const distinctS1Matches = new Set(
+        s1.lines.flatMap((l: any) => l.legs.map((g: any) => g.matchId))
+      );
+      assert.equal(
+        distinctS1Matches.size,
+        mCount,
+        `Objective Slot ① on M=${mCount} must retain all ${mCount} matches (Spec 0012)`
+      );
+      let refFullMBox: Array<{ prob: number; odds: number[] }> = [
+        { prob: 1, odds: [] },
+      ];
       for (const m of slate) {
-        for (const code of ["HAD", "HHAD", "HAFU", "TTG"]) {
-          const p = m.pools[code];
-          if (!p || p.selling === false || !p.single) continue;
-          const pr = refKnapsackBestProb(
-            p.options.map((o: any) => ({
-              prob: o.fairProb,
-              unitPayout: bankerRoundParlayUnitPayout([o.odds]),
-            })),
-            100
-          );
-          if (pr > refBestAnyLegal) refBestAnyLegal = pr;
-        }
-      }
-      for (let i = 0; i < slate.length; i++) {
-        for (let j = i + 1; j < slate.length; j++) {
-          for (const c1 of ["HAD", "HHAD"]) {
-            for (const c2 of ["HAD", "HHAD"]) {
-              const p1 = slate[i].pools[c1];
-              const p2 = slate[j].pools[c2];
-              if (!p1?.selling && p1?.selling !== undefined) continue;
-              if (!p2?.selling && p2?.selling !== undefined) continue;
-              const tks: Array<{ prob: number; unitPayout: number }> = [];
-              for (const o1 of p1.options) {
-                for (const o2 of p2.options) {
-                  tks.push({
-                    prob: o1.fairProb * o2.fairProb,
-                    unitPayout: bankerRoundParlayUnitPayout([o1.odds, o2.odds]),
-                  });
-                }
-              }
-              const pr = refKnapsackBestProb(tks, 100);
-              if (pr > refBestAnyLegal) refBestAnyLegal = pr;
-            }
+        const nxt: Array<{ prob: number; odds: number[] }> = [];
+        for (const prev of refFullMBox) {
+          for (const o of m.pools.HAD.options) {
+            nxt.push({
+              prob: prev.prob * o.fairProb,
+              odds: [...prev.odds, o.odds],
+            });
           }
         }
+        refFullMBox = nxt;
       }
+      const capM = mCount <= 5 ? 500_000 : 1_000_000;
+      const refFullMProb = refKnapsackBestProb(
+        refFullMBox.map((t) => ({
+          prob: t.prob,
+          unitPayout: Math.min(capM, bankerRoundParlayUnitPayout(t.odds)),
+        })),
+        100
+      );
       assert.ok(
-        s1.profitProb >= refBestAnyLegal - 1e-9,
-        `Objective Slot ① (${s1.profitProb}) must match or beat global 1..2-leg exact 0-1 knapsack (${refBestAnyLegal}) on M=${mCount}`
+        s1.profitProb >= refFullMProb - 1e-9,
+        `Objective Slot ① (${s1.profitProb}) must match or beat full-${mCount} exact 0-1 knapsack (${refFullMProb}) on M=${mCount}`
       );
 
       // Radar-anchored mode: anchors all M matches (HAD options) -> exact M-leg 0-1 knapsack zero gap + honest 2-match note!

@@ -5,6 +5,7 @@ import {
   calibrateMatchCoherentModel,
   computeTruthReport,
   evaluateQuantWorkspace,
+  generateParetoPortfolio,
   optimizeBonusPlan,
   parseSportteryRawJson,
 } from "../server/quantEngine.mjs";
@@ -758,6 +759,223 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       wsCons4.effectiveReport.consolidatedTickets <
         wsExact4.effectiveReport.consolidatedTickets,
       `Expected consolidated shop ticket count (${wsCons4.effectiveReport.consolidatedTickets}) < unmerged (${wsExact4.effectiveReport.consolidatedTickets})`
+    );
+  });
+
+  it("Slice 03 · Seam 1: enforces unanchored Slot ① full-slate retention across 2..8 matches with 1~2-match benchmark note, closes ¥5,000+ budget accounting, splits strictNetGainProb vs breakEvenProb, and locks objective* metrics under stance/slider beauty filters", () => {
+    // 1. Unanchored Slot ① (max-profit-prob) MUST retain ALL M user-selected matches across M = 2..8 (never silently dropping M-1 matches to bet 1 single!)
+    for (const mCount of [2, 3, 4, 6, 8]) {
+      const sub = (FALLBACK_MATCHES as MatchItem[]).slice(0, mCount);
+      const plans = generateParetoPortfolio(sub, 120, "objective", false, []);
+      const slot1 = plans[0];
+      assert.equal(slot1.key, "max-profit-prob");
+      assert.equal(slot1.available, true);
+      assert.equal(slot1.underwaterCount, 0);
+      const distinctMatches = new Set(
+        slot1.lines.flatMap((l: any) => l.legs.map((g: any) => g.matchId))
+      );
+      assert.equal(
+        distinctMatches.size,
+        mCount,
+        `Unanchored Slot ① on M=${mCount} matches must retain all ${mCount} matches, got ${distinctMatches.size}`
+      );
+      if (mCount >= 3) {
+        assert.ok(
+          slot1.reasons.some(
+            (r: string) => r.includes("精简") || r.includes("核心")
+          ),
+          `Expected Slot ① on M=${mCount} to append core 1~2-match higher-rate benchmark note in reasons`
+        );
+      }
+    }
+
+    // 2. ¥5,000 large budget closure: EVERY slot 0..3 must satisfy totalCost + savedCash === 5000 (zero unaccounted missing cash!),
+    //    and Slot ① / ② / ③ must deploy full ¥5,000 (or up to statutory 999x per-line ceiling with exact savedCash) rather than capping at ¥1,000!
+    const fourSlate = (FALLBACK_MATCHES as MatchItem[]).slice(0, 4);
+    const plans5000 = generateParetoPortfolio(
+      fourSlate,
+      5000,
+      "objective",
+      false,
+      []
+    );
+    for (const pl of plans5000) {
+      assert.equal(
+        pl.totalCost + pl.savedCash,
+        5000,
+        `Slot ${pl.key} violated budget conservation: totalCost(${pl.totalCost}) + savedCash(${pl.savedCash}) !== 5000`
+      );
+    }
+    assert.ok(
+      plans5000[0].totalCost >= 4500,
+      `Expected Slot ① to scale cleanly to ~¥5,000 budget (not stuck at ¥1,000), got ¥${plans5000[0].totalCost}`
+    );
+    assert.ok(
+      plans5000[2].totalCost >= 4500,
+      `Expected Slot ③ wheel to scale cleanly to ~¥5,000 budget, got ¥${plans5000[2].totalCost}`
+    );
+
+    // 3. Exact strictNetGainProb (netProfit > 0) vs breakEvenProb (netProfit === 0) decomposition:
+    //    1-match single with two @2.00 options (p=0.45, p=0.44) at ¥20 budget (5 notes + 5 notes -> each pays 5*4 = ¥20 -> netProfit === ¥0.00!)
+    const breakEvenPairMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "s3-be-split",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 2.0, trend: 0, fairProb: 0.45 },
+            { key: "d", label: "平", odds: 2.0, trend: 0, fairProb: 0.44 },
+            { key: "a", label: "客胜", odds: 7.5, trend: 0, fairProb: 0.11 },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.TTG,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.CRS,
+          selling: false,
+        },
+      },
+    };
+    const bePicks = [
+      makePick(breakEvenPairMatch, "HAD", "h"),
+      makePick(breakEvenPairMatch, "HAD", "d"),
+    ];
+    const beRep = computeTruthReport(bePicks, 5, [breakEvenPairMatch]) as any;
+    assert.equal(beRep.totalCost, 20);
+    assert.equal(beRep.underwaterCount, 0);
+    assert.ok(
+      beRep.breakEvenProb > 0.8 && Math.abs(beRep.strictNetGainProb) < 1e-12,
+      `Pure refund slip (netProfit===0) must report strictNetGainProb=0 and breakEvenProb~0.89, got strict=${beRep.strictNetGainProb}, be=${beRep.breakEvenProb}`
+    );
+    assert.ok(
+      Math.abs(
+        beRep.strictNetGainProb + beRep.breakEvenProb - beRep.realProfitProb
+      ) < 1e-12
+    );
+
+    const bePlans = generateParetoPortfolio(
+      [breakEvenPairMatch],
+      20,
+      "objective",
+      false,
+      []
+    ) as any[];
+    for (const pl of bePlans.filter((p) => p.available)) {
+      assert.equal(typeof pl.strictNetGainProb, "number");
+      assert.equal(typeof pl.breakEvenProb, "number");
+      assert.ok(
+        Math.abs(pl.strictNetGainProb + pl.breakEvenProb - pl.profitProb) <
+          1e-12,
+        `Archetype ${pl.key} strictNetGainProb + breakEvenProb must equal profitProb`
+      );
+    }
+
+    // 4. Objective Metric Lock ("No Beauty Filter" on primary KPIs):
+    //    Changing subjectiveDeltaPct (+15%) or stance ("home-lean" / "upset-watch") MUST keep objectiveEVRate,
+    //    objectiveProfitProb, and objectiveStrictNetGainProb invariant to baseline objective values, while populating subjectiveProjected*!
+    const twoM = (FALLBACK_MATCHES as MatchItem[]).slice(0, 2);
+    const twoPicks = [
+      makePick(twoM[0], "HAD", "h"),
+      makePick(twoM[1], "HAD", "h"),
+    ];
+
+    const wsObj0 = evaluateQuantWorkspace(
+      {
+        picks: twoPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-ev-utility",
+          scaleMultiple: 1,
+        },
+        targetIds: twoM.map((m) => m.id),
+        anchorToRadarPicks: true,
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      twoM
+    ) as any;
+    const wsTilted15 = evaluateQuantWorkspace(
+      {
+        picks: twoPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 15,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-ev-utility",
+          scaleMultiple: 1,
+        },
+        targetIds: twoM.map((m) => m.id),
+        anchorToRadarPicks: true,
+        budget: 100,
+        stance: "home-lean",
+        unlockFullAgg: false,
+      },
+      twoM
+    ) as any;
+
+    assert.equal(wsObj0.manualReport.subjectiveProjectedEVRate, null);
+    assert.ok(
+      Math.abs(
+        wsTilted15.manualReport.objectiveEVRate -
+          wsObj0.manualReport.objectiveEVRate
+      ) < 1e-12,
+      `manualReport.objectiveEVRate must stay locked at ${wsObj0.manualReport.objectiveEVRate} under +15% slider, got ${wsTilted15.manualReport.objectiveEVRate}`
+    );
+    assert.ok(
+      Math.abs(
+        wsTilted15.manualReport.objectiveStrictNetGainProb -
+          wsObj0.manualReport.objectiveStrictNetGainProb
+      ) < 1e-12
+    );
+    assert.ok(
+      typeof wsTilted15.manualReport.subjectiveProjectedEVRate === "number" &&
+        wsTilted15.manualReport.subjectiveProjectedEVRate >
+          wsTilted15.manualReport.objectiveEVRate + 0.1,
+      "subjectiveProjectedEVRate must capture the +15% personal projection separately"
+    );
+
+    // For anchored Slot ② (identical lines on [twoM[0]:h, twoM[1]:h] when single-anchored? Or check portfolioPlans[0]/[1] objectiveEVRate matches pure objective evaluation of those exact lines!)
+    for (const pl of wsTilted15.portfolioPlans.filter(
+      (p: any) => p.available
+    )) {
+      assert.equal(typeof pl.objectiveEVRate, "number");
+      assert.equal(typeof pl.objectiveStrictNetGainProb, "number");
+      assert.equal(typeof pl.subjectiveProjectedEVRate, "number");
+      assert.ok(
+        Math.abs(pl.subjectiveProjectedEVRate - pl.expectedValueRate) < 1e-12
+      );
+    }
+    assert.ok(
+      Math.abs(
+        wsTilted15.effectiveReport.objectiveEVRate -
+          wsObj0.effectiveReport.objectiveEVRate
+      ) < 1e-9 || wsTilted15.effectiveReport.objectiveEVRate < 0,
+      "effectiveReport.objectiveEVRate must remain anchored to objective probabilities (never turning -20% parlay positive via beauty filter)"
+    );
+    assert.ok(
+      wsTilted15.effectiveReport.objectiveEVRate < 0 &&
+        wsTilted15.effectiveReport.subjectiveProjectedEVRate >
+          wsTilted15.effectiveReport.objectiveEVRate + 0.15,
+      `Expected negative objectiveEVRate (${wsTilted15.effectiveReport.objectiveEVRate}) alongside higher subjectiveProjectedEVRate (${wsTilted15.effectiveReport.subjectiveProjectedEVRate})`
     );
   });
 });
