@@ -16,7 +16,8 @@ How the engineering skills consume this repo's domain documentation when explori
   - `docs/adr/0007-official-sporttery-rule-parity-and-state-space-parlay-engine.md` — China Sporttery statutory rules, mutex & state-space parlay evaluation
   - `docs/adr/0008-deep-bet-slip-state-seam-unified-runtime-and-server-xiaogao-context.md` — headless `BetSlipController` seam & `createYouJingRuntime` assembly
   - `docs/adr/0009-shin-dixon-coles-coherent-calibration-and-pareto-3plus1-portfolio.md` — `Shin/Power` de-vigging, 5-pool coherent calibration & `3+1` Pareto portfolio
-- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0007-baseline-quirks-and-ledger-closure.md`, `0008-coherent-quant-and-pareto-portfolio.md`) when reviewing or extending a specific feature.
+  - `docs/adr/0010-partition-consistent-kl-calibration-and-exact-milp-portfolio.md` — partition-consistent KL/IPF projection, exact 0-1 knapsack/LP portfolio & real Sporttery OOS gate
+- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0008-coherent-quant-and-pareto-portfolio.md`, `0009-red-team-remediation-and-real-oos-closure.md`) when reviewing or extending a specific feature.
 
 ## Use the glossary's vocabulary
 

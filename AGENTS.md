@@ -6,9 +6,9 @@
 
 动手评估或修改代码前，按触发条件读取权威单一事实源：
 
-- **既有功能、协议与遗留边界** → 先读 `docs/specs/0000-baseline-spec.md` 与最新增量规范 `docs/specs/0007-*.md`、`docs/specs/0008-*.md`。
+- **既有功能、协议与遗留边界** → 先读 `docs/specs/0000-baseline-spec.md` 与最新增量规范 `docs/specs/0008-*.md`、`docs/specs/0009-*.md`。
 - **业务命名、界面文案与测试标题** → 先读 `GLOSSARY.md` 采用标准术语，避开 `_Avoid_` 同义词。
-- **架构权衡与历史红线（ADR `0001`~`0009` 完整文件名索引）** → 先读 `docs/agents/domain.md` 定位对应 `docs/adr/NNNN-*.md`；方案与既有 ADR 冲突时先向用户显式指出并确认。
+- **架构权衡与历史红线（ADR `0001`~`0010` 完整文件名索引）** → 先读 `docs/agents/domain.md` 定位对应 `docs/adr/NNNN-*.md`；方案与既有 ADR 冲突时先向用户显式指出并确认。
 - **保密口径、入参上界、法定算奖与审查细则** → 审查或触及服务端接口/双端排版时，读根部 `CODING_STANDARDS.md`。
 - **Web 双视口实机核验与线上巡检** → 启动浏览器前，读 `docs/ops/qa-ego-browser.md`。
 
@@ -23,7 +23,7 @@
    - 算奖、去水、五池闭合校准与 `3+1 精算配单` 归属 `server/quantEngine.mjs`；鉴权风控、铁笼问答与小高路由归属 `server/{runtimeApp,securityShield,accountManager,manualQaEngine,xiaogaoCore}.mjs`；客户端 `src/` 与 `android/` 保持薄状态与纯渲染视图，通过 `createYouJingRuntime` 与 `createBetSlipController` 暴露可注入时钟/存储/网络桩的测试接缝。
    - **完成判据**：`pnpm run check:guardrails` 通过（零客户端算术泄露、零厂商名外泄、零敏感路径跟踪）。
 3. **测试驱动红绿循环（`tdd` / `diagnosing-bugs`）**
-   - 在 `tests/*.test.ts` 围绕公开模块接缝先写覆盖正常路径、体彩法定极值与恶意入参的失败测试（*red*），再编写最小完备实现转绿（*green*）并重构。
+   - 在 `tests/*.test.ts` 围绕公开模块接缝先写覆盖正常路径、体彩法定极值与恶意入参的失败测试（_red_），再编写最小完备实现转绿（_green_）并重构。
    - **完成判据**：`pnpm typecheck && pnpm test` 100% 通过，目标 Spec 每条验收项均有断言锁死。
 4. **零泄露生产构建与全量 AST 混淆门禁**
    - 运行 `pnpm build`（串联 `tsc -b`、`vite build` 与 `scripts/obfuscate-dist.mjs` RC4 混淆及产物门禁）。
