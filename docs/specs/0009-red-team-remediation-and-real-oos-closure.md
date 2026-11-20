@@ -1,6 +1,6 @@
 # Spec 0009: 红队十项数学/统计/公平性缺陷清零与真实体彩完场 OOS 科学基准闭环（Red-Team Quant Remediation & Real Sporttery OOS Closure）
 
-Status: `ready-for-agent`
+Status: `completed`
 Baseline Anchor: `docs/specs/0000-baseline-spec.md` & `docs/specs/0008-coherent-quant-and-pareto-portfolio.md`
 Related ADRs: `ADR-0002`, `ADR-0007`, `ADR-0008`, `ADR-0009`, `ADR-0010`
 Canonical Vocabulary: `GLOSSARY.md`

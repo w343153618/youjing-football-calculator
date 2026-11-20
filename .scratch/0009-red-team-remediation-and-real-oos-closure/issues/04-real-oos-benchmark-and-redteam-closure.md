@@ -4,8 +4,8 @@
 
 **Blocked by:** 01, 02, 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `realSportteryOosMatches.json` 含 `>= 240` 场真实中国体彩完场五池赛事，`0` 星期错位、`0` 比分赔率跳档违规
-- [ ] `pnpm run bench:quant` 与 `tests/quantScientificBenchmarks.test.ts` 在真实 OOS 集上通过万次配对 Bootstrap、无筒仓帕累托检验与同规则双轨回放
-- [ ] 复跑红队独立目录下的 `audit1_cross_lang.py`、`audit2_forensics_and_bootstrap.py`、`audit3_pathological_stress.mjs` 与 `audit4_portfolio_milp_and_fairness.py` 实证全项缺陷清零
+- [x] `realSportteryOosMatches.json` 含 `>= 240` 场（实冻 `622` 场）真实中国体彩完场五池赛事，`0` 星期错位、`0` 比分赔率跳档违规
+- [x] `pnpm run bench:quant` 与 `tests/quantScientificBenchmarks.test.ts` 在真实 OOS 集上通过万次配对 Bootstrap、无筒仓帕累托检验与同规则双轨回放
+- [x] 复跑红队独立目录下的 `audit1_cross_lang.py`、`audit2_forensics_and_bootstrap.py`、`audit3_pathological_stress.mjs` 与 `audit4_portfolio_milp_and_fairness.py` 实证全项缺陷清零

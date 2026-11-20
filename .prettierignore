@@ -2,3 +2,4 @@ dist/
 data/
 pnpm-lock.yaml
 android/app/build/
+tests/fixtures/*.json

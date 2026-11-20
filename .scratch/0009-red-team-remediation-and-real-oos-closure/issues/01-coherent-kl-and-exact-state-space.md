@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 无论跨场商状态数大小，`expectedReturn` 与 `expectedValueRate` 恒与单票精确线性期望零误差一致（消除 `+52.84%` 正期望失真），且 `bankerRoundCents` 消除浮点边界微漂移
-- [ ] 手动选单超 `2,048` 注或总金额超 `¥20,000` 时显式返回 `canCheckout: false`、真实注数与阻断原因，零静默截断
-- [ ] 全选项 `WeakMap` 缓存签名对任意 `HAFU` / `CRS` 单项改赔立即失效重算；8 场 `8串247 + 奖金优化` 全工作区耗时 `< 15ms`
-- [ ] 分割一致 KL/IPF 闭合校准在 `{0..14}²` 网格上消除深盘右尾截断与 `HAD+HAFU` 闷平失明，并在中国体彩真实完场 OOS 数据上五大玩法 `Log-Loss` / `Brier` 显著优于等比去水且不劣于单池 `Shin`
+- [x] 无论跨场商状态数大小，`expectedReturn` 与 `expectedValueRate` 恒与单票精确线性期望零误差一致（消除 `+52.84%` 正期望失真），且 `bankerRoundCents` 消除浮点边界微漂移
+- [x] 手动选单超 `2,048` 注或总金额超 `¥20,000` 时显式返回 `canCheckout: false`、真实注数与阻断原因，零静默截断
+- [x] 全选项 `WeakMap` 缓存签名对任意 `HAFU` / `CRS` 单项改赔立即失效重算；8 场 `8串247 + 奖金优化` 全工作区耗时 `< 15ms`
+- [x] 分割一致 KL/IPF 闭合校准在 `{0..14}²` 网格上消除深盘右尾截断与 `HAD+HAFU` 闷平失明，并在中国体彩真实完场 OOS 数据上五大玩法 `Log-Loss` / `Brier` 显著优于等比去水且不劣于单池 `Shin`

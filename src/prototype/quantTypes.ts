@@ -1,18 +1,15 @@
-export type PoolCode = 'HAD' | 'HHAD' | 'HAFU' | 'TTG' | 'CRS';
-export type UserStance = 'objective' | 'home-lean' | 'upset-watch';
+export type PoolCode = "HAD" | "HHAD" | "HAFU" | "TTG" | "CRS";
+export type UserStance = "objective" | "home-lean" | "upset-watch";
 export type PortfolioKey =
-  | 'max-profit-prob'
-  | 'max-ev-utility'
-  | 'max-cvar-wheel'
-  | 'alpha-radar';
+  "max-profit-prob" | "max-ev-utility" | "max-cvar-wheel" | "alpha-radar";
 export type LegacyArchetypeKey =
-  | 'iron-shield'
-  | 'spear-shield'
-  | 'fault-tolerant'
-  | 'goal-structure'
-  | 'value-assassin';
+  | "iron-shield"
+  | "spear-shield"
+  | "fault-tolerant"
+  | "goal-structure"
+  | "value-assassin";
 export type ArchetypeKey = PortfolioKey | LegacyArchetypeKey;
-export type BonusOptMode = 'equal' | 'hot-first' | 'cold-first';
+export type BonusOptMode = "equal" | "hot-first" | "cold-first";
 
 export interface OddsOption {
   key: string;
@@ -37,7 +34,7 @@ export interface MatchPool {
 
 export interface MicroBadge {
   text: string;
-  tone: 'emerald' | 'amber' | 'rose' | 'sky' | 'purple';
+  tone: "emerald" | "amber" | "rose" | "sky" | "purple";
 }
 
 export interface EquivalentArbPickRef {
@@ -71,7 +68,7 @@ export interface MatchMicroQuant {
   steamSignal: string;
   microBadges: MicroBadge[];
   paceCorrelation: number;
-  paceLabel: '防守死锁' | '均衡节奏' | '开放对攻';
+  paceLabel: "防守死锁" | "均衡节奏" | "开放对攻";
   alphaScanSummary: string;
 }
 
@@ -86,7 +83,7 @@ export interface MatchItem {
   awayRank?: string;
   isHot?: boolean;
   aiAlert?: {
-    level: 'high' | 'medium';
+    level: "high" | "medium";
     tag: string;
     summary: string;
     priceInStatus: string;
@@ -125,13 +122,13 @@ export interface ComboRow {
 
 export interface RadarWarning {
   id: string;
-  severity: 'danger' | 'warn' | 'tip';
+  severity: "danger" | "warn" | "tip";
   title: string;
   detail: string;
 }
 
 export type PassSelectionSpec = {
-  mode: 'auto' | 'free' | 'combo';
+  mode: "auto" | "free" | "combo";
   passSizes?: number[];
   comboCode?: string;
 };
@@ -223,7 +220,7 @@ export interface PlanTicketLine {
 export interface ArchetypePlan {
   key: ArchetypeKey;
   available: boolean;
-  alphaKind?: 'positive-ev' | 'relative-alpha' | 'none';
+  alphaKind?: "positive-ev" | "relative-alpha" | "none";
   emptyReason?: string | null;
   shortTab: string;
   badge: string;
@@ -235,6 +232,9 @@ export interface ArchetypePlan {
   maxReturn: number;
   winProb: number;
   profitProb: number;
+  expectedValueRate?: number;
+  underwaterCount?: number;
+  wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
   vigPct: number;
   reasons: string[];
@@ -274,8 +274,13 @@ export interface ProOrderInsights {
 
 export type AppliedPlanSpec =
   | null
-  | { kind: 'bonus'; optMode: BonusOptMode; scaleMultiple?: number }
-  | { kind: 'archetype'; key: ArchetypeKey; snapshotPlan?: ArchetypePlan; scaleMultiple?: number };
+  | { kind: "bonus"; optMode: BonusOptMode; scaleMultiple?: number }
+  | {
+      kind: "archetype";
+      key: ArchetypeKey;
+      snapshotPlan?: ArchetypePlan;
+      scaleMultiple?: number;
+    };
 
 export interface QuantWorkspaceParams {
   picks: SelectedPick[];
@@ -289,7 +294,7 @@ export interface QuantWorkspaceParams {
   budget: number;
   stance: UserStance;
   unlockFullAgg: boolean;
-  clientAlerts?: Record<string, NonNullable<MatchItem['aiAlert']>>;
+  clientAlerts?: Record<string, NonNullable<MatchItem["aiAlert"]>>;
 }
 
 export interface QuantWorkspaceResponse {
@@ -308,7 +313,7 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   betCount: 0,
   comboCount: 0,
   multiple: 5,
-  modeLabel: '过关选择',
+  modeLabel: "过关选择",
   canSingle: false,
   canCheckout: false,
   ruleBlockReason: null,
@@ -343,16 +348,16 @@ export const EMPTY_INSIGHTS: ProOrderInsights = {
   hedge: {
     available: false,
     gapMinutes: 0,
-    gapText: '同时间段开球',
-    earlyMatchTitle: '',
-    lateMatchTitle: '',
-    earlyKickoff: '',
-    lateKickoff: '',
-    oppositeLabel: '',
+    gapText: "同时间段开球",
+    earlyMatchTitle: "",
+    lateMatchTitle: "",
+    earlyKickoff: "",
+    lateKickoff: "",
+    oppositeLabel: "",
     oppositeOdds: 1.85,
     hedgeCost: 0,
     lockedNetProfit: 0,
-    reason: '需至少选择 2 场且开球时间间隔 ≥ 110 分钟',
+    reason: "需至少选择 2 场且开球时间间隔 ≥ 110 分钟",
   },
   weakestLink: null,
   fiveLossStreakProb: 0,
