@@ -75,6 +75,7 @@ function buildCoherentTestMatch(
     return Number(Math.max(1.06, 1 / q).toFixed(2));
   };
   const raw: Record<string, unknown> & {
+    had: Record<string, string>;
     ttg: Record<string, string>;
     hhad: Record<string, string>;
     crs: Record<string, string>;
@@ -225,9 +226,10 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       .getState()
       .workspace.portfolioPlans.find((p) => p.key === "max-ev-utility")!;
     assert.equal(ctrl.applyArchetype(evPlan), true);
-    assert.equal(ctrl.getState().planSpec?.kind, "archetype");
-    if (ctrl.getState().planSpec?.kind === "archetype") {
-      assert.equal(ctrl.getState().planSpec.key, "max-ev-utility");
+    const specAfterEv = ctrl.getState().planSpec;
+    assert.equal(specAfterEv?.kind, "archetype");
+    if (specAfterEv?.kind === "archetype") {
+      assert.equal(specAfterEv.key, "max-ev-utility");
     }
     assert.equal(ctrl.getState().workspace.appliedPlan?.key, "max-ev-utility");
 
@@ -694,8 +696,9 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       "Must locate QUICK_QA_PILLS in UserManualModal.tsx"
     );
     const quickPills = Array.from(
-      pillsBlockMatch[1].matchAll(/['"]([^'"]+)['"]/g)
-    ).map((m) => m[1]);
+      String(pillsBlockMatch[1]).matchAll(/['"]([^'"]+)['"]/g),
+      (m) => m[1]
+    );
     assert.ok(quickPills.length >= 10, "Should expose curated quick Q&A pills");
 
     const qa = createManualQaEngine({

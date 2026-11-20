@@ -9,13 +9,17 @@
 ```bash
 rm -rf /tmp/yj-qa && mkdir -p /tmp/yj-qa
 PORT=18908 DATA_DIR=/tmp/yj-qa node server/index.mjs
-# 初始账号密码位于 /tmp/yj-qa/admin-credentials.txt
+# 初始凭证文件 /tmp/yj-qa/admin-credentials.txt 格式：
+# ADMIN_USER=yjadmin
+# ADMIN_INITIAL_PASSWORD=<随机密码>
 ```
 
-## 2. 防逆向护盾与选择器准则
+## 2. 防逆向护盾与工作台标准选择器
 
 - **保持常规页面通道**：仅使用 `ego-browser` 标准页面 API（`snapshot`、`click`、`fill`、`evaluate`、`screenshot`）与 `Emulation.setDeviceMetricsOverride`；避免开启 CDP `Debugger` 域或发送 `F12` 快捷键（会触发 `src/security/antiReverseShield.ts` 写入 48h `security-bans.json` 熔断）。
-- **精确匹配 vs 子串匹配**：带引号的 `text="期望效用"` 为全字精确匹配；不带引号的 `text=精算配单` 为子串匹配。遇到同名候选按钮时先看 `snapshot()` 的 `@ref` 或使用引号精确匹配。
+- **工作台高频元素无歧义选择器**（避免同名候选重试）：
+  - 登录表单：`loc=css:input[placeholder="请输入分配的成员账号"]`、`loc=css:input[placeholder="请输入通行密码"]`、提交按钮 `text=验证身份并进入精算工作台`。
+  - 配单页签：桌面顶栏使用带引号精确匹配 `text="🎯 3+1 精算配单"`（因中栏空态同时存在 `"去 3+1 精算配单"` 按钮）；四档槽位按钮内含副标，使用不带引号子串匹配 `text=稳健保本`、`text=期望效用`、`text=容错缩水`、`text=错价雷达`。
 - **弹簧滚轮稳定等待**：底部金额栏（`slipAmtRef`）带有 240Hz 弹簧滚轮过渡动画，点击「套用方案」后等待 `>= 650ms` 再调用 `page.screenshot()`，确保拍到稳定终值。
 
 ## 3. 单脚本双视口（桌面 `>= 960px` + 移动 `< 960px`）核验模板

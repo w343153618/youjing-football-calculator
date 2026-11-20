@@ -1564,7 +1564,7 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
 
     const runs = 40;
     const t0 = performance.now();
-    let lastWs = null;
+    let lastWs: any = null;
     for (let i = 0; i < runs; i++) {
       lastWs = evaluateQuantWorkspace(
         {

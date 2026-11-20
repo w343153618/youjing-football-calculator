@@ -421,7 +421,7 @@ describe("Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
       matchNumStr: "周二004",
       kickoff: "03:30",
     };
-    const baseLate = {
+    const baseLate: MatchItem = {
       ...(FALLBACK_MATCHES[3] as MatchItem),
       id: "c-late-0345",
       matchNumStr: "周二007",
@@ -1928,11 +1928,28 @@ describe("Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     }
 
     const ctrl = createBetSlipController({
-      initialMatches: [m1, m2],
-      initialSyncNote: "test",
-      evaluateFn: async (params, matches) =>
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
         evaluateQuantWorkspace(params, matches),
     });
+    ctrl.initializeMatches(
+      [m1, m2],
+      [],
+      evaluateQuantWorkspace(
+        {
+          picks: [],
+          multiple: 5,
+          subjectiveDeltaPct: 0,
+          simVoidFirstMatch: false,
+          planSpec: null,
+          targetIds: [m1.id, m2.id],
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        [m1, m2]
+      )
+    );
     const spearPlan = fivePlans.find(
       (p: { key: string }) => p.key === "max-ev-utility"
     )!;

@@ -561,7 +561,7 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
               const p2 = slate[j].pools[c2];
               if (!p1?.selling && p1?.selling !== undefined) continue;
               if (!p2?.selling && p2?.selling !== undefined) continue;
-              const tks = [];
+              const tks: Array<{ prob: number; unitPayout: number }> = [];
               for (const o1 of p1.options) {
                 for (const o2 of p2.options) {
                   tks.push({
