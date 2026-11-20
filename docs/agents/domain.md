@@ -32,3 +32,19 @@ When your output names a domain concept (in UI copy, spec headings, refactor pro
 If a change contradicts an existing ADR in `docs/adr/`, surface it explicitly rather than silently overriding:
 
 > _Contradicts ADR-0003 (in-app RBAC hidden admin & WeChat session), worth reopening because…_
+
+## Module navigation anchors & test conventions
+
+Use `grep` on these stable symbol anchors instead of scanning line offsets in large files:
+
+- **`server/quantEngine.mjs`**:
+  - Calibration & de-vigging: `function devigPoolProbabilities`, `export function calibrateMatchCoherentModel`, `function scanMatchAlphaCandidates`
+  - Quotient state space & statutory payout: `export function bankerRoundParlayUnitPayout`, `function evaluateTicketsOnQuotientSpace`, `const canUseExactBilinearMitm`, `export function computeTruthReport`
+  - `3+1` Pareto solvers: `function isGenuinePairCoveringDesign`, `function computeSurvivingMissOneFloor`, `function allocateWheelMeanCvar`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `export function generateParetoPortfolio`
+  - Staggered hedge, insights, bonus & sandbox: `function resolveComplementaryLateHedge`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `function applySandboxToPlan`, `export function evaluateQuantWorkspace`
+- **`src/mobile/SkinPhoneApp.tsx`**:
+  - Workspace selectors & `>512` bonus gate: `const manualBonusLineCount`
+  - Step 3 audit cockpit & equalizer: `PayoutEqualizerBars`, `防坑雷达 · 弹性保本 · 省钱动作`
+  - Staggered hedge & sandbox drawer: `早场红单减损补单`, `SUBJECTIVE_DELTA_MIN`
+- **`tests/*.test.ts` import convention**:
+  - Node's native TypeScript test runner (`node --test tests/*.test.ts`) resolves local TypeScript modules with explicit `.ts` extensions (e.g. `import { createBetSlipController } from "../src/workspace/betSlipController.ts"`).

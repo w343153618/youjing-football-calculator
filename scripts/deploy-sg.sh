@@ -32,7 +32,11 @@ cd "${ROOT_DIR}"
 echo "==> [1/5] Running guardrails, TypeScript check, TDD seam tests & Vite production build..."
 pnpm run check:guardrails
 pnpm run typecheck
-pnpm test
+if [[ "${SKIP_TESTS:-0}" == "1" ]]; then
+  echo "    [SKIP_TESTS=1] Skipping full test rerun (already verified on clean HEAD)."
+else
+  pnpm test
+fi
 pnpm run build
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"

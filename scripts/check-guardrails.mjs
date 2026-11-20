@@ -109,7 +109,8 @@ for (const file of [
   }
 }
 
-// 4. Enforce Spec 0009 scientific honesty copy guardrails (zero "零风险" or "单池暗扣" regression)
+// 4. Enforce Spec 0009/0011 scientific honesty copy & mechanical anti-bypass guardrails
+const emptyTicketsNullishBypassRe = /\.tickets\?\.length\s*\?\?(?!\s*0\b)/;
 for (const file of [...clientFiles, ...serverFiles]) {
   const rel = path.relative(ROOT_DIR, file);
   const src = fs.readFileSync(file, "utf8");
@@ -118,9 +119,24 @@ for (const file of [...clientFiles, ...serverFiles]) {
       `[honesty-guardrail] Forbidden misleading phrase "零风险" found in ${rel}`
     );
   }
+  if (src.includes("保本锁回")) {
+    errors.push(
+      `[honesty-guardrail] Forbidden misleading negative-hedge phrase "保本锁回" found in ${rel}`
+    );
+  }
+  if (src.includes("锁死最小保本护盾注数")) {
+    errors.push(
+      `[honesty-guardrail] Outdated shield-lock claim "锁死最小保本护盾注数" found in ${rel}`
+    );
+  }
   if (rel.startsWith(`src${path.sep}`) && src.includes("单池暗扣")) {
     errors.push(
       `[honesty-guardrail] Deprecated misleading parlay vig label "单池暗扣" found in ${rel}`
+    );
+  }
+  if (emptyTicketsNullishBypassRe.test(src)) {
+    errors.push(
+      `[ticket-gate-bypass] Unsafe ".tickets?.length ??" pattern in ${rel} (empty tickets=[] evaluates to 0; use Math.max(rep.tickets?.length ?? 0, rep.betCount))`
     );
   }
 }

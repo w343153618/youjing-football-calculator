@@ -17,8 +17,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: 'pnpm'
+          cache: "pnpm"
       - run: pnpm install --no-frozen-lockfile
       - run: pnpm run check:guardrails
+      - run: pnpm run typecheck
       - run: pnpm test
       - run: pnpm run build

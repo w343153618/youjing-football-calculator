@@ -2294,10 +2294,11 @@ export function SkinPhoneApp({
     [effectiveReport.combos, comboSortMode]
   );
 
+  const effectiveTicketOrBetCount = effectiveReport.tickets?.length
+    ? effectiveReport.tickets.length
+    : effectiveReport.betCount;
   const auditTicketCount =
-    appliedPlan?.lines.length ??
-    effectiveReport.tickets?.length ??
-    effectiveReport.betCount;
+    appliedPlan?.lines.length ?? effectiveTicketOrBetCount;
 
   const isPlanHandoff = Boolean(appliedPlan || (planSpec && handoffBanner));
 
@@ -3224,9 +3225,8 @@ export function SkinPhoneApp({
               <div>
                 <div className="num big">¥{effectiveReport.totalCost}</div>
                 <div className="num small">
-                  物理实票{" "}
-                  {effectiveReport.tickets?.length ?? effectiveReport.betCount}{" "}
-                  注 · 合票 {effectiveReport.consolidatedTickets} 张可核对
+                  物理实票 {effectiveTicketOrBetCount} 注 · 合票{" "}
+                  {effectiveReport.consolidatedTickets} 张可核对
                 </div>
               </div>
               <button
