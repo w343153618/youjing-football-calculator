@@ -776,3 +776,146 @@ describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode
     assert.ok(Array.isArray(digest.trendMovements));
   });
 });
+
+describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring Drawers, Space Compaction & Dual-Lens UI Contracts", () => {
+  it("Slice 6: enforces 1-2-3 guided layout, non-overlapping Step 2 CTA, untruncated combo P&L, [1,2,3,4,5,10] multipliers, [10,20,50,100]+custom budget, post-mount handoff animation, TactileFlipCard/SpringCollapseDrawer, and Android/CSS space compaction", () => {
+    const repoRoot = process.cwd();
+    const appSrc = fs.readFileSync(
+      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    const widgetsSrc = fs.readFileSync(
+      path.join(repoRoot, "src/spring/widgets.tsx"),
+      "utf8"
+    );
+    const coreCss = fs.readFileSync(
+      path.join(repoRoot, "public/skins/core.css"),
+      "utf8"
+    );
+    const androidMain = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "android/app/src/main/kotlin/io/yjty/jisuanqi/MainActivity.kt"
+      ),
+      "utf8"
+    );
+
+    // 1. Mobile UserManualModal receives onQuotaUpdate & onLoadPresetScenario (matching Desktop)
+    const manualUsages = appSrc.match(/<UserManualModal[\s\S]*?\/>/g) || [];
+    assert.equal(
+      manualUsages.length,
+      2,
+      "Expected Desktop & Mobile UserManualModal instances"
+    );
+    for (const snippet of manualUsages) {
+      assert.ok(
+        snippet.includes("onQuotaUpdate={syncRemainingAiQuota}"),
+        "Every UserManualModal instance must pass onQuotaUpdate={syncRemainingAiQuota}"
+      );
+      assert.ok(
+        snippet.includes("onLoadPresetScenario={loadPresetScenario}"),
+        "Every UserManualModal instance must pass onLoadPresetScenario={loadPresetScenario}"
+      );
+    }
+
+    // 2. Space compaction: non-embed hides fake .home-ind; Android MainActivity handles displayCutout cleanly
+    assert.ok(
+      coreCss.includes(".jz-root:not(.embed) .home-ind") ||
+        !appSrc.includes('<div className="home-ind">') ||
+        appSrc.includes('{embedded && <div className="home-ind">'),
+      "Fake iOS .home-ind bar must not waste vertical space outside embedded 8-skin showcase"
+    );
+    assert.ok(
+      androidMain.includes("displayCutout()"),
+      "Android MainActivity WindowInsets should include displayCutout() alongside systemBars() and ime()"
+    );
+    assert.ok(
+      androidMain.includes("WebView.setWebContentsDebuggingEnabled(false)"),
+      "Android MainActivity must preserve WebView debugging prohibition"
+    );
+
+    // 3. Auto-sync radar enabled + chicken-rib首屏 buttons removed + non-overlapping Step 2 mobile betbar decoupling
+    assert.ok(
+      appSrc.includes("autoSyncRadar: true"),
+      "SkinPhoneApp must opt into autoSyncRadar: true on createBetSlipController"
+    );
+    for (const removedClutter of [
+      "演:假中奖",
+      "演:早晚锁利",
+      "演:4串1雪崩",
+      "重置2场",
+      "统配倍数 (1~999倍",
+    ]) {
+      assert.equal(
+        appSrc.includes(removedClutter),
+        false,
+        `SkinPhoneApp must remove cluttered inline control "${removedClutter}"`
+      );
+    }
+
+    // 4. Desktop left-to-right 1 -> 2 -> 3 column order: Match Radar -> 3+1 Archetypes -> 5D Audit/Ledger
+    const dkMatchIdx = appSrc.indexOf("📡 赛事雷达 · 全盘矩阵");
+    const dkArchIdx = appSrc.indexOf("🎯 3+1 精算配单");
+    const dkAuditIdx = appSrc.indexOf("🛡️ 五维审单锁利");
+    assert.ok(
+      dkMatchIdx > 0 && dkArchIdx > dkMatchIdx && dkAuditIdx > dkArchIdx,
+      "Desktop 3-column workbench must flow left-to-right: ① 赛事雷达 -> ② 3+1 精算配单 -> ③ 五维审单锁利"
+    );
+
+    // 5. Practical multiplier presets [1, 2, 3, 4, 5, 10] & budget presets [10, 20, 50, 100] + custom input
+    assert.ok(
+      appSrc.includes("[1, 2, 3, 4, 5, 10]"),
+      "Keypad multiplier presets must be upgraded to [1, 2, 3, 4, 5, 10]"
+    );
+    assert.equal(
+      appSrc.includes("[1, 5, 10, 20, 50, 99]"),
+      false,
+      "Legacy [1, 5, 10, 20, 50, 99] multiplier presets must be replaced"
+    );
+    assert.ok(
+      appSrc.includes("[10, 20, 50, 100]"),
+      "Budget presets must be upgraded to [10, 20, 50, 100]"
+    );
+    assert.equal(
+      appSrc.includes("[50, 100, 200, 500]"),
+      false,
+      "Legacy [50, 100, 200, 500] budget presets must be replaced"
+    );
+
+    // 6. Untruncated Combo P&L + TactileFlipCard + SpringCollapseDrawer + Stance Δ + Dual-Lens Intel
+    assert.equal(
+      /\.combo-item\s+\.cdesc\s+b\s*\{[^}]*text-overflow:\s*ellipsis/.test(
+        coreCss
+      ),
+      false,
+      "core.css must remove single-line ellipsis truncation on .combo-item .cdesc b"
+    );
+    assert.ok(
+      widgetsSrc.includes("export function TactileFlipCard"),
+      "widgets.tsx must export TactileFlipCard"
+    );
+    assert.ok(
+      widgetsSrc.includes("export function SpringCollapseDrawer"),
+      "widgets.tsx must export SpringCollapseDrawer"
+    );
+    assert.ok(
+      coreCss.includes("prefers-reduced-motion: reduce"),
+      "core.css must provide prefers-reduced-motion fallback for 3D flip / transitions"
+    );
+    assert.ok(
+      appSrc.includes("resolveComboTicketBreakdown") &&
+        appSrc.includes("sortComboRows"),
+      "SkinPhoneApp must wire resolveComboTicketBreakdown & sortComboRows for untruncated Combo P&L"
+    );
+    assert.ok(
+      appSrc.includes("getStanceDeltaSummary"),
+      "SkinPhoneApp must surface transparent Stance Δ summary"
+    );
+    assert.ok(
+      appSrc.includes("actuarySynergy") &&
+        appSrc.includes("residualRisks") &&
+        appSrc.includes("buildMatchIntelDigest"),
+      "SkinPhoneApp must render Dual-Lens actuarySynergy/residualRisks and zero-quota MatchIntelDigest"
+    );
+  });
+});

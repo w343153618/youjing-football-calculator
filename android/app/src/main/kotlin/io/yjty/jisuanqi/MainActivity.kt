@@ -128,6 +128,7 @@ class MainActivity : Activity() {
         val bgInt = Color.parseColor(BG_DARK)
         window.decorView.setBackgroundColor(bgInt)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false)
             window.insetsController?.setSystemBarsAppearance(
                 0,
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
@@ -142,9 +143,12 @@ class MainActivity : Activity() {
         rootLayout.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val sys = insets.getInsets(
-                    WindowInsets.Type.systemBars() or WindowInsets.Type.ime()
+                    WindowInsets.Type.systemBars() or
+                        WindowInsets.Type.displayCutout() or
+                        WindowInsets.Type.ime()
                 )
                 view.setPadding(sys.left, sys.top, sys.right, sys.bottom)
+                android.view.WindowInsets.CONSUMED
             } else {
                 @Suppress("DEPRECATION")
                 view.setPadding(
@@ -153,8 +157,9 @@ class MainActivity : Activity() {
                     insets.systemWindowInsetRight,
                     insets.systemWindowInsetBottom
                 )
+                @Suppress("DEPRECATION")
+                insets.consumeSystemWindowInsets()
             }
-            insets
         }
 
         webView = WebView(this).apply {

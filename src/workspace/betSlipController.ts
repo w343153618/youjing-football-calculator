@@ -1073,7 +1073,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       hasBaseline && state.stance !== "objective"
         ? Number(
             (
-              (activePlan!.profitProb ?? 0) - (basePlan!.profitProb ?? 0)
+              ((activePlan!.profitProb ?? 0) - (basePlan!.profitProb ?? 0)) *
+              100
             ).toFixed(1)
           )
         : 0;
@@ -1081,8 +1082,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       hasBaseline && state.stance !== "objective"
         ? Number(
             (
-              (activePlan!.expectedValueRate ?? 0) -
-              (basePlan!.expectedValueRate ?? 0)
+              ((activePlan!.expectedValueRate ?? 0) -
+                (basePlan!.expectedValueRate ?? 0)) *
+              100
             ).toFixed(1)
           )
         : 0;

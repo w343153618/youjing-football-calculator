@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "start": "node server/index.mjs",
     "typecheck": "tsc -b && tsc -p tsconfig.test.json",
-    "test": "node --test --test-concurrency=2 tests/*.test.ts",
+    "test": "node --test --test-concurrency=1 tests/*.test.ts",
     "bench:quant": "node scripts/bench-quant.mjs",
     "check:guardrails": "node scripts/check-guardrails.mjs",
     "prepare": "husky"

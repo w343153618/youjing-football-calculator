@@ -1,32 +1,32 @@
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
 import {
-  Spring,
-  fxOf,
-  getGlobalTimeScale,
-  haptic,
-  popStagger,
-} from './engine';
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { Spring, fxOf, getGlobalTimeScale, haptic, popStagger } from "./engine";
 
 /* ---------- Heraldic Team Crest Badge ---------- */
 const TEAM_PALETTES: Record<string, [string, string]> = {
-  中国: ['#C8102E', '#FFDE00'],
-  巴林: ['#CE1126', '#FFFFFF'],
-  日本: ['#002366', '#FFFFFF'],
-  巴拉圭: ['#D52B1E', '#0038A8'],
-  波黑: ['#002395', '#FECB00'],
-  罗马尼亚: ['#FCD116', '#002B7F'],
-  波兰: ['#DC143C', '#FFFFFF'],
-  瑞典: ['#006AA7', '#FECC02'],
-  丹麦: ['#C60C30', '#FFFFFF'],
-  挪威: ['#BA0C2F', '#00205B'],
-  威尔士: ['#D30731', '#00AB39'],
-  葡萄牙: ['#046A38', '#DA291C'],
-  匈牙利: ['#CD2A3E', '#436F4D'],
-  北爱尔兰: ['#006A4E', '#FFFFFF'],
-  爱尔兰: ['#169B62', '#FF883E'],
-  科索沃: ['#244AA5', '#D0A650'],
-  智利: ['#D52B1E', '#0039A6'],
-  哥伦比亚: ['#FCD116', '#003893'],
+  中国: ["#C8102E", "#FFDE00"],
+  巴林: ["#CE1126", "#FFFFFF"],
+  日本: ["#002366", "#FFFFFF"],
+  巴拉圭: ["#D52B1E", "#0038A8"],
+  波黑: ["#002395", "#FECB00"],
+  罗马尼亚: ["#FCD116", "#002B7F"],
+  波兰: ["#DC143C", "#FFFFFF"],
+  瑞典: ["#006AA7", "#FECC02"],
+  丹麦: ["#C60C30", "#FFFFFF"],
+  挪威: ["#BA0C2F", "#00205B"],
+  威尔士: ["#D30731", "#00AB39"],
+  葡萄牙: ["#046A38", "#DA291C"],
+  匈牙利: ["#CD2A3E", "#436F4D"],
+  北爱尔兰: ["#006A4E", "#FFFFFF"],
+  爱尔兰: ["#169B62", "#FF883E"],
+  科索沃: ["#244AA5", "#D0A650"],
+  智利: ["#D52B1E", "#0039A6"],
+  哥伦比亚: ["#FCD116", "#003893"],
 };
 
 function hashColors(name: string): [string, string] {
@@ -37,15 +37,32 @@ function hashColors(name: string): [string, string] {
   return [`hsl(${hue}, 64%, 42%)`, `hsl(${(hue + 42) % 360}, 78%, 88%)`];
 }
 
-export function TeamCrest({ name, size = 22 }: { name: string; size?: number }) {
+export function TeamCrest({
+  name,
+  size = 22,
+}: {
+  name: string;
+  size?: number;
+}) {
   const [c1, c2] = hashColors(name);
   const ch = name.slice(0, 1);
   return (
     <span className="crest" style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
         <circle cx="12" cy="12" r="11" fill={c1} />
-        <path d="M12 1 A11 11 0 0 1 23 12 L12 12 Z" fill={c2} fillOpacity="0.28" />
-        <circle cx="12" cy="12" r="10.2" fill="none" stroke="rgba(255,255,255,0.35)" strokeWidth="0.9" />
+        <path
+          d="M12 1 A11 11 0 0 1 23 12 L12 12 Z"
+          fill={c2}
+          fillOpacity="0.28"
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="10.2"
+          fill="none"
+          stroke="rgba(255,255,255,0.35)"
+          strokeWidth="0.9"
+        />
         <text
           x="12"
           y="16.1"
@@ -128,7 +145,7 @@ export function SpringSegmented<T extends string>({
   return (
     <div
       ref={trackRef}
-      className={`seg-track ${small ? 'sm' : ''}`}
+      className={`seg-track ${small ? "sm" : ""}`}
       style={{ gridTemplateColumns: `repeat(${options.length}, 1fr)` }}
     >
       <div ref={thumbRef} className="seg-thumb" />
@@ -144,7 +161,7 @@ export function SpringSegmented<T extends string>({
               onChange(k);
             }
           }}
-          className={`seg-btn ${k === value ? 'on' : ''}`}
+          className={`seg-btn ${k === value ? "on" : ""}`}
         >
           {label}
         </button>
@@ -194,7 +211,7 @@ export function SpringSwitch({ checked, onChange }: SpringSwitchProps) {
   return (
     <button
       type="button"
-      className={`switch ${checked ? 'on' : ''}`}
+      className={`switch ${checked ? "on" : ""}`}
       onPointerDown={() => sprRef.current?.w.set(30)}
       onPointerUp={() => sprRef.current?.w.set(24)}
       onPointerCancel={() => sprRef.current?.w.set(24)}
@@ -216,7 +233,12 @@ interface SpringSheetProps {
   onAfterOpen?: (sheetEl: HTMLElement) => void | (() => void);
 }
 
-export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringSheetProps) {
+export function SpringSheet({
+  open,
+  onClose,
+  children,
+  onAfterOpen,
+}: SpringSheetProps) {
   const maskRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const ySpringRef = useRef<Spring | null>(null);
@@ -232,7 +254,7 @@ export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringShee
       onClose();
       return;
     }
-    if (mask) mask.style.pointerEvents = 'none';
+    if (mask) mask.style.pointerEvents = "none";
     const H = sh.offsetHeight || 520;
     y.config(420, 38).set(H + 40);
     y.onRest = () => {
@@ -265,7 +287,7 @@ export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringShee
 
     // Pop stagger any `.pop` grids inside the sheet
     let d = 0;
-    sh.querySelectorAll<HTMLElement>('.pop').forEach((c) => {
+    sh.querySelectorAll<HTMLElement>(".pop").forEach((c) => {
       window.setTimeout(() => popStagger(c, 12), d / getGlobalTimeScale());
       d += 65;
     });
@@ -274,7 +296,7 @@ export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringShee
 
     return () => {
       y.stop();
-      if (typeof afterDisposer === 'function') afterDisposer();
+      if (typeof afterDisposer === "function") afterDisposer();
     };
   }, [open]);
 
@@ -282,7 +304,7 @@ export function SpringSheet({ open, onClose, children, onAfterOpen }: SpringShee
   const dragRef = useRef({ active: false, sy: 0, sv: 0, ly: 0, lt: 0, vel: 0 });
 
   const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
-    if ((e.target as HTMLElement).closest('button')) return;
+    if ((e.target as HTMLElement).closest("button")) return;
     const y = ySpringRef.current;
     if (!y) return;
     dragRef.current = {
@@ -355,7 +377,7 @@ export function SpringProbBar({ probs }: { probs: [number, number, number] }) {
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
-    const segs = [...el.querySelectorAll<HTMLElement>('i')];
+    const segs = [...el.querySelectorAll<HTMLElement>("i")];
     const springs = segs.map(
       (seg) =>
         new Spring(0, {
@@ -398,7 +420,6 @@ export function kickElement(el: HTMLElement | null, velocity = 2.6) {
   fxOf(el).scale.kick(velocity);
 }
 
-
 /* ---------- Live Spring-Animated Payout Equalizer Bars ---------- */
 export interface EqualizerComboBar {
   id: string;
@@ -418,13 +439,17 @@ export function PayoutEqualizerBars({
   const springsRef = useRef<Spring[]>([]);
 
   const visible = combos.slice(0, 8);
-  const maxVal = Math.max(totalCost * 1.35, ...visible.map((c) => c.totalPayout), 10);
+  const maxVal = Math.max(
+    totalCost * 1.35,
+    ...visible.map((c) => c.totalPayout),
+    10
+  );
   const costPct = Math.min(88, Math.max(12, (totalCost / maxVal) * 100));
 
   useLayoutEffect(() => {
     const root = wrapRef.current;
     if (!root) return;
-    const barEls = [...root.querySelectorAll<HTMLElement>('.eq-bar-fill')];
+    const barEls = [...root.querySelectorAll<HTMLElement>(".eq-bar-fill")];
 
     while (springsRef.current.length < barEls.length) {
       springsRef.current.push(new Spring(15, { k: 290, c: 19, eps: 0.1 }));
@@ -433,7 +458,10 @@ export function PayoutEqualizerBars({
     barEls.forEach((el, idx) => {
       const item = visible[idx];
       if (!item) return;
-      const targetPct = Math.min(100, Math.max(8, (item.totalPayout / maxVal) * 100));
+      const targetPct = Math.min(
+        100,
+        Math.max(8, (item.totalPayout / maxVal) * 100)
+      );
       const sp = springsRef.current[idx];
       sp.onUpdate = (v) => {
         el.style.height = `${Math.max(4, v)}%`;
@@ -444,7 +472,11 @@ export function PayoutEqualizerBars({
     return () => {
       // Keep spring positions across re-renders so mode switches morph smoothly!
     };
-  }, [visible.map((c) => `${c.id}:${c.totalPayout.toFixed(1)}`).join('|'), totalCost, maxVal]);
+  }, [
+    visible.map((c) => `${c.id}:${c.totalPayout.toFixed(1)}`).join("|"),
+    totalCost,
+    maxVal,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -459,13 +491,20 @@ export function PayoutEqualizerBars({
       <div className="eq-cost-line" style={{ bottom: `${costPct}%` }}>
         <span>本金线 ¥{totalCost}</span>
       </div>
-      <div className="eq-bars" style={{ gridTemplateColumns: `repeat(${visible.length}, 1fr)` }}>
+      <div
+        className="eq-bars"
+        style={{ gridTemplateColumns: `repeat(${visible.length}, 1fr)` }}
+      >
         {visible.map((c, idx) => {
           const isLoss = c.totalPayout < totalCost - 0.01;
           return (
-            <div key={c.id} className="eq-col" title={`${c.label} · 实派 ¥${c.totalPayout.toFixed(1)}`}>
+            <div
+              key={c.id}
+              className="eq-col"
+              title={`${c.label} · 实派 ¥${c.totalPayout.toFixed(1)}`}
+            >
               <div className="eq-track">
-                <div className={`eq-bar-fill ${isLoss ? 'loss' : 'win'}`}>
+                <div className={`eq-bar-fill ${isLoss ? "loss" : "win"}`}>
                   <em className="eq-val">¥{Math.round(c.totalPayout)}</em>
                 </div>
               </div>
@@ -475,6 +514,137 @@ export function PayoutEqualizerBars({
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Spec 0010 · Tactile 3D Dual-Face Flip Card (外简内丰) ---------- */
+export interface TactileFlipCardProps {
+  flipped?: boolean;
+  defaultFlipped?: boolean;
+  onFlipChange?: (next: boolean) => void;
+  frontHeader?: ReactNode;
+  backHeader?: ReactNode;
+  flipToBackLabel?: string;
+  flipToFrontLabel?: string;
+  front: ReactNode;
+  back: ReactNode;
+  className?: string;
+}
+
+export function TactileFlipCard({
+  flipped,
+  defaultFlipped = false,
+  onFlipChange,
+  frontHeader,
+  backHeader,
+  flipToBackLabel = "🔄 翻转看底牌 ›",
+  flipToFrontLabel = "↩ 返回极简面",
+  front,
+  back,
+  className = "",
+}: TactileFlipCardProps) {
+  const [innerFlipped, setInnerFlipped] = useState<boolean>(defaultFlipped);
+  const isFlipped = flipped !== undefined ? flipped : innerFlipped;
+
+  const handleToggle = () => {
+    haptic(7);
+    const next = !isFlipped;
+    if (flipped === undefined) setInnerFlipped(next);
+    onFlipChange?.(next);
+  };
+
+  return (
+    <div
+      className={`tflip-scene ${isFlipped ? "is-flipped" : ""} ${className}`}
+    >
+      <div className="tflip-inner">
+        <div className="card tflip-face tflip-front" aria-hidden={isFlipped}>
+          <div className="tflip-bar">
+            <div className="tflip-title">{frontHeader}</div>
+            <button
+              type="button"
+              data-spring="0.9"
+              className="tflip-btn num"
+              onClick={handleToggle}
+            >
+              {flipToBackLabel}
+            </button>
+          </div>
+          {front}
+        </div>
+
+        <div className="card tflip-face tflip-back" aria-hidden={!isFlipped}>
+          <div className="tflip-bar">
+            <div className="tflip-title">{backHeader ?? frontHeader}</div>
+            <button
+              type="button"
+              data-spring="0.9"
+              className="tflip-btn on num"
+              onClick={handleToggle}
+            >
+              {flipToFrontLabel}
+            </button>
+          </div>
+          {back}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Spec 0010 · Spring Progressive Collapse Drawer ---------- */
+export interface SpringCollapseDrawerProps {
+  open?: boolean;
+  defaultOpen?: boolean;
+  onOpenChange?: (next: boolean) => void;
+  title: ReactNode;
+  badge?: ReactNode;
+  summary?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}
+
+export function SpringCollapseDrawer({
+  open,
+  defaultOpen = false,
+  onOpenChange,
+  title,
+  badge,
+  summary,
+  children,
+  className = "",
+}: SpringCollapseDrawerProps) {
+  const [innerOpen, setInnerOpen] = useState<boolean>(defaultOpen);
+  const isOpen = open !== undefined ? open : innerOpen;
+
+  const handleToggle = () => {
+    haptic(5);
+    const next = !isOpen;
+    if (open === undefined) setInnerOpen(next);
+    onOpenChange?.(next);
+  };
+
+  return (
+    <div className={`card sdrawer ${isOpen ? "open" : ""} ${className}`}>
+      <button
+        type="button"
+        className="sdrawer-head"
+        onClick={handleToggle}
+        aria-expanded={isOpen}
+      >
+        <div className="sdrawer-head-main">
+          <span className="sdrawer-title">{title}</span>
+          {summary && <span className="sdrawer-sum">{summary}</span>}
+        </div>
+        <div className="sdrawer-head-right">
+          {badge}
+          <span className={`sdrawer-chev ${isOpen ? "open" : ""}`}>▾</span>
+        </div>
+      </button>
+      <div className="sdrawer-body">
+        <div className="sdrawer-inner">{children}</div>
       </div>
     </div>
   );
