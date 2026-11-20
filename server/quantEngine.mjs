@@ -1402,11 +1402,17 @@ export function calibrateMatchCoherentModel(match) {
     if (tHad && tHhad && Math.abs(goalLine) === 1) {
       const mHhad = hhadTarget.multProbs;
       const sHhad = hhadTarget.probs;
+      const smoothReconWeight = (gap) => {
+        if (gap <= 0.1) return 1;
+        if (gap >= 0.16) return 0;
+        return 0.5 * (1 + Math.cos((Math.PI * (gap - 0.1)) / 0.06));
+      };
       if (goalLine === -1) {
         const splitWin =
           0.5 * (sHhad[0] + sHhad[1]) + 0.5 * (mHhad[0] + mHhad[1]);
-        if (Math.abs(splitWin - tHad[0]) <= 0.12) {
-          // Symmetric Jensen-cancelling reconciliation between bundled HAD[h] and split HHAD[hh+hd]
+        const alpha = smoothReconWeight(Math.abs(splitWin - tHad[0]));
+        if (alpha > 0) {
+          // Symmetric Jensen-cancelling reconciliation with C1 smooth ramp on [0.10, 0.16]
           const pHCons = Math.min(
             0.995,
             Math.max(0.005, 0.5 * tHad[0] + 0.5 * splitWin)
@@ -1414,21 +1420,28 @@ export function calibrateMatchCoherentModel(match) {
           const pDaCons = 1 - pHCons;
           const daSum = Math.max(1e-12, tHad[1] + tHad[2]);
           const hhSum = Math.max(1e-12, mHhad[0] + mHhad[1]);
+          const rHad0 = pHCons;
+          const rHad1 = pDaCons * (tHad[1] / daSum);
+          const rHad2 = pDaCons * (tHad[2] / daSum);
+          const rHhad0 = pHCons * (mHhad[0] / hhSum);
+          const rHhad1 = pHCons * (mHhad[1] / hhSum);
+          const rHhad2 = pDaCons;
           tHad = new Float64Array([
-            pHCons,
-            pDaCons * (tHad[1] / daSum),
-            pDaCons * (tHad[2] / daSum),
+            (1 - alpha) * tHad[0] + alpha * rHad0,
+            (1 - alpha) * tHad[1] + alpha * rHad1,
+            (1 - alpha) * tHad[2] + alpha * rHad2,
           ]);
           tHhad = new Float64Array([
-            pHCons * (mHhad[0] / hhSum),
-            pHCons * (mHhad[1] / hhSum),
-            pDaCons,
+            (1 - alpha) * tHhad[0] + alpha * rHhad0,
+            (1 - alpha) * tHhad[1] + alpha * rHhad1,
+            (1 - alpha) * tHhad[2] + alpha * rHhad2,
           ]);
         }
       } else {
         const splitAway =
           0.5 * (sHhad[1] + sHhad[2]) + 0.5 * (mHhad[1] + mHhad[2]);
-        if (Math.abs(splitAway - tHad[2]) <= 0.12) {
+        const alpha = smoothReconWeight(Math.abs(splitAway - tHad[2]));
+        if (alpha > 0) {
           const pACons = Math.min(
             0.995,
             Math.max(0.005, 0.5 * tHad[2] + 0.5 * splitAway)
@@ -1436,15 +1449,21 @@ export function calibrateMatchCoherentModel(match) {
           const pHdCons = 1 - pACons;
           const hdSum = Math.max(1e-12, tHad[0] + tHad[1]);
           const haSum = Math.max(1e-12, mHhad[1] + mHhad[2]);
+          const rHad0 = pHdCons * (tHad[0] / hdSum);
+          const rHad1 = pHdCons * (tHad[1] / hdSum);
+          const rHad2 = pACons;
+          const rHhad0 = pHdCons;
+          const rHhad1 = pACons * (mHhad[1] / haSum);
+          const rHhad2 = pACons * (mHhad[2] / haSum);
           tHad = new Float64Array([
-            pHdCons * (tHad[0] / hdSum),
-            pHdCons * (tHad[1] / hdSum),
-            pACons,
+            (1 - alpha) * tHad[0] + alpha * rHad0,
+            (1 - alpha) * tHad[1] + alpha * rHad1,
+            (1 - alpha) * tHad[2] + alpha * rHad2,
           ]);
           tHhad = new Float64Array([
-            pHdCons,
-            pACons * (mHhad[1] / haSum),
-            pACons * (mHhad[2] / haSum),
+            (1 - alpha) * tHhad[0] + alpha * rHhad0,
+            (1 - alpha) * tHhad[1] + alpha * rHhad1,
+            (1 - alpha) * tHhad[2] + alpha * rHhad2,
           ]);
         }
       }
@@ -1621,6 +1640,73 @@ export function calibrateMatchCoherentModel(match) {
     if (sgSum > 0) {
       const invSg = 1 / sgSum;
       for (let cell = 0; cell < DC_GRID_LEN; cell++) scoreGrid[cell] *= invSg;
+    }
+  } else if (sellingPoolCount === 1) {
+    // Closed-form 1-step KL projection onto the sole selling pool's Shin marginal so fairProb, poolProbs & scoreGrid align to <1e-15
+    const priorAtomic = SCRATCH_PRIOR_ATOMIC;
+    for (let i = 0; i < atomicLen; i++) {
+      priorAtomic[i] = Math.max(1e-14, atomicProbs[i]);
+    }
+    let singleTargetProbs = null;
+    let bucketOf = null;
+    if (hadTarget) {
+      singleTargetProbs = hadTarget.probs;
+      bucketOf = (tpl) => tpl.ftCode;
+    } else if (hhadTarget) {
+      singleTargetProbs = hhadTarget.probs;
+      bucketOf = (tpl) => {
+        const adj = tpl.goalDiff + goalLine;
+        return adj > 0 ? 0 : adj === 0 ? 1 : 2;
+      };
+    } else if (ttgTarget) {
+      singleTargetProbs = ttgTarget.probs;
+      bucketOf = (tpl) => tpl.ttgIdx;
+    } else if (hafuTarget) {
+      singleTargetProbs = hafuTarget.probs;
+      bucketOf = (tpl) => tpl.hafuIdx;
+    } else if (crsTarget) {
+      singleTargetProbs = crsTarget.probs;
+      bucketOf = (tpl) => tpl.crsIdx;
+    }
+    if (singleTargetProbs && bucketOf) {
+      const curMarg = new Float64Array(singleTargetProbs.length);
+      for (let i = 0; i < atomicLen; i++) {
+        curMarg[bucketOf(ATOMIC_TEMPLATES[i])] += priorAtomic[i];
+      }
+      let sumP = 0;
+      for (let i = 0; i < atomicLen; i++) {
+        const b = bucketOf(ATOMIC_TEMPLATES[i]);
+        const ratio = curMarg[b] > 0 ? singleTargetProbs[b] / curMarg[b] : 0;
+        const v = priorAtomic[i] * ratio;
+        atomicProbs[i] = v;
+        sumP += v;
+      }
+      if (sumP > 0) {
+        const inv = 1 / sumP;
+        for (let i = 0; i < atomicLen; i++) atomicProbs[i] *= inv;
+      }
+      scoreGrid.fill(0);
+      for (let cell = 0; cell < DC_GRID_LEN; cell++) {
+        const baseMap = cell * 3;
+        let cellMass = 0;
+        for (let htCode = 0; htCode < 3; htCode++) {
+          const aIdx = GRID_HT_TO_ATOMIC[baseMap + htCode];
+          if (aIdx >= 0) {
+            const priorCellHt = cellPriorHt[baseMap + htCode];
+            const priorAtom = priorAtomic[aIdx];
+            if (priorCellHt > 0 && priorAtom > 0) {
+              cellMass += atomicProbs[aIdx] * (priorCellHt / priorAtom);
+            }
+          }
+        }
+        scoreGrid[cell] = cellMass;
+      }
+      let sgSum = 0;
+      for (let cell = 0; cell < DC_GRID_LEN; cell++) sgSum += scoreGrid[cell];
+      if (sgSum > 0) {
+        const invSg = 1 / sgSum;
+        for (let cell = 0; cell < DC_GRID_LEN; cell++) scoreGrid[cell] *= invSg;
+      }
     }
   }
 
@@ -10003,9 +10089,10 @@ function parseMatchDatePrefixMinutes(matchId) {
   return Number.isFinite(ts) ? Math.round(ts / 60_000) : null;
 }
 
-function getSellingPoolOption(pool, key) {
+function getSellingPoolOption(pool, key, requireSingle = false) {
   if (!pool || pool.selling === false || !Array.isArray(pool.options))
     return null;
+  if (requireSingle && pool.single !== true) return null;
   const found = pool.options.find((o) => o.key === key && Number(o.odds) > 0);
   return found ?? null;
 }
@@ -10083,111 +10170,137 @@ function resolveComplementaryLateHedge(late, latePicks) {
         }
       : null;
 
-  if (poolCode === "HAD") {
-    const validHadKeys = ["h", "d", "a"].filter((k) => pickedKeys.has(k));
-    if (validHadKeys.length !== pickedKeys.size || validHadKeys.length === 0) {
-      return {
-        ok: false,
-        reason: `末场 ${late.matchNumStr} 胜平负选项异常，无法构成完备互补对冲`,
-      };
-    }
-    if (validHadKeys.length >= 3) {
-      return {
-        ok: false,
-        reason: `末场 ${late.matchNumStr} 已全包胜平负全部赛果，无需额外补买反向对冲`,
-      };
-    }
-    if (validHadKeys.length === 2) {
-      const remKey = ["h", "d", "a"].find((k) => !pickedKeys.has(k));
-      const remOpt = getSellingPoolOption(hadPool, remKey);
-      const best = makeSingleCand(remOpt, "胜平负");
+  const evalForSingleRequirement = (requireSingle) => {
+    if (poolCode === "HAD") {
+      const validHadKeys = ["h", "d", "a"].filter((k) => pickedKeys.has(k));
+      if (
+        validHadKeys.length !== pickedKeys.size ||
+        validHadKeys.length === 0
+      ) {
+        return {
+          ok: false,
+          reason: `末场 ${late.matchNumStr} 胜平负选项异常，无法构成完备互补对冲`,
+        };
+      }
+      if (validHadKeys.length >= 3) {
+        return {
+          ok: false,
+          reason: `末场 ${late.matchNumStr} 已全包胜平负全部赛果，无需额外补买反向对冲`,
+        };
+      }
+      if (validHadKeys.length === 2) {
+        const remKey = ["h", "d", "a"].find((k) => !pickedKeys.has(k));
+        const remOpt = getSellingPoolOption(hadPool, remKey, requireSingle);
+        const best = makeSingleCand(remOpt, "胜平负");
+        return best
+          ? { ok: true, candidate: best }
+          : {
+              ok: false,
+              reason: `末场 ${late.matchNumStr} 缺少在售的胜平负互补第 3 项，无法无死角锁利`,
+            };
+      }
+
+      const singleKey = validHadKeys[0];
+      const hadH = getSellingPoolOption(hadPool, "h", requireSingle);
+      const hadD = getSellingPoolOption(hadPool, "d", requireSingle);
+      const hadA = getSellingPoolOption(hadPool, "a", requireSingle);
+      let best = null;
+      if (singleKey === "h") {
+        const hhadHa =
+          goalLineNum === -1
+            ? getSellingPoolOption(hhadPool, "ha", requireSingle)
+            : null;
+        best = pickBest([
+          makeSingleCand(hhadHa, "让球(-1)"),
+          makePairCand(hadD, hadA, "胜平负"),
+        ]);
+      } else if (singleKey === "a") {
+        const hhadHh =
+          goalLineNum === 1
+            ? getSellingPoolOption(hhadPool, "hh", requireSingle)
+            : null;
+        best = pickBest([
+          makeSingleCand(hhadHh, "让球(+1)"),
+          makePairCand(hadH, hadD, "胜平负"),
+        ]);
+      } else if (singleKey === "d") {
+        best = makePairCand(hadH, hadA, "胜平负");
+      }
+
       return best
         ? { ok: true, candidate: best }
         : {
             ok: false,
-            reason: `末场 ${late.matchNumStr} 缺少在售的胜平负互补第 3 项，无法无死角锁利`,
+            reason: `末场 ${late.matchNumStr} 缺少在售的 100% 互补反向盘口，无法无死角对冲`,
           };
     }
 
-    const singleKey = validHadKeys[0];
-    const hadH = getSellingPoolOption(hadPool, "h");
-    const hadD = getSellingPoolOption(hadPool, "d");
-    const hadA = getSellingPoolOption(hadPool, "a");
-    let best = null;
-    if (singleKey === "h") {
-      const hhadHa =
-        goalLineNum === -1 ? getSellingPoolOption(hhadPool, "ha") : null;
-      best = pickBest([
-        makeSingleCand(hhadHa, "让球(-1)"),
-        makePairCand(hadD, hadA, "胜平负"),
-      ]);
-    } else if (singleKey === "a") {
-      const hhadHh =
-        goalLineNum === 1 ? getSellingPoolOption(hhadPool, "hh") : null;
-      best = pickBest([
-        makeSingleCand(hhadHh, "让球(+1)"),
-        makePairCand(hadH, hadD, "胜平负"),
-      ]);
-    } else if (singleKey === "d") {
-      best = makePairCand(hadH, hadA, "胜平负");
+    const validHhadKeys = ["hh", "hd", "ha"].filter((k) => pickedKeys.has(k));
+    if (
+      !Number.isFinite(goalLineNum) ||
+      goalLineNum === 0 ||
+      validHhadKeys.length !== pickedKeys.size ||
+      validHhadKeys.length === 0
+    ) {
+      return {
+        ok: false,
+        reason: `末场 ${late.matchNumStr} 让球盘选项异常，无法构成完备互补对冲`,
+      };
+    }
+    if (validHhadKeys.length >= 3) {
+      return {
+        ok: false,
+        reason: `末场 ${late.matchNumStr} 已全包让球胜平负全部赛果，无需额外补买反向对冲`,
+      };
+    }
+    const poolTag = `让球(${goalLineStr})`;
+    if (validHhadKeys.length === 2) {
+      const remKey = ["hh", "hd", "ha"].find((k) => !pickedKeys.has(k));
+      const remOpt = getSellingPoolOption(hhadPool, remKey, requireSingle);
+      const best = makeSingleCand(remOpt, poolTag);
+      return best
+        ? { ok: true, candidate: best }
+        : {
+            ok: false,
+            reason: `末场 ${late.matchNumStr} 缺少在售的${poolTag}互补第 3 项，无法无死角锁利`,
+          };
     }
 
+    const singleKey = validHhadKeys[0];
+    const otherKeys = ["hh", "hd", "ha"].filter((k) => k !== singleKey);
+    const opt1 = getSellingPoolOption(hhadPool, otherKeys[0], requireSingle);
+    const opt2 = getSellingPoolOption(hhadPool, otherKeys[1], requireSingle);
+    let crossSingle = null;
+    if (goalLineNum === -1 && singleKey === "ha") {
+      crossSingle = makeSingleCand(
+        getSellingPoolOption(hadPool, "h", requireSingle),
+        "胜平负"
+      );
+    } else if (goalLineNum === 1 && singleKey === "hh") {
+      crossSingle = makeSingleCand(
+        getSellingPoolOption(hadPool, "a", requireSingle),
+        "胜平负"
+      );
+    }
+    const best = pickBest([crossSingle, makePairCand(opt1, opt2, poolTag)]);
     return best
       ? { ok: true, candidate: best }
       : {
           ok: false,
           reason: `末场 ${late.matchNumStr} 缺少在售的 100% 互补反向盘口，无法无死角对冲`,
         };
-  }
+  };
 
-  const validHhadKeys = ["hh", "hd", "ha"].filter((k) => pickedKeys.has(k));
-  if (
-    !Number.isFinite(goalLineNum) ||
-    goalLineNum === 0 ||
-    validHhadKeys.length !== pickedKeys.size ||
-    validHhadKeys.length === 0
-  ) {
+  const strictSingleRes = evalForSingleRequirement(true);
+  if (strictSingleRes.ok) return strictSingleRes;
+  const sellingOnlyRes = evalForSingleRequirement(false);
+  if (sellingOnlyRes.ok) {
     return {
       ok: false,
-      reason: `末场 ${late.matchNumStr} 让球盘选项异常，无法构成完备互补对冲`,
+      reason: `末场 ${late.matchNumStr} 互补胜平负/让球盘未开单关，体彩店无法单独补买反向盘对冲`,
     };
   }
-  if (validHhadKeys.length >= 3) {
-    return {
-      ok: false,
-      reason: `末场 ${late.matchNumStr} 已全包让球胜平负全部赛果，无需额外补买反向对冲`,
-    };
-  }
-  const poolTag = `让球(${goalLineStr})`;
-  if (validHhadKeys.length === 2) {
-    const remKey = ["hh", "hd", "ha"].find((k) => !pickedKeys.has(k));
-    const remOpt = getSellingPoolOption(hhadPool, remKey);
-    const best = makeSingleCand(remOpt, poolTag);
-    return best
-      ? { ok: true, candidate: best }
-      : {
-          ok: false,
-          reason: `末场 ${late.matchNumStr} 缺少在售的${poolTag}互补第 3 项，无法无死角锁利`,
-        };
-  }
-
-  const singleKey = validHhadKeys[0];
-  const otherKeys = ["hh", "hd", "ha"].filter((k) => k !== singleKey);
-  const opt1 = getSellingPoolOption(hhadPool, otherKeys[0]);
-  const opt2 = getSellingPoolOption(hhadPool, otherKeys[1]);
-  let crossSingle = null;
-  if (goalLineNum === -1 && singleKey === "ha") {
-    crossSingle = makeSingleCand(getSellingPoolOption(hadPool, "h"), "胜平负");
-  } else if (goalLineNum === 1 && singleKey === "hh") {
-    crossSingle = makeSingleCand(getSellingPoolOption(hadPool, "a"), "胜平负");
-  }
-  const best = pickBest([crossSingle, makePairCand(opt1, opt2, poolTag)]);
-  return best
-    ? { ok: true, candidate: best }
-    : {
-        ok: false,
-        reason: `末场 ${late.matchNumStr} 缺少在售的 100% 互补反向盘口，无法无死角对冲`,
-      };
+  return strictSingleRes;
 }
 
 function extractPlanEffectivePicks(appliedPlan) {
@@ -10303,6 +10416,7 @@ export function computeProOrderInsights(
 
   let hedge = {
     available: false,
+    hedgeMode: "unavailable",
     gapMinutes: 0,
     gapText: "同时间段开球",
     earlyMatchTitle: "",
@@ -10358,6 +10472,7 @@ export function computeProOrderInsights(
         hedge = {
           ...hedge,
           available: false,
+          hedgeMode: "unavailable",
           gapMinutes: gap,
           gapText,
           earlyMatchTitle,
@@ -10385,6 +10500,7 @@ export function computeProOrderInsights(
           hedge = {
             ...hedge,
             available: false,
+            hedgeMode: "unavailable",
             gapMinutes: gap,
             gapText,
             earlyMatchTitle,
@@ -10425,9 +10541,27 @@ export function computeProOrderInsights(
               hedgeCost
             ).toFixed(2)
           );
+          const hedgeMode =
+            lockedNetProfit > 0
+              ? "lock-profit"
+              : lockedNetProfit === 0
+                ? "break-even"
+                : "reduce-loss";
+          const lockedReturn = Number(
+            (report.totalCost + hedgeCost + lockedNetProfit).toFixed(2)
+          );
+          const hedgeReason =
+            hedgeMode === "lock-profit"
+              ? sortedByTime.length >= 3
+                ? `前 ${sortedByTime.length - 1} 场最晚(${penultimate.kickoff})完场后距末场(${late.kickoff})仍有 ${gapText} 窗口！若前序 ${sortedByTime.length - 1} 关全红，单关补买 ¥${hedgeCost} 互补反向盘即可稳赚锁利 +¥${lockedNetProfit.toFixed(2)}！`
+                : `早场(${penultimate.kickoff})完场后距晚场(${late.kickoff})间隔 ${gapText}！若第一关顺利红单，单关补买 ¥${hedgeCost} 互补反向盘即可稳赚锁利 +¥${lockedNetProfit.toFixed(2)}！`
+              : hedgeMode === "break-even"
+                ? `前序红单后距末场(${late.kickoff})间隔 ${gapText}；单关补买 ¥${hedgeCost} 互补反向盘可零损拿回全部成本 ¥${lockedReturn.toFixed(2)}。`
+                : `受两元偶数凑整与双盘抽水影响，前序红单后单关补买 ¥${hedgeCost} 互补反向盘仅属减损止血：锁死少亏 -¥${Math.abs(lockedNetProfit).toFixed(2)}（拿回 ¥${lockedReturn.toFixed(2)}），无法正收益，请谨慎评估。`;
 
           hedge = {
             available: true,
+            hedgeMode,
             gapMinutes: gap,
             gapText,
             earlyMatchTitle,
@@ -10438,10 +10572,7 @@ export function computeProOrderInsights(
             oppositeOdds: oppOdds,
             hedgeCost,
             lockedNetProfit,
-            reason:
-              sortedByTime.length >= 3
-                ? `前 ${sortedByTime.length - 1} 场最晚(${penultimate.kickoff})完场后距末场(${late.kickoff})仍有 ${gapText} 窗口！若前序 ${sortedByTime.length - 1} 关全红，补买 ¥${hedgeCost} 互补反向盘即可 100% 无死角提前锁利！`
-                : `早场(${penultimate.kickoff})完场后距晚场(${late.kickoff})间隔 ${gapText}！若第一关顺利红单，补买 ¥${hedgeCost} 互补反向盘即可 100% 无死角提前锁利！`,
+            reason: hedgeReason,
           };
         }
       }
@@ -10449,28 +10580,54 @@ export function computeProOrderInsights(
   }
 
   let weakestLink = null;
-  if (pickedMatches.length >= 2) {
-    const perMatchProb = pickedMatches.map((m) => {
-      const mp = effectivePicks.filter((p) => p.matchId === m.id);
-      const sumP = Math.min(
-        0.95,
-        mp.reduce((a, x) => a + x.fairProb, 0)
-      );
-      return { m, sumP };
-    });
-    perMatchProb.sort((a, b) => a.sumP - b.sumP);
-    const worst = perMatchProb[0];
-    const withoutWorstProb = perMatchProb
-      .slice(1)
-      .reduce((acc, x) => acc * x.sumP, 1);
-    if (worst && withoutWorstProb - report.realProfitProb >= 0.14) {
-      weakestLink = {
-        matchId: worst.m.id,
-        matchTitle: `${worst.m.matchNumStr} ${worst.m.home}vs${worst.m.away}`,
-        currentProfitProb: report.realProfitProb,
-        afterRemoveProfitProb: withoutWorstProb,
-        message: `【${worst.m.home}vs${worst.m.away}】单场过关率仅 ${(worst.sumP * 100).toFixed(0)}%，是拉低整单胜率的最大瓶颈；砍掉它后整单胜率立升至 ${(withoutWorstProb * 100).toFixed(1)}%！`,
-      };
+  const rawPicksList = Array.isArray(picks) ? picks : [];
+  const rawPickedMatchIds = Array.from(
+    new Set(rawPicksList.map((p) => p.matchId))
+  );
+  if (!appliedPlan && rawPickedMatchIds.length >= 2 && report?.canCheckout) {
+    const rawPickedMatches = rawPickedMatchIds
+      .map((id) => matches.find((m) => m.id === id))
+      .filter(Boolean);
+    if (rawPickedMatches.length >= 2) {
+      const perMatchProb = rawPickedMatches.map((m) => {
+        const mp = rawPicksList.filter((p) => p.matchId === m.id);
+        const sumP = Math.min(
+          0.98,
+          mp.reduce((a, x) => a + x.fairProb, 0)
+        );
+        return { m, sumP };
+      });
+      perMatchProb.sort((a, b) => a.sumP - b.sumP);
+      const worst = perMatchProb[0];
+      if (worst) {
+        const remainingPicks = rawPicksList.filter(
+          (p) => p.matchId !== worst.m.id
+        );
+        const nextPassSpec = report.activeComboCode
+          ? { mode: "combo", comboCode: report.activeComboCode }
+          : Array.isArray(report.activePassSizes) &&
+              report.activePassSizes.length > 0
+            ? { mode: "free", passSizes: report.activePassSizes }
+            : { mode: "auto" };
+        const afterRep = computeTruthReport(
+          remainingPicks,
+          report.multiple || 1,
+          matches,
+          nextPassSpec
+        );
+        if (
+          afterRep.canCheckout === true &&
+          afterRep.realProfitProb - report.realProfitProb >= 0.14
+        ) {
+          weakestLink = {
+            matchId: worst.m.id,
+            matchTitle: `${worst.m.matchNumStr} ${worst.m.home}vs${worst.m.away}`,
+            currentProfitProb: report.realProfitProb,
+            afterRemoveProfitProb: afterRep.realProfitProb,
+            message: `【${worst.m.home}vs${worst.m.away}】单场命中率仅 ${(worst.sumP * 100).toFixed(0)}%，是拉低整单真赚钱率的最大瓶颈；砍掉它后真赚钱率立升至 ${(afterRep.realProfitProb * 100).toFixed(1)}%！`,
+          };
+        }
+      }
     }
   }
 

@@ -243,6 +243,7 @@ export interface ArchetypePlan {
 
 export interface StaggeredHedgePlan {
   available: boolean;
+  hedgeMode?: "lock-profit" | "break-even" | "reduce-loss" | "unavailable";
   gapMinutes: number;
   gapText: string;
   earlyMatchTitle: string;
@@ -347,6 +348,7 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
 export const EMPTY_INSIGHTS: ProOrderInsights = {
   hedge: {
     available: false,
+    hedgeMode: "unavailable",
     gapMinutes: 0,
     gapText: "同时间段开球",
     earlyMatchTitle: "",

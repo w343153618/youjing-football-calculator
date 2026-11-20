@@ -304,4 +304,326 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       `Expected 8串247 active bonus p50 < 15ms, got ${latTimes[5].toFixed(2)}ms`
     );
   });
+
+  it("Slice 02 · Seam 1: enforces single-eligibility & reduce-loss honesty on staggered hedge, aligns single-pool calibration + smooth HAD/HHAD ramp, and guards weakestLink with exact legal realProfitProb", () => {
+    // 1. P0-3a: Late match with HAD.single=false & HHAD.single=false (FALLBACK_MATCHES[2] 周二005) MUST reject hedge
+    const earlyM = FALLBACK_MATCHES[0] as MatchItem; // 20:00
+    const nonSingleLate = FALLBACK_MATCHES[2] as MatchItem; // 03:45, hadSingle=false, hhadSingle=false
+    const nonSinglePicks = [
+      makePick(earlyM, "HAD", "h"),
+      makePick(nonSingleLate, "HAD", "h"),
+    ];
+    const repNonSingle = computeTruthReport(nonSinglePicks, 5, [
+      earlyM,
+      nonSingleLate,
+    ]);
+    const insNonSingle = computeProOrderInsights(nonSinglePicks, repNonSingle, [
+      earlyM,
+      nonSingleLate,
+    ]);
+    assert.equal(
+      insNonSingle.hedge.available,
+      false,
+      "Non-single late match cannot be hedged as a standalone ticket at a Sporttery shop"
+    );
+    assert.equal(insNonSingle.hedge.hedgeMode, "unavailable");
+    assert.ok(
+      insNonSingle.hedge.reason.includes("单关"),
+      `Expected reason to explain missing single eligibility, got: ${insNonSingle.hedge.reason}`
+    );
+
+    // 2. P0-3b: Single-eligible late match with rounding/vig net loss MUST classify as reduce-loss with zero "提前锁利"/"保本" wording
+    const lowOddsEarly: MatchItem = {
+      ...earlyM,
+      id: "20261117-011",
+      kickoff: "20:00",
+      pools: {
+        ...earlyM.pools,
+        HAD: {
+          ...earlyM.pools.HAD,
+          options: [
+            { key: "h", label: "主胜", odds: 1.08, trend: 0, fairProb: 0.82 },
+            { key: "d", label: "平", odds: 6.5, trend: 0, fairProb: 0.11 },
+            { key: "a", label: "客胜", odds: 11.0, trend: 0, fairProb: 0.07 },
+          ],
+        },
+      },
+    };
+    const singleLate: MatchItem = {
+      ...(FALLBACK_MATCHES[3] as MatchItem), // 20261117-007 03:45, single=true
+      pools: {
+        ...(FALLBACK_MATCHES[3] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[3] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 1.82, trend: 0, fairProb: 0.48 },
+            { key: "d", label: "平", odds: 3.3, trend: 0, fairProb: 0.27 },
+            { key: "a", label: "客胜", odds: 3.6, trend: 0, fairProb: 0.25 },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[3] as MatchItem).pools.HHAD,
+          single: true,
+          selling: true,
+          goalLine: "-1",
+          options: [
+            { key: "hh", label: "让胜", odds: 3.5, trend: 0, fairProb: 0.25 },
+            { key: "hd", label: "让平", odds: 3.4, trend: 0, fairProb: 0.26 },
+            { key: "ha", label: "让负", odds: 1.78, trend: 0, fairProb: 0.49 },
+          ],
+        },
+      },
+    };
+    const reduceLossPicks = [
+      makePick(lowOddsEarly, "HAD", "h"),
+      makePick(singleLate, "HAD", "h"),
+    ];
+    const repReduceLoss = computeTruthReport(reduceLossPicks, 1, [
+      lowOddsEarly,
+      singleLate,
+    ]);
+    const insReduceLoss = computeProOrderInsights(
+      reduceLossPicks,
+      repReduceLoss,
+      [lowOddsEarly, singleLate]
+    );
+    assert.equal(insReduceLoss.hedge.available, true);
+    assert.ok(
+      insReduceLoss.hedge.lockedNetProfit < 0,
+      `Expected negative lockedNetProfit, got ${insReduceLoss.hedge.lockedNetProfit}`
+    );
+    assert.equal(insReduceLoss.hedge.hedgeMode, "reduce-loss");
+    assert.ok(!insReduceLoss.hedge.reason.includes("提前锁利"));
+    assert.ok(!insReduceLoss.hedge.reason.includes("保本"));
+
+    // Positive net profit case -> hedgeMode === "lock-profit"
+    const lockProfitPicks = [
+      makePick(earlyM, "HAD", "h"),
+      makePick(FALLBACK_MATCHES[3] as MatchItem, "HAD", "a"),
+    ];
+    const repLockProfit = computeTruthReport(lockProfitPicks, 15, [
+      earlyM,
+      FALLBACK_MATCHES[3] as MatchItem,
+    ]);
+    const insLockProfit = computeProOrderInsights(
+      lockProfitPicks,
+      repLockProfit,
+      [earlyM, FALLBACK_MATCHES[3] as MatchItem]
+    );
+    assert.equal(insLockProfit.hedge.available, true);
+    assert.ok(insLockProfit.hedge.lockedNetProfit > 0);
+    assert.equal(insLockProfit.hedge.hedgeMode, "lock-profit");
+
+    // 3. P2-1: Single-pool selling match aligns poolProbs & scoreGrid with shinProb/fairProb (<1e-12), and HAD/HHAD ramp has zero cliff at 0.12
+    const singleHadOnly = parseSportteryRawJson({
+      value: {
+        matchInfoList: [
+          {
+            subMatchList: [
+              {
+                matchId: "single-had-only",
+                matchNumStr: "周六101",
+                homeTeamAbbName: "甲队",
+                awayTeamAbbName: "乙队",
+                leagueAbbName: "测试赛",
+                matchTime: "21:00:00",
+                poolList: [
+                  {
+                    poolCode: "HAD",
+                    single: 1,
+                    cbtValue: 1,
+                    poolStatus: "Selling",
+                  },
+                  {
+                    poolCode: "HHAD",
+                    single: 0,
+                    cbtValue: 2,
+                    poolStatus: "Suspended",
+                  },
+                  {
+                    poolCode: "HAFU",
+                    single: 0,
+                    cbtValue: 2,
+                    poolStatus: "Suspended",
+                  },
+                  {
+                    poolCode: "TTG",
+                    single: 0,
+                    cbtValue: 2,
+                    poolStatus: "Suspended",
+                  },
+                  {
+                    poolCode: "CRS",
+                    single: 0,
+                    cbtValue: 2,
+                    poolStatus: "Suspended",
+                  },
+                ],
+                had: { h: "1.42", d: "4.10", a: "5.85" },
+              },
+            ],
+          },
+        ],
+      },
+    })[0] as MatchItem;
+    const calOnePool = calibrateMatchCoherentModel(singleHadOnly);
+    assert.equal(calOnePool.coherent, false);
+    assert.equal(calOnePool.sellingPoolCount, 1);
+    for (const o of calOnePool.pools.HAD.options) {
+      assert.ok(
+        Math.abs(
+          o.fairProb -
+            calOnePool.poolProbs.HAD[
+              o.key as keyof typeof calOnePool.poolProbs.HAD
+            ]
+        ) < 1e-12,
+        `Single-pool HAD[${o.key}] fairProb=${o.fairProb} diverged from poolProbs.HAD=${calOnePool.poolProbs.HAD[o.key as keyof typeof calOnePool.poolProbs.HAD]}`
+      );
+    }
+
+    // Continuity test across gap ~ 0.12 between HAD[h] and HHAD(-1)[hh+hd]
+    const makeGapMatch = (hhadHaOdds: number): MatchItem => ({
+      ...earlyM,
+      id: `gap-test-${hhadHaOdds}`,
+      pools: {
+        ...earlyM.pools,
+        HAD: {
+          ...earlyM.pools.HAD,
+          selling: true,
+          options: [
+            { key: "h", label: "主胜", odds: 1.55, trend: 0, fairProb: 0.56 },
+            { key: "d", label: "平", odds: 3.75, trend: 0, fairProb: 0.24 },
+            { key: "a", label: "客胜", odds: 4.9, trend: 0, fairProb: 0.2 },
+          ],
+        },
+        HHAD: {
+          ...earlyM.pools.HHAD,
+          selling: true,
+          goalLine: "-1",
+          options: [
+            { key: "hh", label: "让胜", odds: 3.4, trend: 0, fairProb: 0.25 },
+            { key: "hd", label: "让平", odds: 3.65, trend: 0, fairProb: 0.24 },
+            {
+              key: "ha",
+              label: "让负",
+              odds: hhadHaOdds,
+              trend: 0,
+              fairProb: 0.51,
+            },
+          ],
+        },
+      },
+    });
+    let maxStepJump = 0;
+    let prevHadH: number | null = null;
+    for (let haOdds = 1.55; haOdds <= 1.85; haOdds += 0.002) {
+      const calStep = calibrateMatchCoherentModel(
+        makeGapMatch(Number(haOdds.toFixed(4)))
+      );
+      const curH = calStep.pools.HAD.options[0].fairProb;
+      if (prevHadH !== null) {
+        maxStepJump = Math.max(maxStepJump, Math.abs(curH - prevHadH));
+      }
+      prevHadH = curH;
+    }
+    assert.ok(
+      maxStepJump < 0.0025,
+      `Expected smooth HAD/HHAD calibration across gap threshold (< 0.0025 per 0.002 odds step), got cliff ${maxStepJump}`
+    );
+
+    // 4. P2-2: weakestLink MUST NOT recommend cutting a 2-match non-single parlay into an un-checkoutable 1-match slip,
+    // and on a valid 3-match slip with underwater branch MUST report exact afterRep.realProfitProb!
+    const twoNonSingle = [
+      FALLBACK_MATCHES[0] as MatchItem, // hadSingle=false
+      FALLBACK_MATCHES[2] as MatchItem, // hadSingle=false
+    ];
+    const picks2NonSingle = [
+      makePick(twoNonSingle[0], "HAD", "a"), // low prob drag leg
+      makePick(twoNonSingle[1], "HAD", "h"), // non-single remaining leg!
+    ];
+    const rep2NonSingle = computeTruthReport(picks2NonSingle, 1, twoNonSingle);
+    const ins2NonSingle = computeProOrderInsights(
+      picks2NonSingle,
+      rep2NonSingle,
+      twoNonSingle
+    );
+    assert.equal(
+      ins2NonSingle.weakestLink,
+      null,
+      "Must not suggest removing a leg when remaining 1-match slip cannot be checked out as single"
+    );
+
+    // Case 4b: False-positive trap — Match 5 (1.18+5.40) + Match 3 (1.66) + Match 2 (5.20):
+    // Cutting Match 2 leaves 1.18*1.66*2 = ¥3.92 < ¥4.00 underwater, so realProfitProb stays ~8% (NOT ~50% anyWinProb)!
+    const trapMatches = [
+      FALLBACK_MATCHES[5] as MatchItem,
+      FALLBACK_MATCHES[3] as MatchItem,
+      FALLBACK_MATCHES[2] as MatchItem,
+    ];
+    const trapPicks = [
+      makePick(trapMatches[0], "HAD", "h"),
+      makePick(trapMatches[0], "HAD", "d"),
+      makePick(trapMatches[1], "HAD", "a"),
+      makePick(trapMatches[2], "HAD", "a"),
+    ];
+    const repTrap = computeTruthReport(trapPicks, 1, trapMatches);
+    const insTrap = computeProOrderInsights(trapPicks, repTrap, trapMatches);
+    assert.equal(
+      insTrap.weakestLink,
+      null,
+      "Must NOT claim +40% win-rate jump when the favorite branch after cutting is underwater"
+    );
+
+    // Case 4c: True positive with underwater branch on real FALLBACK_MATCHES —
+    // 波兰vs瑞典 all-3 HAD (2.38/3.15/2.58) + 法国vs以色列 HAD h (1.18) + drag 日本vs巴拉圭 HAD a (6.50, 13%):
+    // After cutting 日本vs巴拉圭, 2.38*1.18*2=¥5.62 < ¥6 is underwater while 3.15 & 2.58 branches profit (~49% realProfitProb vs ~79% anyWinProb)!
+    const mA = FALLBACK_MATCHES[2] as MatchItem; // 波兰 vs 瑞典
+    const mB = FALLBACK_MATCHES[5] as MatchItem; // 法国 vs 以色列
+    const mC = FALLBACK_MATCHES[1] as MatchItem; // 日本 vs 巴拉圭 (pick a @ 6.50, p=0.13)
+    const threeMatches = [mA, mB, mC];
+    const picks3WithUnderwater = [
+      makePick(mA, "HAD", "h"),
+      makePick(mA, "HAD", "d"),
+      makePick(mA, "HAD", "a"),
+      makePick(mB, "HAD", "h"),
+      makePick(mC, "HAD", "a"),
+    ];
+    const rep3Before = computeTruthReport(
+      picks3WithUnderwater,
+      1,
+      threeMatches
+    );
+    const ins3Before = computeProOrderInsights(
+      picks3WithUnderwater,
+      rep3Before,
+      threeMatches
+    );
+    assert.notEqual(
+      ins3Before.weakestLink,
+      null,
+      "Expected weakestLink to fire on 3-match slip with heavy drag leg"
+    );
+    const remainingAfterCut = picks3WithUnderwater.filter(
+      (p) => p.matchId !== ins3Before.weakestLink!.matchId
+    );
+    const repAfterExact = computeTruthReport(
+      remainingAfterCut,
+      1,
+      threeMatches
+    );
+    assert.equal(repAfterExact.canCheckout, true);
+    assert.ok(
+      repAfterExact.anyWinProb - repAfterExact.realProfitProb > 0.2,
+      "Remaining 2串1 must have underwater branch so anyWinProb (~62%) >> realProfitProb (~33%)"
+    );
+    assert.ok(
+      Math.abs(
+        ins3Before.weakestLink!.afterRemoveProfitProb -
+          repAfterExact.realProfitProb
+      ) < 1e-12,
+      `Expected weakestLink.afterRemoveProfitProb=${repAfterExact.realProfitProb}, got ${ins3Before.weakestLink!.afterRemoveProfitProb}`
+    );
+  });
 });
