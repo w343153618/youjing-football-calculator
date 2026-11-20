@@ -19,7 +19,8 @@ How the engineering skills consume this repo's domain documentation when explori
   - `docs/adr/0010-partition-consistent-kl-calibration-and-exact-milp-portfolio.md` — partition-consistent KL/IPF projection, exact 0-1 knapsack/LP portfolio & real Sporttery OOS gate
   - `docs/adr/0011-guided-123-workflow-and-dual-lens-actuary-intel-synergy.md` — guided `1-2-3` workflow, step-adaptive single Primary CTA bar & read-only actuary-to-intel dual-lens synergy
   - `docs/adr/0012-exact-payout-convolution-honest-hedge-and-covering-taxonomy.md` — exact payout convolution above `131,072` states, void-leg statutory cap step-down, single-eligible honest kickoff hedge & strict $t \ge 2$ covering taxonomy
-- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0009-red-team-remediation-and-real-oos-closure.md`, `0010-guided-123-workflow-tactile-flip-ui-and-actuary-intel-synergy.md`, `0011-blind-audit-actuarial-and-honesty-remediation.md`) when reviewing or extending a specific feature.
+  - `docs/adr/0013-budget-sovereignty-objective-anchor-and-banker-bridge-actuary.md` — bonus budget sovereignty, objective metric lock, timestamp-verified lag & all-integer goalLine calibration, native banker parlay, bridge-match finder & discrete shop anti-slippage suite
+- **`docs/specs/NNNN-*.md`**: read the originating incremental specification (latest: `0010-guided-123-workflow-tactile-flip-ui-and-actuary-intel-synergy.md`, `0011-blind-audit-actuarial-and-honesty-remediation.md`, `0012-blind-audit-v2-banker-bridge-and-honest-ui.md`) when reviewing or extending a specific feature.
 
 ## Use the glossary's vocabulary
 
