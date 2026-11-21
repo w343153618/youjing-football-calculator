@@ -1,9 +1,10 @@
 import path from "node:path";
 import { createXiaoGaoService } from "./xiaogaoCore.mjs";
 import { createAccountManager } from "./accountManager.mjs";
+import { createAppRoutes } from "./appRoutes.mjs";
 import { createLedgerManager } from "./ledgerManager.mjs";
 import { createManualQaEngine } from "./manualQaEngine.mjs";
-import { createSecurityAndQuantGateway } from "./securityShield.mjs";
+import { createSecurityShield } from "./securityShield.mjs";
 
 /**
  * 统一服务端运行时装配模块（Node 生产入口、Vite 开发中间件与全栈契约测试共用唯一装配接缝）
@@ -52,21 +53,36 @@ export function createYouJingRuntime(opts = {}) {
     nowFn: opts.nowFn,
   });
 
-  const gateway = createSecurityAndQuantGateway({
+  const appRoutes = createAppRoutes({
     snapshotFile,
     resultsCacheFile,
-    banStoreFile,
     accountManager,
     ledgerManager,
     manualQaEngine,
     xiaogaoService,
     getApiKey,
     nowFn: opts.nowFn,
-    fuseLoopback: opts.fuseLoopback,
-    fuseDurationMs: opts.fuseDurationMs,
     fetchMatches: opts.fetchMatches,
     fetchResults: opts.fetchResults,
   });
+
+  const shield = createSecurityShield({
+    banStoreFile,
+    persistDelayMs: opts.persistDelayMs,
+    fspImpl: opts.fspImpl,
+    accountManager,
+    appRoutes,
+    nowFn: opts.nowFn,
+    fuseLoopback: opts.fuseLoopback,
+    fuseDurationMs: opts.fuseDurationMs,
+    sessionTtlMs: opts.sessionTtlMs,
+    replayWindowMs: opts.replayWindowMs,
+  });
+
+  const gateway = {
+    ...shield,
+    ensureMatchesLoaded: appRoutes.ensureMatchesLoaded,
+  };
 
   return {
     dataDir,
@@ -74,6 +90,7 @@ export function createYouJingRuntime(opts = {}) {
     accountManager,
     ledgerManager,
     manualQaEngine,
+    appRoutes,
     gateway,
     dispose() {
       xiaogaoService.dispose?.();

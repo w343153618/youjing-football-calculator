@@ -113,6 +113,32 @@ function formatMatchTrends(m) {
 }
 
 /**
+ * 统一权威赛事标识对齐判定（兼容内部赛事 id、体彩编号 matchNumStr 与标题内嵌编号，供串关会诊解析与会话告警回填共用）
+ */
+export function matchesCanonicalSportteryItem(pm, canonical) {
+  if (
+    !pm ||
+    typeof pm !== "object" ||
+    !canonical ||
+    typeof canonical !== "object"
+  ) {
+    return false;
+  }
+  const canonicalId = String(canonical.id ?? canonical.matchId ?? "");
+  const canonicalNum = canonical.matchNumStr
+    ? String(canonical.matchNumStr)
+    : "";
+  const rawId =
+    pm.matchId !== undefined && pm.matchId !== null ? String(pm.matchId) : "";
+  const rawTitle = pm.matchTitle ? String(pm.matchTitle) : "";
+  return (
+    (Boolean(canonicalId) && rawId === canonicalId) ||
+    (Boolean(canonicalNum) && rawId === canonicalNum) ||
+    Boolean(canonicalNum && rawTitle && rawTitle.includes(canonicalNum))
+  );
+}
+
+/**
  * 服务端权威盘口上下文构建（单场点诊）：直接基于服务端赛事快照生成完整排雷输入，杜绝前端拼接提示上下文
  */
 export function buildSingleMatchDiagnosisContext(m, userNote) {
@@ -731,25 +757,19 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
     const rawPerMatch = Array.isArray(parsed.perMatch) ? parsed.perMatch : [];
-    const knownIds = new Set(
-      items.flatMap((it) =>
-        [it.matchId, it.matchNumStr].filter(Boolean).map((v) => String(v))
-      )
-    );
-    const perMatch = items.map((srcItem, idx) => {
-      const byId = rawPerMatch.find(
-        (x) =>
-          String(x?.matchId) === String(srcItem.matchId) ||
-          (Boolean(srcItem.matchNumStr) &&
-            String(x?.matchId) === String(srcItem.matchNumStr))
+    const matchedRawSet = new Set();
+    const explicitMatches = items.map((srcItem) => {
+      const found = rawPerMatch.find((x) =>
+        matchesCanonicalSportteryItem(x, srcItem)
       );
+      if (found) matchedRawSet.add(found);
+      return found || null;
+    });
+    const perMatch = items.map((srcItem, idx) => {
       const positional = rawPerMatch[idx];
       const pm =
-        byId ??
-        (positional &&
-        (!positional.matchId || !knownIds.has(String(positional.matchId)))
-          ? positional
-          : null);
+        explicitMatches[idx] ??
+        (positional && !matchedRawSet.has(positional) ? positional : null);
       return {
         matchId: String(srcItem.matchId),
         matchTitle: redactModelLeak(

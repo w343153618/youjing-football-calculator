@@ -191,8 +191,14 @@ declare module "../server/runtimeApp.mjs" {
   export const createYouJingRuntime: (...args: any[]) => any;
 }
 
+declare module "../server/appRoutes.mjs" {
+  export const createAppRoutes: (...args: any[]) => any;
+  export const reconcileComboAlertsToMatchMap: (...args: any[]) => any;
+}
+
 declare module "../server/securityShield.mjs" {
   export const isAiReaderOrScraperRequest: (...args: any[]) => boolean;
+  export const createSecurityShield: (...args: any[]) => any;
   export const createSecurityAndQuantGateway: (...args: any[]) => any;
   export const computeEnvelopeHmacHex: (...args: any[]) => string;
   export const decryptEnvelope: (...args: any[]) => any;
@@ -207,9 +213,13 @@ declare module "../server/accountManager.mjs" {
 
 declare module "../server/ledgerManager.mjs" {
   export const createLedgerManager: (...args: any[]) => any;
+  export const sealAuthoritativePrintSnapshot: (...args: any[]) => any;
 }
 
 declare module "../server/manualQaEngine.mjs" {
+  export const LOCAL_CURATED_QA: any[];
+  export const APP_GROUND_TRUTH_MANUAL_SPEC: string;
+  export const buildAppGroundTruthManualSpec: (...args: any[]) => string;
   export const createManualQaEngine: (...args: any[]) => any;
 }
 

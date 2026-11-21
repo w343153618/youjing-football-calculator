@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { settleTicketSnapshotWithOfficialResults } from "./quantEngine.mjs";
+import {
+  POOL_MAX_PASS,
+  evaluateQuantWorkspace,
+  settleTicketSnapshotWithOfficialResults,
+} from "./quantEngine.mjs";
 
 const DEFAULT_DAILY_LIMIT = 300;
 const MIN_DAILY_LIMIT = 20;
@@ -18,13 +22,6 @@ const MAX_TRUSTED_SNAPSHOT_LINES = 512;
 const UNDO_TTL_MS = 15_000;
 
 const VALID_POOLS = new Set(["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
-const POOL_PARLAY_CAPS = {
-  HAD: 8,
-  HHAD: 8,
-  TTG: 6,
-  HAFU: 4,
-  CRS: 4,
-};
 const VALID_STATUSES = new Set(["pending", "won", "partial", "lost"]);
 
 function round2(val) {
@@ -161,7 +158,7 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         break;
       }
       seenLineMatches.add(matchId);
-      minPoolCap = Math.min(minPoolCap, POOL_PARLAY_CAPS[poolCode] || 8);
+      minPoolCap = Math.min(minPoolCap, POOL_MAX_PASS[poolCode] || 8);
 
       const isKnownAuthMatch = Boolean(authMap?.has(matchId));
       const authPick = resolveAuthoritativePick(
@@ -263,6 +260,8 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
     return undefined;
   }
 
+  const bankerIds =
+    opts.bankerMatchIds instanceof Set ? opts.bankerMatchIds : null;
   const matchesById = new Map();
   for (const m of rawMatches) {
     if (!m || typeof m !== "object") continue;
@@ -329,7 +328,7 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         : m.goalLine !== undefined
           ? String(m.goalLine).slice(0, 8)
           : undefined,
-      isBanker: Boolean(m.isBanker),
+      isBanker: bankerIds ? bankerIds.has(matchId) : Boolean(m.isBanker),
       picks,
     });
   }
@@ -338,14 +337,22 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
     for (const lg of ln.legs) {
       let item = matchesById.get(lg.matchId);
       if (!item) {
+        const authM = authMap?.get(lg.matchId);
         item = {
           matchId: lg.matchId,
-          matchNumStr: lg.matchNumStr || lg.matchId,
-          home: lg.home || "",
-          away: lg.away || "",
-          kickoff: lg.kickoff || "",
-          goalLine: lg.goalLine,
-          isBanker: false,
+          matchNumStr: String(
+            authM?.matchNumStr || lg.matchNumStr || lg.matchId
+          ).slice(0, 20),
+          home: String(authM?.home || lg.home || "").slice(0, 32),
+          away: String(authM?.away || lg.away || "").slice(0, 32),
+          kickoff: String(authM?.kickoff || lg.kickoff || "").slice(0, 16),
+          ...(authM?.businessDate
+            ? { businessDate: String(authM.businessDate).slice(0, 12) }
+            : {}),
+          goalLine: authM?.pools?.HHAD?.goalLine
+            ? String(authM.pools.HHAD.goalLine).slice(0, 8)
+            : lg.goalLine,
+          isBanker: bankerIds ? bankerIds.has(lg.matchId) : false,
           picks: [],
         };
         matchesById.set(lg.matchId, item);
@@ -369,6 +376,202 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
   return {
     matches: Array.from(matchesById.values()),
     lines,
+  };
+}
+
+/**
+ * 服务端唯一权威出票快照封存器：
+ * 共享精算模块导出的 POOL_MAX_PASS，依据权威在售盘口一次性定格对阵元数据、开球时间、让球线、固定水位、胆码标识与实票列表；
+ * 当未传入 workspaceParams 时，平滑回退至历史/离线原始快照严格核验。
+ */
+export function sealAuthoritativePrintSnapshot(opts = {}) {
+  const {
+    workspaceParams = null,
+    workspaceRes = null,
+    authoritativeMatches = null,
+    rawSnapshotFallback = undefined,
+    trustedServerSnapshot = false,
+    title,
+    modeLabel,
+    betCount,
+    cost,
+    paperRefCost,
+    minPayout,
+    maxPayout,
+  } = opts;
+
+  if (workspaceParams || workspaceRes) {
+    const cleanWsParams = workspaceParams
+      ? {
+          ...workspaceParams,
+          simVoidFirstMatch: false,
+          subjectiveDeltaPct: 0,
+        }
+      : null;
+    const hasCallerSandboxShift =
+      Boolean(workspaceParams?.simVoidFirstMatch) ||
+      Number(workspaceParams?.subjectiveDeltaPct || 0) !== 0;
+    const authList = Array.isArray(authoritativeMatches)
+      ? authoritativeMatches
+      : authoritativeMatches instanceof Map
+        ? Array.from(authoritativeMatches.values())
+        : undefined;
+    const ws =
+      !hasCallerSandboxShift && workspaceRes
+        ? workspaceRes
+        : evaluateQuantWorkspace(cleanWsParams || {}, authList);
+    const effRep = ws?.effectiveReport;
+
+    if (effRep?.canCheckout && effRep.totalCost > 0) {
+      const appPlan =
+        cleanWsParams?.planSpec || effRep.syntheticAutoMounted
+          ? ws.appliedPlan
+          : null;
+      const bankerSet = new Set(
+        (
+          effRep.bankerMatchIds ??
+          ws.manualReport?.bankerMatchIds ??
+          cleanWsParams?.passSpec?.bankerMatchIds ??
+          []
+        ).map((id) => String(id))
+      );
+      const authMap = toAuthoritativeMap(authoritativeMatches);
+      const mapSealedLeg = (lg) => {
+        const m = authMap?.get(String(lg.matchId));
+        const opt = m?.pools?.[lg.poolCode]?.options?.find(
+          (o) => String(o.key) === String(lg.optionKey)
+        );
+        return {
+          matchId: lg.matchId,
+          matchNumStr: m?.matchNumStr || lg.matchNumStr,
+          home: m?.home || lg.home,
+          away: m?.away || lg.away,
+          kickoff: m?.kickoff || lg.kickoff,
+          poolCode: lg.poolCode,
+          optionKey: lg.optionKey,
+          optionLabel: opt?.label || lg.optionLabel,
+          odds: opt?.odds ?? lg.odds,
+          goalLine: m?.pools?.HHAD?.goalLine ?? lg.goalLine ?? "-1",
+        };
+      };
+
+      const builtLines =
+        effRep.betCount <= MAX_TRUSTED_SNAPSHOT_LINES
+          ? appPlan
+            ? appPlan.lines.map((ln, idx) => ({
+                id: ln.id || `ap_${idx + 1}`,
+                modeLabel: ln.modeLabel,
+                multiple: Math.max(1, Math.round(ln.multiple || 1)),
+                legs: (ln.legs || []).map(mapSealedLeg),
+              }))
+            : (effRep.tickets || []).map((tk, idx) => {
+                const legs = tk.legs || [];
+                const passTxt =
+                  legs.length === 1
+                    ? "单关"
+                    : `${legs.length}串1${
+                        bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
+                      }`;
+                return {
+                  id: tk.id || `tk_${idx + 1}`,
+                  modeLabel: passTxt,
+                  multiple: Math.max(
+                    1,
+                    Math.round(
+                      Number(tk.multiple ?? cleanWsParams?.multiple) || 1
+                    )
+                  ),
+                  legs: legs.map(mapSealedLeg),
+                };
+              })
+          : [];
+
+      const snapshot =
+        builtLines.length > 0 && builtLines.length <= MAX_TRUSTED_SNAPSHOT_LINES
+          ? sanitizeTicketSnapshot(
+              {
+                matches: Array.isArray(rawSnapshotFallback?.matches)
+                  ? rawSnapshotFallback.matches
+                  : [],
+                lines: builtLines,
+              },
+              {
+                strictValidate: true,
+                trustedServerSnapshot: true,
+                authoritativeMatches,
+                bankerMatchIds: bankerSet,
+              }
+            )
+          : undefined;
+
+      const resolvedBetCount = Math.max(1, effRep.betCount);
+      const resolvedModeLabel =
+        String(modeLabel || effRep.modeLabel || "方案")
+          .trim()
+          .slice(0, 40) || "方案";
+      const defaultTitle = appPlan
+        ? `${effRep.modeLabel} · ${appPlan.shortTab}(${appPlan.lines.length}张)`
+        : `${effRep.modeLabel} · ${resolvedBetCount}注方案`;
+      const resolvedTitle =
+        String(title || defaultTitle)
+          .trim()
+          .slice(0, 120) || defaultTitle;
+
+      return {
+        sealedFromWorkspace: true,
+        snapshot,
+        betCount: resolvedBetCount,
+        totalCost: effRep.totalCost,
+        minPayout: effRep.minPayout,
+        maxPayout: effRep.maxPayout,
+        modeLabel: resolvedModeLabel,
+        title: resolvedTitle,
+        bankerMatchIds: Array.from(bankerSet),
+      };
+    }
+
+    if (
+      !rawSnapshotFallback &&
+      !(Number(cost) > 0 || Number(paperRefCost) > 0)
+    ) {
+      throw new Error(
+        effRep?.ruleBlockReason || "当前选单尚未满足中国体彩合法出票条件"
+      );
+    }
+  }
+
+  const snapshot = sanitizeTicketSnapshot(rawSnapshotFallback, {
+    strictValidate: true,
+    trustedServerSnapshot: Boolean(trustedServerSnapshot),
+    authoritativeMatches,
+  });
+  const snapshotCost = snapshot
+    ? snapshot.lines.reduce((s, l) => s + l.multiple * 2, 0)
+    : null;
+  const resolvedBetCount = clampBetCount(
+    betCount ?? (snapshot ? snapshot.lines.length : 1)
+  );
+  const resolvedModeLabel =
+    String(modeLabel || snapshot?.lines?.[0]?.modeLabel || "方案")
+      .trim()
+      .slice(0, 40) || "方案";
+  const resolvedTitle =
+    String(title || `${resolvedModeLabel} · ${resolvedBetCount}注方案`)
+      .trim()
+      .slice(0, 120) || `${resolvedModeLabel} · ${resolvedBetCount}注方案`;
+
+  return {
+    sealedFromWorkspace: false,
+    snapshot,
+    betCount: resolvedBetCount,
+    totalCost: snapshotCost,
+    minPayout,
+    maxPayout,
+    modeLabel: resolvedModeLabel,
+    title: resolvedTitle,
+    bankerMatchIds: snapshot
+      ? snapshot.matches.filter((m) => m.isBanker).map((m) => m.matchId)
+      : [],
   };
 }
 
@@ -803,20 +1006,26 @@ export function createLedgerManager(opts = {}) {
         throw new Error("账本记录类型必须为实买单或模拟观察单");
       }
 
-      const snapshot = sanitizeTicketSnapshot(payload?.snapshot, {
-        strictValidate: true,
-        trustedServerSnapshot: Boolean(callOpts.trustedServerSnapshot),
+      const sealed = sealAuthoritativePrintSnapshot({
+        workspaceParams: payload?.workspaceParams,
         authoritativeMatches: callOpts.authoritativeMatches,
+        rawSnapshotFallback: payload?.snapshot,
+        trustedServerSnapshot: Boolean(callOpts.trustedServerSnapshot),
+        title: payload?.title,
+        modeLabel: payload?.modeLabel,
+        betCount: payload?.betCount,
+        cost: payload?.cost,
+        paperRefCost: payload?.paperRefCost,
+        minPayout: payload?.minPayout,
+        maxPayout: payload?.maxPayout,
       });
-      const snapshotCost = snapshot
-        ? snapshot.lines.reduce((s, l) => s + l.multiple * 2, 0)
-        : null;
+      const snapshot = sealed.snapshot;
 
       const rec = ensureUserRecord(uid);
       pruneStaleLockedLosses(rec, now);
       const curSnap = buildSnapshot(rec, now);
-      const rawCost = snapshotCost ?? Number(payload?.cost);
-      const rawPaperRef = snapshotCost ?? Number(payload?.paperRefCost);
+      const rawCost = sealed.totalCost ?? Number(payload?.cost);
+      const rawPaperRef = sealed.totalCost ?? Number(payload?.paperRefCost);
 
       if (kind === "live") {
         if (!Number.isFinite(rawCost) || rawCost <= 0) {
@@ -848,19 +1057,13 @@ export function createLedgerManager(opts = {}) {
               MAX_ENTRY_COST
             )
           : 0;
-      const betCount = clampBetCount(payload?.betCount);
-      const modeLabel =
-        String(payload?.modeLabel || "方案")
-          .trim()
-          .slice(0, 40) || "方案";
-      const title =
-        String(payload?.title || `${modeLabel} · ${betCount}注方案`)
-          .trim()
-          .slice(0, 120) || `${modeLabel} · ${betCount}注方案`;
-      const minPayout = clampMoney(payload?.minPayout, MAX_PAYOUT);
+      const betCount = clampBetCount(sealed.betCount);
+      const modeLabel = sealed.modeLabel;
+      const title = sealed.title;
+      const minPayout = clampMoney(sealed.minPayout, MAX_PAYOUT);
       const maxPayout = Math.max(
         minPayout,
-        clampMoney(payload?.maxPayout, MAX_PAYOUT)
+        clampMoney(sealed.maxPayout, MAX_PAYOUT)
       );
 
       const entry = {

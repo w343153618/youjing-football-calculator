@@ -158,6 +158,12 @@ export const LOCAL_CURATED_QA = [
       "不同玩法",
       "跨玩法",
       "双单关",
+      "顺滑切换",
+      "直点切换",
+      "切换玩法",
+      "撤销切换",
+      "一键撤销",
+      "同场切换",
     ],
     question:
       "为什么同一场比赛选了「胜平负」后，不能再点「让球平」或其他玩法？",
@@ -166,6 +172,30 @@ export const LOCAL_CURATED_QA = [
       "• 同一玩法内可复式多选：比如同一场的 `[0] 胜平负` 里，你可以同时点选 `胜 + 平` 双防。\n" +
       "• 同场单一玩法互斥与顺滑直切：体彩终端机不允许把同一场的两个不同玩法串进同一张串关票！为了方便改选，所有开售按钮始终开放直点——当你选了 `[0] 胜` 后再去点同场 `[+1] 让球`、`比分`、`总进球` 或 `半全场`，系统会自动平滑替换本场旧玩法并提供 `↩ 撤销切换` 按钮。\n" +
       "• 唯一例外（双单关）：仅在「胜平负/单关」视图下，当该场 `[0]` 和 `[±1]` 均带绿色「单」标且全单所有比赛都开了单关时，才允许同场双选两个玩法，系统会自动强制锁死为【单关】独立计奖。",
+  },
+  {
+    id: "qa-synthetic-single",
+    section: "quickstart",
+    keywords: [
+      "合成单关",
+      "3项全包",
+      "3项全包无死角",
+      "3项无死角",
+      "2项省本",
+      "2项省本搏常规",
+      "单选1场",
+      "未开单关单选",
+      "等效水位",
+      "恢复原盘",
+      "意图保真",
+    ],
+    question:
+      "单选 1 场未开单关比赛时，「合成单关（3项全包无死角 / 2项省本搏常规）」怎么自动挂载与还原？",
+    answer:
+      "【意图保真选号 · 3项全包无死角自动配平 · 选满2场秒还原】\n" +
+      "• 默认挂载无死角合成单关：单选 1 场未开单关赛事时，前台保留原始选号高亮不变，出票层默认自动挂载半全场「🛡️ 3项全包无死角」（如主胜对应胜胜+平胜+负胜）按水位反比例整数配平合成单关。\n" +
+      "• 三态切换与诚实防亏门禁：支持一键切换「🛡️ 3项全包无死角 / ⚡ 2项省本搏常规 / 🌉 搭1场过桥凑2串1」（若合成等效水位 ≤ 1.00 或受整数倍限制无法盈利，系统会诚实拦截废票并引导搭过桥场）。\n" +
+      "• 0ms 自动还原串关：一旦继续补选第 2 场比赛满足合法串关条件，系统立即自动脱去合成单关外壳、恢复低抽水原盘串关！",
   },
   {
     id: "qa-pass-modes",
@@ -492,25 +522,58 @@ export const LOCAL_CURATED_QA = [
   },
 ];
 
-const APP_GROUND_TRUTH_MANUAL_SPEC = `
-【优竞体育内部专用 · 智能精算与风控工作台 唯一官方功能边界】
-1. 赛事雷达、五池跨盘联合校准与体彩法定选号规则（100%对齐中国体彩官网计算器）：
-   - 支持混合、胜平负、比分（完整 31 项含胜其它/平其它/负其它）、总进球、半全场、单关筛选；未开售盘口标「未」禁选，单关盘口独立标「单」；每个赔率格内置经非线性去水与五池跨盘联合校准后的真实隐含概率，单场底牌展示同源 xG、全让球线一球卡盘率、比赛节奏相关性（低比分联动修正系数 ρ：防守死锁/均衡节奏/开放对攻）与跨盘错价扫描结论。
-   - 意图保真无锁选号与同场单一玩法规则（ADR-0015）：同一场同一玩法内可复式多选；串关同场仅容单一玩法，但所有已开售玩法格始终开放直点切换（零「互斥」置灰拒点拦截，点击同场新玩法时自动顺滑替换本场旧玩法并弹出一步「↩ 撤销切换」缓冲）；仅当同场胜平负与让球胜平负及全单所有已选项均开放单关时，两者可直接并存并自动锁定【单关】。
-   - 串关最多 8 场；各玩法最高过关上限：胜平负/让球 8 关、总进球 6 关、比分/半全场 4 关；≥3 场自由低关支持原生「📌 设胆（胆拖过关）」一键剔除无胆废票；单选 1 场未开单关赛事时，前台保留原始选号高亮不变，出票层默认自动挂载半全场「3项全包无死角」（如胜胜+平胜+负胜）按水位反比例整数配平合成单关（支持一键切换「🛡️ 3项全包无死角 / ⚡ 2项省本搏常规 / 🌉 搭1场过桥凑2串1」及 Top 2 过桥配菜搭子；仅当合成等效水位 ≤ 1.00 必亏时诚实拦截提示），一旦补选第 2 场比赛满足合法串关条件即 0ms 自动脱去合成外壳恢复低抽水原盘串关。
-2. 全局常驻「过关选择 + 倍数」总控底栏：
-   - 无论上下滑动赛事或切换任何页面，底部始终常驻显示已选场数、过关选择（含设胆）、倍数（1~999倍九宫格键盘，超99倍自动算拆票张数；启用奖金优化或精算配单时自动切换智能分倍双态）、应付总额与真实保底奖金。
-   - 过关选择支持 8 格自由过关多选叠加（单关、2关~8关）与官方标准 M串N 多串容错组合（3串3/3串4、4串4~4串11、5串5~5串26、6串6~6串57、7串7~7串120、8串8~8串247）。
-3. 3+1 精算配单（原五流派升级为正交帕累托 3+1 体系，支持 1~8 场目标对决池 + 「🎯 一键匹配赛事雷达已选球队」联动锚定）：
-   - 四档方案：① 稳健保本（保留全部所选合法场次公平求解零假中奖组合，以严格净赚率 payout > cost 为第一主目标、刚回本率为次级决胜）、② 期望效用（同预算满配与单行 ≤999 倍约束下联立寻优无倒贴整数倍保本护盾以最大化对数财富效用，按单腿 O·p 裁剪高抽水拖累腿，雷达锚定时保留场次并告警）、③ 容错缩水（最多 10 组逻辑组合内严格区分真正零漏网 C(v,k,t) 旋转矩阵缩水、独立分块容错串与官方多串锁定错 1 场回血，超 99 倍自动区分逻辑组数与 99 倍纸质拆票张数，诚实披露错 ≥ 2 场击穿率与局部回血组数）、④ 错价雷达（结合官方更新时间差与跨盘同向校验，仅在收缩校准期望返还 ≥ 101.0% 且成单 EV > 0% 时 36% 自动轻仓出击；常态严密盘下空仓属正常理性结果，动态展示最高校准单腿返还率及距门槛差值）。全部方案严守实投 ≤ 预算且实投 + 省下 === 预算闭合。
-4. 五维审单锁利、素颜客观真账双轨与三模奖金优化：
-   - 主看板核心大字永远锁定五池客观校准的「严格净赚率（netProfit > 0）」与「客观期望 EV」，单独拆分标注「刚回本率（netProfit = 0）」与个人倾向/滑块推演值。
-   - 智能奖金优化分倍器（① 平均优化、② 博热保本、③ 博冷高弹）默认严守当前预算主权绝不擅自涨本金，支持 M串N 联合状态保底与「⚡ 一键加至最低保本门槛 ¥X」显式授权升级，打票单支持 📌【胆】 标识与「🔗 智能合票减张」。
-   - 预算感知同义错价替换（校验 ¥2 整数注离散保底严格占优才推荐）、串关拖油瓶敏感度体检、早晚场时间差（≥135分钟安全线且末场反向具备单关资格）对冲锁利/减损计算器、对称主观胜率信心微调滑块（-15%~+15%）、首场腰斩按 1.0 模拟与四舍六入五成双逐行明细。
-5. 扫地僧小高双模排雷（单场独立点诊 + 多场串关联合会诊 + Price-In 消息入价消化度）、双舱解耦双轨止损账本（出票固定水位快照封存、体彩官方 90 分钟完场自动对奖、局部回血诚实三态、早场已红末场锁利补单提醒、5秒撤销删除与已结亏损额度锁死防上头）、店主微信出票口令与 8 套材质触感皮肤。
-`;
+const MANUAL_SECTION_LABELS = {
+  quickstart: "一、快速上手、意图保真选号与过关设胆",
+  archetypes: "二、3+1 精算配单与雷达选队锚定",
+  optimizer: "三、三模奖金优化、保本门槛与合票减张",
+  sandbox: "四、五维审单真账、主观微调与腰斩预演",
+  hedge: "五、早晚场时间差对冲锁利",
+  xiaogao: "六、扫地僧小高会诊与双轨止损账本",
+  glossary: "七、跨盘联合校准与核心精算标尺",
+};
 
-function matchLocalKnowledgeBase(question) {
+const MANUAL_GLOBAL_FRAME_HEADER = [
+  "【优竞体育内部专用 · 智能精算与风控工作台 唯一官方功能边界（由本地精编知识库同源派生）】",
+  "• 全局基础交互框架：赛事雷达支持混合、胜平负、比分（完整 31 项含胜其它/平其它/负其它）、总进球、半全场、单关筛选（未开售盘口标「未」禁选，单关盘口独立标「单」）；底部常驻投控栏支持 1~999 倍九宫格键盘；审单台内置预算感知离散同义错价替换与四舍六入五成双逐行明细；内置 8 套材质触感皮肤。",
+].join("\n");
+
+/**
+ * 由结构化精编词库 LOCAL_CURATED_QA 确定性自动派生 Engine-2 长问系统规则摘要，彻底消除手工双写漂移。
+ */
+export function buildAppGroundTruthManualSpec(topics = LOCAL_CURATED_QA) {
+  const safeTopics = Array.isArray(topics) ? topics : [];
+  const bySection = new Map();
+  for (const key of Object.keys(MANUAL_SECTION_LABELS)) {
+    bySection.set(key, []);
+  }
+  for (const item of safeTopics) {
+    if (!item || typeof item !== "object") continue;
+    const sec = String(item.section || "quickstart");
+    if (!bySection.has(sec)) bySection.set(sec, []);
+    bySection.get(sec).push(item);
+  }
+
+  const blocks = [MANUAL_GLOBAL_FRAME_HEADER];
+  for (const [sec, items] of bySection.entries()) {
+    if (items.length === 0) continue;
+    const heading = MANUAL_SECTION_LABELS[sec] || `章节 · ${sec}`;
+    const lines = items.map((it) => {
+      const compactAns = String(it.answer || "")
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(" ");
+      return `  - [${it.id}] ${it.question} => ${compactAns}`;
+    });
+    blocks.push(`${heading}：\n${lines.join("\n")}`);
+  }
+  return blocks.join("\n");
+}
+
+export const APP_GROUND_TRUTH_MANUAL_SPEC =
+  buildAppGroundTruthManualSpec(LOCAL_CURATED_QA);
+
+function matchLocalKnowledgeBase(question, topics = LOCAL_CURATED_QA) {
   const q = String(question || "")
     .trim()
     .toLowerCase();
@@ -518,9 +581,9 @@ function matchLocalKnowledgeBase(question) {
 
   let bestItem = null;
   let bestScore = 0;
-  for (const item of LOCAL_CURATED_QA) {
+  for (const item of topics) {
     let score = 0;
-    for (const kw of item.keywords) {
+    for (const kw of item.keywords || []) {
       if (q.includes(kw.toLowerCase())) {
         score += kw.length >= 4 ? 3 : 2;
       }
@@ -547,13 +610,21 @@ function sanitizeOutputText(text) {
  * 混合双擎铁笼说明书问答引擎（Route C）：
  * - Gate 1: 探底/敏感词/明显超纲前置拦截 + 累计超过 4 次自动锁死账号！
  * - Engine 1: 本地精修说明书词库 0ms 零误差秒回
- * - Engine 2: 严格锚定本 APP 真实功能的受限解释引擎 + 超纲反哺记过 + 输出二次脱敏
+ * - Engine 2: 严格锚定由本地精编词库同源派生的真实功能规范解释引擎 + 超纲反哺记过 + 输出二次脱敏
  */
-export function createManualQaEngine({
-  accountManager,
-  xiaogaoService,
-  getApiKey,
-}) {
+export function createManualQaEngine(opts = {}) {
+  const {
+    accountManager,
+    xiaogaoService,
+    getApiKey = () => "",
+    topics = LOCAL_CURATED_QA,
+  } = opts;
+  const curatedTopics = Array.isArray(topics) ? topics : LOCAL_CURATED_QA;
+  const groundTruthSpec =
+    curatedTopics === LOCAL_CURATED_QA
+      ? APP_GROUND_TRUTH_MANUAL_SPEC
+      : buildAppGroundTruthManualSpec(curatedTopics);
+
   async function answerManualQuestion({ userId, question, ip }) {
     const cleanQ = String(question || "").trim();
     if (!cleanQ) {
@@ -626,7 +697,7 @@ export function createManualQaEngine({
     }
 
     // Engine 1: Local Zero-Latency Grounded Knowledge Base
-    const localHit = matchLocalKnowledgeBase(cleanQ);
+    const localHit = matchLocalKnowledgeBase(cleanQ, curatedTopics);
     if (localHit) {
       return {
         ok: true,
@@ -667,7 +738,7 @@ export function createManualQaEngine({
 4. 如果提问属于正常的本计算器功能或相关竞彩精算概念疑问，请输出如下 JSON（不要输出任何多余解释文字）：
 {"outOfScope": false, "section": "quickstart|optimizer|archetypes|glossary|hedge|xiaogao|sandbox 之一", "answer": "120~260字通俗生动、带实操例子的清晰解答"}
 
-${APP_GROUND_TRUTH_MANUAL_SPEC}`;
+${groundTruthSpec}`;
 
     const { content } = await xiaogaoService.invokeWithAutoFailover(
       apiKey,
@@ -731,6 +802,7 @@ ${APP_GROUND_TRUTH_MANUAL_SPEC}`;
 
   return {
     answerManualQuestion,
-    localTopics: LOCAL_CURATED_QA,
+    localTopics: curatedTopics,
+    groundTruthSpec,
   };
 }
