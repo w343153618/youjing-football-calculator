@@ -38,5 +38,14 @@
 
 ## Agent skills
 
-- **Issue tracker & worktree bootstrap**: `docs/agents/issue-tracker.md`
-- **Domain docs & exact ADR index**: `docs/agents/domain.md`
+### Issue tracker
+
+GitHub Issues (`w343153618/youjing-football-calculator` via `gh` CLI; historical specs `0000`–`0013` archived in `docs/specs/`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role triage vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (`GLOSSARY.md` + `docs/adr/0001..0014` + module symbol anchors). See `docs/agents/domain.md`.
