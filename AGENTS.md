@@ -6,9 +6,9 @@
 
 动手评估或修改代码前，按触发条件读取权威单一事实源：
 
-- **既有功能、协议与遗留边界** → 先读 `docs/specs/0000-baseline-spec.md` 与最新增量规范 `docs/specs/0009-*.md`、`docs/specs/0010-*.md`、`docs/specs/0011-*.md`。
+- **既有功能、协议与遗留边界** → 先读 GitHub Spec Issues（见 `docs/agents/issue-tracker.md`）与历史归档 `docs/specs/0000-baseline-spec.md`、`docs/specs/0011..0013-*.md`。
 - **业务命名、界面文案与测试标题** → 先读 `GLOSSARY.md` 采用标准术语，避开 `_Avoid_` 同义词。
-- **架构权衡（ADR `0001`~`0012` 索引）、大模块锚点导航与测试导入约定** → 先读 `docs/agents/domain.md` 定位对应 `docs/adr/NNNN-*.md` 及大文件函数锚点；方案与既有 ADR 冲突时先向用户显式指出并确认。
+- **架构权衡（ADR `0001`~`0015` 索引）、大模块锚点导航与测试导入约定** → 先读 `docs/agents/domain.md` 定位对应 `docs/adr/NNNN-*.md` 及大文件函数锚点；方案与既有 ADR 冲突时先向用户显式指出并确认。
 - **保密口径、入参上界、法定算奖与审查细则** → 审查或触及服务端接口/双端排版时，读根部 `CODING_STANDARDS.md`。
 - **Web 双视口实机核验与线上巡检** → 启动浏览器前，读 `docs/ops/qa-ego-browser.md`。
 

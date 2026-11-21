@@ -42,11 +42,14 @@ Use `grep` on these stable symbol anchors instead of scanning line offsets in la
 
 - **`server/quantEngine.mjs`**:
   - Calibration & de-vigging: `function devigPoolProbabilities`, `export function calibrateMatchCoherentModel`, `function scanMatchAlphaCandidates`
-  - Quotient state space & statutory payout: `export function bankerRoundParlayUnitPayout`, `function evaluateTicketsOnQuotientSpace`, `const canUseExactBilinearMitm`, `export function computeTruthReport`
+  - Quotient state space & statutory payout: `export function bankerRoundParlayUnitPayout`, `function evaluateTicketsOnQuotientSpace`, `const canUseExactBilinearMitm`, `function computeSyntheticUncoveredStats`, `function resolveSyntheticSingleBundle`, `export function computeTruthReport`
   - `3+1` Pareto solvers: `function isGenuinePairCoveringDesign`, `function computeSurvivingMissOneFloor`, `function allocateWheelMeanCvar`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `export function generateParetoPortfolio`
-  - Staggered hedge, insights, bonus & sandbox: `function resolveComplementaryLateHedge`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `function applySandboxToPlan`, `export function evaluateQuantWorkspace`
+  - Staggered hedge, insights, bonus, synthetic single & sandbox: `function resolveComplementaryLateHedge`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `function buildAutoSyntheticSinglePlan`, `function applySandboxToPlan`, `export function evaluateQuantWorkspace`
+- **`server/manualQaEngine.mjs`** (keep both ground-truth surfaces synchronized whenever product rules change):
+  - 0ms local curated entries: `const LOCAL_CURATED_QA`
+  - Grounded Engine-2 system spec (`>42` char queries): `const APP_GROUND_TRUTH_MANUAL_SPEC`
 - **`src/mobile/SkinPhoneApp.tsx`**:
-  - Workspace selectors & `>512` bonus gate: `const manualBonusLineCount`
+  - Workspace selectors, synthetic mode pills & `>512` bonus gate: `const manualBonusLineCount`, `SyntheticModePills`
   - Step 3 audit cockpit & equalizer: `PayoutEqualizerBars`, `防坑雷达 · 弹性保本 · 省钱动作`
   - Staggered hedge & sandbox drawer: `早场红单减损补单`, `SUBJECTIVE_DELTA_MIN`
 - **`tests/*.test.ts` import convention**:

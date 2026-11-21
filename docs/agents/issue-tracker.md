@@ -52,8 +52,8 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 ## Historical repository specs & worktree bootstrap (`implement-spec`)
 
 - **Historical baseline & prior incremental specs**: `docs/specs/0000-baseline-spec.md` through `docs/specs/0013-*.md` archive prior milestone contracts for reference alongside GitHub Spec Issues; every acceptance item is gated by `pnpm run check:guardrails`, `pnpm typecheck`, `pnpm test`, `pnpm build`, and dual-axis `code-review` against `CODING_STANDARDS.md`.
-- **Parallel subagent worktrees (`implement-spec`)**: When spawning isolated git worktrees for ticket subagents, symlink the existing `node_modules` directory first so `pnpm typecheck`, `pnpm test`, and `pnpm build` run immediately in `0ms` without network installs:
+- **Parallel subagent worktrees (`implement-spec`)**: `pnpm` v11 rejects external symlinked `node_modules` (`ERR_PNPM_UNSAFE_MODULES_DIR`) during `.husky/pre-commit`. Hydrate isolated git worktrees from the local CAS store via hardlinks in `~1.5s` with zero network installs:
 
 ```bash
-ln -s /Users/yawen/gemini/caipiao/football-calculator/node_modules node_modules
+pnpm install --frozen-lockfile --prefer-offline
 ```

@@ -132,6 +132,16 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
         `[honesty-guardrail] Outdated shield-lock claim "锁死最小保本护盾注数" found in ${rel}`
       );
     }
+    if (src.includes("标「互斥」拦截")) {
+      errors.push(
+        `[honesty-guardrail] Retired mutex-block copy "标「互斥」拦截" found in ${rel} (ADR-0015 uses smooth pool switch + undo)`
+      );
+    }
+    if (src.includes("一键无损切换单场出票")) {
+      errors.push(
+        `[honesty-guardrail] Retired misleading 2-way synthetic claim "一键无损切换单场出票" found in ${rel}`
+      );
+    }
     if (rel.startsWith(`src${path.sep}`) && src.includes("单池暗扣")) {
       errors.push(
         `[honesty-guardrail] Deprecated misleading parlay vig label "单池暗扣" found in ${rel}`

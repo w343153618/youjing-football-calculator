@@ -849,7 +849,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (pathname === "/api/health" && req.method === "GET") {
       sendJson(res, 200, {
         ok: true,
-        version: "2.5.0",
+        version: "2.6.0",
         uptimeSec: Math.round(process.uptime()),
       });
       return true;

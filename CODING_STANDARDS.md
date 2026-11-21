@@ -27,6 +27,7 @@
   - 复式展开前用初等对称多项式精确预计总注数，对 `> 2,048` 注组合爆炸显式返回 `canCheckout: false` 与真实注数/总金额；对 `<= 2,048` 注任意单场单池合法选单（含 `> 131,072` 态大复式）保持无损派奖分布积分（全单关美分 DP 或双线性折半精确卷积），保持 `realProfitProb`、`minPayout`、`maxPayout` 与票级线性 `expectedValueRate` 精确无偏。
   - `3+1 精算配单` 如实透出 `expectedValueRate`、`underwaterCount`、容错缩水 `wipeoutMiss2Prob` 与整单真实全黑率 `zeroPayoutProb = 1 - winProb`；双场同池单关缓冲垫属互斥事件，存活保底取 `min`（禁止相加）并标注未覆盖死角 `¥0`；仅满足任意两场全覆盖（$t \ge 2$）的子串设计可冠名「旋转矩阵缩水」，其余分块结构标为「独立分块容错串」；槽位④仅在单腿收缩校准 $O \cdot p_{\text{shrunk}} \ge 1.01$ 且整单双口径均为严格正期望时激活；负期望方案凯利参考仓位封顶 `<= 2%`。
   - 早晚场时间差对冲强制校验末场反向互补池开放单关（`single === true`），双项反向补单按线下体彩店真实可打的 `¥2` 整数倍双票 `(2m₁, 2m₂)` 寻优最坏净利，并严格区分正净利 `lock-profit`、零损 `break-even` 与净亏损橙色预警 `reduce-loss`（净亏态禁用锁利/保本表述）。
+  - 任何跨玩法合成单关或局部缩水方案声称「无死角 / `0%` 漏网」前，须在 139 态原子空间按 `targetMask \ coveredMask` 精确积分未覆盖残余概率（如 `CRS` 丢弃跨档 `胜其它 / 平其它 / 负其它` 时须如实披露 `syntheticBlindSpotProb`）；单场选单（`matchCount === 1`）的同义替换目标池须全员具备权威 `single === true` 资格（`ADR-0015`）。
   - 概率校准与回测基准统一以冻结的真实体彩完场实盘 `tests/fixtures/realSportteryOosMatches.json` 为准，保留独立暴力枚举/背包参考神谕防同义自证，新旧策略回放须执行完全对称的止损规则（禁止单边 `forceConfirmed` 豁免）。
 - **高压防逆向与隔离解锁（`ADR-0004` & `ADR-0005`）**：
   - 铁笼说明书问答累计违规探底 `> 4` 次立即锁死账号并触发 48 小时硬件指纹（`hwFp`）+ IP 传染式熔断。
