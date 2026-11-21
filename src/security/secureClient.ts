@@ -115,6 +115,7 @@ export type LedgerMutatePayload =
       minPayout: number;
       maxPayout: number;
       snapshot?: LedgerTicketSnapshot;
+      workspaceParams?: QuantWorkspaceParams;
       forceConfirmed?: boolean;
     }
   | {

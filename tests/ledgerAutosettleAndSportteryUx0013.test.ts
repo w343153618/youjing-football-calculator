@@ -1123,4 +1123,301 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("Slice 05 · Two-Axis Review Remediation: enforces authoritative snapshot odds/caps, HHAD goalLine & kickoff hedge guards, strict official payout status, 2-click anti-tilt lock, paper partial->won transition, and raw odds sealing under sandbox void", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-rev-0013-"));
+    try {
+      // 1. Strict official settled gate: Close/Selling or missing half-time sectionsNo1 must NOT settle
+      const incompleteRes = parseSportteryResultsJson([
+        {
+          matchId: 9001,
+          matchResultStatus: "",
+          poolStatus: "Close",
+          sectionsNo1: "1:0",
+          sectionsNo999: "2:0",
+        },
+        {
+          matchId: 9002,
+          matchResultStatus: "2",
+          poolStatus: "Payout",
+          sectionsNo1: "",
+          sectionsNo999: "2:0",
+        },
+      ]);
+      assert.equal(incompleteRes.get("9001")?.settled, false);
+      assert.equal(incompleteRes.get("9002")?.settled, false);
+
+      // 2. HHAD goalLine shift (-2 at print time vs -1 live) MUST block false lock-profit liveEarlyHedge
+      const settledEarly = parseSportteryResultsJson([
+        {
+          matchId: 2042881,
+          matchResultStatus: "2",
+          poolStatus: "Payout",
+          sectionsNo1: "0:0",
+          sectionsNo999: "1:1",
+          goalLine: "-1",
+        },
+      ]);
+      const shiftedLiveMap = new Map([
+        [
+          "2042886",
+          {
+            id: "2042886",
+            matchNumStr: "周五008",
+            home: "毕尔巴鄂",
+            away: "西班牙人",
+            kickoff: "03:45",
+            pools: {
+              HAD: {
+                code: "HAD",
+                name: "胜平负",
+                single: true,
+                selling: true,
+                options: [
+                  { key: "h", label: "主胜", odds: 1.5 },
+                  { key: "d", label: "平", odds: 3.8 },
+                  { key: "a", label: "客胜", odds: 5.2 },
+                ],
+              },
+              HHAD: {
+                code: "HHAD",
+                name: "让球(-1)",
+                goalLine: "-1", // shifted from -2!
+                single: true,
+                selling: true,
+                options: [
+                  { key: "hh", label: "让胜", odds: 2.4 },
+                  { key: "hd", label: "让平", odds: 3.35 },
+                  { key: "ha", label: "让负", odds: 2.45 },
+                ],
+              },
+            },
+          },
+        ],
+      ]);
+      const shiftedSnap = {
+        matches: [],
+        lines: [
+          {
+            id: "sh1",
+            modeLabel: "2串1",
+            multiple: 10,
+            legs: [
+              {
+                matchId: "2042881",
+                poolCode: "HAD",
+                optionKey: "d",
+                odds: 3.2,
+              },
+              {
+                matchId: "2042886",
+                poolCode: "HHAD",
+                optionKey: "hh",
+                odds: 4.5,
+                goalLine: "-2",
+              },
+            ],
+          },
+        ],
+      };
+      const shiftedOut = settleTicketSnapshotWithOfficialResults(
+        shiftedSnap,
+        settledEarly,
+        { stakeCost: 20, liveMatchesById: shiftedLiveMap }
+      );
+      assert.equal(shiftedOut.liveEarlyHedge, null);
+
+      // 3. Untrusted snapshot validation: rejects >64 untrusted lines, rejects 5-leg CRS (>4 statutory cap), binds authoritative odds
+      let nowMs = Date.parse("2026-11-20T15:00:00+08:00");
+      const ldg = createLedgerManager({
+        ledgerFile: path.join(tmpDir, "ldg.json"),
+        nowFn: () => nowMs,
+      });
+      const uid = "u_sec_13";
+      ldg.mutateUserLedger(uid, { action: "set-daily-limit", dailyLimit: 200 });
+
+      // 65 untrusted lines without trustedServerSnapshot -> snapshot rejected
+      const over64Snap = {
+        matches: [{ matchId: FALLBACK_MATCHES[0].id, picks: [] }],
+        lines: Array.from({ length: 65 }, (_, i) => ({
+          id: `ln_${i}`,
+          modeLabel: "单关",
+          multiple: 1,
+          legs: [
+            {
+              matchId: FALLBACK_MATCHES[0].id,
+              poolCode: "CRS",
+              optionKey: "1:0",
+              odds: 6.5,
+            },
+          ],
+        })),
+      };
+      assert.throws(() =>
+        ldg.mutateUserLedger(uid, {
+          action: "add-entry",
+          kind: "paper",
+          title: "超64行未受信快照",
+          modeLabel: "单关",
+          betCount: 65,
+          cost: 0,
+          paperRefCost: 130,
+          minPayout: 10,
+          maxPayout: 100,
+          snapshot: over64Snap,
+        })
+      );
+
+      // 5-leg CRS parlay violates statutory 4-leg CRS cap -> rejected
+      const crs5LegSnap = {
+        matches: FALLBACK_MATCHES.slice(0, 5).map((m) => ({
+          matchId: m.id,
+          picks: [{ poolCode: "CRS", optionKey: "1:0", odds: 7 }],
+        })),
+        lines: [
+          {
+            id: "bad_crs5",
+            modeLabel: "5串1",
+            multiple: 1,
+            legs: FALLBACK_MATCHES.slice(0, 5).map((m) => ({
+              matchId: m.id,
+              poolCode: "CRS",
+              optionKey: "1:0",
+              odds: 7,
+            })),
+          },
+        ],
+      };
+      assert.throws(() =>
+        ldg.mutateUserLedger(uid, {
+          action: "add-entry",
+          kind: "paper",
+          title: "非法比分5串1",
+          modeLabel: "5串1",
+          betCount: 1,
+          cost: 0,
+          paperRefCost: 2,
+          minPayout: 10,
+          maxPayout: 100,
+          snapshot: crs5LegSnap,
+        })
+      );
+
+      // Forged odds (9999) on known authoritative match gets bound to authoritative match odds!
+      const authMatch = FALLBACK_MATCHES[0];
+      const realHadHomeOdds = authMatch.pools.HAD.options[0].odds;
+      const forgedAdd = ldg.mutateUserLedger(
+        uid,
+        {
+          action: "add-entry",
+          kind: "live",
+          title: "防伪赔率测试",
+          modeLabel: "单关",
+          betCount: 1,
+          cost: 50,
+          minPayout: 60,
+          maxPayout: 60,
+          snapshot: {
+            matches: [
+              {
+                matchId: authMatch.id,
+                picks: [{ poolCode: "HAD", optionKey: "h", odds: 9999 }],
+              },
+            ],
+            lines: [
+              {
+                id: "fg1",
+                modeLabel: "单关",
+                multiple: 25,
+                legs: [
+                  {
+                    matchId: authMatch.id,
+                    poolCode: "HAD",
+                    optionKey: "h",
+                    odds: 9999,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        { authoritativeMatches: FALLBACK_MATCHES }
+      );
+      assert.equal(
+        forgedAdd.entry.snapshot.lines[0].legs[0].odds,
+        realHadHomeOdds
+      );
+
+      // 4. 2-click anti-tilt bypass blocked: settle as lost -> reset to pending -> delete STILL locks daily quota!
+      const lostEntryId = forgedAdd.entry.id;
+      ldg.mutateUserLedger(uid, {
+        action: "settle-entry",
+        entryId: lostEntryId,
+        status: "lost",
+      });
+      ldg.mutateUserLedger(uid, {
+        action: "settle-entry",
+        entryId: lostEntryId,
+        status: "pending",
+      });
+      const delAfterReset = ldg.mutateUserLedger(uid, {
+        action: "delete-entry",
+        entryId: lostEntryId,
+      });
+      assert.equal(delAfterReset.lockedStopLossStake, 50);
+      assert.equal(delAfterReset.ledger.dailyLiveSpent, 50);
+
+      // 5. Paper partial -> manual "won" without settledReturn transitions cleanly to "won"
+      const paperEntry = ldg.mutateUserLedger(uid, {
+        action: "add-entry",
+        kind: "paper",
+        title: "模拟部分回血转命中",
+        modeLabel: "2串1",
+        betCount: 2,
+        cost: 0,
+        paperRefCost: 40,
+        minPayout: 25,
+        maxPayout: 80,
+      });
+      ldg.mutateUserLedger(uid, {
+        action: "settle-entry",
+        entryId: paperEntry.entry.id,
+        status: "partial",
+        settledReturn: 25,
+      });
+      const paperToWon = ldg.mutateUserLedger(uid, {
+        action: "settle-entry",
+        entryId: paperEntry.entry.id,
+        status: "won",
+      });
+      assert.equal(paperToWon.entry.status, "won");
+
+      // 6. simVoidFirstMatch: true in BetSlipController MUST still seal raw print-time odds (NOT 1.0!)
+      const ctrl = createBetSlipController({
+        debounceMs: 0,
+        computeWorkspace: async (params) =>
+          evaluateQuantWorkspace(params, FALLBACK_MATCHES),
+      });
+      ctrl.initializeMatches(
+        FALLBACK_MATCHES,
+        [],
+        evaluateQuantWorkspace({ picks: [], multiple: 1 }, FALLBACK_MATCHES)
+      );
+      const [cm1, cm2] = ctrl.getState().matches;
+      ctrl.togglePick(cm1, "HAD", "h");
+      ctrl.togglePick(cm2, "HAD", "h");
+      ctrl.setSimVoidFirstMatch(true);
+      await ctrl.flush();
+      const draftUnderVoidSim = ctrl.buildSealedLedgerDraft();
+      assert.ok(draftUnderVoidSim?.snapshot);
+      const sealedFirstLegOdds =
+        draftUnderVoidSim?.snapshot?.lines[0]?.legs.find(
+          (l) => l.matchId === cm1.id
+        )?.odds;
+      assert.equal(sealedFirstLegOdds, cm1.pools.HAD.options[0].odds);
+      assert.notEqual(sealedFirstLegOdds, 1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

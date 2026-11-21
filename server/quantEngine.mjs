@@ -13263,66 +13263,15 @@ export function computeProOrderInsights(
             minAllHitPayout > 0
               ? minAllHitPayout
               : Math.max(report.minPayout, report.likelyRange?.[0] ?? 0);
-          let hedgeCost = 2;
-          let lockedNetProfit = -report.totalCost;
-          let oppositeLabel = bestCand.label;
-          if (
-            bestCand.isPair &&
-            Number(bestCand.odds1) > 0 &&
-            Number(bestCand.odds2) > 0
-          ) {
-            const u1 = bankerRoundParlayUnitPayout([bestCand.odds1]);
-            const u2 = bankerRoundParlayUnitPayout([bestCand.odds2]);
-            const m1Mid = Math.max(1, Math.round(targetReturn / u1));
-            const m2Mid = Math.max(1, Math.round(targetReturn / u2));
-            let bestNet = -Infinity;
-            let bestM1 = m1Mid;
-            let bestM2 = m2Mid;
-            for (let m1 = Math.max(1, m1Mid - 3); m1 <= m1Mid + 3; m1++) {
-              for (let m2 = Math.max(1, m2Mid - 3); m2 <= m2Mid + 3; m2++) {
-                const cHedge = 2 * (m1 + m2);
-                const worstPay = Math.min(targetReturn, m1 * u1, m2 * u2);
-                const net = worstPay - report.totalCost - cHedge;
-                if (
-                  net > bestNet + 1e-9 ||
-                  (Math.abs(net - bestNet) <= 1e-9 &&
-                    cHedge < 2 * (bestM1 + bestM2))
-                ) {
-                  bestNet = net;
-                  bestM1 = m1;
-                  bestM2 = m2;
-                }
-              }
-            }
-            hedgeCost = 2 * (bestM1 + bestM2);
-            lockedNetProfit = Number(bestNet.toFixed(2));
-            oppositeLabel = `${late.home} 反向【${bestCand.poolTag}·${bestCand.opt1Label}¥${2 * bestM1}+${bestCand.opt2Label}¥${2 * bestM2}】`;
-          } else {
-            const uSingle = bankerRoundParlayUnitPayout([oppOdds]);
-            const mMid = Math.max(1, Math.round(targetReturn / uSingle));
-            let bestNet = -Infinity;
-            let bestM = mMid;
-            for (let m = Math.max(1, mMid - 2); m <= mMid + 2; m++) {
-              const cHedge = 2 * m;
-              const worstPay = Math.min(targetReturn, m * uSingle);
-              const net = worstPay - report.totalCost - cHedge;
-              if (
-                net > bestNet + 1e-9 ||
-                (Math.abs(net - bestNet) <= 1e-9 && cHedge < 2 * bestM)
-              ) {
-                bestNet = net;
-                bestM = m;
-              }
-            }
-            hedgeCost = 2 * bestM;
-            lockedNetProfit = Number(bestNet.toFixed(2));
-          }
-          const hedgeMode =
-            lockedNetProfit > 0
-              ? "lock-profit"
-              : lockedNetProfit === 0
-                ? "break-even"
-                : "reduce-loss";
+          const split = solveDiscreteHedgeSplit(
+            report.totalCost,
+            targetReturn,
+            late.home,
+            bestCand,
+            0
+          );
+          const { hedgeCost, lockedNetProfit, oppositeLabel, hedgeMode } =
+            split;
           const lockedReturn = Number(
             (report.totalCost + hedgeCost + lockedNetProfit).toFixed(2)
           );
@@ -15599,8 +15548,9 @@ export function parseSportteryResultsJson(rawJson) {
     const halfPair = parseScorePair(r.sectionsNo1);
     const isOfficiallyFinished =
       Boolean(fullPair) &&
+      Boolean(halfPair) &&
       statusStr !== "1" &&
-      (statusStr === "2" || poolStatus === "payout" || statusStr === "");
+      (statusStr === "2" || poolStatus === "payout");
 
     if (!isOfficiallyFinished || !fullPair) {
       map.set(matchId, {
@@ -15812,10 +15762,17 @@ function computeCappedTicketLinePayout(legOdds, nonVoidCount, multiple) {
   return Number((cappedUnit * cleanMult).toFixed(2));
 }
 
-function solveDiscreteHedgeSplit(totalCost, targetReturn, lateHome, bestCand) {
+function solveDiscreteHedgeSplit(
+  totalCost,
+  targetReturn,
+  lateHome,
+  bestCand,
+  baseGuaranteedReturn = 0
+) {
   let hedgeCost = 2;
   let lockedNetProfit = -totalCost;
   let oppositeLabel = bestCand.label;
+  const incrementalTarget = Math.max(2, targetReturn - baseGuaranteedReturn);
 
   if (
     bestCand.isPair &&
@@ -15824,15 +15781,19 @@ function solveDiscreteHedgeSplit(totalCost, targetReturn, lateHome, bestCand) {
   ) {
     const u1 = bankerRoundParlayUnitPayout([bestCand.odds1]);
     const u2 = bankerRoundParlayUnitPayout([bestCand.odds2]);
-    const m1Mid = Math.max(1, Math.round(targetReturn / u1));
-    const m2Mid = Math.max(1, Math.round(targetReturn / u2));
+    const m1Mid = Math.max(1, Math.round(incrementalTarget / u1));
+    const m2Mid = Math.max(1, Math.round(incrementalTarget / u2));
     let bestNet = -Infinity;
     let bestM1 = m1Mid;
     let bestM2 = m2Mid;
     for (let m1 = Math.max(1, m1Mid - 3); m1 <= m1Mid + 3; m1++) {
       for (let m2 = Math.max(1, m2Mid - 3); m2 <= m2Mid + 3; m2++) {
         const cHedge = 2 * (m1 + m2);
-        const worstPay = Math.min(targetReturn, m1 * u1, m2 * u2);
+        const worstPay = Math.min(
+          targetReturn,
+          baseGuaranteedReturn + m1 * u1,
+          baseGuaranteedReturn + m2 * u2
+        );
         const net = worstPay - totalCost - cHedge;
         if (
           net > bestNet + 1e-9 ||
@@ -15849,12 +15810,15 @@ function solveDiscreteHedgeSplit(totalCost, targetReturn, lateHome, bestCand) {
     oppositeLabel = `${lateHome} 反向【${bestCand.poolTag}·${bestCand.opt1Label}¥${2 * bestM1}+${bestCand.opt2Label}¥${2 * bestM2}】`;
   } else {
     const uSingle = bankerRoundParlayUnitPayout([bestCand.odds]);
-    const mMid = Math.max(1, Math.round(targetReturn / uSingle));
+    const mMid = Math.max(1, Math.round(incrementalTarget / uSingle));
     let bestNet = -Infinity;
     let bestM = mMid;
     for (let m = Math.max(1, mMid - 2); m <= mMid + 2; m++) {
       const cHedge = 2 * m;
-      const worstPay = Math.min(targetReturn, m * uSingle);
+      const worstPay = Math.min(
+        targetReturn,
+        baseGuaranteedReturn + m * uSingle
+      );
       const net = worstPay - totalCost - cHedge;
       if (
         net > bestNet + 1e-9 ||
@@ -16036,6 +16000,7 @@ export function settleTicketSnapshotWithOfficialResults(
         optionKey: lg.optionKey,
         optionLabel: lg.optionLabel || lg.optionKey,
         odds: Number(lg.odds) || 1,
+        goalLine: lg.goalLine ?? meta?.goalLine,
         state,
       };
     });
@@ -16175,10 +16140,28 @@ export function settleTicketSnapshotWithOfficialResults(
   if (anyEarlierHitOnSurviving && pendingMatchIds.size === 1 && refStake > 0) {
     const [lateId] = Array.from(pendingMatchIds);
     const liveLate = liveById.get(lateId);
-    if (liveLate) {
+    const stillSelling =
+      liveLate &&
+      (liveLate.pools?.HAD?.selling !== false ||
+        liveLate.pools?.HHAD?.selling !== false);
+    const nowCheckMs = Number(opts.nowMs);
+    const dateStr = liveLate?.matchDate || liveLate?.businessDate || "";
+    const kickoffEpoch =
+      dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr) && liveLate?.kickoff
+        ? Date.parse(`${dateStr}T${liveLate.kickoff}:00+08:00`)
+        : NaN;
+    const notYetKickedOff =
+      !Number.isFinite(nowCheckMs) ||
+      !Number.isFinite(kickoffEpoch) ||
+      kickoffEpoch > nowCheckMs;
+
+    if (liveLate && stillSelling && notYetKickedOff) {
       const latePickMap = new Map();
       const latePools = new Set();
       let uniformAcrossSurviving = true;
+      let hhadGoalLineAligned = true;
+      const liveHhadGl = Number(liveLate.pools?.HHAD?.goalLine ?? -1);
+
       for (const tk of survivingPendingTickets) {
         const lateLegs = tk.legs.filter((l) => l.matchId === lateId);
         if (lateLegs.length !== 1) {
@@ -16187,6 +16170,19 @@ export function settleTicketSnapshotWithOfficialResults(
         }
         const lg = lateLegs[0];
         latePools.add(lg.poolCode);
+        if (lg.poolCode === "HHAD") {
+          const sealedGl = Number(
+            lg.goalLine ?? matchMetaById.get(lateId)?.goalLine ?? -1
+          );
+          if (
+            !Number.isFinite(sealedGl) ||
+            !Number.isFinite(liveHhadGl) ||
+            sealedGl !== liveHhadGl
+          ) {
+            hhadGoalLineAligned = false;
+            break;
+          }
+        }
         const pkKey = `${lg.poolCode}:${lg.optionKey}`;
         if (!latePickMap.has(pkKey)) {
           latePickMap.set(pkKey, {
@@ -16202,7 +16198,11 @@ export function settleTicketSnapshotWithOfficialResults(
         }
       }
 
-      if (uniformAcrossSurviving && latePools.size === 1) {
+      if (
+        uniformAcrossSurviving &&
+        hhadGoalLineAligned &&
+        latePools.size === 1
+      ) {
         const latePicks = Array.from(latePickMap.values());
         const resolved = resolveComplementaryLateHedge(liveLate, latePicks);
         if (resolved.ok && resolved.candidate) {
@@ -16221,22 +16221,28 @@ export function settleTicketSnapshotWithOfficialResults(
             return Number((settledReturn + addPay).toFixed(2));
           });
           const survivingTargetReturn = Math.min(...optionPayouts);
-          if (survivingTargetReturn > 0) {
+          if (survivingTargetReturn > settledReturn) {
             const split = solveDiscreteHedgeSplit(
               refStake,
               survivingTargetReturn,
               liveLate.home || latePicks[0]?.home || "末场",
-              resolved.candidate
+              resolved.candidate,
+              settledReturn
             );
-            liveEarlyHedge = {
-              available: true,
-              lateMatchId: lateId,
-              lateMatchTitle:
-                `${liveLate.matchNumStr || ""} ${liveLate.home || ""}vs${liveLate.away || ""}`.trim(),
-              lateKickoff: liveLate.kickoff || "",
-              survivingTargetReturn,
-              ...split,
-            };
+            const unhedgedWorstNet = Number(
+              (settledReturn - refStake).toFixed(2)
+            );
+            if (split.lockedNetProfit > unhedgedWorstNet + 1e-9) {
+              liveEarlyHedge = {
+                available: true,
+                lateMatchId: lateId,
+                lateMatchTitle:
+                  `${liveLate.matchNumStr || ""} ${liveLate.home || ""}vs${liveLate.away || ""}`.trim(),
+                lateKickoff: liveLate.kickoff || "",
+                survivingTargetReturn,
+                ...split,
+              };
+            }
           }
         }
       }

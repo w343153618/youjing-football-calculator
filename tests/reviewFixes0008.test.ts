@@ -271,12 +271,18 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
       "utf8"
     );
+    const controllerSrc = fs.readFileSync(
+      path.resolve(process.cwd(), "src/workspace/betSlipController.ts"),
+      "utf8"
+    );
     const slipChunkLoops =
-      appSrc.match(/Math\.ceil\(totalMult\s*\/\s*99\)/g) ?? [];
+      `${appSrc}\n${controllerSrc}`.match(
+        /Math\.ceil\(totalMult\s*\/\s*99\)/g
+      ) ?? [];
     assert.equal(
       slipChunkLoops.length,
       1,
-      `Expected exactly 1 shared <=99 terminal slip-splitting helper in SkinPhoneApp.tsx, found ${slipChunkLoops.length}`
+      `Expected exactly 1 shared <=99 terminal slip-splitting helper across SkinPhoneApp.tsx + betSlipController.ts, found ${slipChunkLoops.length}`
     );
   });
 

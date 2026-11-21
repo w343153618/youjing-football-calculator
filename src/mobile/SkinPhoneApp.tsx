@@ -14,6 +14,7 @@ import {
   type BridgeMatchCandidate,
   type EquivalentArbItem,
   type LedgerOutcomeStatus,
+  type LedgerSettlementDetail,
   type LedgerTicketSnapshot,
   type MatchItem,
   type PoolCode,
@@ -48,6 +49,7 @@ import {
   normalizeBudgetYuan,
   resolveComboTicketBreakdown,
   sortComboRows,
+  splitTerminalPosterSlips,
   type ComboSortMode,
   type MatchMode,
   type PresetScenarioKind,
@@ -117,44 +119,6 @@ const MODE_OPTS: Array<[MatchMode, string]> = [
   ["single", "单关"],
 ];
 
-function splitTerminalPosterSlips(
-  id: string,
-  left: string,
-  modeLabel: string,
-  rawMultiple: number,
-  singleSlipCost?: number
-): Array<{ key: string; left: string; right: string }> {
-  const totalMult = Math.max(1, rawMultiple);
-  const unitSlipCost =
-    typeof singleSlipCost === "number" && singleSlipCost > 0 && totalMult > 0
-      ? Math.max(2, Math.round(singleSlipCost / totalMult))
-      : 2;
-  if (totalMult <= 99) {
-    return [
-      {
-        key: id,
-        left,
-        right: `${modeLabel} · ${totalMult}倍 (¥${singleSlipCost ?? totalMult * unitSlipCost})`,
-      },
-    ];
-  }
-  const slips: Array<{ key: string; left: string; right: string }> = [];
-  let rem = totalMult;
-  let idx = 1;
-  const slipCount = Math.ceil(totalMult / 99);
-  while (rem > 0) {
-    const chunk = Math.min(99, rem);
-    slips.push({
-      key: `${id}-p${idx}`,
-      left: `${left} [第${idx}/${slipCount}张]`,
-      right: `${modeLabel} · ${chunk}倍 (¥${chunk * unitSlipCost})`,
-    });
-    rem -= chunk;
-    idx += 1;
-  }
-  return slips;
-}
-
 interface LedgerDraftPayload {
   title: string;
   modeLabel: string;
@@ -207,6 +171,9 @@ export function SkinPhoneApp({
     Record<string, boolean>
   >({});
   const [cutoffTickNow, setCutoffTickNow] = useState<number>(() => Date.now());
+  const [wechatSlipPreview, setWechatSlipPreview] = useState<string | null>(
+    null
+  );
   const [dkFocusStep, setDkFocusStep] = useState<1 | 2 | 3 | null>(null);
   const [customBudgetOpen, setCustomBudgetOpen] = useState<boolean>(false);
   const [customBudgetDraft, setCustomBudgetDraft] = useState<string>("100");
@@ -726,8 +693,8 @@ export function SkinPhoneApp({
   }, [undoBanner?.seq]);
 
   const cutoffStatus = useMemo(
-    () => computeSportteryCutoffStatus(cutoffTickNow),
-    [cutoffTickNow]
+    () => computeSportteryCutoffStatus(cutoffTickNow, matches),
+    [cutoffTickNow, matches]
   );
 
   const radarFiltered = useMemo(() => {
@@ -1181,6 +1148,7 @@ export function SkinPhoneApp({
         minPayout: draft.minPayout,
         maxPayout: draft.maxPayout,
         snapshot: draft.snapshot,
+        workspaceParams: betCtrl.buildWorkspaceParams(),
         forceConfirmed,
       });
       syncLedgerState(res.ledger);
@@ -1469,27 +1437,29 @@ export function SkinPhoneApp({
     }
     let copied = false;
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-        copied = true;
-      }
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      copied = document.execCommand("copy");
+      ta.remove();
     } catch {
       copied = false;
     }
-    if (!copied) {
+    if (!copied && window.isSecureContext && navigator.clipboard?.writeText) {
       try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        copied = document.execCommand("copy");
-        ta.remove();
+        await navigator.clipboard.writeText(text);
+        copied = true;
       } catch {
         copied = false;
       }
     }
+    setWechatSlipPreview(copied ? null : text);
     haptic(10);
     playTactileCue("optimize-arpeggio");
     if (triggerEl) burstCelebrationSparks(triggerEl, 18);
@@ -1497,7 +1467,7 @@ export function SkinPhoneApp({
       layerRef.current,
       copied
         ? "📋 已复制店主微信打票口令，可直接去微信粘贴发送"
-        : "已生成出票口令（当前浏览器限制自动剪贴板）"
+        : "📋 已展开微信打票口令文本框，可直接长按复制"
     );
   };
 
@@ -2154,7 +2124,7 @@ export function SkinPhoneApp({
             )}
           </div>
         </div>
-      ) : radarFiltered.groups.length > 1 ? (
+      ) : (
         radarFiltered.groups.map((grp) => {
           const isCollapsed = Boolean(collapsedDayKeys[grp.dayKey]);
           return (
@@ -2178,8 +2148,6 @@ export function SkinPhoneApp({
             </div>
           );
         })
-      ) : (
-        visibleMatches.map(renderSingleRadarMatchCard)
       )}
     </>
   );
@@ -3322,7 +3290,8 @@ export function SkinPhoneApp({
                   className="key mini dark"
                   onClick={() => {
                     void triggerXiaoGaoComboLive("picked");
-                    if (isDesktop && !embedded) setDkRightTab("ledger");
+                    setMobileCabin("intel");
+                    if (isDesktop && !embedded) setDkRightTab("intel");
                   }}
                 >
                   {diagnosingCombo
@@ -4475,7 +4444,7 @@ export function SkinPhoneApp({
             </button>
           ))}
         </div>
-        {settledPaperCount > 0 && (
+        {ledgerFilter === "paper" && settledPaperCount > 0 && (
           <button
             type="button"
             className="key mini num"
@@ -4483,7 +4452,7 @@ export function SkinPhoneApp({
             onClick={() => void handleClearSettledPaper()}
             title="一键清理已开奖的模拟观察单（支持5秒撤销）"
           >
-            🧹 清已结模拟({settledPaperCount})
+            🧹 清空已结模拟单({settledPaperCount})
           </button>
         )}
       </div>
@@ -4507,10 +4476,63 @@ export function SkinPhoneApp({
         filteredLedgerEntries.map((it) => {
           const isLive = it.kind === "live";
           const detail = it.settlementDetail;
-          const hasAnatomy = Boolean(
-            (detail?.matches && detail.matches.length > 0) ||
-            (it.snapshot?.lines && it.snapshot.lines.length > 0)
-          );
+          const resolvedDetail: LedgerSettlementDetail | null =
+            detail ??
+            (it.snapshot?.lines?.length
+              ? {
+                  status: it.status,
+                  settledReturn: it.settledReturn,
+                  netProfit: it.netProfit,
+                  hitTicketCount: 0,
+                  totalTicketCount: it.snapshot.lines.length,
+                  hitMatchCount: 0,
+                  settledMatchCount: 0,
+                  totalMatchCount: it.snapshot.matches.length,
+                  earlyEliminated: false,
+                  lockedFloorReturn: 0,
+                  progressSummary: `已封存 ${it.snapshot.matches.length} 场 / ${it.snapshot.lines.length} 张实票`,
+                  liveEarlyHedge: null,
+                  matches: it.snapshot.matches.map((sm) => ({
+                    matchId: sm.matchId,
+                    matchNumStr: sm.matchNumStr,
+                    home: sm.home,
+                    away: sm.away,
+                    kickoff: sm.kickoff,
+                    goalLine: sm.goalLine,
+                    isBanker: Boolean(sm.isBanker),
+                    state: "pending" as const,
+                    halfScore: "",
+                    fullScore: "",
+                    picks: sm.picks.map((pk) => ({
+                      poolCode: pk.poolCode,
+                      optionKey: pk.optionKey,
+                      optionLabel: pk.optionLabel,
+                      odds: pk.odds,
+                      state: "pending" as const,
+                    })),
+                  })),
+                  tickets: it.snapshot.lines.map((ln) => ({
+                    id: ln.id,
+                    modeLabel: ln.modeLabel,
+                    multiple: ln.multiple,
+                    cost: ln.multiple * 2,
+                    status: "pending" as const,
+                    payout: 0,
+                    legs: ln.legs.map((lg) => ({
+                      matchId: lg.matchId,
+                      matchNumStr: lg.matchNumStr || lg.matchId,
+                      home: lg.home || "",
+                      away: lg.away || "",
+                      poolCode: lg.poolCode,
+                      optionKey: lg.optionKey,
+                      optionLabel: lg.optionLabel || lg.optionKey,
+                      odds: lg.odds,
+                      state: "pending" as const,
+                    })),
+                  })),
+                }
+              : null);
+          const hasAnatomy = Boolean(resolvedDetail);
           const isExpanded = Boolean(expandedLedgerIds[it.id]);
           const defaultWinReturn =
             it.settledReturn > 0
@@ -4646,31 +4668,67 @@ export function SkinPhoneApp({
               )}
 
               {/* Flip / Expand Order Anatomy View */}
-              {hasAnatomy && isExpanded && detail && (
+              {hasAnatomy && isExpanded && resolvedDetail && (
                 <div className="ledger-anatomy num">
+                  {/* Top Summary P&L Bar across ALL statuses & live/paper tracks */}
                   <div
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 6,
+                      paddingBottom: 5,
+                      borderBottom: "0.5px solid var(--line)",
                       fontSize: 11.5,
                       fontWeight: 600,
                     }}
                   >
-                    <span>{detail.progressSummary}</span>
-                    {it.status === "partial" && isLive && (
-                      <span style={{ color: "var(--warn, #d97706)" }}>
-                        挽回{" "}
-                        {Math.round(
-                          (it.settledReturn / Math.max(1, it.cost)) * 100
-                        )}
-                        % 本金 · 净亏 -¥{Math.abs(it.netProfit).toFixed(2)}
-                      </span>
-                    )}
+                    <span>
+                      {isLive
+                        ? `总投入 ¥${it.cost.toFixed(2)} → ${
+                            it.status === "pending"
+                              ? `预计保底 ¥${it.minPayout.toFixed(2)}`
+                              : `实派 ¥${it.settledReturn.toFixed(2)}`
+                          }`
+                        : `拟投 ¥${it.paperRefCost.toFixed(2)}（0真金）→ ${
+                            it.status === "pending"
+                              ? "跟踪观察中"
+                              : `拟派 ¥${it.settledReturn.toFixed(2)}`
+                          }`}
+                    </span>
+                    <span
+                      style={{
+                        color:
+                          it.status === "won"
+                            ? "var(--good)"
+                            : it.status === "partial"
+                              ? "var(--warn, #d97706)"
+                              : it.status === "lost"
+                                ? isLive
+                                  ? "var(--live)"
+                                  : "var(--good)"
+                                : "var(--text-2)",
+                      }}
+                    >
+                      {it.status === "pending"
+                        ? resolvedDetail.progressSummary
+                        : isLive
+                          ? it.status === "won"
+                            ? it.netProfit > 0
+                              ? `净赚 +¥${it.netProfit.toFixed(2)} (${Math.round((it.settledReturn / Math.max(1, it.cost)) * 100)}%返还)`
+                              : "平手保本 ¥0.00 (100%回本)"
+                            : it.status === "partial"
+                              ? `挽回 ${Math.round((it.settledReturn / Math.max(1, it.cost)) * 100)}% 本金 · 净亏 -¥${Math.abs(it.netProfit).toFixed(2)}`
+                              : `未中净亏 -¥${it.cost.toFixed(2)} (0%回血)`
+                          : it.status === "won"
+                            ? "模拟命中（未实买踏空）"
+                            : `免损省下 ¥${Math.max(0, it.paperRefCost - it.settledReturn).toFixed(2)}`}
+                    </span>
                   </div>
 
                   {/* Layer 1: Per-Match Official Score & Pick Red/Black */}
-                  {detail.matches.length > 0 && (
+                  {resolvedDetail.matches.length > 0 && (
                     <div
                       style={{
                         display: "flex",
@@ -4678,7 +4736,7 @@ export function SkinPhoneApp({
                         gap: 4,
                       }}
                     >
-                      {detail.matches.map((mOut) => (
+                      {resolvedDetail.matches.map((mOut) => (
                         <div key={mOut.matchId} className="ledger-anat-match">
                           <div
                             style={{
@@ -4745,7 +4803,7 @@ export function SkinPhoneApp({
                   )}
 
                   {/* Layer 2: Per-Ticket Payout Breakdown */}
-                  {detail.tickets.length > 0 && (
+                  {resolvedDetail.tickets.length > 0 && (
                     <div
                       style={{
                         display: "flex",
@@ -4757,10 +4815,10 @@ export function SkinPhoneApp({
                         className="small"
                         style={{ margin: "2px 0 0", fontWeight: 600 }}
                       >
-                        逐张实票拆解（命中 {detail.hitTicketCount}/
-                        {detail.totalTicketCount} 张）：
+                        逐张实票拆解（命中 {resolvedDetail.hitTicketCount}/
+                        {resolvedDetail.totalTicketCount} 张）：
                       </div>
-                      {detail.tickets.slice(0, 24).map((tk, tIdx) => (
+                      {resolvedDetail.tickets.slice(0, 24).map((tk, tIdx) => (
                         <div key={tk.id} className="ledger-anat-ticket">
                           <span style={{ minWidth: 0 }}>
                             <b>票{tIdx + 1}</b>{" "}
@@ -4794,9 +4852,9 @@ export function SkinPhoneApp({
                           </b>
                         </div>
                       ))}
-                      {detail.tickets.length > 24 && (
+                      {resolvedDetail.tickets.length > 24 && (
                         <div className="small">
-                          其余 {detail.tickets.length - 24}{" "}
+                          其余 {resolvedDetail.tickets.length - 24}{" "}
                           张子票已合并计入总派奖
                         </div>
                       )}
@@ -5428,6 +5486,21 @@ export function SkinPhoneApp({
           >
             📋 一键复制发店主微信口令
           </button>
+          {wechatSlipPreview && (
+            <textarea
+              readOnly
+              value={wechatSlipPreview}
+              rows={4}
+              onFocus={(e) => e.currentTarget.select()}
+              className="ledger-input num"
+              style={{
+                height: "auto",
+                padding: "6px 8px",
+                lineHeight: 1.4,
+                fontSize: 11,
+              }}
+            />
+          )}
           <div className="two">
             <button
               type="button"

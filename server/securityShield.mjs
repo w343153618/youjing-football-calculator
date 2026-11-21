@@ -849,7 +849,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
     if (pathname === "/api/health" && req.method === "GET") {
       sendJson(res, 200, {
         ok: true,
-        version: "2.4.0",
+        version: "2.5.0",
         uptimeSec: Math.round(process.uptime()),
       });
       return true;
@@ -1381,9 +1381,10 @@ export function createSecurityAndQuantGateway(opts = {}) {
         },
         async ({ sess, data, user }) => {
           const act = String(data?.action || "");
+          const { matches } = await ensureMatchesLoaded(false);
+          const sessionMatches = mergeSessionAlerts(matches, sess);
+
           if (act === "auto-settle") {
-            const { matches } = await ensureMatchesLoaded(false);
-            const sessionMatches = mergeSessionAlerts(matches, sess);
             const synced = await resolveSyncedUserLedger(
               user.id,
               sessionMatches,
@@ -1396,14 +1397,133 @@ export function createSecurityAndQuantGateway(opts = {}) {
               ledger: synced.ledger,
             };
           }
-          const mutated = ledgerManager.mutateUserLedger(user.id, data || {});
-          if (
+
+          let payloadToMutate = data || {};
+          let trustedServerSnapshot = false;
+
+          if (act === "add-entry" && data?.workspaceParams) {
+            const cleanWsParams = {
+              ...data.workspaceParams,
+              simVoidFirstMatch: false,
+              subjectiveDeltaPct: 0,
+            };
+            const ws = evaluateQuantWorkspace(cleanWsParams, sessionMatches);
+            const effRep = ws.effectiveReport;
+            const appPlan = cleanWsParams.planSpec ? ws.appliedPlan : null;
+            if (effRep.canCheckout && effRep.totalCost > 0) {
+              const bankerSet = new Set(
+                effRep.bankerMatchIds ??
+                  ws.manualReport.bankerMatchIds ??
+                  cleanWsParams.passSpec?.bankerMatchIds ??
+                  []
+              );
+              const matchById = new Map(sessionMatches.map((m) => [m.id, m]));
+              const builtLines =
+                effRep.betCount <= 512
+                  ? appPlan
+                    ? appPlan.lines.map((ln, idx) => ({
+                        id: ln.id || `ap_${idx + 1}`,
+                        modeLabel: ln.modeLabel,
+                        multiple: Math.max(1, Math.round(ln.multiple || 1)),
+                        legs: ln.legs.map((lg) => {
+                          const m = matchById.get(lg.matchId);
+                          const opt = m?.pools?.[lg.poolCode]?.options?.find(
+                            (o) => o.key === lg.optionKey
+                          );
+                          return {
+                            matchId: lg.matchId,
+                            matchNumStr: lg.matchNumStr || m?.matchNumStr,
+                            home: lg.home || m?.home,
+                            away: lg.away || m?.away,
+                            kickoff: lg.kickoff || m?.kickoff,
+                            poolCode: lg.poolCode,
+                            optionKey: lg.optionKey,
+                            optionLabel: opt?.label || lg.optionLabel,
+                            odds: opt?.odds ?? lg.odds,
+                            goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+                          };
+                        }),
+                      }))
+                    : (effRep.tickets || []).map((tk, idx) => {
+                        const legs = tk.legs || [];
+                        const passTxt =
+                          legs.length === 1
+                            ? "单关"
+                            : `${legs.length}串1${
+                                bankerSet.size > 0
+                                  ? `(${bankerSet.size}胆)`
+                                  : ""
+                              }`;
+                        return {
+                          id: tk.id || `tk_${idx + 1}`,
+                          modeLabel: passTxt,
+                          multiple: Math.max(
+                            1,
+                            Math.round(Number(cleanWsParams.multiple) || 1)
+                          ),
+                          legs: legs.map((lg) => {
+                            const m = matchById.get(lg.matchId);
+                            const opt = m?.pools?.[lg.poolCode]?.options?.find(
+                              (o) => o.key === lg.optionKey
+                            );
+                            return {
+                              matchId: lg.matchId,
+                              matchNumStr: lg.matchNumStr || m?.matchNumStr,
+                              home: lg.home || m?.home,
+                              away: lg.away || m?.away,
+                              kickoff: m?.kickoff,
+                              poolCode: lg.poolCode,
+                              optionKey: lg.optionKey,
+                              optionLabel: opt?.label || lg.optionLabel,
+                              odds: opt?.odds ?? lg.odds,
+                              goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+                            };
+                          }),
+                        };
+                      })
+                  : [];
+
+              payloadToMutate = {
+                ...payloadToMutate,
+                betCount: Math.max(1, effRep.betCount),
+                cost: payloadToMutate.kind === "live" ? effRep.totalCost : 0,
+                paperRefCost:
+                  payloadToMutate.kind === "paper"
+                    ? effRep.totalCost
+                    : undefined,
+                minPayout: effRep.minPayout,
+                maxPayout: effRep.maxPayout,
+                snapshot:
+                  builtLines.length > 0 && builtLines.length <= 512
+                    ? {
+                        matches: (data.snapshot?.matches || []).map((sm) => ({
+                          ...sm,
+                          isBanker: bankerSet.has(String(sm?.matchId || "")),
+                        })),
+                        lines: builtLines,
+                      }
+                    : undefined,
+              };
+              trustedServerSnapshot = builtLines.length > 0;
+            }
+          }
+
+          const mutated = ledgerManager.mutateUserLedger(
+            user.id,
+            payloadToMutate,
+            {
+              authoritativeMatches: sessionMatches,
+              trustedServerSnapshot,
+            }
+          );
+
+          const shouldAutoSyncNow =
             mutated.ok &&
-            act === "add-entry" &&
-            ledgerManager.hasPendingSnapshots?.(user.id)
-          ) {
-            const { matches } = await ensureMatchesLoaded(false);
-            const sessionMatches = mergeSessionAlerts(matches, sess);
+            (act === "add-entry" ||
+              (act === "settle-entry" && data?.status === "pending")) &&
+            ledgerManager.hasPendingSnapshots?.(user.id);
+
+          if (shouldAutoSyncNow) {
             const synced = await resolveSyncedUserLedger(
               user.id,
               sessionMatches,

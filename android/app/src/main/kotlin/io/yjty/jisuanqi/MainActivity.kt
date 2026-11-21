@@ -182,7 +182,7 @@ class MainActivity : Activity() {
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             textZoom = 100
-            userAgentString = "$userAgentString YouJingAndroid/2.4.0"
+            userAgentString = "$userAgentString YouJingAndroid/2.5.0"
         }
 
         webView.addJavascriptInterface(NativeHapticBridge(applicationContext), "YJAndroidNative")

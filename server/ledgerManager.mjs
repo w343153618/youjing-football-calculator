@@ -7,17 +7,24 @@ const DEFAULT_DAILY_LIMIT = 300;
 const MIN_DAILY_LIMIT = 20;
 const MAX_DAILY_LIMIT = 100_000;
 const MAX_ENTRY_COST = 1_000_000;
+const MAX_SNAPSHOT_TOTAL_COST = 20_000;
 const MAX_PAYOUT = 10_000_000;
 const MAX_BET_COUNT = 100_000;
 const MAX_ENTRIES_PER_USER = 200;
 const MAX_SNAPSHOT_MATCHES = 15;
 const MAX_SNAPSHOT_PICKS_PER_MATCH = 31;
-const MAX_SNAPSHOT_LINES = 512;
-const MAX_SNAPSHOT_LEGS_PER_LINE = 8;
-const MAX_UNDO_RECORDS_PER_USER = 8;
-const UNDO_TTL_MS = 5 * 60_000;
+const MAX_UNTRUSTED_SNAPSHOT_LINES = 64;
+const MAX_TRUSTED_SNAPSHOT_LINES = 512;
+const UNDO_TTL_MS = 15_000;
 
 const VALID_POOLS = new Set(["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
+const POOL_PARLAY_CAPS = {
+  HAD: 8,
+  HHAD: 8,
+  TTG: 6,
+  HAFU: 4,
+  CRS: 4,
+};
 const VALID_STATUSES = new Set(["pending", "won", "partial", "lost"]);
 
 function round2(val) {
@@ -45,10 +52,10 @@ function clampDailyLimit(raw) {
   return Math.max(MIN_DAILY_LIMIT, Math.min(MAX_DAILY_LIMIT, Math.round(n)));
 }
 
-function clampOdds(raw) {
+function clampCustomOdds(raw) {
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 1) return 1;
-  return Math.min(10_000, Number(n.toFixed(4)));
+  if (!Number.isFinite(n) || n < 1.01) return 1.01;
+  return Math.min(1000, Number(n.toFixed(4)));
 }
 
 function beijingDateStr(nowMs) {
@@ -56,23 +63,182 @@ function beijingDateStr(nowMs) {
   return d.toISOString().slice(0, 10);
 }
 
-function sanitizeTicketSnapshot(raw) {
+function toAuthoritativeMap(authInput) {
+  if (!authInput) return null;
+  if (authInput instanceof Map) return authInput;
+  if (Array.isArray(authInput)) {
+    return new Map(
+      authInput
+        .filter((m) => m && m.id !== undefined)
+        .map((m) => [String(m.id), m])
+    );
+  }
+  return null;
+}
+
+function resolveAuthoritativePick(authMap, matchId, poolCode, optionKey) {
+  const m = authMap?.get(matchId);
+  if (!m || !m.pools) return null;
+  const pool = m.pools[poolCode];
+  if (!pool || !Array.isArray(pool.options)) return null;
+  const opt = pool.options.find((o) => String(o.key) === optionKey);
+  if (!opt || !(Number(opt.odds) > 1)) return null;
+  return {
+    odds: Number(opt.odds),
+    optionLabel: opt.label || optionKey,
+    goalLine: m.pools.HHAD?.goalLine ?? "-1",
+    matchNumStr: m.matchNumStr,
+    home: m.home,
+    away: m.away,
+    kickoff: m.kickoff,
+    businessDate: m.businessDate,
+  };
+}
+
+function sanitizeTicketSnapshot(raw, opts = {}) {
   if (!raw || typeof raw !== "object") return undefined;
+  const strict = Boolean(opts.strictValidate);
+  const trusted = Boolean(opts.trustedServerSnapshot);
+  const authMap = toAuthoritativeMap(opts.authoritativeMatches);
+  const lineCap = trusted
+    ? MAX_TRUSTED_SNAPSHOT_LINES
+    : MAX_UNTRUSTED_SNAPSHOT_LINES;
+
+  if (!Array.isArray(raw.lines) || raw.lines.length === 0) return undefined;
+  if (raw.lines.length > lineCap) {
+    if (strict) {
+      throw new Error(`出票快照实票行数超出上限（最多 ${lineCap} 行）`);
+    }
+    return undefined;
+  }
+
   const rawMatches = Array.isArray(raw.matches)
     ? raw.matches.slice(0, MAX_SNAPSHOT_MATCHES)
     : [];
-  const rawLines = Array.isArray(raw.lines)
-    ? raw.lines.slice(0, MAX_SNAPSHOT_LINES)
-    : [];
-  if (rawLines.length === 0) return undefined;
+  const distinctMatchIds = new Set();
+  let hasParlayLine = false;
+  let totalLineCost = 0;
 
-  const matches = [];
+  const lines = [];
+  for (let i = 0; i < raw.lines.length; i++) {
+    const ln = raw.lines[i];
+    if (!ln || typeof ln !== "object" || !Array.isArray(ln.legs)) continue;
+    if (ln.legs.length === 0 || ln.legs.length > 8) {
+      if (strict) throw new Error("单张实票关数不合法");
+      continue;
+    }
+
+    const seenLineMatches = new Set();
+    const legs = [];
+    let minPoolCap = 8;
+
+    for (const lg of ln.legs) {
+      if (!lg || typeof lg !== "object") continue;
+      const matchId = String(lg.matchId ?? "")
+        .trim()
+        .slice(0, 32);
+      const poolCode = String(lg.poolCode || "").toUpperCase();
+      const optionKey = String(lg.optionKey ?? "")
+        .trim()
+        .slice(0, 16);
+      if (!matchId || !VALID_POOLS.has(poolCode) || !optionKey) {
+        if (strict) throw new Error("实票选项参数无效");
+        continue;
+      }
+      if (seenLineMatches.has(matchId)) {
+        if (strict) throw new Error("同一张实票内禁止重复同一场赛事");
+        continue;
+      }
+      seenLineMatches.add(matchId);
+      distinctMatchIds.add(matchId);
+      minPoolCap = Math.min(minPoolCap, POOL_PARLAY_CAPS[poolCode] || 8);
+
+      const authPick = resolveAuthoritativePick(
+        authMap,
+        matchId,
+        poolCode,
+        optionKey
+      );
+      const resolvedOdds = authPick ? authPick.odds : clampCustomOdds(lg.odds);
+      const resolvedGoalLine = authPick
+        ? authPick.goalLine
+        : lg.goalLine !== undefined
+          ? String(lg.goalLine).slice(0, 8)
+          : undefined;
+
+      legs.push({
+        matchId,
+        matchNumStr:
+          authPick?.matchNumStr ||
+          (lg.matchNumStr ? String(lg.matchNumStr).slice(0, 20) : undefined),
+        home:
+          authPick?.home ||
+          (lg.home ? String(lg.home).slice(0, 32) : undefined),
+        away:
+          authPick?.away ||
+          (lg.away ? String(lg.away).slice(0, 32) : undefined),
+        kickoff:
+          authPick?.kickoff ||
+          (lg.kickoff ? String(lg.kickoff).slice(0, 16) : undefined),
+        poolCode,
+        optionKey,
+        optionLabel: String(
+          authPick?.optionLabel || lg.optionLabel || optionKey
+        ).slice(0, 24),
+        odds: resolvedOdds,
+        goalLine: resolvedGoalLine,
+      });
+    }
+
+    if (legs.length === 0) continue;
+    if (legs.length > minPoolCap) {
+      if (strict) {
+        throw new Error(
+          `出票快照包含超出中国体彩玩法最高过关上限（${minPoolCap}关）的串关组合`
+        );
+      }
+      return undefined;
+    }
+    if (legs.length >= 2) hasParlayLine = true;
+
+    const mult = Math.max(
+      1,
+      Math.min(999, Math.round(Number(ln.multiple) || 1))
+    );
+    totalLineCost += mult * 2;
+    lines.push({
+      id: String(ln.id || `line_${i + 1}`).slice(0, 40),
+      modeLabel: String(
+        ln.modeLabel || (legs.length === 1 ? "单关" : `${legs.length}串1`)
+      ).slice(0, 24),
+      multiple: mult,
+      legs,
+    });
+  }
+
+  if (lines.length === 0) return undefined;
+  const maxMatchesAllowed = hasParlayLine ? 8 : 15;
+  if (distinctMatchIds.size > maxMatchesAllowed) {
+    if (strict) {
+      throw new Error(`方案关联场次数超出上限（最多 ${maxMatchesAllowed} 场）`);
+    }
+    return undefined;
+  }
+  if (totalLineCost > MAX_SNAPSHOT_TOTAL_COST) {
+    if (strict) {
+      throw new Error("单次方案总金额超出中国体彩 ¥20,000 法定上限");
+    }
+    return undefined;
+  }
+
+  const matchesById = new Map();
   for (const m of rawMatches) {
     if (!m || typeof m !== "object") continue;
     const matchId = String(m.matchId ?? "")
       .trim()
       .slice(0, 32);
-    if (!matchId) continue;
+    if (!matchId || !distinctMatchIds.has(matchId)) continue;
+    const authM = authMap?.get(matchId);
     const rawPicks = Array.isArray(m.picks)
       ? m.picks.slice(0, MAX_SNAPSHOT_PICKS_PER_MATCH)
       : [];
@@ -85,84 +251,85 @@ function sanitizeTicketSnapshot(raw) {
         .trim()
         .slice(0, 16);
       if (!optionKey) continue;
+      const authPick = resolveAuthoritativePick(
+        authMap,
+        matchId,
+        poolCode,
+        optionKey
+      );
       picks.push({
         poolCode,
         optionKey,
-        optionLabel: String(p.optionLabel || optionKey).slice(0, 24),
-        odds: clampOdds(p.odds),
-        goalLine:
-          p.goalLine !== undefined ? String(p.goalLine).slice(0, 8) : undefined,
+        optionLabel: String(
+          authPick?.optionLabel || p.optionLabel || optionKey
+        ).slice(0, 24),
+        odds: authPick ? authPick.odds : clampCustomOdds(p.odds),
+        goalLine: authPick
+          ? authPick.goalLine
+          : p.goalLine !== undefined
+            ? String(p.goalLine).slice(0, 8)
+            : undefined,
       });
     }
-    matches.push({
+    matchesById.set(matchId, {
       matchId,
-      matchNumStr: String(m.matchNumStr || matchId).slice(0, 20),
-      home: String(m.home || "").slice(0, 32),
-      away: String(m.away || "").slice(0, 32),
-      kickoff: String(m.kickoff || "").slice(0, 16),
-      businessDate: m.businessDate
-        ? String(m.businessDate).slice(0, 12)
-        : undefined,
-      goalLine:
-        m.goalLine !== undefined ? String(m.goalLine).slice(0, 8) : undefined,
+      matchNumStr: String(authM?.matchNumStr || m.matchNumStr || matchId).slice(
+        0,
+        20
+      ),
+      home: String(authM?.home || m.home || "").slice(0, 32),
+      away: String(authM?.away || m.away || "").slice(0, 32),
+      kickoff: String(authM?.kickoff || m.kickoff || "").slice(0, 16),
+      businessDate:
+        authM?.businessDate || m.businessDate
+          ? String(authM?.businessDate || m.businessDate).slice(0, 12)
+          : undefined,
+      goalLine: authM?.pools?.HHAD?.goalLine
+        ? String(authM.pools.HHAD.goalLine).slice(0, 8)
+        : m.goalLine !== undefined
+          ? String(m.goalLine).slice(0, 8)
+          : undefined,
       isBanker: Boolean(m.isBanker),
       picks,
     });
   }
 
-  const lines = [];
-  for (let i = 0; i < rawLines.length; i++) {
-    const ln = rawLines[i];
-    if (!ln || typeof ln !== "object" || !Array.isArray(ln.legs)) continue;
-    const seenMatchIds = new Set();
-    const legs = [];
-    for (const lg of ln.legs.slice(0, MAX_SNAPSHOT_LEGS_PER_LINE)) {
-      if (!lg || typeof lg !== "object") continue;
-      const matchId = String(lg.matchId ?? "")
-        .trim()
-        .slice(0, 32);
-      const poolCode = String(lg.poolCode || "").toUpperCase();
-      const optionKey = String(lg.optionKey ?? "")
-        .trim()
-        .slice(0, 16);
-      if (!matchId || !VALID_POOLS.has(poolCode) || !optionKey) continue;
-      if (seenMatchIds.has(matchId)) continue;
-      seenMatchIds.add(matchId);
-      legs.push({
-        matchId,
-        matchNumStr: lg.matchNumStr
-          ? String(lg.matchNumStr).slice(0, 20)
-          : undefined,
-        home: lg.home ? String(lg.home).slice(0, 32) : undefined,
-        away: lg.away ? String(lg.away).slice(0, 32) : undefined,
-        kickoff: lg.kickoff ? String(lg.kickoff).slice(0, 16) : undefined,
-        poolCode,
-        optionKey,
-        optionLabel: String(lg.optionLabel || optionKey).slice(0, 24),
-        odds: clampOdds(lg.odds),
-        goalLine:
-          lg.goalLine !== undefined
-            ? String(lg.goalLine).slice(0, 8)
-            : undefined,
-      });
+  for (const ln of lines) {
+    for (const lg of ln.legs) {
+      let item = matchesById.get(lg.matchId);
+      if (!item) {
+        item = {
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr || lg.matchId,
+          home: lg.home || "",
+          away: lg.away || "",
+          kickoff: lg.kickoff || "",
+          goalLine: lg.goalLine,
+          isBanker: false,
+          picks: [],
+        };
+        matchesById.set(lg.matchId, item);
+      }
+      if (
+        !item.picks.some(
+          (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+        )
+      ) {
+        item.picks.push({
+          poolCode: lg.poolCode,
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+          goalLine: lg.goalLine ?? item.goalLine,
+        });
+      }
     }
-    if (legs.length === 0) continue;
-    const mult = Math.max(
-      1,
-      Math.min(9999, Math.round(Number(ln.multiple) || 1))
-    );
-    lines.push({
-      id: String(ln.id || `line_${i + 1}`).slice(0, 40),
-      modeLabel: String(
-        ln.modeLabel || (legs.length === 1 ? "单关" : `${legs.length}串1`)
-      ).slice(0, 24),
-      multiple: mult,
-      legs,
-    });
   }
 
-  if (lines.length === 0) return undefined;
-  return { matches, lines };
+  return {
+    matches: Array.from(matchesById.values()),
+    lines,
+  };
 }
 
 function normalizeStatusAndPayout(
@@ -202,7 +369,6 @@ function normalizeStatusAndPayout(
       netProfit: round2(settledReturn - cost),
     };
   }
-  // Paper ticket: settledReturn may be 0 when legacy manual mark "won" had no snapshot
   if (settledReturn > 0 && refStake > 0) {
     const status = settledReturn + 1e-9 < refStake ? "partial" : "won";
     return { status, settledReturn, netProfit: 0 };
@@ -231,7 +397,10 @@ function sanitizeEntry(raw) {
     cost,
     paperRefCost
   );
-  const snapshot = sanitizeTicketSnapshot(raw.snapshot);
+  const snapshot = sanitizeTicketSnapshot(raw.snapshot, {
+    strictValidate: false,
+    trustedServerSnapshot: true,
+  });
 
   return {
     id: raw.id,
@@ -246,6 +415,7 @@ function sanitizeEntry(raw) {
     status: norm.status,
     settledReturn: norm.settledReturn,
     netProfit: norm.netProfit,
+    everSettledLoss: Boolean(raw.everSettledLoss) || norm.netProfit < 0,
     manualOverride: Boolean(raw.manualOverride),
     autoSettled: Boolean(raw.autoSettled),
     snapshot,
@@ -343,7 +513,9 @@ function buildSnapshot(rec, nowMs) {
     dailyLimit,
     usageDate,
     dailyLiveSpent: roundedSpent,
-    dailyLockedLossSpent: round2(dailyLockedLossSpent),
+    ...(dailyLockedLossSpent > 0
+      ? { dailyLockedLossSpent: round2(dailyLockedLossSpent) }
+      : {}),
     dailyRemaining,
     entries,
     stats: {
@@ -381,8 +553,8 @@ export function createLedgerManager(opts = {}) {
   const db = {
     users: {},
   };
-  // Per-user ephemeral undo buffer (not persisted to disk; bounded to MAX_UNDO_RECORDS_PER_USER)
-  const undoBuffers = new Map();
+  // Single-slot 15-second soft undo per user
+  const undoSlots = new Map();
 
   if (ledgerFile && fs.existsSync(ledgerFile)) {
     try {
@@ -447,12 +619,9 @@ export function createLedgerManager(opts = {}) {
     return db.users[uid];
   }
 
-  function pushUndoRecord(uid, items, nowMs) {
+  function setUndoSlot(uid, items, nowMs) {
     const token = `undo_${nowMs}_${crypto.randomBytes(3).toString("hex")}`;
-    const list = (undoBuffers.get(uid) || []).filter(
-      (r) => nowMs - r.createdAt <= UNDO_TTL_MS
-    );
-    list.unshift({
+    undoSlots.set(uid, {
       token,
       createdAt: nowMs,
       items: items.map((it) => ({
@@ -460,10 +629,6 @@ export function createLedgerManager(opts = {}) {
         entry: structuredClone(it.entry),
       })),
     });
-    if (list.length > MAX_UNDO_RECORDS_PER_USER) {
-      list.length = MAX_UNDO_RECORDS_PER_USER;
-    }
-    undoBuffers.set(uid, list);
     return token;
   }
 
@@ -500,17 +665,22 @@ export function createLedgerManager(opts = {}) {
 
     for (const e of rec.entries) {
       if (!e.snapshot?.lines?.length) continue;
+      if (
+        e.status !== "pending" &&
+        e.settlementDetail &&
+        !context.forceRecalcAll
+      ) {
+        continue;
+      }
+
       const detail = settleFn(e.snapshot, resultsById, {
         stakeCost: e.kind === "live" ? e.cost : 0,
         paperRefCost: e.paperRefCost,
         liveMatchesById,
+        nowMs: now,
       });
-      const prevDetailJson = JSON.stringify(e.settlementDetail || null);
-      const nextDetailJson = JSON.stringify(detail);
-      if (prevDetailJson !== nextDetailJson) {
-        e.settlementDetail = detail;
-        dirty = true;
-      }
+      e.settlementDetail = detail;
+      dirty = true;
 
       if (!e.manualOverride && detail.status !== "pending") {
         const wasPending = e.status === "pending";
@@ -521,22 +691,17 @@ export function createLedgerManager(opts = {}) {
           e.cost,
           e.paperRefCost
         );
-        if (
-          e.status !== norm.status ||
-          e.settledReturn !== norm.settledReturn ||
-          e.netProfit !== norm.netProfit ||
-          !e.autoSettled
-        ) {
-          e.status = norm.status;
-          e.settledReturn = norm.settledReturn;
-          e.netProfit = norm.netProfit;
-          e.autoSettled = true;
-          if (!e.settledAt) e.settledAt = now;
-          dirty = true;
-          if (wasPending) {
-            newlySettledCount += 1;
-            newlySettledTitles.push(e.title);
-          }
+        e.status = norm.status;
+        e.settledReturn = norm.settledReturn;
+        e.netProfit = norm.netProfit;
+        if (e.kind === "live") {
+          e.everSettledLoss = norm.netProfit < 0;
+        }
+        e.autoSettled = true;
+        if (!e.settledAt) e.settledAt = now;
+        if (wasPending) {
+          newlySettledCount += 1;
+          newlySettledTitles.push(e.title);
         }
       }
     }
@@ -559,7 +724,7 @@ export function createLedgerManager(opts = {}) {
     return buildSnapshot(rec, nowFn());
   }
 
-  function mutateUserLedger(userId, payload = {}) {
+  function mutateUserLedger(userId, payload = {}, callOpts = {}) {
     const uid = String(userId || "").trim();
     if (!uid) {
       throw new Error("无效的授权账号标识");
@@ -598,24 +763,36 @@ export function createLedgerManager(opts = {}) {
         throw new Error("账本记录类型必须为实买单或模拟观察单");
       }
 
+      const snapshot = sanitizeTicketSnapshot(payload?.snapshot, {
+        strictValidate: true,
+        trustedServerSnapshot: Boolean(callOpts.trustedServerSnapshot),
+        authoritativeMatches: callOpts.authoritativeMatches,
+      });
+      const snapshotCost = snapshot
+        ? snapshot.lines.reduce((s, l) => s + l.multiple * 2, 0)
+        : null;
+
       const rec = ensureUserRecord(uid);
       pruneStaleLockedLosses(rec, now);
       const curSnap = buildSnapshot(rec, now);
-      const rawCost = Number(payload?.cost);
-      const rawPaperRef = Number(payload?.paperRefCost);
+      const rawCost = snapshotCost ?? Number(payload?.cost);
+      const rawPaperRef = snapshotCost ?? Number(payload?.paperRefCost);
 
       if (kind === "live") {
         if (!Number.isFinite(rawCost) || rawCost <= 0) {
           throw new Error("实买单投入本金必须大于 0 元");
         }
-        const cost = round2(Math.min(1_000_000, rawCost));
-        if (cost > curSnap.dailyRemaining && payload?.forceConfirmed !== true) {
+        const costCheck = round2(Math.min(MAX_ENTRY_COST, rawCost));
+        if (
+          costCheck > curSnap.dailyRemaining &&
+          payload?.forceConfirmed !== true
+        ) {
           return {
             ok: false,
             code: "STOP_LOSS_EXCEEDED",
             dailyRemaining: curSnap.dailyRemaining,
             dailyLimit: curSnap.dailyLimit,
-            overBy: round2(cost - curSnap.dailyRemaining),
+            overBy: round2(costCheck - curSnap.dailyRemaining),
             ledger: curSnap,
           };
         }
@@ -627,7 +804,7 @@ export function createLedgerManager(opts = {}) {
           ? clampMoney(
               !Number.isNaN(rawPaperRef) && rawPaperRef > 0
                 ? rawPaperRef
-                : rawCost,
+                : Number(payload?.cost),
               MAX_ENTRY_COST
             )
           : 0;
@@ -645,7 +822,6 @@ export function createLedgerManager(opts = {}) {
         minPayout,
         clampMoney(payload?.maxPayout, MAX_PAYOUT)
       );
-      const snapshot = sanitizeTicketSnapshot(payload?.snapshot);
 
       const entry = {
         id: `ldg_${now}_${crypto.randomBytes(4).toString("hex")}`,
@@ -660,6 +836,7 @@ export function createLedgerManager(opts = {}) {
         status: "pending",
         settledReturn: 0,
         netProfit: 0,
+        everSettledLoss: false,
         manualOverride: false,
         autoSettled: false,
         snapshot,
@@ -667,6 +844,7 @@ export function createLedgerManager(opts = {}) {
           ? settleFn(snapshot, new Map(), {
               stakeCost: cost,
               paperRefCost,
+              nowMs: now,
             })
           : undefined,
         createdAt: now,
@@ -698,6 +876,9 @@ export function createLedgerManager(opts = {}) {
       }
 
       if (nextStatus === "pending") {
+        if (target.kind === "live" && target.netProfit < 0) {
+          target.everSettledLoss = true;
+        }
         target.status = "pending";
         target.settledReturn = 0;
         target.netProfit = 0;
@@ -728,12 +909,21 @@ export function createLedgerManager(opts = {}) {
           target.status = norm.status;
           target.settledReturn = norm.settledReturn;
           target.netProfit = norm.netProfit;
+          if (norm.netProfit < 0) {
+            target.everSettledLoss = true;
+          }
         } else {
           const passedRet = Number(payload?.settledReturn);
+          const fallbackPaperWonRet = Math.max(
+            target.paperRefCost,
+            target.minPayout || target.paperRefCost
+          );
           const settledReturn =
             Number.isFinite(passedRet) && passedRet > 0
               ? round2(Math.min(10_000_000, passedRet))
-              : target.settledReturn;
+              : nextStatus === "won"
+                ? fallbackPaperWonRet
+                : target.settledReturn;
           const norm = normalizeStatusAndPayout(
             "paper",
             nextStatus,
@@ -752,6 +942,9 @@ export function createLedgerManager(opts = {}) {
         target.status = "lost";
         target.settledReturn = 0;
         target.netProfit = target.kind === "live" ? round2(-target.cost) : 0;
+        if (target.kind === "live") {
+          target.everSettledLoss = true;
+        }
         target.manualOverride = true;
         target.autoSettled = false;
         target.settledAt = now;
@@ -779,12 +972,16 @@ export function createLedgerManager(opts = {}) {
       const today = beijingDateStr(now);
       let lockedStopLossStake = 0;
 
-      // Anti-tilt stop-loss lock: deleting a same-day settled losing/underwater live entry does NOT refund daily quota
+      const settledAsLoss =
+        removed.netProfit < 0 ||
+        removed.everSettledLoss ||
+        removed.settlementDetail?.status === "lost" ||
+        removed.settlementDetail?.status === "partial";
+
       if (
         removed.kind === "live" &&
         beijingDateStr(removed.createdAt) === today &&
-        removed.status !== "pending" &&
-        removed.netProfit < 0
+        settledAsLoss
       ) {
         rec.dailyLockedLosses[removed.id] = {
           date: today,
@@ -793,11 +990,7 @@ export function createLedgerManager(opts = {}) {
         lockedStopLossStake = removed.cost;
       }
 
-      const undoToken = pushUndoRecord(
-        uid,
-        [{ index: idx, entry: removed }],
-        now
-      );
+      const undoToken = setUndoSlot(uid, [{ index: idx, entry: removed }], now);
       persistNowSync();
       return {
         ok: true,
@@ -829,7 +1022,7 @@ export function createLedgerManager(opts = {}) {
         };
       }
       rec.entries = kept;
-      const undoToken = pushUndoRecord(uid, removedItems, now);
+      const undoToken = setUndoSlot(uid, removedItems, now);
       persistNowSync();
       return {
         ok: true,
@@ -843,22 +1036,19 @@ export function createLedgerManager(opts = {}) {
       const rec = ensureUserRecord(uid);
       pruneStaleLockedLosses(rec, now);
       const token = String(payload?.undoToken || "").trim();
-      const list = (undoBuffers.get(uid) || []).filter(
-        (r) => now - r.createdAt <= UNDO_TTL_MS
-      );
-      const foundIdx = token
-        ? list.findIndex((r) => r.token === token)
-        : list.length > 0
-          ? 0
-          : -1;
-      if (foundIdx === -1) {
+      const slot = undoSlots.get(uid);
+      if (
+        !token ||
+        !slot ||
+        slot.token !== token ||
+        now - slot.createdAt > UNDO_TTL_MS
+      ) {
         throw new Error("撤销窗口已过期或记录不存在");
       }
-      const [record] = list.splice(foundIdx, 1);
-      undoBuffers.set(uid, list);
+      undoSlots.delete(uid);
 
       const existingIds = new Set(rec.entries.map((e) => e.id));
-      const sorted = [...record.items].sort((a, b) => a.index - b.index);
+      const sorted = [...slot.items].sort((a, b) => a.index - b.index);
       let restoredCount = 0;
       for (const item of sorted) {
         if (existingIds.has(item.entry.id)) continue;
@@ -886,7 +1076,7 @@ export function createLedgerManager(opts = {}) {
     const uid = String(userId || "").trim();
     if (uid && db.users[uid]) {
       delete db.users[uid];
-      undoBuffers.delete(uid);
+      undoSlots.delete(uid);
       persistNowSync();
     }
     return { ok: true };

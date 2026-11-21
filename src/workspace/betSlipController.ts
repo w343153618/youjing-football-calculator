@@ -2282,57 +2282,87 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           []
       );
       const matchById = new Map(state.matches.map((m) => [m.id, m]));
+      const resolveRawPrintOdds = (
+        matchId: string,
+        poolCode: PoolCode,
+        optionKey: string,
+        fallbackOdds: number
+      ): { odds: number; label?: string } => {
+        const m = matchById.get(matchId);
+        const opt = m?.pools?.[poolCode]?.options?.find(
+          (o) => o.key === optionKey
+        );
+        if (opt && opt.odds > 1) {
+          return { odds: opt.odds, label: opt.label };
+        }
+        return { odds: fallbackOdds };
+      };
 
-      const lines: LedgerSnapshotLine[] = appliedPlan
-        ? appliedPlan.lines.map((ln, idx) => ({
-            id: ln.id || `ap_${idx + 1}`,
-            modeLabel: ln.modeLabel,
-            multiple: Math.max(1, Math.round(ln.multiple || 1)),
-            legs: ln.legs.map((lg) => {
-              const m = matchById.get(lg.matchId);
-              return {
-                matchId: lg.matchId,
-                matchNumStr: lg.matchNumStr || m?.matchNumStr,
-                home: lg.home || m?.home,
-                away: lg.away || m?.away,
-                kickoff: lg.kickoff || m?.kickoff,
-                poolCode: lg.poolCode,
-                optionKey: lg.optionKey,
-                optionLabel: lg.optionLabel,
-                odds: lg.odds,
-                goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
-              };
-            }),
-          }))
-        : (effectiveReport.tickets ?? []).map((tk, idx) => {
-            const legs = tk.legs ?? [];
-            const passTxt =
-              legs.length === 1
-                ? "单关"
-                : `${legs.length}串1${
-                    bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
-                  }`;
-            return {
-              id: tk.id || `tk_${idx + 1}`,
-              modeLabel: passTxt,
-              multiple: Math.max(1, Math.round(state.multiple || 1)),
-              legs: legs.map((lg) => {
+      const canSealSnapshot = effectiveReport.betCount <= 512;
+      const lines: LedgerSnapshotLine[] = !canSealSnapshot
+        ? []
+        : appliedPlan
+          ? appliedPlan.lines.map((ln, idx) => ({
+              id: ln.id || `ap_${idx + 1}`,
+              modeLabel: ln.modeLabel,
+              multiple: Math.max(1, Math.round(ln.multiple || 1)),
+              legs: ln.legs.map((lg) => {
                 const m = matchById.get(lg.matchId);
+                const rawOpt = resolveRawPrintOdds(
+                  lg.matchId,
+                  lg.poolCode,
+                  lg.optionKey,
+                  lg.odds
+                );
                 return {
                   matchId: lg.matchId,
                   matchNumStr: lg.matchNumStr || m?.matchNumStr,
                   home: lg.home || m?.home,
                   away: lg.away || m?.away,
-                  kickoff: m?.kickoff,
+                  kickoff: lg.kickoff || m?.kickoff,
                   poolCode: lg.poolCode,
                   optionKey: lg.optionKey,
-                  optionLabel: lg.optionLabel,
-                  odds: lg.odds,
+                  optionLabel: rawOpt.label || lg.optionLabel,
+                  odds: rawOpt.odds,
                   goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
                 };
               }),
-            };
-          });
+            }))
+          : (effectiveReport.tickets ?? []).map((tk, idx) => {
+              const legs = tk.legs ?? [];
+              const passTxt =
+                legs.length === 1
+                  ? "单关"
+                  : `${legs.length}串1${
+                      bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
+                    }`;
+              return {
+                id: tk.id || `tk_${idx + 1}`,
+                modeLabel: passTxt,
+                multiple: Math.max(1, Math.round(state.multiple || 1)),
+                legs: legs.map((lg) => {
+                  const m = matchById.get(lg.matchId);
+                  const rawOpt = resolveRawPrintOdds(
+                    lg.matchId,
+                    lg.poolCode,
+                    lg.optionKey,
+                    lg.odds
+                  );
+                  return {
+                    matchId: lg.matchId,
+                    matchNumStr: lg.matchNumStr || m?.matchNumStr,
+                    home: lg.home || m?.home,
+                    away: lg.away || m?.away,
+                    kickoff: m?.kickoff,
+                    poolCode: lg.poolCode,
+                    optionKey: lg.optionKey,
+                    optionLabel: rawOpt.label || lg.optionLabel,
+                    odds: rawOpt.odds,
+                    goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+                  };
+                }),
+              };
+            });
 
       const matchMap = new Map<string, LedgerSnapshotMatch>();
       for (const ln of lines) {
@@ -2417,27 +2447,18 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         totalMult: number,
         totalLineCost?: number
       ) => {
-        const cleanMult = Math.max(1, Math.round(totalMult || 1));
-        const unitCost =
-          typeof totalLineCost === "number" &&
-          totalLineCost > 0 &&
-          cleanMult > 0
-            ? Math.max(2, Math.round(totalLineCost / cleanMult))
-            : 2;
-        let rem = cleanMult;
-        let partIdx = 0;
-        const totalParts = Math.ceil(cleanMult / 99);
-        while (rem > 0) {
-          const chunk = Math.min(99, rem);
-          const chunkCost = unitCost * chunk;
+        for (const sl of splitTerminalPosterSlips(
+          "wc",
+          legsDesc,
+          modeLabel,
+          totalMult,
+          totalLineCost,
+          true
+        )) {
           physicalSlipSeq += 1;
-          partIdx += 1;
-          const partTag =
-            totalParts > 1 ? `[分票${partIdx}/${totalParts}]` : "";
           slipRows.push(
-            `票${physicalSlipSeq}${partTag}：${legsDesc} ｜ ${modeLabel} × ${chunk}倍 = ¥${chunkCost}`
+            `票${physicalSlipSeq}${sl.partTag}：${legsDesc} ｜ ${sl.right}`
           );
-          rem -= chunk;
         }
       };
 
@@ -2504,12 +2525,73 @@ export interface SportteryCutoffStatus {
   badgeText: string;
 }
 
+export function splitTerminalPosterSlips(
+  id: string,
+  left: string,
+  modeLabel: string,
+  rawMultiple: number,
+  singleSlipCost?: number,
+  wechatStyle = false
+): Array<{ key: string; left: string; right: string; partTag: string }> {
+  const totalMult = Math.max(1, Math.round(rawMultiple || 1));
+  const unitSlipCost =
+    typeof singleSlipCost === "number" && singleSlipCost > 0 && totalMult > 0
+      ? Math.max(2, Math.round(singleSlipCost / totalMult))
+      : 2;
+  if (totalMult <= 99) {
+    const cost = singleSlipCost ?? totalMult * unitSlipCost;
+    return [
+      {
+        key: id,
+        left,
+        partTag: "",
+        right: wechatStyle
+          ? `${modeLabel} × ${totalMult}倍 = ¥${cost}`
+          : `${modeLabel} · ${totalMult}倍 (¥${cost})`,
+      },
+    ];
+  }
+  const slips: Array<{
+    key: string;
+    left: string;
+    right: string;
+    partTag: string;
+  }> = [];
+  let rem = totalMult;
+  let idx = 1;
+  const slipCount = Math.ceil(totalMult / 99);
+  while (rem > 0) {
+    const chunk = Math.min(99, rem);
+    const chunkCost = chunk * unitSlipCost;
+    slips.push({
+      key: `${id}-p${idx}`,
+      left: `${left} [第${idx}/${slipCount}张]`,
+      partTag: `[分票${idx}/${slipCount}]`,
+      right: wechatStyle
+        ? `${modeLabel} × ${chunk}倍 = ¥${chunkCost}`
+        : `${modeLabel} · ${chunk}倍 (¥${chunkCost})`,
+    });
+    rem -= chunk;
+    idx += 1;
+  }
+  return slips;
+}
+
 /**
  * 计算中国体彩竞彩足球线下终端每日官方停售红线倒计时（北京时间：工作日 11:00-22:00，周末 11:00-23:00）
  */
 export function computeSportteryCutoffStatus(
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  matches?: MatchItem[]
 ): SportteryCutoffStatus {
+  if (Array.isArray(matches) && matches.length === 0) {
+    return {
+      level: "closed",
+      cutoffLabel: "22:00",
+      remainingMinutes: 0,
+      badgeText: "当前暂无在售竞彩赛事",
+    };
+  }
   const bj = new Date(nowMs + 8 * 3600_000);
   const dow = bj.getUTCDay(); // 0 = Sun, 6 = Sat
   const isWeekend = dow === 0 || dow === 6;
