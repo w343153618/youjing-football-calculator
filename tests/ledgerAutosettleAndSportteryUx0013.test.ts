@@ -1447,39 +1447,41 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
           { authoritativeMatches: [authMatch] }
         )
       );
-      assert.throws(() =>
-        ldg.mutateUserLedger(
-          uid,
-          {
-            action: "add-entry",
-            kind: "paper",
-            title: "未开单关伪造单关票",
-            modeLabel: "单关",
-            betCount: 1,
-            cost: 0,
-            paperRefCost: 2,
-            minPayout: 10,
-            maxPayout: 10,
-            snapshot: {
-              lines: [
-                {
-                  id: "nonsingle_ln",
-                  modeLabel: "单关",
-                  multiple: 1,
-                  legs: [
-                    {
-                      matchId: "auth_closed_had",
-                      poolCode: "HHAD",
-                      optionKey: "h",
-                      odds: 2.1,
-                    },
-                  ],
-                },
-              ],
+      assert.throws(
+        () =>
+          ldg.mutateUserLedger(
+            uid,
+            {
+              action: "add-entry",
+              kind: "paper",
+              title: "未开单关伪造单关票",
+              modeLabel: "单关",
+              betCount: 1,
+              cost: 0,
+              paperRefCost: 2,
+              minPayout: 10,
+              maxPayout: 10,
+              snapshot: {
+                lines: [
+                  {
+                    id: "nonsingle_ln",
+                    modeLabel: "单关",
+                    multiple: 1,
+                    legs: [
+                      {
+                        matchId: "auth_closed_had",
+                        poolCode: "HHAD",
+                        optionKey: closedHadAuthMatch.pools.HHAD.options[0].key,
+                        odds: closedHadAuthMatch.pools.HHAD.options[0].odds,
+                      },
+                    ],
+                  },
+                ],
+              },
             },
-          },
-          { authoritativeMatches: [closedHadAuthMatch] }
-        )
+            { authoritativeMatches: [closedHadAuthMatch] }
+          ),
+        /未开单关/
       );
 
       // 4. 2-click anti-tilt bypass blocked: settle as lost -> reset to pending -> delete STILL locks daily quota!
