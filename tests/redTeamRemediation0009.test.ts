@@ -833,10 +833,13 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
       "utf8"
     );
-    const manualSrc = fs.readFileSync(
-      path.join(repoRoot, "src/manual/UserManualModal.tsx"),
-      "utf8"
-    );
+    const manualSrc = [
+      "src/manual/UserManualModal.tsx",
+      "src/manual/manualCatalog.ts",
+      "src/manual/manualChapters.tsx",
+    ]
+      .map((rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8"))
+      .join("\n");
     const qaSrc = fs.readFileSync(
       path.join(repoRoot, "server/manualQaEngine.mjs"),
       "utf8"

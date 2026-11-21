@@ -97,7 +97,7 @@ describe("Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
 
     // 2. ADR-0015 smooth same-match pool switch + 1-click undo:
     // Clicking HHAD[+1] draw 3.04 on Coritiba atomically replaces the 2 HAD picks and supports 1-click undo!
-    assert.equal(ctrl.isPoolMutexLocked(coritibaMatch, "HHAD"), false);
+    assert.equal("isPoolMutexLocked" in ctrl, false);
     const switchedMix = await ctrl.togglePick(coritibaMatch, "HHAD", "hd");
     assert.equal(switchedMix.ok, true);
     assert.equal(switchedMix.action, "switched-pool");

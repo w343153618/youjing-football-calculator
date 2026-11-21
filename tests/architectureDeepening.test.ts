@@ -351,7 +351,7 @@ describe("Spec 0006 Seam 1: Deep Bet-Slip & Workspace State Module + Shallow Wra
     const addHad = await ctrl.togglePick(m0, "HAD", "h");
     assert.equal(addHad.ok, true);
     assert.equal(addHad.action, "added");
-    assert.equal(ctrl.isPoolMutexLocked(m0, "HHAD"), false);
+    assert.equal("isPoolMutexLocked" in ctrl, false);
 
     const switchedCross = await ctrl.togglePick(m0, "HHAD", "hd");
     assert.equal(switchedCross.ok, true);
