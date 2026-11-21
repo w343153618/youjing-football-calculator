@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -93,6 +94,9 @@ export function SkinPhoneApp({
     });
   }
   const wbCtrl = wbCtrlRef.current;
+  useEffect(() => {
+    return () => wbCtrl.dispose();
+  }, [wbCtrl]);
   const betCtrl = wbCtrl.betSlip;
   const wbSnap = useSyncExternalStore(wbCtrl.subscribe, wbCtrl.getState);
   const {

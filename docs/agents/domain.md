@@ -53,8 +53,12 @@ Use `grep` on these stable symbol anchors instead of scanning line offsets acros
   - `3+1` Pareto solvers (`0-1` knapsack, log-wealth shield, `C(v,k,t)` covering wheel & pure `+EV` alpha): `export function computeSurvivingMissOneFloor`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `function isGenuinePairCoveringDesign`, `export function generateParetoPortfolio`
 - **`server/quant/reportAndSettlement.mjs`**:
   - Truth report, bonus optimization, synthetic single, staggered hedge & snapshot settlement: `export function resolveSyntheticSingleBundle`, `export function computeTruthReport`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `export function applySandboxToPlan`, `export function archetypeToReport`, `export function settleTicketSnapshotOnResultsMap`
+- **`server/quant/sportteryParsers.mjs`**:
+  - Pure zero-I/O Sporttery JSON parsers & calibrated fallback fixture: `export const FALLBACK_MATCHES`, `export function parseSportteryRawJson`, `export function parseSportteryResultsJson`
+- **`server/sportteryFallbackMatches.mjs`**:
+  - Static 8-match Sporttery fallback fixture data: `export function buildPool`, `export const RAW_FALLBACK_MATCHES`
 - **`server/sportteryFeed.mjs`**:
-  - Upstream Sporttery live odds & 90-minute match result feed I/O adapter: `export const FALLBACK_MATCHES`, `export function parseSportteryRawJson`, `export async function fetchOfficialMatchesServer`, `export function parseSportteryResultsJson`, `export async function fetchOfficialMatchResultsServer`
+  - Upstream Sporttery live odds & 90-minute match result feed I/O adapter: `export async function fetchOfficialMatchesServer`, `export async function fetchOfficialMatchResultsServer`
 - **`server/securityShield.mjs`**:
   - Transport ECDH/AES-GCM/HMAC envelope, anti-scraper decoy & 48h `hwFp`/IP fuse: `export function deriveSessionSubkeys`, `export function encryptEnvelope`, `export function decryptEnvelope`, `export function createSecurityShield`
 - **`server/appRoutes.mjs`**:

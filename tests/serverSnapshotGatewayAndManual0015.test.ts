@@ -33,6 +33,7 @@ import {
   deriveSessionSubkeys,
   encryptEnvelope,
 } from "../server/securityShield.mjs";
+import { createBetSlipController } from "../src/workspace/betSlipController.ts";
 import type { MatchItem, SelectedPick } from "../src/prototype/quantTypes.ts";
 
 const REPO_ROOT = path.resolve(
@@ -346,6 +347,228 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
             { authoritativeMatches: FALLBACK_MATCHES }
           ),
         /最高过关上限（6关）/
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Slice 1b: strictly rejects non-checkoutable workspaceParams even with cost/paperRefCost/snapshot, blocks rawSnapshotFallback.matches pick leakage, and keeps buildSealedLedgerDraft lightweight", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-t7-strict-seal-"));
+    try {
+      const ldg = createLedgerManager({
+        ledgerFile: path.join(tmpDir, "ledgers.json"),
+      });
+      const matches = FALLBACK_MATCHES as MatchItem[];
+      const [m0, m1] = matches;
+
+      // 1. Closed pool on authoritativeMatches with cost > 0 & paperRefCost > 0 MUST throw (never persist unsealed summary!)
+      const closedPoolMatches: MatchItem[] = matches.map((m, idx) =>
+        idx === 0
+          ? {
+              ...m,
+              pools: {
+                ...m.pools,
+                HAD: { ...m.pools.HAD, selling: false },
+              },
+            }
+          : m
+      );
+      const closedPoolWsParams = {
+        picks: [makePick(m0, "HAD", "h"), makePick(m1, "HAD", "h")],
+        multiple: 5,
+        passSpec: { mode: "auto" as const },
+      };
+      assert.throws(
+        () =>
+          sealAuthoritativePrintSnapshot({
+            workspaceParams: closedPoolWsParams,
+            authoritativeMatches: closedPoolMatches,
+            cost: 10,
+            paperRefCost: 10,
+          }),
+        /未开售|暂停销售|合法出票/
+      );
+      assert.throws(
+        () =>
+          ldg.mutateUserLedger(
+            "u-strict",
+            {
+              action: "add-entry",
+              kind: "live",
+              cost: 10,
+              workspaceParams: closedPoolWsParams,
+            },
+            { authoritativeMatches: closedPoolMatches }
+          ),
+        /未开售|暂停销售|合法出票/
+      );
+
+      // 2. Total cost > ¥20,000, > 2,048 bets, and unplayable synthetic single MUST all reject even when cost/paperRefCost or fallback snapshot are supplied
+      const over20kWsParams = {
+        picks: matches
+          .slice(0, 4)
+          .flatMap((m) => [makePick(m, "HAD", "h"), makePick(m, "HAD", "d")]),
+        multiple: 800, // 16 bets * 2 * 800 = ¥25,600 > ¥20,000
+        passSpec: { mode: "auto" as const },
+      };
+      assert.throws(
+        () =>
+          ldg.mutateUserLedger(
+            "u-strict",
+            {
+              action: "add-entry",
+              kind: "paper",
+              paperRefCost: 200,
+              workspaceParams: over20kWsParams,
+            },
+            { authoritativeMatches: matches }
+          ),
+        /20,000|2万|上限/
+      );
+
+      const over2048WsParams = {
+        picks: matches
+          .slice(0, 8)
+          .flatMap((m) =>
+            m.pools.TTG.options
+              .slice(0, 3)
+              .map((o) => makePick(m, "TTG", o.key))
+          ),
+        multiple: 1, // 3^6 combinations across 6-leg cap > 2,048 bets
+        passSpec: { mode: "free" as const, passSizes: [6] },
+      };
+      assert.throws(
+        () =>
+          ldg.mutateUserLedger(
+            "u-strict",
+            {
+              action: "add-entry",
+              kind: "live",
+              cost: 20,
+              workspaceParams: over2048WsParams,
+            },
+            { authoritativeMatches: matches }
+          ),
+        /2,048|2048|组合|合法出票/
+      );
+
+      const unplayableSynMatch: MatchItem = {
+        ...m0,
+        pools: {
+          ...m0.pools,
+          HAD: {
+            ...m0.pools.HAD,
+            single: false,
+            options: m0.pools.HAD.options.map((o, idx) =>
+              idx === 0 ? { ...o, odds: 1.05 } : o
+            ),
+          },
+          HAFU: {
+            ...m0.pools.HAFU,
+            single: true,
+            options: m0.pools.HAFU.options.map((o) =>
+              ["hh", "dh", "ah"].includes(o.key) ? { ...o, odds: 2.1 } : o
+            ),
+          },
+        },
+      };
+      const unplayableSynMatches = [unplayableSynMatch, ...matches.slice(1)];
+      assert.throws(
+        () =>
+          ldg.mutateUserLedger(
+            "u-strict",
+            {
+              action: "add-entry",
+              kind: "live",
+              cost: 10,
+              workspaceParams: {
+                picks: [makePick(unplayableSynMatch, "HAD", "h")],
+                multiple: 1,
+                syntheticSingleMode: "full-3way",
+              },
+            },
+            { authoritativeMatches: unplayableSynMatches }
+          ),
+        /合成等效水位|无法盈利|合法出票/
+      );
+      assert.equal(ldg.getUserLedger("u-strict").entries.length, 0);
+
+      // Unsealed summary-only entry remains allowed ONLY when BOTH workspaceParams and snapshot are omitted
+      const summaryOnly = ldg.mutateUserLedger(
+        "u-strict",
+        {
+          action: "add-entry",
+          kind: "paper",
+          title: "纯摘要复盘",
+          modeLabel: "2串1",
+          betCount: 1,
+          cost: 0,
+          paperRefCost: 20,
+          minPayout: 30,
+          maxPayout: 30,
+        },
+        { authoritativeMatches: matches }
+      );
+      assert.equal(summaryOnly.ok, true);
+      assert.equal(summaryOnly.entry.snapshot, undefined);
+
+      // 3. Bug B: When sealing from workspaceParams, ignore rawSnapshotFallback.matches so extra picks cannot leak!
+      const validWsParams = {
+        picks: [makePick(m0, "HAD", "h"), makePick(m1, "HAD", "h")],
+        multiple: 2,
+        passSpec: { mode: "auto" as const },
+      };
+      const leakedCheck = sealAuthoritativePrintSnapshot({
+        workspaceParams: validWsParams,
+        authoritativeMatches: matches,
+        rawSnapshotFallback: {
+          matches: [
+            {
+              matchId: m0.id,
+              picks: [
+                { poolCode: "HAD", optionKey: "h", odds: 2.0 },
+                { poolCode: "HAD", optionKey: "a", odds: 4.5 },
+                { poolCode: "TTG", optionKey: "s7", odds: 25.0 },
+              ],
+            },
+          ],
+          lines: [],
+        },
+      });
+      const sealedM0Picks = leakedCheck.snapshot.matches.find(
+        (x: any) => x.matchId === m0.id
+      ).picks;
+      assert.deepEqual(
+        sealedM0Picks.map((p: any) => `${p.poolCode}:${p.optionKey}`),
+        ["HAD:h"]
+      );
+
+      // 4. Cleanup C: betSlipController.buildSealedLedgerDraft() returns lightweight preview + workspaceParams without client line expansion
+      const ctrl = createBetSlipController({
+        debounceMs: 0,
+        computeWorkspace: (params, ms) => evaluateQuantWorkspace(params, ms),
+      });
+      ctrl.initializeMatches(
+        matches,
+        [],
+        evaluateQuantWorkspace({ picks: [], multiple: 5 }, matches)
+      );
+      ctrl.togglePick(m0, "HAD", "h");
+      ctrl.togglePick(m1, "HAD", "d");
+      await ctrl.flush();
+
+      const draft = ctrl.buildSealedLedgerDraft();
+      assert.ok(draft);
+      assert.equal(draft.passLabel, "2串1");
+      assert.equal(draft.modeLabel, "2串1");
+      assert.equal(draft.betCount, 1);
+      assert.equal(draft.cost, 10);
+      assert.ok(draft.workspaceParams);
+      assert.equal(
+        draft.snapshot,
+        undefined,
+        "Client buildSealedLedgerDraft must stay lightweight and delegate line expansion to server sealAuthoritativePrintSnapshot"
       );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -746,24 +969,30 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
         "Session aiAlerts must reconcile reversed matchTitle item onto canonical m1.id"
       );
 
-      // Direct mapper check on custom matchNumStr / matchTitle report
-      const customMap = reconcileComboAlertsToMatchMap(
-        {
-          level: "medium",
-          source: "扫地僧小高",
-          perMatch: [
-            {
-              matchId: "custom-unknown",
-              matchTitle: `焦点战 ${m1.matchNumStr}`,
-              tag: "标题编号命中",
-              note: "通过赛事编号对齐成功",
-              priceInStatus: "尚未消化",
-            },
-          ],
-        },
-        [m0, m1]
-      );
+      // Direct mapper check on custom matchNumStr / matchTitle report: stamps canonical matchId onto perMatch!
+      const rawCustomReport = {
+        level: "medium" as const,
+        source: "扫地僧小高 2场协同会诊 · 21:30",
+        perMatch: [
+          {
+            matchId: "custom-unknown",
+            matchTitle: `焦点战 ${m1.matchNumStr}`,
+            tag: "标题编号命中",
+            note: "通过赛事编号对齐成功",
+            priceInStatus: "尚未消化",
+          },
+        ],
+      };
+      const customMap = reconcileComboAlertsToMatchMap(rawCustomReport, [
+        m0,
+        m1,
+      ]);
       assert.equal(customMap.get(m1.id)?.tag, "标题编号命中");
+      assert.equal(
+        rawCustomReport.perMatch[0].matchId,
+        m1.id,
+        "reconcileComboAlertsToMatchMap must stamp canonical matchId onto perMatch items"
+      );
     } finally {
       runtime.dispose();
       fs.rmSync(tmpDir, { recursive: true, force: true });

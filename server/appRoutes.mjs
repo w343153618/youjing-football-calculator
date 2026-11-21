@@ -50,6 +50,9 @@ export function reconcileComboAlertsToMatchMap(
       pm,
       canonicalMatches
     );
+    if (matchedCanonical?.id) {
+      pm.matchId = String(matchedCanonical.id);
+    }
     const canonicalId =
       matchedCanonical?.id || (pm.matchId ? String(pm.matchId) : "");
     if (!canonicalId) continue;

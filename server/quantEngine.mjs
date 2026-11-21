@@ -36,11 +36,9 @@ import {
 } from "./quant/reportAndSettlement.mjs";
 import {
   FALLBACK_MATCHES,
-  fetchOfficialMatchResultsServer,
-  fetchOfficialMatchesServer,
   parseSportteryRawJson,
   parseSportteryResultsJson,
-} from "./sportteryFeed.mjs";
+} from "./quant/sportteryParsers.mjs";
 
 export {
   FALLBACK_MATCHES,
@@ -55,8 +53,6 @@ export {
   computeProOrderInsights,
   computeTruthReport,
   devigPoolProbabilities,
-  fetchOfficialMatchResultsServer,
-  fetchOfficialMatchesServer,
   generateFiveArchetypes,
   generateParetoPortfolio,
   optimizeBonusPlan,

@@ -161,11 +161,7 @@ declare module "../server/quantEngine.mjs" {
   export const calibrateMatchCoherentModel: (...args: any[]) => any;
   export const analyzeMatchMicroQuant: (...args: any[]) => any;
   export const parseSportteryRawJson: (...args: any[]) => any[];
-  export const fetchOfficialMatchesServer: (...args: any[]) => Promise<any>;
   export const parseSportteryResultsJson: (...args: any[]) => Map<string, any>;
-  export const fetchOfficialMatchResultsServer: (
-    ...args: any[]
-  ) => Promise<Map<string, any>>;
   export const computeTruthReport: (...args: any[]) => any;
   export const generateParetoPortfolio: (...args: any[]) => any[];
   export const generateFiveArchetypes: (...args: any[]) => any[];

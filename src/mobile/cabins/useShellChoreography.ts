@@ -14,11 +14,7 @@ import type {
   SyntheticSingleMode,
 } from "../../prototype/quantTypes.ts";
 import { initHighPressureAntiReverseShield } from "../../security/antiReverseShield.ts";
-import {
-  readPersistedWechatAuth,
-  registerAuthRevokedHandler,
-  type AuthenticatedWorkspaceBundle,
-} from "../../security/secureClient.ts";
+import type { AuthenticatedWorkspaceBundle } from "../../security/secureClient.ts";
 import {
   Spring,
   animateNumber,
@@ -227,9 +223,6 @@ export function useShellChoreography({
 
   useEffect(() => {
     let alive = true;
-    registerAuthRevokedHandler((reason) => {
-      if (alive) wbCtrl.handleAuthRevoked(reason);
-    });
     const runHandshake = async (isReconnect = false) => {
       const res = await wbCtrl.bootstrapHandshake({
         isReconnect,
@@ -246,10 +239,7 @@ export function useShellChoreography({
       }
     };
     void runHandshake(false);
-    const hasSession = () =>
-      Boolean(
-        wbCtrl.getState().authUser || readPersistedWechatAuth()?.authToken
-      );
+    const hasSession = () => wbCtrl.hasPersistedSession();
     const onOnline = () => {
       if (hasSession()) void runHandshake(true);
     };
@@ -262,7 +252,6 @@ export function useShellChoreography({
     document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
-      registerAuthRevokedHandler(null);
       window.removeEventListener("online", onOnline);
       document.removeEventListener("visibilitychange", onVis);
     };

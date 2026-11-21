@@ -502,46 +502,81 @@ describe("Spec #5 · Ticket #6: Pure Quant Seams, Unified Two-Stage Dutching & 1
       `Expected server/quantEngine.mjs < 600 lines, got ${facadeLines}`
     );
 
-    const quantSubModules = [
-      "server/quant/statutoryRules.mjs",
-      "server/quant/coherentCalibration.mjs",
-      "server/quant/quotientStateSpace.mjs",
-      "server/quant/paretoPortfolio.mjs",
-      "server/quant/reportAndSettlement.mjs",
-    ];
-    for (const rel of quantSubModules) {
+    // Recursively walk EVERY static & dynamic import reachable from server/quantEngine.mjs
+    // (plus all files inside server/quant/) to guarantee true 100% zero transitive I/O!
+    const forbiddenSpecifierRe =
+      /^(?:node:)?(?:fs|fs\/promises|http|https|net|tls|dgram|child_process)$/;
+    const forbiddenSourceIoRe =
+      /\bnode:(?:fs|fs\/promises|http|https)\b|\bfs\/promises\b|\bfetch\s*\(|\bglobalThis\.fetch\b/;
+    const importSpecRe =
+      /(?:from\s+["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\))/g;
+
+    const visitedFiles = new Set<string>();
+    const walkPureQuantGraph = (absFile: string) => {
+      const normalized = path.resolve(absFile);
+      if (visitedFiles.has(normalized)) return;
+      visitedFiles.add(normalized);
       assert.equal(
-        fs.existsSync(path.join(repoRoot, rel)),
+        fs.existsSync(normalized),
         true,
-        `Expected cohesive domain module ${rel} to exist`
+        `Reachable module must exist on disk: ${normalized}`
       );
-    }
-
-    const forbiddenIoRe =
-      /\bnode:(?:fs|http|https)\b|\bfs\/promises\b|\bfetch\s*\(/;
-    for (const rel of ["server/quantEngine.mjs", ...quantSubModules]) {
-      const src = fs.readFileSync(path.join(repoRoot, rel), "utf8");
+      const src = fs.readFileSync(normalized, "utf8");
+      const rel = path.relative(repoRoot, normalized);
       assert.equal(
-        forbiddenIoRe.test(src),
+        forbiddenSourceIoRe.test(src),
         false,
-        `Pure quant module ${rel} must contain ZERO filesystem or network I/O`
+        `Transitively reachable module ${rel} from server/quantEngine.mjs must contain ZERO node:fs, node:fs/promises, node:http, node:https, or fetch`
       );
-    }
+      let m: RegExpExecArray | null;
+      importSpecRe.lastIndex = 0;
+      while ((m = importSpecRe.exec(src)) !== null) {
+        const spec = m[1] || m[2];
+        if (!spec) continue;
+        assert.equal(
+          forbiddenSpecifierRe.test(spec),
+          false,
+          `Module ${rel} must NOT import I/O specifier "${spec}"`
+        );
+        if (spec.startsWith(".")) {
+          walkPureQuantGraph(path.resolve(path.dirname(normalized), spec));
+        }
+      }
+    };
 
-    // Dead symbols removed from external surface while all 22 required exports remain intact
-    for (const deadSym of [
+    walkPureQuantGraph(quantFacadePath);
+    const quantDirEntries = fs
+      .readdirSync(path.join(repoRoot, "server/quant"))
+      .filter((f) => f.endsWith(".mjs"));
+    assert.ok(
+      quantDirEntries.length >= 5,
+      `Expected cohesive server/quant/*.mjs modules, found ${quantDirEntries.length}`
+    );
+    for (const fname of quantDirEntries) {
+      walkPureQuantGraph(path.join(repoRoot, "server/quant", fname));
+    }
+    assert.equal(
+      visitedFiles.has(sportteryFeedPath),
+      false,
+      "server/quantEngine.mjs must NOT transitively import server/sportteryFeed.mjs"
+    );
+
+    // Dead & I/O symbols removed from external surface while all 20 pure exports remain intact
+    for (const deadOrIoSym of [
       "OFFICIAL_COMBO_PASS_TABLE",
       "attachMicroQuant",
       "repairUnderwaterMultiples",
       "buildSandboxAdjustedPicks",
+      "fetchOfficialMatchesServer",
+      "fetchOfficialMatchResultsServer",
     ]) {
       assert.equal(
-        deadSym in quantModule,
+        deadOrIoSym in quantModule,
         false,
-        `Dead symbol ${deadSym} must not be exported on server/quantEngine.mjs`
+        `Symbol ${deadOrIoSym} must not be exported on pure server/quantEngine.mjs`
       );
     }
-    const required22 = [
+    const requiredPureExports = [
       "FALLBACK_MATCHES",
       "OFFICIAL_CRS_PAIRS",
       "POOL_MAX_PASS",
@@ -555,8 +590,6 @@ describe("Spec #5 · Ticket #6: Pure Quant Seams, Unified Two-Stage Dutching & 1
       "computeTruthReport",
       "devigPoolProbabilities",
       "evaluateQuantWorkspace",
-      "fetchOfficialMatchResultsServer",
-      "fetchOfficialMatchesServer",
       "generateFiveArchetypes",
       "generateParetoPortfolio",
       "optimizeBonusPlan",
@@ -565,7 +598,7 @@ describe("Spec #5 · Ticket #6: Pure Quant Seams, Unified Two-Stage Dutching & 1
       "settleTicketSnapshotWithOfficialResults",
       "statutorySingleBetCap",
     ];
-    for (const sym of required22) {
+    for (const sym of requiredPureExports) {
       assert.equal(
         sym in quantModule,
         true,
@@ -648,5 +681,123 @@ describe("Spec #5 · Ticket #6: Pure Quant Seams, Unified Two-Stage Dutching & 1
     } finally {
       globalThis.fetch = origFetch;
     }
+  });
+
+  it("Slice 6 (Post-Review Hard #2): clamps non-authoritative sandbox custom odds strictly to [1.01, 1000] across workspace picks and snapshotPlan legs (0, -5, 1e308, NaN) without coercing to 1.0 or throwing BigInt RangeError", () => {
+    const authMatches = FALLBACK_MATCHES.slice(0, 2) as MatchItem[];
+    const extremeInputs = [
+      { id: "sbx-zero", rawOdds: 0, expectedOdds: 1.01 },
+      { id: "sbx-neg", rawOdds: -5, expectedOdds: 1.01 },
+      { id: "sbx-nan", rawOdds: Number.NaN, expectedOdds: 1.01 },
+      { id: "sbx-huge", rawOdds: 1e308, expectedOdds: 1000 },
+    ];
+
+    const sandboxPicks: SelectedPick[] = extremeInputs.map((item, idx) => ({
+      matchId: item.id,
+      matchNumStr: `沙盒00${idx + 1}`,
+      home: `主队${idx + 1}`,
+      away: `客队${idx + 1}`,
+      poolCode: "HAD",
+      poolName: "胜平负",
+      singleAllowed: true,
+      optionKey: "h",
+      optionLabel: "主胜",
+      odds: item.rawOdds,
+      fairProb: 0.45,
+    }));
+
+    // 1. Manual workspace picks on 4 non-authoritative sandbox matches (4串1 -> hits BigInt path in statutoryRules.mjs)
+    const wsManual = evaluateQuantWorkspace(
+      {
+        picks: sandboxPicks,
+        multiple: 1,
+        passSpec: { mode: "auto" },
+      },
+      authMatches
+    );
+    assert.equal(wsManual.manualReport.canCheckout, true);
+    assert.equal(wsManual.manualReport.tickets.length, 1);
+    const manualLegOdds = wsManual.manualReport.tickets[0].legs!.map(
+      (lg) => lg.odds
+    );
+    assert.deepEqual(
+      manualLegOdds,
+      extremeInputs.map((x) => x.expectedOdds)
+    );
+    assert.ok(
+      manualLegOdds.every((o) => o >= 1.01 && o <= 1000),
+      `Every non-authoritative sandbox leg must lie strictly in [1.01, 1000], got ${JSON.stringify(manualLegOdds)}`
+    );
+
+    // 2. snapshotPlan (applySandboxToPlan + scaleArchetypePlan) with 0, -5, NaN, 1e308 on non-authoritative matches
+    const wsPlan = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 1,
+        planSpec: {
+          kind: "archetype",
+          key: "max-profit-prob",
+          scaleMultiple: 2,
+          snapshotPlan: {
+            key: "max-profit-prob",
+            available: true,
+            shortTab: "沙盒验证",
+            badge: "沙盒",
+            title: "沙盒极限赔率校验",
+            tagline: "校验",
+            totalCost: 2,
+            savedCash: 0,
+            minReturn: 4,
+            maxReturn: 4,
+            winProb: 0.2,
+            profitProb: 0.2,
+            strictNetGainProb: 0.2,
+            breakEvenProb: 0,
+            expectedValueRate: 0,
+            underwaterCount: 0,
+            breakevenUpgradeCost: null,
+            consolidateTickets: false,
+            missOneReturn: null,
+            vigPct: 12,
+            reasons: [],
+            lines: [
+              {
+                id: "sbx-line-1",
+                roleLabel: "沙盒实票#1",
+                modeLabel: "4串1",
+                multiple: 1,
+                cost: 2,
+                unitPayout: 4,
+                cappedClipped: 0,
+                returnPayout: 4,
+                netProfit: 2,
+                prob: 0.04,
+                legs: extremeInputs.map((item, idx) => ({
+                  matchId: item.id,
+                  matchNumStr: `沙盒00${idx + 1}`,
+                  home: `主队${idx + 1}`,
+                  away: `客队${idx + 1}`,
+                  kickoff: "21:00",
+                  poolCode: "HAD" as const,
+                  poolName: "胜平负",
+                  optionKey: "h",
+                  optionLabel: "主胜",
+                  odds: item.rawOdds,
+                  fairProb: 0.45,
+                })),
+              },
+            ],
+          },
+        },
+      },
+      authMatches
+    );
+    assert.ok(wsPlan.appliedPlan);
+    const planLegOdds = wsPlan.appliedPlan!.lines[0].legs.map((lg) => lg.odds);
+    assert.deepEqual(
+      planLegOdds,
+      extremeInputs.map((x) => x.expectedOdds)
+    );
+    assert.equal(wsPlan.effectiveReport.canCheckout, true);
   });
 });

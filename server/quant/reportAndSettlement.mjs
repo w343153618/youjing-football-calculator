@@ -3062,8 +3062,16 @@ export function isValidPlanObject(plan) {
   );
 }
 
+export function clampSandboxCustomOdds(rawOdds) {
+  const n = Number(rawOdds);
+  if (n === Number.POSITIVE_INFINITY) return 1000;
+  if (!Number.isFinite(n) || n < 1.01) return 1.01;
+  return Math.min(1000, n);
+}
+
 export function scaleArchetypePlan(plan, rawScale) {
   if (!isValidPlanObject(plan)) return null;
+  const isTrusted = TRUSTED_SERVER_BONUS_PLANS.has(plan);
   const requestedScale = Math.max(
     1,
     Math.min(50, Math.round(Number(rawScale) || 1))
@@ -3084,7 +3092,9 @@ export function scaleArchetypePlan(plan, rawScale) {
       Math.min(999, Math.round((Number(l.multiple) || 1) * scale))
     );
     const cost = mult * 2;
-    const legOdds = l.legs.map((g) => Number(g.odds));
+    const legOdds = l.legs.map((g) =>
+      isTrusted ? Number(g.odds) : clampSandboxCustomOdds(g.odds)
+    );
     const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
     const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
     const effectiveUnit = Math.min(cap, Number(l.unitPayout));
@@ -3434,7 +3444,7 @@ export function buildSandboxAdjustedBundle(
           ? authOpt.odds
           : fm
             ? 0
-            : Number(pk.odds) || 1.0;
+            : clampSandboxCustomOdds(pk.odds);
     const odds =
       simVoidFirstMatch && pk.matchId === firstMid && baseOdds > 0
         ? 1.0
@@ -3526,7 +3536,7 @@ export function applySandboxToPlan(
               ? authOpt.odds
               : fm
                 ? 0
-                : Number(lg.odds) || 1.0;
+                : clampSandboxCustomOdds(lg.odds);
         const odds =
           simVoidFirstMatch && lg.matchId === firstMid && baseOdds > 0
             ? 1.0

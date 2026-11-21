@@ -602,17 +602,19 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       path.join(repoRoot, "src/workspace/workbenchController.ts"),
       "utf8"
     );
-    const stageSrc = fs.readFileSync(
-      path.join(repoRoot, "src/studio/ComparisonStage.tsx"),
-      "utf8"
-    );
     const { createWorkbenchController } =
       await import("../src/workspace/workbenchController.ts");
     const {
       DESKTOP_WORKBENCH_COLUMNS,
+      STUDIO_SKIN_OPTIONS,
+      STUDIO_STAGE_ACTIONS,
       buildPortfolioSlotOptions,
       formatPaceCorrelationTileLabel,
     } = await import("../src/mobile/cabins/cabinViewModels.ts");
+    const stageSerialized = JSON.stringify({
+      STUDIO_SKIN_OPTIONS,
+      STUDIO_STAGE_ACTIONS,
+    });
     const {
       MANUAL_CHAPTER_SPECS,
       MANUAL_TOPICS,
@@ -644,7 +646,7 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
     for (const [name, src] of [
       ["betSlipController.ts", ctrlSrc],
       ["workbenchController.ts", wbSrc],
-      ["ComparisonStage.tsx", stageSrc],
+      ["ComparisonStage.tsx", stageSerialized],
       ["manualCatalog.ts", manualCatalogText],
     ] as const) {
       assert.equal(
@@ -720,11 +722,19 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
     );
     wb.dispose();
 
-    assert.ok(
-      /label:\s*['"]精算配单['"]/.test(stageSrc),
-      "ComparisonStage.tsx action pill must be updated to 精算配单"
+    assert.equal(STUDIO_SKIN_OPTIONS.length, 8);
+    assert.deepEqual(
+      STUDIO_SKIN_OPTIONS.map((sk: { id: string }) => sk.id),
+      ["air", "swiss", "studio", "dot", "sumi", "glass", "dial", "pitch"]
     );
-    assert.equal(stageSrc.includes("五流派"), false);
+    assert.ok(
+      STUDIO_STAGE_ACTIONS.some(
+        (act: { id: string; label: string }) =>
+          act.id === "archetypes" && act.label === "精算配单"
+      ),
+      "ComparisonStage STUDIO_STAGE_ACTIONS must expose 精算配单"
+    );
+    assert.equal(stageSerialized.includes("五流派"), false);
 
     // 4. Structured manual catalog contracts + every QUICK_QA_PILLS item hits local-kb in 0ms
     assert.ok(

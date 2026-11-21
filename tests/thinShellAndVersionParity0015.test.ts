@@ -428,6 +428,48 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
       shellSrc.includes("playabilityGates"),
       "SkinPhoneApp.tsx must consume unified playabilityGates from workbench snapshot"
     );
+    assert.ok(
+      shellSrc.includes("wbCtrl.dispose()"),
+      "SkinPhoneApp.tsx must dispose wbCtrl in a useEffect cleanup on unmount"
+    );
+
+    const choreoSrc = fs.readFileSync(
+      path.join(repoRoot, "src/mobile/cabins/useShellChoreography.ts"),
+      "utf8"
+    );
+    assert.equal(
+      choreoSrc.includes("registerAuthRevokedHandler"),
+      false,
+      "useShellChoreography.ts must NOT call registerAuthRevokedHandler directly (prevents clobbering wbCtrl's authPort handler)"
+    );
+    assert.equal(
+      choreoSrc.includes("readPersistedWechatAuth"),
+      false,
+      "useShellChoreography.ts must route session token checks strictly through wbCtrl instead of calling readPersistedWechatAuth directly"
+    );
+
+    const wbCtrlSrc = fs.readFileSync(
+      path.join(repoRoot, "src/workspace/workbenchController.ts"),
+      "utf8"
+    );
+    assert.equal(
+      wbCtrlSrc.includes("const WECHAT_AUTH_STORAGE_KEY") ||
+        wbCtrlSrc.includes("const LEDGER_CACHE_PREFIX"),
+      false,
+      "workbenchController.ts must reuse secureClient.ts storage helpers instead of duplicating storage keys & JSON parsing"
+    );
+    for (const sharedStorageFn of [
+      "readPersistedWechatAuth",
+      "persistWechatAuth",
+      "clearPersistedWechatAuth",
+      "readCachedLedgerSnapshot",
+      "persistCachedLedgerSnapshot",
+    ]) {
+      assert.ok(
+        wbCtrlSrc.includes(sharedStorageFn),
+        `workbenchController.ts must delegate to shared secureClient storage helper "${sharedStorageFn}"`
+      );
+    }
     for (const retiredInlineState of [
       "setLedger(",
       "setStopLossPrompt(",
@@ -497,6 +539,7 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
 
     const skinAppSourceReaders: string[] = [];
     const manualModalSourceReaders: string[] = [];
+    const comparisonStageSourceReaders: string[] = [];
 
     for (const file of testFiles) {
       if (file === "thinShellAndVersionParity0015.test.ts") continue;
@@ -510,6 +553,21 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
       ) {
         manualModalSourceReaders.push(file);
       }
+      if (
+        /readFileSync\s*\([^)]*ComparisonStage\.tsx|["'`][^"'`]*src\/studio\/ComparisonStage\.tsx["'`]/.test(
+          src
+        ) &&
+        src.includes("readFileSync")
+      ) {
+        // Only flag if ComparisonStage.tsx is read as raw file text rather than imported
+        if (
+          /readFileSync[\s\S]{0,120}ComparisonStage\.tsx|ComparisonStage\.tsx[\s\S]{0,40}utf-?8/.test(
+            src
+          )
+        ) {
+          comparisonStageSourceReaders.push(file);
+        }
+      }
     }
 
     assert.deepEqual(
@@ -521,6 +579,11 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
       manualModalSourceReaders,
       [],
       `Expected 0 functional feature tests reading UserManualModal.tsx / manualChapters.tsx as raw strings, found: ${manualModalSourceReaders.join(", ")}`
+    );
+    assert.deepEqual(
+      comparisonStageSourceReaders,
+      [],
+      `Expected 0 functional feature tests reading ComparisonStage.tsx as raw strings, found: ${comparisonStageSourceReaders.join(", ")}`
     );
   });
 
@@ -590,13 +653,34 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
     );
     const navSection = domainDoc.slice(navSectionIdx);
 
+    // Discover every pure quant module via recursive import walk from server/quantEngine.mjs + directory walk
+    const discoveredQuantModules = new Set<string>();
+    const importRe =
+      /(?:from\s+["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\))/g;
+    const walkQuantImports = (absFile: string) => {
+      const norm = path.resolve(absFile);
+      const rel = path.relative(repoRoot, norm).replace(/\\/g, "/");
+      if (discoveredQuantModules.has(rel) || !fs.existsSync(norm)) return;
+      discoveredQuantModules.add(rel);
+      const src = fs.readFileSync(norm, "utf8");
+      let m: RegExpExecArray | null;
+      importRe.lastIndex = 0;
+      while ((m = importRe.exec(src)) !== null) {
+        const spec = m[1] || m[2];
+        if (spec && spec.startsWith(".")) {
+          walkQuantImports(path.resolve(path.dirname(norm), spec));
+        }
+      }
+    };
+    walkQuantImports(path.join(repoRoot, "server/quantEngine.mjs"));
+    for (const f of fs
+      .readdirSync(path.join(repoRoot, "server/quant"))
+      .filter((n) => n.endsWith(".mjs"))) {
+      discoveredQuantModules.add(`server/quant/${f}`);
+    }
+
     for (const requiredModulePath of [
-      "server/quantEngine.mjs",
-      "server/quant/statutoryRules.mjs",
-      "server/quant/coherentCalibration.mjs",
-      "server/quant/quotientStateSpace.mjs",
-      "server/quant/paretoPortfolio.mjs",
-      "server/quant/reportAndSettlement.mjs",
+      ...discoveredQuantModules,
       "server/sportteryFeed.mjs",
       "server/securityShield.mjs",
       "server/appRoutes.mjs",

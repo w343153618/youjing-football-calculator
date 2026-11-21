@@ -1963,16 +1963,11 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     );
     assert.equal(slipText.includes("胜平负"), false);
 
-    // 4. Sealed Ledger Snapshot passes authoritative server ledgerManager single-eligibility check AND settles comeback 0:1 -> 2:1 ("ah") as WON!
+    // 4. Lightweight Ledger Draft + authoritative server ledgerManager single-eligibility check AND comeback 0:1 -> 2:1 ("ah") WON settlement!
     const draft = ctrl.buildSealedLedgerDraft();
-    assert.ok(draft && draft.snapshot);
+    assert.ok(draft && draft.workspaceParams);
+    assert.equal(draft.snapshot, undefined);
     assert.equal(draft.cost, ws.effectiveReport.totalCost);
-    assert.equal(draft.snapshot.lines.length, 3);
-    assert.ok(
-      draft.snapshot.lines.every(
-        (ln) => ln.legs.length === 1 && ln.legs[0].poolCode === "HAFU"
-      )
-    );
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-syn-ledger-"));
     try {
@@ -1992,6 +1987,11 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       assert.equal(addRes.ok, true);
       const savedEntry = addRes.ledger.entries[0];
       assert.equal(savedEntry.snapshot.lines.length, 3);
+      assert.ok(
+        savedEntry.snapshot.lines.every(
+          (ln: any) => ln.legs.length === 1 && ln.legs[0].poolCode === "HAFU"
+        )
+      );
 
       // Settle against a halftime-trailing comeback HT 0:1 -> FT 2:1 ("ah" = 负胜)!
       const comebackResults = parseSportteryResultsJson({

@@ -400,8 +400,17 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     maxPayout,
   } = opts;
 
-  if (workspaceParams || workspaceRes) {
-    const cleanWsParams = workspaceParams
+  const hasWorkspaceParams =
+    workspaceParams !== null && workspaceParams !== undefined;
+  if (
+    hasWorkspaceParams &&
+    (typeof workspaceParams !== "object" || Array.isArray(workspaceParams))
+  ) {
+    throw new Error("选单工作区参数格式无效");
+  }
+
+  if (hasWorkspaceParams || workspaceRes) {
+    const cleanWsParams = hasWorkspaceParams
       ? {
           ...workspaceParams,
           simVoidFirstMatch: false,
@@ -422,129 +431,127 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
         : evaluateQuantWorkspace(cleanWsParams || {}, authList);
     const effRep = ws?.effectiveReport;
 
-    if (effRep?.canCheckout && effRep.totalCost > 0) {
-      const appPlan =
-        cleanWsParams?.planSpec || effRep.syntheticAutoMounted
-          ? ws.appliedPlan
-          : null;
-      const bankerSet = new Set(
-        (
-          effRep.bankerMatchIds ??
-          ws.manualReport?.bankerMatchIds ??
-          cleanWsParams?.passSpec?.bankerMatchIds ??
-          []
-        ).map((id) => String(id))
-      );
-      const authMap = toAuthoritativeMap(authoritativeMatches);
-      const mapSealedLeg = (lg) => {
-        const m = authMap?.get(String(lg.matchId));
-        const opt = m?.pools?.[lg.poolCode]?.options?.find(
-          (o) => String(o.key) === String(lg.optionKey)
-        );
-        return {
-          matchId: lg.matchId,
-          matchNumStr: m?.matchNumStr || lg.matchNumStr,
-          home: m?.home || lg.home,
-          away: m?.away || lg.away,
-          kickoff: m?.kickoff || lg.kickoff,
-          poolCode: lg.poolCode,
-          optionKey: lg.optionKey,
-          optionLabel: opt?.label || lg.optionLabel,
-          odds: opt?.odds ?? lg.odds,
-          goalLine: m?.pools?.HHAD?.goalLine ?? lg.goalLine ?? "-1",
-        };
-      };
-
-      const builtLines =
-        effRep.betCount <= MAX_TRUSTED_SNAPSHOT_LINES
-          ? appPlan
-            ? appPlan.lines.map((ln, idx) => ({
-                id: ln.id || `ap_${idx + 1}`,
-                modeLabel: ln.modeLabel,
-                multiple: Math.max(1, Math.round(ln.multiple || 1)),
-                legs: (ln.legs || []).map(mapSealedLeg),
-              }))
-            : (effRep.tickets || []).map((tk, idx) => {
-                const legs = tk.legs || [];
-                const passTxt =
-                  legs.length === 1
-                    ? "单关"
-                    : `${legs.length}串1${
-                        bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
-                      }`;
-                return {
-                  id: tk.id || `tk_${idx + 1}`,
-                  modeLabel: passTxt,
-                  multiple: Math.max(
-                    1,
-                    Math.round(
-                      Number(tk.multiple ?? cleanWsParams?.multiple) || 1
-                    )
-                  ),
-                  legs: legs.map(mapSealedLeg),
-                };
-              })
-          : [];
-
-      const snapshot =
-        builtLines.length > 0 && builtLines.length <= MAX_TRUSTED_SNAPSHOT_LINES
-          ? sanitizeTicketSnapshot(
-              {
-                matches: Array.isArray(rawSnapshotFallback?.matches)
-                  ? rawSnapshotFallback.matches
-                  : [],
-                lines: builtLines,
-              },
-              {
-                strictValidate: true,
-                trustedServerSnapshot: true,
-                authoritativeMatches,
-                bankerMatchIds: bankerSet,
-              }
-            )
-          : undefined;
-
-      const resolvedBetCount = Math.max(1, effRep.betCount);
-      const resolvedModeLabel =
-        String(modeLabel || effRep.modeLabel || "方案")
-          .trim()
-          .slice(0, 40) || "方案";
-      const defaultTitle = appPlan
-        ? `${effRep.modeLabel} · ${appPlan.shortTab}(${appPlan.lines.length}张)`
-        : `${effRep.modeLabel} · ${resolvedBetCount}注方案`;
-      const resolvedTitle =
-        String(title || defaultTitle)
-          .trim()
-          .slice(0, 120) || defaultTitle;
-
-      return {
-        sealedFromWorkspace: true,
-        snapshot,
-        betCount: resolvedBetCount,
-        totalCost: effRep.totalCost,
-        minPayout: effRep.minPayout,
-        maxPayout: effRep.maxPayout,
-        modeLabel: resolvedModeLabel,
-        title: resolvedTitle,
-        bankerMatchIds: Array.from(bankerSet),
-      };
-    }
-
-    if (
-      !rawSnapshotFallback &&
-      !(Number(cost) > 0 || Number(paperRefCost) > 0)
-    ) {
+    if (!effRep?.canCheckout || !(effRep.totalCost > 0)) {
       throw new Error(
         effRep?.ruleBlockReason || "当前选单尚未满足中国体彩合法出票条件"
       );
     }
+
+    const appPlan =
+      cleanWsParams?.planSpec || effRep.syntheticAutoMounted
+        ? ws.appliedPlan
+        : null;
+    const bankerSet = new Set(
+      (
+        effRep.bankerMatchIds ??
+        ws.manualReport?.bankerMatchIds ??
+        cleanWsParams?.passSpec?.bankerMatchIds ??
+        []
+      ).map((id) => String(id))
+    );
+    const authMap = toAuthoritativeMap(authoritativeMatches);
+    const mapSealedLeg = (lg) => {
+      const m = authMap?.get(String(lg.matchId));
+      const opt = m?.pools?.[lg.poolCode]?.options?.find(
+        (o) => String(o.key) === String(lg.optionKey)
+      );
+      return {
+        matchId: lg.matchId,
+        matchNumStr: m?.matchNumStr || lg.matchNumStr,
+        home: m?.home || lg.home,
+        away: m?.away || lg.away,
+        kickoff: m?.kickoff || lg.kickoff,
+        poolCode: lg.poolCode,
+        optionKey: lg.optionKey,
+        optionLabel: opt?.label || lg.optionLabel,
+        odds: opt?.odds ?? lg.odds,
+        goalLine: m?.pools?.HHAD?.goalLine ?? lg.goalLine ?? "-1",
+      };
+    };
+
+    const builtLines =
+      effRep.betCount <= MAX_TRUSTED_SNAPSHOT_LINES
+        ? appPlan
+          ? appPlan.lines.map((ln, idx) => ({
+              id: ln.id || `ap_${idx + 1}`,
+              modeLabel: ln.modeLabel,
+              multiple: Math.max(1, Math.round(ln.multiple || 1)),
+              legs: (ln.legs || []).map(mapSealedLeg),
+            }))
+          : (effRep.tickets || []).map((tk, idx) => {
+              const legs = tk.legs || [];
+              const passTxt =
+                legs.length === 1
+                  ? "单关"
+                  : `${legs.length}串1${
+                      bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
+                    }`;
+              return {
+                id: tk.id || `tk_${idx + 1}`,
+                modeLabel: passTxt,
+                multiple: Math.max(
+                  1,
+                  Math.round(
+                    Number(tk.multiple ?? cleanWsParams?.multiple) || 1
+                  )
+                ),
+                legs: legs.map(mapSealedLeg),
+              };
+            })
+        : [];
+
+    const snapshot =
+      builtLines.length > 0 && builtLines.length <= MAX_TRUSTED_SNAPSHOT_LINES
+        ? sanitizeTicketSnapshot(
+            {
+              matches: [],
+              lines: builtLines,
+            },
+            {
+              strictValidate: true,
+              trustedServerSnapshot: true,
+              authoritativeMatches,
+              bankerMatchIds: bankerSet,
+            }
+          )
+        : undefined;
+
+    const resolvedBetCount = Math.max(1, effRep.betCount);
+    const resolvedModeLabel =
+      String(modeLabel || effRep.modeLabel || "方案")
+        .trim()
+        .slice(0, 40) || "方案";
+    const defaultTitle = appPlan
+      ? `${effRep.modeLabel} · ${appPlan.shortTab}(${appPlan.lines.length}张)`
+      : `${effRep.modeLabel} · ${resolvedBetCount}注方案`;
+    const resolvedTitle =
+      String(title || defaultTitle)
+        .trim()
+        .slice(0, 120) || defaultTitle;
+
+    return {
+      sealedFromWorkspace: true,
+      snapshot,
+      betCount: resolvedBetCount,
+      totalCost: effRep.totalCost,
+      minPayout: effRep.minPayout,
+      maxPayout: effRep.maxPayout,
+      modeLabel: resolvedModeLabel,
+      title: resolvedTitle,
+      bankerMatchIds: Array.from(bankerSet),
+    };
   }
 
+  const hasRawSnapshotInput =
+    rawSnapshotFallback !== undefined && rawSnapshotFallback !== null;
   const snapshot = sanitizeTicketSnapshot(rawSnapshotFallback, {
     strictValidate: true,
     trustedServerSnapshot: Boolean(trustedServerSnapshot),
     authoritativeMatches,
   });
+  if (hasRawSnapshotInput && !snapshot) {
+    throw new Error("出票快照参数无效或实票列表为空");
+  }
   const snapshotCost = snapshot
     ? snapshot.lines.reduce((s, l) => s + l.multiple * 2, 0)
     : null;

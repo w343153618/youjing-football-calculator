@@ -8,10 +8,15 @@ import type {
 } from "../prototype/quantTypes.ts";
 import {
   bootstrapSecureWorkspace,
+  clearPersistedWechatAuth,
   createEmptyLedgerSnapshot,
   loginWithPassword,
   logoutSession,
   mutateServerLedger,
+  persistCachedLedgerSnapshot,
+  persistWechatAuth,
+  readCachedLedgerSnapshot,
+  readPersistedWechatAuth,
   registerAuthRevokedHandler,
   requestServerMatchesSync,
   requestServerQuantCompute,
@@ -22,6 +27,7 @@ import {
   type LedgerEntry,
   type LedgerMutatePayload,
   type LedgerMutateResponse,
+  type PersistedWechatAuth,
   type PublicAccountUser,
   type UserLedgerSnapshot,
   type XiaoGaoAlert,
@@ -144,15 +150,6 @@ export interface WorkbenchSnapshot {
   comboReport: XiaoGaoComboReport | null;
   remainingAiQuota: number | null;
   matchAiAlerts: Record<string, NonNullable<MatchItem["aiAlert"]>>;
-}
-
-const WECHAT_AUTH_STORAGE_KEY = "yj_wechat_auth_v1";
-const LEDGER_CACHE_PREFIX = "yj_ledger_cache_v1_";
-
-interface PersistedWechatAuthRecord {
-  authToken: string;
-  cachedUser: PublicAccountUser;
-  savedAt: number;
 }
 
 function createDefaultClockPort(): WorkbenchClockPort {
@@ -299,74 +296,24 @@ export function createWorkbenchController(
   let lastAutoSettleAt = 0;
   let activeArchKey: PortfolioKey = "max-ev-utility";
 
-  function readPersistedAuth(): PersistedWechatAuthRecord | null {
-    try {
-      const raw = storagePort.getItem(WECHAT_AUTH_STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as PersistedWechatAuthRecord;
-      if (
-        parsed &&
-        typeof parsed.authToken === "string" &&
-        parsed.cachedUser?.id
-      ) {
-        return parsed;
-      }
-    } catch {
-      // ignore malformed cache
-    }
-    return null;
+  function readPersistedAuth(): PersistedWechatAuth | null {
+    return readPersistedWechatAuth(storagePort);
   }
 
   function writePersistedAuth(authToken: string, user: PublicAccountUser) {
-    try {
-      const rec: PersistedWechatAuthRecord = {
-        authToken,
-        cachedUser: user,
-        savedAt: clockPort.now(),
-      };
-      storagePort.setItem(WECHAT_AUTH_STORAGE_KEY, JSON.stringify(rec));
-    } catch {
-      // ignore
-    }
+    persistWechatAuth(authToken, user, storagePort, clockPort.now());
   }
 
   function clearPersistedAuth() {
-    storagePort.removeItem(WECHAT_AUTH_STORAGE_KEY);
+    clearPersistedWechatAuth(storagePort);
   }
 
   function readCachedLedger(userId: string): UserLedgerSnapshot | null {
-    const cleanId = String(userId || "").trim();
-    if (!cleanId) return null;
-    try {
-      const raw = storagePort.getItem(`${LEDGER_CACHE_PREFIX}${cleanId}`);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as UserLedgerSnapshot;
-      if (
-        parsed &&
-        typeof parsed.dailyLimit === "number" &&
-        Array.isArray(parsed.entries) &&
-        parsed.stats &&
-        typeof parsed.stats === "object"
-      ) {
-        return parsed;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
+    return readCachedLedgerSnapshot(userId, storagePort);
   }
 
   function writeCachedLedger(userId: string, snap: UserLedgerSnapshot) {
-    const cleanId = String(userId || "").trim();
-    if (!cleanId || !snap) return;
-    try {
-      storagePort.setItem(
-        `${LEDGER_CACHE_PREFIX}${cleanId}`,
-        JSON.stringify(snap)
-      );
-    } catch {
-      // ignore
-    }
+    persistCachedLedgerSnapshot(userId, snap, storagePort);
   }
 
   const initPersisted = readPersistedAuth();
@@ -471,9 +418,21 @@ export function createWorkbenchController(
     }
   }
 
-  const unsubBetSlip = betSlip.subscribe(() => {
+  let unsubBetSlip = betSlip.subscribe(() => {
     rebuildSnapshotAndEmit();
   });
+  let disposed = false;
+
+  function ensureActiveLifecycle() {
+    if (!disposed) return;
+    disposed = false;
+    unsubBetSlip = betSlip.subscribe(() => {
+      rebuildSnapshotAndEmit();
+    });
+    authPort.registerRevokedHandler?.((reason) => {
+      clearSessionState(reason);
+    });
+  }
 
   function clearUndoTimer() {
     if (undoTimerHandle !== null) {
@@ -584,6 +543,7 @@ export function createWorkbenchController(
     const isReconnect = Boolean(opts?.isReconnect);
     const maxAttempts = Math.max(1, opts?.maxAttempts ?? 2);
     const retryDelayMs = Math.max(0, opts?.retryDelayMs ?? 0);
+    ensureActiveLifecycle();
 
     if (!isReconnect) {
       syncing = true;
@@ -1195,7 +1155,13 @@ export function createWorkbenchController(
       }
     },
 
+    hasPersistedSession(): boolean {
+      return Boolean(authUser || readPersistedAuth()?.authToken);
+    },
+
     dispose() {
+      if (disposed) return;
+      disposed = true;
       clearUndoTimer();
       unsubBetSlip();
       authPort.registerRevokedHandler?.(null);

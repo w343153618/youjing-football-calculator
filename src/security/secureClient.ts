@@ -212,7 +212,13 @@ export class AuthLoginError extends Error {
 const WECHAT_AUTH_STORAGE_KEY = "yj_wechat_auth_v1";
 const LEDGER_CACHE_PREFIX = "yj_ledger_cache_v1_";
 
-interface PersistedWechatAuth {
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+export interface PersistedWechatAuth {
   authToken: string;
   cachedUser: PublicAccountUser;
   savedAt: number;
@@ -245,9 +251,11 @@ export function registerAuthRevokedHandler(
   authRevokedHandler = fn;
 }
 
-export function readPersistedWechatAuth(): PersistedWechatAuth | null {
+export function readPersistedWechatAuth(
+  storeOverride?: StorageLike | null
+): PersistedWechatAuth | null {
   try {
-    const store = resolveLocalStorage();
+    const store = storeOverride ?? resolveLocalStorage();
     const raw = store?.getItem(WECHAT_AUTH_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as PersistedWechatAuth;
@@ -266,15 +274,17 @@ export function readPersistedWechatAuth(): PersistedWechatAuth | null {
 
 export function writePersistedWechatAuth(
   authToken: string,
-  user: PublicAccountUser
+  user: PublicAccountUser,
+  storeOverride?: StorageLike | null,
+  nowMs?: number
 ): void {
   try {
-    const store = resolveLocalStorage();
+    const store = storeOverride ?? resolveLocalStorage();
     if (!store) return;
     const payload: PersistedWechatAuth = {
       authToken,
       cachedUser: user,
-      savedAt: Date.now(),
+      savedAt: typeof nowMs === "number" ? nowMs : Date.now(),
     };
     store.setItem(WECHAT_AUTH_STORAGE_KEY, JSON.stringify(payload));
   } catch {
@@ -282,9 +292,15 @@ export function writePersistedWechatAuth(
   }
 }
 
-export function clearPersistedWechatAuth(): void {
+export const persistWechatAuth = writePersistedWechatAuth;
+
+export function clearPersistedWechatAuth(
+  storeOverride?: StorageLike | null
+): void {
   try {
-    resolveLocalStorage()?.removeItem(WECHAT_AUTH_STORAGE_KEY);
+    (storeOverride ?? resolveLocalStorage())?.removeItem(
+      WECHAT_AUTH_STORAGE_KEY
+    );
   } catch {
     // ignore
   }
@@ -316,12 +332,13 @@ export function createEmptyLedgerSnapshot(
 }
 
 export function readCachedUserLedger(
-  userId: string
+  userId: string,
+  storeOverride?: StorageLike | null
 ): UserLedgerSnapshot | null {
   try {
     const cleanId = String(userId || "").trim();
     if (!cleanId) return null;
-    const raw = resolveLocalStorage()?.getItem(
+    const raw = (storeOverride ?? resolveLocalStorage())?.getItem(
       `${LEDGER_CACHE_PREFIX}${cleanId}`
     );
     if (!raw) return null;
@@ -341,19 +358,24 @@ export function readCachedUserLedger(
   return null;
 }
 
+export const readCachedLedgerSnapshot = readCachedUserLedger;
+
 export function writeCachedUserLedger(
   userId: string,
-  snapshot: UserLedgerSnapshot
+  snapshot: UserLedgerSnapshot,
+  storeOverride?: StorageLike | null
 ): void {
   try {
     const cleanId = String(userId || "").trim();
-    const store = resolveLocalStorage();
+    const store = storeOverride ?? resolveLocalStorage();
     if (!cleanId || !store || !snapshot) return;
     store.setItem(`${LEDGER_CACHE_PREFIX}${cleanId}`, JSON.stringify(snapshot));
   } catch {
     // ignore
   }
 }
+
+export const persistCachedLedgerSnapshot = writeCachedUserLedger;
 
 function detectReadableDeviceLabel(): string {
   if (typeof navigator === "undefined") return "Web 终端";

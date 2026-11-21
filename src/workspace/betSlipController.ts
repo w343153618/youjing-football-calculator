@@ -8,8 +8,6 @@ import {
   type BridgeMatchCandidate,
   type ComboRow,
   type EquivalentArbItem,
-  type LedgerSnapshotLine,
-  type LedgerSnapshotMatch,
   type LedgerTicketSnapshot,
   type MatchItem,
   type PassSelectionSpec,
@@ -1147,8 +1145,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       bootstrapped = true;
       computeSeq += 1;
 
-      const isLiveXiaoGaoAlert = (a?: MatchItem["aiAlert"]) =>
-        Boolean(a && (a.source === "primary" || a.source === "fallback"));
+      const isLiveXiaoGaoAlert = (a?: MatchItem["aiAlert"]) => {
+        if (!a?.source) return false;
+        return (
+          a.source === "primary" ||
+          a.source === "fallback" ||
+          a.source.includes("扫地僧小高") ||
+          a.source.includes("实时诊盘") ||
+          a.source.includes("协同会诊")
+        );
+      };
       const mergedMatches = res.matches.map((nm) => {
         if (isLiveXiaoGaoAlert(nm.aiAlert)) return nm;
         const prev = state.matches.find(
@@ -1256,19 +1262,15 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }>;
     }) {
       if (!Array.isArray(rep?.perMatch) || rep.perMatch.length === 0) return;
+      const byMatchId = new Map(
+        rep.perMatch
+          .filter((x) => Boolean(x?.matchId))
+          .map((x) => [x.matchId, x])
+      );
       state = {
         ...state,
         matches: state.matches.map((item) => {
-          const pm = rep.perMatch.find(
-            (x) =>
-              x.matchId === item.id ||
-              (Boolean(item.matchNumStr) && x.matchId === item.matchNumStr) ||
-              Boolean(
-                item.matchNumStr &&
-                x.matchTitle &&
-                x.matchTitle.includes(item.matchNumStr)
-              )
-          );
+          const pm = byMatchId.get(item.id);
           if (!pm) return item;
           return {
             ...item,
@@ -2274,7 +2276,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     buildSealedLedgerDraft(): SealedLedgerDraft | null {
-      const { effectiveReport, manualReport } = state.workspace;
+      const { effectiveReport } = state.workspace;
       const appliedPlan =
         state.planSpec || effectiveReport.syntheticAutoMounted
           ? state.workspace.appliedPlan
@@ -2287,115 +2289,13 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         return null;
       }
 
-      const bankerSet = new Set(
-        effectiveReport.bankerMatchIds ??
-          manualReport.bankerMatchIds ??
-          state.passSpec.bankerMatchIds ??
-          []
-      );
-      const matchById = new Map(state.matches.map((m) => [m.id, m]));
-      const mapLeg = (lg: {
-        matchId: string;
-        matchNumStr?: string;
-        home?: string;
-        away?: string;
-        kickoff?: string;
-        poolCode: PoolCode;
-        optionKey: string;
-        optionLabel?: string;
-        odds: number;
-      }) => {
-        const m = matchById.get(lg.matchId);
-        const opt = m?.pools?.[lg.poolCode]?.options?.find(
-          (o) => o.key === lg.optionKey
-        );
-        return {
-          matchId: lg.matchId,
-          matchNumStr: lg.matchNumStr || m?.matchNumStr,
-          home: lg.home || m?.home,
-          away: lg.away || m?.away,
-          kickoff: lg.kickoff || m?.kickoff,
-          poolCode: lg.poolCode,
-          optionKey: lg.optionKey,
-          optionLabel:
-            (opt && opt.odds > 1 ? opt.label : undefined) || lg.optionLabel,
-          odds: opt && opt.odds > 1 ? opt.odds : lg.odds,
-          goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
-        };
-      };
-
-      const rawLines =
-        effectiveReport.betCount > 512
-          ? []
-          : appliedPlan
-            ? appliedPlan.lines.map((ln, idx) => ({
-                id: ln.id || `ap_${idx + 1}`,
-                modeLabel: ln.modeLabel,
-                multiple: Math.max(1, Math.round(ln.multiple || 1)),
-                legs: ln.legs.map(mapLeg),
-              }))
-            : (effectiveReport.tickets ?? []).map((tk, idx) => {
-                const legs = tk.legs ?? [];
-                const passTxt =
-                  legs.length === 1
-                    ? "单关"
-                    : `${legs.length}串1${bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""}`;
-                return {
-                  id: tk.id || `tk_${idx + 1}`,
-                  modeLabel: passTxt,
-                  multiple: Math.max(
-                    1,
-                    Math.round(
-                      (tk as ComboRow & { multiple?: number }).multiple ??
-                        state.multiple ??
-                        1
-                    )
-                  ),
-                  legs: legs.map(mapLeg),
-                };
-              });
-
-      const matchMap = new Map<string, LedgerSnapshotMatch>();
-      for (const ln of rawLines) {
-        for (const lg of ln.legs) {
-          const m = matchById.get(lg.matchId);
-          let entry = matchMap.get(lg.matchId);
-          if (!entry) {
-            entry = {
-              matchId: lg.matchId,
-              matchNumStr: lg.matchNumStr || m?.matchNumStr || lg.matchId,
-              home: lg.home || m?.home || "",
-              away: lg.away || m?.away || "",
-              kickoff: lg.kickoff || m?.kickoff || "",
-              businessDate: m?.businessDate,
-              goalLine: lg.goalLine ?? m?.pools?.HHAD?.goalLine ?? "-1",
-              isBanker: bankerSet.has(lg.matchId),
-              picks: [],
-            };
-            matchMap.set(lg.matchId, entry);
-          }
-          if (
-            !entry.picks.some(
-              (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
-            )
-          ) {
-            entry.picks.push({
-              poolCode: lg.poolCode,
-              optionKey: lg.optionKey,
-              optionLabel: lg.optionLabel || lg.optionKey,
-              odds: lg.odds,
-              goalLine: entry.goalLine,
-            });
-          }
-        }
-      }
-
       const title = appliedPlan
         ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${appliedPlan.lines.length}张)`
         : `${effectiveReport.modeLabel} · ${effectiveReport.betCount}注方案`;
 
       return {
         title,
+        passLabel: effectiveReport.modeLabel,
         modeLabel: effectiveReport.modeLabel,
         betCount: Math.max(1, effectiveReport.betCount),
         cost: effectiveReport.totalCost,
@@ -2403,10 +2303,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         minPayout: effectiveReport.minPayout,
         maxPayout: effectiveReport.maxPayout,
         workspaceParams: buildWorkspaceParams(state),
-        snapshot:
-          rawLines.length > 0
-            ? { matches: Array.from(matchMap.values()), lines: rawLines }
-            : undefined,
       };
     },
 
@@ -2509,6 +2405,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
 export interface SealedLedgerDraft {
   title: string;
+  passLabel?: string;
   modeLabel: string;
   betCount: number;
   cost: number;

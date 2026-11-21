@@ -9,7 +9,10 @@ import {
   parseSportteryResultsJson,
   settleTicketSnapshotWithOfficialResults,
 } from "../server/quantEngine.mjs";
-import { createLedgerManager } from "../server/ledgerManager.mjs";
+import {
+  createLedgerManager,
+  sealAuthoritativePrintSnapshot,
+} from "../server/ledgerManager.mjs";
 import { createAccountManager } from "../server/accountManager.mjs";
 import { createManualQaEngine } from "../server/manualQaEngine.mjs";
 import { createYouJingRuntime } from "../server/runtimeApp.mjs";
@@ -949,18 +952,23 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
     ctrl.setDirectMultiple(120); // >99x triggers 99 + 21 physical terminal slip split in shopkeeper text!
     await ctrl.flush();
 
-    const sealed = ctrl.buildSealedLedgerDraft();
-    assert.ok(sealed);
-    assert.equal(sealed.betCount, 2);
-    assert.equal(sealed.cost, 480); // 2 bets * 2 yuan * 120x = 480
+    const draft = ctrl.buildSealedLedgerDraft();
+    assert.ok(draft && draft.workspaceParams);
+    assert.equal(draft.betCount, 2);
+    assert.equal(draft.cost, 480); // 2 bets * 2 yuan * 120x = 480
+    assert.equal(draft.snapshot, undefined);
+    const sealed = sealAuthoritativePrintSnapshot({
+      workspaceParams: draft.workspaceParams,
+      authoritativeMatches: FALLBACK_MATCHES,
+    });
     assert.equal(sealed.snapshot?.matches.length, 3);
     assert.equal(
-      sealed.snapshot?.matches.find((x) => x.matchId === m1.id)?.isBanker,
+      sealed.snapshot?.matches.find((x: any) => x.matchId === m1.id)?.isBanker,
       true
     );
     assert.equal(sealed.snapshot?.lines.length, 2);
     const totalLineCost = (sealed.snapshot?.lines || []).reduce(
-      (s, l) => s + l.multiple * 2,
+      (s: number, l: any) => s + l.multiple * 2,
       0
     );
     assert.equal(totalLineCost, 480);
@@ -1602,10 +1610,22 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
       ctrl.setSimVoidFirstMatch(true);
       await ctrl.flush();
       const draftUnderVoidSim = ctrl.buildSealedLedgerDraft();
-      assert.ok(draftUnderVoidSim?.snapshot);
+      assert.ok(draftUnderVoidSim?.workspaceParams);
+      assert.equal(draftUnderVoidSim.snapshot, undefined);
+      const sealedUnderVoidSim = ldg.mutateUserLedger(
+        uid,
+        {
+          action: "add-entry",
+          kind: "live",
+          forceConfirmed: true,
+          ...draftUnderVoidSim,
+        },
+        { authoritativeMatches: FALLBACK_MATCHES }
+      );
+      assert.ok(sealedUnderVoidSim.entry.snapshot);
       const sealedFirstLegOdds =
-        draftUnderVoidSim?.snapshot?.lines[0]?.legs.find(
-          (l) => l.matchId === cm1.id
+        sealedUnderVoidSim.entry.snapshot.lines[0]?.legs.find(
+          (l: any) => l.matchId === cm1.id
         )?.odds;
       assert.equal(sealedFirstLegOdds, cm1.pools.HAD.options[0].odds);
       assert.notEqual(sealedFirstLegOdds, 1);

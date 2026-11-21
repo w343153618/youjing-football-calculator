@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { createManualQaEngine } from "../server/manualQaEngine.mjs";
+import {
+  APP_GROUND_TRUTH_MANUAL_SPEC,
+  LOCAL_CURATED_QA,
+  createManualQaEngine,
+} from "../server/manualQaEngine.mjs";
+import { sealAuthoritativePrintSnapshot } from "../server/ledgerManager.mjs";
 import {
   FALLBACK_MATCHES,
   evaluateQuantWorkspace,
@@ -38,6 +43,19 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
     assert.ok(extractSearchBigrams("一球小胜卡盘").includes("卡盘"));
     const matched = matchManualTopics("一球小胜卡盘");
     assert.ok(matched.some((t) => t.id === "glossary"));
+    for (const adr0015Kw of [
+      "意图保真",
+      "3项无死角",
+      "自动挂载",
+      "顺滑切换",
+      "一键撤销",
+    ]) {
+      const kwHits = matchManualTopics(adr0015Kw);
+      assert.ok(
+        kwHits.length > 0,
+        `matchManualTopics("${adr0015Kw}") must return non-empty ADR-0015 manual topics`
+      );
+    }
 
     const nav = resolveManualNavigation(
       {
@@ -66,6 +84,24 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
         (pill) => pill.includes("同一场比赛") && pill.includes("撤销")
       ),
       "QUICK_QA_PILLS must include ADR-0015 smooth same-match pool switch & undo question"
+    );
+    const synPill = QUICK_QA_PILLS.find((pill) =>
+      pill.includes("3项无死角合成单关")
+    );
+    assert.ok(
+      synPill,
+      "QUICK_QA_PILLS must include a '3项无死角合成单关' pill"
+    );
+    const mutexTopic = LOCAL_CURATED_QA.find(
+      (item: any) => item.id === "qa-same-match-mutex"
+    );
+    assert.equal(
+      mutexTopic?.question,
+      "同一场比赛选了「胜平负」后，再点「让球平」或其他玩法会怎样？"
+    );
+    assert.equal(
+      APP_GROUND_TRUTH_MANUAL_SPEC.includes("不能再点「让球平」"),
+      false
     );
 
     // 3. 100% of QUICK_QA_PILLS hit local-kb in 0ms without consuming AI quota
@@ -96,7 +132,23 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
         "local-kb",
         `Quick pill "${pill}" must hit local-kb in 0ms, got ${res.source}`
       );
+      if (pill === synPill) {
+        const synEntry = LOCAL_CURATED_QA.find(
+          (x: any) => x.id === "qa-synthetic-single"
+        );
+        assert.equal(res.matchedTitle, synEntry?.question);
+      }
     }
+    const legacyMutexHit = await qaEngine.answerManualQuestion({
+      userId: "u-manual-check",
+      question: "为什么同一场比赛选了胜平负后，不能再点让球平？",
+      ip: "127.0.0.1",
+    });
+    assert.equal(legacyMutexHit.source, "local-kb");
+    assert.equal(
+      legacyMutexHit.matchedTitle,
+      "同一场比赛选了「胜平负」后，再点「让球平」或其他玩法会怎样？"
+    );
 
     // 4. Structured 7 illustrated chapters cover all non-qa sections and preserve ADR-0015 & scientific honesty copy
     const expectedChapterIds = [
@@ -359,8 +411,15 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
     const sealed = ctrl.buildSealedLedgerDraft();
     assert.ok(sealed);
     assert.ok(sealed.workspaceParams);
+    assert.equal(sealed.snapshot, undefined);
+    assert.deepEqual(sealed.workspaceParams.passSpec?.bankerMatchIds, [m0.id]);
+    const serverSealed = sealAuthoritativePrintSnapshot({
+      workspaceParams: sealed.workspaceParams,
+      authoritativeMatches: FALLBACK_MATCHES,
+    });
     assert.equal(
-      sealed.snapshot?.matches.find((x) => x.matchId === m0.id)?.isBanker,
+      serverSealed.snapshot?.matches.find((x: any) => x.matchId === m0.id)
+        ?.isBanker,
       true
     );
   });
@@ -799,6 +858,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
 
     let observedInFlightSingleId: string | null = null;
     let observedInFlightCombo = false;
+    let revokedHandler: ((reason: string) => void) | null = null;
     let bootMode: "authenticated" | "network-fail" | "unauthorized-401" =
       "authenticated";
 
@@ -825,7 +885,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
               tag: `${matchId} 热门升水预警`,
               summary: "主力后腰轮休且主胜水位红升散热",
               priceInStatus: "盘面逆向背离",
-              source: "primary",
+              source: "扫地僧小高实时诊盘 · 21:15",
             },
             aiRemaining: 12,
           };
@@ -842,7 +902,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
               structureAdvice: "次关建议补防让球平",
               priceInVerdict: "部分消息尚未充分入价",
               matchCount: 2,
-              source: "primary",
+              source: "扫地僧小高 2场协同会诊 · 21:20",
               perMatch: [
                 {
                   matchId: m0.id,
@@ -852,8 +912,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
                   priceInStatus: "尚未消化",
                 },
                 {
-                  // Intentionally pass matchNumStr instead of internal id to test canonical reconciliation!
-                  matchId: m1.matchNumStr,
+                  matchId: m1.id,
                   matchTitle: `${m1.matchNumStr} ${m1.home} vs ${m1.away}`,
                   tag: "次关卡盘高危",
                   note: "强队净胜1球占比偏高",
@@ -888,12 +947,19 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
             ),
           };
         },
+        registerRevokedHandler: (fn) => {
+          revokedHandler = fn;
+        },
       },
     });
+
+    assert.equal(wb.hasPersistedSession(), false);
+    assert.equal(typeof revokedHandler, "function");
 
     // 1. Authenticated bootstrap caches token + user in storagePort & initializes remainingAiQuota = 13 (15 - 2)
     const boot1 = await wb.bootstrapHandshake();
     assert.equal(boot1.ok, true);
+    assert.equal(wb.hasPersistedSession(), true);
     assert.equal(wb.getState().authUser?.username, "member02");
     assert.equal(wb.getState().remainingAiQuota, 13);
     assert.ok(storagePort.getItem("yj_wechat_auth_v1") !== null);
@@ -951,12 +1017,39 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
     assert.equal(wb.getState().offlineMode, false);
     assert.equal(wb.betSlip.getState().picks.length, 2);
 
-    // Official match sync updates syncSummary and preserves AI alerts
+    // Official match sync updates syncSummary and preserves live "扫地僧小高..." alerts over static nm.aiAlert (e.g. m0!)
+    assert.ok(
+      Boolean(m0.aiAlert),
+      "Sanity check: m0 carries a static fallback aiAlert that must NOT overwrite live XiaoGao diagnosis"
+    );
     const syncRes = await wb.syncOfficialMatches();
     assert.equal(syncRes.ok, true);
     assert.equal(syncRes.newlySettledCount, 2);
     assert.equal(wb.getState().syncSummary, "官方盘口已刷新");
+    assert.equal(
+      wb.getState().matchAiAlerts[m0.id]?.tag,
+      "首关盘口稳固",
+      "Live '扫地僧小高 N场协同会诊 · HH:MM' alert on m0 must survive sync even when incoming m0 has static aiAlert"
+    );
     assert.equal(wb.getState().matchAiAlerts[m1.id]?.tag, "次关卡盘高危");
+
+    // Client applyComboAiReport maps strictly by canonical matchId without heuristic matchTitle substring guessing
+    const m2 = matches[2];
+    const prevM2Alert = wb.getState().matchAiAlerts[m2.id];
+    await wb.betSlip.applyComboAiReport({
+      level: "medium",
+      source: "fallback",
+      perMatch: [
+        {
+          matchId: "unreconciled-raw-id",
+          matchTitle: `${m2.matchNumStr} ${m2.home} vs ${m2.away}`,
+          tag: "不应由前端猜测匹配",
+          note: "服务端负责唯一规范ID对齐",
+          priceInStatus: "已消化",
+        },
+      ],
+    });
+    assert.deepEqual(wb.getState().matchAiAlerts[m2.id], prevM2Alert);
 
     // 5. Explicit 401 invalidation clears authUser, quota & persisted storage token
     bootMode = "unauthorized-401";
@@ -967,7 +1060,9 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
     assert.equal(wb.getState().authUser, null);
     assert.equal(wb.getState().remainingAiQuota, null);
     assert.equal(storagePort.getItem("yj_wechat_auth_v1"), null);
+    assert.equal(wb.hasPersistedSession(), false);
 
     wb.dispose();
+    assert.equal(revokedHandler, null);
   });
 });

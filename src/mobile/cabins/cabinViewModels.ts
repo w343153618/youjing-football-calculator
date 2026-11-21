@@ -42,6 +42,97 @@ export interface HandoffBannerState {
   seq: number;
 }
 
+export interface SkinPresetDef {
+  id: string;
+  code: string;
+  name: string;
+  en: string;
+  swatchBg: string;
+  swatchDot: string;
+}
+
+export const STUDIO_SKIN_OPTIONS: SkinPresetDef[] = [
+  {
+    id: "air",
+    code: "00",
+    name: "素白",
+    en: "Air",
+    swatchBg: "#F2F4F7",
+    swatchDot: "#0B0D12",
+  },
+  {
+    id: "swiss",
+    code: "05",
+    name: "瑞士",
+    en: "Swiss",
+    swatchBg: "#FFFFFF",
+    swatchDot: "#E30613",
+  },
+  {
+    id: "studio",
+    code: "06",
+    name: "工坊",
+    en: "Studio",
+    swatchBg: "#E4E3DE",
+    swatchDot: "#FF5A1F",
+  },
+  {
+    id: "dot",
+    code: "07",
+    name: "点阵",
+    en: "Dot",
+    swatchBg: "#000000",
+    swatchDot: "#FFFFFF",
+  },
+  {
+    id: "sumi",
+    code: "08",
+    name: "水墨",
+    en: "Sumi",
+    swatchBg: "#F1ECE2",
+    swatchDot: "#1A1A1A",
+  },
+  {
+    id: "glass",
+    code: "09",
+    name: "琉璃",
+    en: "Glass",
+    swatchBg: "linear-gradient(135deg,#2B5D4F,#1B1F3B)",
+    swatchDot: "rgba(255,255,255,.9)",
+  },
+  {
+    id: "dial",
+    code: "10",
+    name: "表盘",
+    en: "Dial",
+    swatchBg: "#0E1729",
+    swatchDot: "#CDB27A",
+  },
+  {
+    id: "pitch",
+    code: "11",
+    name: "草坪",
+    en: "Pitch",
+    swatchBg: "#EAF0EA",
+    swatchDot: "#0E5C3A",
+  },
+];
+
+export const STUDIO_STAGE_ACTIONS: Array<{
+  id: string;
+  label: string;
+  cmd: string;
+  value: string | null;
+}> = [
+  { id: "match", label: "赛事", cmd: "setTab", value: "match" },
+  { id: "more", label: "全玩法", cmd: "openMore", value: null },
+  { id: "intel", label: "卡盘底牌", cmd: "openIntel", value: null },
+  { id: "archetypes", label: "精算配单", cmd: "setTab", value: "archetypes" },
+  { id: "audit", label: "审单锁利", cmd: "setTab", value: "audit" },
+  { id: "poster", label: "打票海报", cmd: "openPoster", value: null },
+  { id: "ledger", label: "账本皮肤", cmd: "setTab", value: "ledger" },
+];
+
 export const RADAR_MODE_OPTS: Array<[MatchMode, string]> = [
   ["mix", "混合"],
   ["spf", "胜平负"],

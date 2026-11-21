@@ -72,7 +72,13 @@ export function bankerRoundParlayUnitPayout(oddsList) {
       return (q % 2 === 0 ? q : q + 1) / 100;
     }
   }
-  if (oddsList.some((o) => !Number.isFinite(o) || o <= 0)) return 0;
+  if (
+    oddsList.some(
+      (o) => !Number.isFinite(o) || o <= 0 || !Number.isFinite(o * 10000)
+    )
+  ) {
+    return 0;
+  }
   let num = 200n;
   let scale = 1n;
   for (const o of oddsList) {

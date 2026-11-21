@@ -13,10 +13,10 @@ import {
   computeProOrderInsights,
   computeTruthReport,
   evaluateQuantWorkspace,
-  fetchOfficialMatchesServer,
   generateFiveArchetypes,
   parseSportteryRawJson,
 } from "../server/quantEngine.mjs";
+import { fetchOfficialMatchesServer } from "../server/sportteryFeed.mjs";
 import { createYouJingRuntime } from "../server/runtimeApp.mjs";
 import { createBetSlipController } from "../src/workspace/betSlipController.ts";
 import type {

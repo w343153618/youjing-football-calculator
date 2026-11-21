@@ -2,25 +2,13 @@
    240Hz Fixed-Substep Damped Harmonic Oscillator Spring Engine
    ========================================================= */
 
-export interface SkinDef {
-  id: string;
-  code: string;
-  name: string;
-  en: string;
-  swatchBg: string;
-  swatchDot: string;
-}
+import {
+  STUDIO_SKIN_OPTIONS,
+  type SkinPresetDef,
+} from "../mobile/cabins/cabinViewModels.ts";
 
-export const SKINS: SkinDef[] = [
-  { id: 'air', code: '00', name: '素白', en: 'Air', swatchBg: '#F2F4F7', swatchDot: '#0B0D12' },
-  { id: 'swiss', code: '05', name: '瑞士', en: 'Swiss', swatchBg: '#FFFFFF', swatchDot: '#E30613' },
-  { id: 'studio', code: '06', name: '工坊', en: 'Studio', swatchBg: '#E4E3DE', swatchDot: '#FF5A1F' },
-  { id: 'dot', code: '07', name: '点阵', en: 'Dot', swatchBg: '#000000', swatchDot: '#FFFFFF' },
-  { id: 'sumi', code: '08', name: '水墨', en: 'Sumi', swatchBg: '#F1ECE2', swatchDot: '#1A1A1A' },
-  { id: 'glass', code: '09', name: '琉璃', en: 'Glass', swatchBg: 'linear-gradient(135deg,#2B5D4F,#1B1F3B)', swatchDot: 'rgba(255,255,255,.9)' },
-  { id: 'dial', code: '10', name: '表盘', en: 'Dial', swatchBg: '#0E1729', swatchDot: '#CDB27A' },
-  { id: 'pitch', code: '11', name: '草坪', en: 'Pitch', swatchBg: '#EAF0EA', swatchDot: '#0E5C3A' },
-];
+export type SkinDef = SkinPresetDef;
+export const SKINS: SkinDef[] = STUDIO_SKIN_OPTIONS;
 
 let TIME_SCALE = 1;
 export function setGlobalTimeScale(scale: number) {
@@ -46,7 +34,12 @@ export class Spring {
 
   constructor(
     value: number,
-    opts: { k?: number; c?: number; eps?: number; onUpdate?: (val: number) => void } = {}
+    opts: {
+      k?: number;
+      c?: number;
+      eps?: number;
+      onUpdate?: (val: number) => void;
+    } = {}
   ) {
     this.x = value;
     this.to = value;
@@ -128,12 +121,12 @@ export let RELEASE_CFG: [number, number] = [480, 13];
 export function readSpringTokens() {
   const cs = getComputedStyle(document.documentElement);
   const p = cs
-    .getPropertyValue('--spring-press')
+    .getPropertyValue("--spring-press")
     .trim()
     .split(/\s+/)
     .map(Number);
   const r = cs
-    .getPropertyValue('--spring-release')
+    .getPropertyValue("--spring-release")
     .trim()
     .split(/\s+/)
     .map(Number);
@@ -146,7 +139,7 @@ import {
   playTactileCue,
   spawnPointerShockwave,
   vibratePattern,
-} from './tactileSymphony';
+} from "./tactileSymphony";
 
 export function haptic(ms = 8) {
   vibratePattern([ms]);
@@ -227,23 +220,26 @@ export function fxOf(el: HTMLElement): ElementFX {
 /** Staggered vertical entrance for `.enter` children */
 export function enterStagger(container: HTMLElement | null, step = 34) {
   if (!container) return;
-  const items = [...container.querySelectorAll<HTMLElement>(':scope > .enter')];
+  const items = [...container.querySelectorAll<HTMLElement>(":scope > .enter")];
   items.forEach((el, i) => {
     const f = fxOf(el);
     const base = f.ty.onUpdate;
-    el.style.opacity = '0';
+    el.style.opacity = "0";
     f.ty.jump(18);
     f.ty.onUpdate = (v) => {
       base?.(v);
       el.style.opacity = String(Math.max(0, Math.min(1, 1 - v / 18)));
     };
-    window.setTimeout(() => {
-      f.ty.config(340, 23).set(0);
-      f.ty.onRest = () => {
-        f.ty.onUpdate = base;
-        el.style.opacity = '';
-      };
-    }, (i * step) / TIME_SCALE);
+    window.setTimeout(
+      () => {
+        f.ty.config(340, 23).set(0);
+        f.ty.onRest = () => {
+          f.ty.onUpdate = base;
+          el.style.opacity = "";
+        };
+      },
+      (i * step) / TIME_SCALE
+    );
   });
 }
 
@@ -254,11 +250,14 @@ export function popStagger(container: HTMLElement | null, step = 12) {
     const el = node as HTMLElement;
     const f = fxOf(el);
     f.scale.jump(0.55);
-    el.style.opacity = '0';
-    window.setTimeout(() => {
-      el.style.opacity = '';
-      f.scale.config(520, 16).set(1);
-    }, (i * step) / TIME_SCALE);
+    el.style.opacity = "0";
+    window.setTimeout(
+      () => {
+        el.style.opacity = "";
+        f.scale.config(520, 16).set(1);
+      },
+      (i * step) / TIME_SCALE
+    );
   });
 }
 
@@ -296,8 +295,8 @@ export function bindTilt(el: HTMLElement | null): () => void {
     el.style.transform = `perspective(720px) rotateX(${rx.x}deg) rotateY(${ry.x}deg)`;
     const gx = 50 + ry.x * 3.2;
     const gy = 50 - rx.x * 3.2;
-    el.style.setProperty('--glare-x', `${gx.toFixed(1)}%`);
-    el.style.setProperty('--glare-y', `${gy.toFixed(1)}%`);
+    el.style.setProperty("--glare-x", `${gx.toFixed(1)}%`);
+    el.style.setProperty("--glare-y", `${gy.toFixed(1)}%`);
   }
 
   const onMove = (e: PointerEvent) => {
@@ -305,13 +304,13 @@ export function bindTilt(el: HTMLElement | null): () => void {
     if (r.width === 0 || r.height === 0) return;
     ry.set(((e.clientX - r.left) / r.width - 0.5) * 16);
     rx.set(-((e.clientY - r.top) / r.height - 0.5) * 16);
-    el.style.setProperty('--glare-o', '0.26');
+    el.style.setProperty("--glare-o", "0.26");
   };
 
   const onLeave = () => {
     rx.set(0);
     ry.set(0);
-    el.style.setProperty('--glare-o', '0.12');
+    el.style.setProperty("--glare-o", "0.12");
   };
 
   const onOrient = (ev: DeviceOrientationEvent) => {
@@ -320,19 +319,19 @@ export function bindTilt(el: HTMLElement | null): () => void {
     const clampedY = Math.max(-14, Math.min(14, (ev.beta - 45) * 0.38));
     ry.set(clampedX);
     rx.set(-clampedY);
-    el.style.setProperty('--glare-o', '0.24');
+    el.style.setProperty("--glare-o", "0.24");
   };
 
-  el.addEventListener('pointermove', onMove);
-  el.addEventListener('pointerleave', onLeave);
-  window.addEventListener('deviceorientation', onOrient, { passive: true });
+  el.addEventListener("pointermove", onMove);
+  el.addEventListener("pointerleave", onLeave);
+  window.addEventListener("deviceorientation", onOrient, { passive: true });
 
   const cleanup = () => {
     rx.stop();
     ry.stop();
-    el.removeEventListener('pointermove', onMove);
-    el.removeEventListener('pointerleave', onLeave);
-    window.removeEventListener('deviceorientation', onOrient);
+    el.removeEventListener("pointermove", onMove);
+    el.removeEventListener("pointerleave", onLeave);
+    window.removeEventListener("deviceorientation", onOrient);
     TILT_CLEANUP.delete(el);
   };
   TILT_CLEANUP.set(el, cleanup);
@@ -342,10 +341,10 @@ export function bindTilt(el: HTMLElement | null): () => void {
 /** Spring Toast Notification (XSS-safe textContent) */
 export function showSpringToast(layer: HTMLElement | null, msg: string) {
   if (!layer) return;
-  const t = document.createElement('div');
-  t.className = 'toast';
+  const t = document.createElement("div");
+  t.className = "toast";
   t.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"/></svg>`;
-  const textSpan = document.createElement('span');
+  const textSpan = document.createElement("span");
   textSpan.textContent = msg;
   t.appendChild(textSpan);
   layer.appendChild(t);
@@ -360,7 +359,8 @@ export function showSpringToast(layer: HTMLElement | null, msg: string) {
     onUpdate: (v) => {
       st.s = v;
       apply();
-      if (!leaving) t.style.opacity = String(Math.min(1, Math.max(0, (v - 0.6) / 0.3)));
+      if (!leaving)
+        t.style.opacity = String(Math.min(1, Math.max(0, (v - 0.6) / 0.3)));
     },
   });
   const y = new Spring(-18, {
@@ -376,8 +376,8 @@ export function showSpringToast(layer: HTMLElement | null, msg: string) {
   y.set(0);
   window.setTimeout(() => {
     leaving = true;
-    t.style.transition = 'opacity 0.22s';
-    t.style.opacity = '0';
+    t.style.transition = "opacity 0.22s";
+    t.style.opacity = "0";
     s.config(500, 40).set(0.85);
     y.config(500, 40).set(-22);
     y.onRest = () => t.remove();
@@ -395,28 +395,32 @@ export function ensureGlobalTactileListener(
   let pressed: HTMLElement | null = null;
   let pressedSwId: string | null = null;
 
-  document.addEventListener('pointerdown', (e) => {
+  document.addEventListener("pointerdown", (e) => {
     const target = e.target as HTMLElement | null;
     if (!target) return;
-    const sw = target.closest<HTMLElement>('.switch[data-sw]');
+    const sw = target.closest<HTMLElement>(".switch[data-sw]");
     if (sw?.dataset.sw) {
       pressedSwId = sw.dataset.sw;
       onSwitchPress?.(pressedSwId, true);
     }
-    const el = target.closest<HTMLElement>('[data-spring]');
+    const el = target.closest<HTMLElement>("[data-spring]");
     if (!el) return;
     pressed = el;
-    el.classList.add('down');
+    el.classList.add("down");
 
     spawnPointerShockwave(e.clientX, e.clientY);
-    playTactileCue('press');
+    playTactileCue("press");
 
-    const ratio = parseFloat(el.dataset.spring || '0.92') || 0.92;
+    const ratio = parseFloat(el.dataset.spring || "0.92") || 0.92;
     const prof = currentSkinProfile();
     const fx = fxOf(el);
     fx.scale.config(PRESS_CFG[0], PRESS_CFG[1]).set(ratio);
-    fx.scaleX.config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62).set(prof.squashX);
-    fx.scaleY.config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62).set(prof.squashY);
+    fx.scaleX
+      .config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62)
+      .set(prof.squashX);
+    fx.scaleY
+      .config(PRESS_CFG[0] * 0.85, PRESS_CFG[1] * 0.62)
+      .set(prof.squashY);
   });
 
   const release = () => {
@@ -427,13 +431,15 @@ export function ensureGlobalTactileListener(
     if (!pressed) return;
     const el = pressed;
     pressed = null;
-    el.classList.remove('down');
+    el.classList.remove("down");
     const fx = fxOf(el);
     fx.scale.config(RELEASE_CFG[0], RELEASE_CFG[1]).set(1);
     fx.scaleX.config(RELEASE_CFG[0] * 1.08, RELEASE_CFG[1]).set(1);
-    fx.scaleY.config(RELEASE_CFG[0] * 0.92, Math.max(10, RELEASE_CFG[1] - 2)).set(1);
+    fx.scaleY
+      .config(RELEASE_CFG[0] * 0.92, Math.max(10, RELEASE_CFG[1] - 2))
+      .set(1);
   };
 
-  document.addEventListener('pointerup', release);
-  document.addEventListener('pointercancel', release);
+  document.addEventListener("pointerup", release);
+  document.addEventListener("pointercancel", release);
 }
