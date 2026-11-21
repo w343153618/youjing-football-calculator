@@ -18,6 +18,7 @@ import {
   createBetSlipController,
   filterAndGroupRadarMatches,
 } from "../src/workspace/betSlipController.ts";
+import type { MatchItem } from "../src/prototype/quantTypes.ts";
 
 describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Polish", () => {
   it("Slice 01 · Seam 1: parses official Sporttery results and settles 5-pool print-time snapshots, partial recovery, void cap step-down, early elimination, and live early-hit hedge", () => {
@@ -1303,8 +1304,10 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
         })
       );
 
-      // Forged odds (9999) on known authoritative match gets bound to authoritative match odds!
-      const authMatch = FALLBACK_MATCHES[0];
+      // Forged odds (9999) on known authoritative single-eligible match gets bound to authoritative match odds!
+      const authMatch =
+        FALLBACK_MATCHES.find((m: MatchItem) => m.pools.HAD.single) ||
+        FALLBACK_MATCHES[0];
       const realHadHomeOdds = authMatch.pools.HAD.options[0].odds;
       const forgedAdd = ldg.mutateUserLedger(
         uid,
@@ -1346,6 +1349,137 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
       assert.equal(
         forgedAdd.entry.snapshot.lines[0].legs[0].odds,
         realHadHomeOdds
+      );
+
+      // 3b. Closed/unsold pool (selling: false / odds: 0), bogus optionKey, or non-single 1-leg line on authoritative match MUST be rejected (never fall back to client 1000x odds!)
+      const closedHadAuthMatch: MatchItem = {
+        ...authMatch,
+        id: "auth_closed_had",
+        pools: {
+          ...authMatch.pools,
+          HAD: {
+            ...authMatch.pools.HAD,
+            selling: false,
+            single: false,
+            options: authMatch.pools.HAD.options.map((o) => ({
+              ...o,
+              odds: 0,
+            })),
+          },
+          HHAD: {
+            ...authMatch.pools.HHAD,
+            selling: true,
+            single: false,
+          },
+        },
+      };
+      assert.throws(() =>
+        ldg.mutateUserLedger(
+          uid,
+          {
+            action: "add-entry",
+            kind: "paper",
+            title: "停售池伪造千倍赔率",
+            modeLabel: "2串1",
+            betCount: 1,
+            cost: 0,
+            paperRefCost: 2,
+            minPayout: 1000,
+            maxPayout: 1000,
+            snapshot: {
+              lines: [
+                {
+                  id: "closed_ln",
+                  modeLabel: "2串1",
+                  multiple: 1,
+                  legs: [
+                    {
+                      matchId: "auth_closed_had",
+                      poolCode: "HAD",
+                      optionKey: "h",
+                      odds: 1000,
+                    },
+                    {
+                      matchId: authMatch.id,
+                      poolCode: "HAD",
+                      optionKey: "h",
+                      odds: realHadHomeOdds,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          { authoritativeMatches: [closedHadAuthMatch, authMatch] }
+        )
+      );
+      assert.throws(() =>
+        ldg.mutateUserLedger(
+          uid,
+          {
+            action: "add-entry",
+            kind: "paper",
+            title: "伪造非法选项键",
+            modeLabel: "单关",
+            betCount: 1,
+            cost: 0,
+            paperRefCost: 2,
+            minPayout: 1000,
+            maxPayout: 1000,
+            snapshot: {
+              lines: [
+                {
+                  id: "bogus_ln",
+                  modeLabel: "单关",
+                  multiple: 1,
+                  legs: [
+                    {
+                      matchId: authMatch.id,
+                      poolCode: "HAD",
+                      optionKey: "bogus_opt",
+                      odds: 1000,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          { authoritativeMatches: [authMatch] }
+        )
+      );
+      assert.throws(() =>
+        ldg.mutateUserLedger(
+          uid,
+          {
+            action: "add-entry",
+            kind: "paper",
+            title: "未开单关伪造单关票",
+            modeLabel: "单关",
+            betCount: 1,
+            cost: 0,
+            paperRefCost: 2,
+            minPayout: 10,
+            maxPayout: 10,
+            snapshot: {
+              lines: [
+                {
+                  id: "nonsingle_ln",
+                  modeLabel: "单关",
+                  multiple: 1,
+                  legs: [
+                    {
+                      matchId: "auth_closed_had",
+                      poolCode: "HHAD",
+                      optionKey: "h",
+                      odds: 2.1,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          { authoritativeMatches: [closedHadAuthMatch] }
+        )
       );
 
       // 4. 2-click anti-tilt bypass blocked: settle as lost -> reset to pending -> delete STILL locks daily quota!

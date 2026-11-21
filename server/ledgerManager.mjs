@@ -80,13 +80,16 @@ function resolveAuthoritativePick(authMap, matchId, poolCode, optionKey) {
   const m = authMap?.get(matchId);
   if (!m || !m.pools) return null;
   const pool = m.pools[poolCode];
-  if (!pool || !Array.isArray(pool.options)) return null;
+  if (!pool || pool.selling === false || !Array.isArray(pool.options)) {
+    return null;
+  }
   const opt = pool.options.find((o) => String(o.key) === optionKey);
   if (!opt || !(Number(opt.odds) > 1)) return null;
   return {
     odds: Number(opt.odds),
     optionLabel: opt.label || optionKey,
     goalLine: m.pools.HHAD?.goalLine ?? "-1",
+    single: Boolean(pool.single),
     matchNumStr: m.matchNumStr,
     home: m.home,
     away: m.away,
@@ -131,9 +134,15 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
     const seenLineMatches = new Set();
     const legs = [];
     let minPoolCap = 8;
+    let lineInvalid = false;
+    let firstLegAuthSingle = true;
 
     for (const lg of ln.legs) {
-      if (!lg || typeof lg !== "object") continue;
+      if (!lg || typeof lg !== "object") {
+        if (strict) throw new Error("实票选项参数无效");
+        lineInvalid = true;
+        break;
+      }
       const matchId = String(lg.matchId ?? "")
         .trim()
         .slice(0, 32);
@@ -143,22 +152,36 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         .slice(0, 16);
       if (!matchId || !VALID_POOLS.has(poolCode) || !optionKey) {
         if (strict) throw new Error("实票选项参数无效");
-        continue;
+        lineInvalid = true;
+        break;
       }
       if (seenLineMatches.has(matchId)) {
         if (strict) throw new Error("同一张实票内禁止重复同一场赛事");
-        continue;
+        lineInvalid = true;
+        break;
       }
       seenLineMatches.add(matchId);
-      distinctMatchIds.add(matchId);
       minPoolCap = Math.min(minPoolCap, POOL_PARLAY_CAPS[poolCode] || 8);
 
+      const isKnownAuthMatch = Boolean(authMap?.has(matchId));
       const authPick = resolveAuthoritativePick(
         authMap,
         matchId,
         poolCode,
         optionKey
       );
+      if (isKnownAuthMatch && !authPick) {
+        if (strict) {
+          throw new Error(
+            "权威在售盘口未开售该玩法或选项无效，禁止写入自定义赔率"
+          );
+        }
+        return undefined;
+      }
+      if (legs.length === 0 && isKnownAuthMatch) {
+        firstLegAuthSingle = Boolean(authPick?.single);
+      }
+
       const resolvedOdds = authPick ? authPick.odds : clampCustomOdds(lg.odds);
       const resolvedGoalLine = authPick
         ? authPick.goalLine
@@ -190,7 +213,13 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
       });
     }
 
-    if (legs.length === 0) continue;
+    if (lineInvalid || legs.length === 0) continue;
+    if (legs.length === 1 && !firstLegAuthSingle) {
+      if (strict) {
+        throw new Error("该场次对应玩法未开单关，禁止伪造单关实票快照");
+      }
+      return undefined;
+    }
     if (legs.length > minPoolCap) {
       if (strict) {
         throw new Error(
@@ -198,6 +227,9 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         );
       }
       return undefined;
+    }
+    for (const vLeg of legs) {
+      distinctMatchIds.add(vLeg.matchId);
     }
     if (legs.length >= 2) hasParlayLine = true;
 
@@ -257,6 +289,14 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         poolCode,
         optionKey
       );
+      if (authM && !authPick) {
+        if (strict) {
+          throw new Error(
+            "权威在售盘口未开售该玩法或选项无效，禁止写入自定义赔率"
+          );
+        }
+        continue;
+      }
       picks.push({
         poolCode,
         optionKey,
