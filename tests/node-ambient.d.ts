@@ -153,25 +153,38 @@ declare module "node:url" {
 declare module "../server/quantEngine.mjs" {
   export const FALLBACK_MATCHES: any[];
   export const OFFICIAL_CRS_PAIRS: Array<[string, string]>;
-  export const OFFICIAL_COMBO_PASS_TABLE: Record<number, any[]>;
   export const POOL_MAX_PASS: Record<string, number>;
   export const bankerRoundCents: (...args: any[]) => number;
   export const bankerRoundParlayUnitPayout: (...args: any[]) => number;
-  export const roundHalfEvenBigInt: (...args: any[]) => bigint;
   export const statutorySingleBetCap: (...args: any[]) => number;
   export const devigPoolProbabilities: (...args: any[]) => any;
   export const calibrateMatchCoherentModel: (...args: any[]) => any;
   export const analyzeMatchMicroQuant: (...args: any[]) => any;
-  export const attachMicroQuant: (...args: any[]) => any[];
   export const parseSportteryRawJson: (...args: any[]) => any[];
   export const fetchOfficialMatchesServer: (...args: any[]) => Promise<any>;
+  export const parseSportteryResultsJson: (...args: any[]) => Map<string, any>;
+  export const fetchOfficialMatchResultsServer: (
+    ...args: any[]
+  ) => Promise<Map<string, any>>;
   export const computeTruthReport: (...args: any[]) => any;
   export const generateParetoPortfolio: (...args: any[]) => any[];
   export const generateFiveArchetypes: (...args: any[]) => any[];
   export const computeProOrderInsights: (...args: any[]) => any;
   export const optimizeBonusPlan: (...args: any[]) => any;
   export const archetypeToReport: (...args: any[]) => any;
+  export const buildXiaoGaoWarnings: (...args: any[]) => any[];
   export const evaluateQuantWorkspace: (...args: any[]) => any;
+  export const settleTicketSnapshotWithOfficialResults: (...args: any[]) => any;
+}
+
+declare module "../server/sportteryFeed.mjs" {
+  export const FALLBACK_MATCHES: any[];
+  export const parseSportteryRawJson: (...args: any[]) => any[];
+  export const fetchOfficialMatchesServer: (...args: any[]) => Promise<any>;
+  export const parseSportteryResultsJson: (...args: any[]) => Map<string, any>;
+  export const fetchOfficialMatchResultsServer: (
+    ...args: any[]
+  ) => Promise<Map<string, any>>;
 }
 
 declare module "../server/runtimeApp.mjs" {

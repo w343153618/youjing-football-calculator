@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   FALLBACK_MATCHES,
   OFFICIAL_CRS_PAIRS,
+  analyzeMatchMicroQuant,
   calibrateMatchCoherentModel,
   computeTruthReport,
   devigPoolProbabilities,
@@ -872,19 +873,24 @@ describe("Spec #1 (0014) · Ticket #2: OOS Fixture Remediation, Upstream Calibra
       path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
       "utf8"
     );
-    const quantSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "server/quantEngine.mjs"),
-      "utf8"
-    );
     assert.ok(
       appSrc.includes("比赛节奏相关性") &&
         appSrc.includes("低比分联动修正系数"),
       "SkinPhoneApp.tsx pace tile must clarify ρ as 低比分联动修正系数"
     );
-    assert.ok(
-      quantSrc.includes("低比分联动修正系数"),
-      "server/quantEngine.mjs must document paceCorrelation as 低比分联动修正系数"
-    );
+    for (const sampleMatch of (FALLBACK_MATCHES as MatchItem[]).slice(0, 4)) {
+      const cal = calibrateMatchCoherentModel(sampleMatch);
+      const mq = analyzeMatchMicroQuant(sampleMatch, cal);
+      assert.equal(
+        mq.paceCorrelation,
+        Number(cal.params.rho.toFixed(4)),
+        "analyzeMatchMicroQuant.paceCorrelation must expose the calibrated Dixon-Coles low-score linkage ρ"
+      );
+      assert.ok(
+        mq.paceCorrelation >= -0.25 && mq.paceCorrelation <= 0.25,
+        `Dixon-Coles ρ must stay bounded in [-0.25, 0.25], got ${mq.paceCorrelation}`
+      );
+    }
   });
 });
 

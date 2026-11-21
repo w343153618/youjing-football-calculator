@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { runRepositoryGuardrails } from "../scripts/check-guardrails.mjs";
 import {
   FALLBACK_MATCHES,
   archetypeToReport,
@@ -771,20 +772,29 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       "Negative-EV equivalent-arb match must NOT induce active betting in Slot ④"
     );
 
-    // Zero "零风险" strings anywhere in server/ or src/
-    for (const relFile of [
-      "server/quantEngine.mjs",
-      "server/manualQaEngine.mjs",
-      "src/mobile/SkinPhoneApp.tsx",
-      "src/manual/UserManualModal.tsx",
-    ]) {
-      const txt = fs.readFileSync(path.resolve(process.cwd(), relFile), "utf8");
-      assert.equal(
-        txt.includes("零风险"),
+    // Zero "零风险" strings in behavioral quant outputs and across all server/ & src/ modules
+    const quantOutputsJson = JSON.stringify({
+      fallback: FALLBACK_MATCHES,
+      portfolio: generateParetoPortfolio(
+        FALLBACK_MATCHES.slice(0, 3),
+        100,
+        "objective",
         false,
-        `${relFile} must contain zero "零风险" claims`
-      );
-    }
+        []
+      ),
+      m1ArbMicro: m1Arb.microQuant,
+    });
+    assert.equal(
+      quantOutputsJson.includes("零风险"),
+      false,
+      "Quant engine outputs must contain zero '零风险' claims"
+    );
+    const guardrailRes = runRepositoryGuardrails();
+    assert.equal(
+      guardrailRes.ok,
+      true,
+      `Repository guardrails must pass with zero '零风险' violations: ${guardrailRes.errors.join("; ")}`
+    );
 
     // 5. D-07: Kelly Criterion bankroll cap <= 2% on all negative-EV slips
     const favPick = [

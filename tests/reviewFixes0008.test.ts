@@ -7,6 +7,7 @@ import {
   FALLBACK_MATCHES,
   analyzeMatchMicroQuant,
   archetypeToReport,
+  calibrateMatchCoherentModel,
   evaluateQuantWorkspace,
   generateParetoPortfolio,
 } from "../server/quantEngine.mjs";
@@ -250,22 +251,49 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
     assert.equal(wsForged.effectiveReport.maxPayout, 0);
     assert.equal(wsForged.effectiveReport.canCheckout, false);
 
-    // 7. Code cleanliness & Glossary polish checks
-    const engineSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "server/quantEngine.mjs"),
-      "utf8"
-    );
-    assert.equal(
-      engineSrc.includes("五流派"),
+    // 7. Behavioral taxonomy & shared half-time thinning coherence checks across public seams
+    const portfolioCheck = generateParetoPortfolio(
+      FALLBACK_MATCHES.slice(0, 3) as MatchItem[],
+      100,
+      "objective",
       false,
-      "server/quantEngine.mjs must update lingering 五流派配单 JSDoc to 精算配单"
+      []
     );
-    const x1LoopMatches = engineSrc.match(/for\s*\(\s*let\s+x1\s*=\s*0/g) ?? [];
+    assert.equal(portfolioCheck.length, 4);
     assert.equal(
-      x1LoopMatches.length,
-      1,
-      `Expected exactly 1 shared Binomial half-time thinning x1/y1 loop in quantEngine.mjs, found ${x1LoopMatches.length}`
+      JSON.stringify(portfolioCheck).includes("五流派"),
+      false,
+      "Portfolio plans must expose 3+1 精算配单 taxonomy without legacy 五流派 copy"
     );
+
+    const mFull5 = FALLBACK_MATCHES[0] as MatchItem;
+    const mHadOnly: MatchItem = {
+      ...mFull5,
+      id: "ht-thinning-had-only",
+      pools: {
+        ...mFull5.pools,
+        HHAD: { ...mFull5.pools.HHAD, selling: false, options: [] },
+        HAFU: { ...mFull5.pools.HAFU, selling: false, options: [] },
+        TTG: { ...mFull5.pools.TTG, selling: false, options: [] },
+        CRS: { ...mFull5.pools.CRS, selling: false, options: [] },
+      },
+    };
+    for (const sampleM of [mFull5, mHadOnly]) {
+      const cal = calibrateMatchCoherentModel(sampleM);
+      for (const [hk, hProb] of Object.entries(
+        cal.poolProbs.HAFU as Record<string, number>
+      )) {
+        const atomicSum = (
+          cal.atomicStates as Array<{ ht: string; ft: string; prob: number }>
+        )
+          .filter((st) => `${st.ht}${st.ft}` === hk)
+          .reduce((a, st) => a + st.prob, 0);
+        assert.ok(
+          Math.abs(atomicSum - hProb) < 1e-12,
+          `HAFU[${hk}] marginal (${hProb}) must match 139-state atomic HT thinning sum (${atomicSum})`
+        );
+      }
+    }
 
     const appSrc = fs.readFileSync(
       path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),

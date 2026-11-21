@@ -370,6 +370,7 @@ export interface QuantWorkspaceResponse {
   appliedPlan: ArchetypePlan | null;
   insights: ProOrderInsights;
   portfolioPlans: ArchetypePlan[];
+  objectivePortfolioPlans?: ArchetypePlan[];
   fivePlans: ArchetypePlan[];
   subjectiveEVPct: number;
   allWarnings: RadarWarning[];
