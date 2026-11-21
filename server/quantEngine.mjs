@@ -394,9 +394,10 @@ export const OFFICIAL_CRS_PAIRS = [
 
 /**
  * 单池非线性去水求解器（Seam A）：
- * - 默认优先采用 Shin (1993) 知情交易博弈二分法（z ∈ (1e-9, 1 - 1e-9)，容差 <= 1e-12）剥离冷门长尾保护性暗扣；
- * - 当 V <= 1 + 1e-6 或极端畸形水位导致 Shin 越界时，平滑回退 Power 幂次法（q_i^k）；
- * - 当 n < 2 或存在 <= 1.0 超界水位时兜底回退 Multiplicative 等比归一化，确保输出概率恒属于 (0, 1] 且总和误差 < 1e-12。
+ * - 默认优先采用 Shin (1993) 知情交易博弈二分法（z ∈ (1e-12, 1 - 1e-12)，容差 <= 1e-12）剥离冷门长尾保护性暗扣，
+ *   并在 odds = 1.00 分界及 z -> 1^- 上界处保持 C^0 连续保序延拓（消除 1.00 分支跳变）；
+ * - 对极小正浮点数输入施加安全下界防护（>= 1e-100），杜绝 1 / odds 溢出产生 Infinity / NaN；
+ * - 当 V <= 1 + 1e-9 时平滑回退 Power 幂次法（q_i^k）或 Multiplicative 等比归一化，确保输出概率有限且总和误差 < 1e-12。
  */
 export function devigPoolProbabilities(rawInputs, method = "shin") {
   if (!Array.isArray(rawInputs) || rawInputs.length === 0) {
@@ -410,17 +411,23 @@ export function devigPoolProbabilities(rawInputs, method = "shin") {
     };
   }
 
+  const SAFE_MIN_POSITIVE_ODDS = 1e-100;
   const odds = rawInputs.map((item) =>
     typeof item === "object" && item !== null ? Number(item.odds) : Number(item)
   );
   const n = odds.length;
 
   if (odds.some((o) => !Number.isFinite(o) || o <= 0)) {
-    const validInv = odds.map((o) => (Number.isFinite(o) && o > 0 ? 1 / o : 0));
+    const validInv = odds.map((o) =>
+      Number.isFinite(o) && o > 0 ? 1 / Math.max(SAFE_MIN_POSITIVE_ODDS, o) : 0
+    );
     const invSum = validInv.reduce((a, b) => a + b, 0);
     const probs =
-      invSum > 0 ? validInv.map((q) => q / invSum) : odds.map(() => 1 / n);
-    const payoutRatio = invSum > 0 ? 1 / invSum : 0.88;
+      invSum > 0 && Number.isFinite(invSum)
+        ? validInv.map((q) => q / invSum)
+        : odds.map(() => 1 / n);
+    const payoutRatio =
+      invSum > 0 && Number.isFinite(invSum) ? 1 / invSum : 0.88;
     return {
       probs,
       methodUsed: "multiplicative",
@@ -432,8 +439,9 @@ export function devigPoolProbabilities(rawInputs, method = "shin") {
   }
 
   if (n === 1) {
-    const overround = 1 / odds[0];
-    const payoutRatio = odds[0];
+    const safeO0 = Math.max(SAFE_MIN_POSITIVE_ODDS, odds[0]);
+    const overround = 1 / safeO0;
+    const payoutRatio = safeO0;
     return {
       probs: [1],
       methodUsed: "multiplicative",
@@ -446,11 +454,14 @@ export function devigPoolProbabilities(rawInputs, method = "shin") {
 
   const q = new Float64Array(n);
   let V = 0;
+  let sumQSq = 0;
   let allSubUnitQ = true;
   for (let i = 0; i < n; i++) {
-    const qi = 1 / odds[i];
+    const safeOdds = Math.max(SAFE_MIN_POSITIVE_ODDS, odds[i]);
+    const qi = 1 / safeOdds;
     q[i] = qi;
     V += qi;
+    sumQSq += qi * qi;
     if (!(qi > 0 && qi < 1)) allSubUnitQ = false;
   }
   const payoutRatio = 1 / V;
@@ -545,7 +556,22 @@ export function devigPoolProbabilities(rawInputs, method = "shin") {
   };
 
   const solveShin = () => {
-    if (!(V > 1 + 1e-6 && allSubUnitQ)) return null;
+    if (!(V > 1 + 1e-9)) return null;
+    // Continuous z -> 1^- boundary extension when ultra-low sub-1.0 odds push sum(q_i^2) >= V
+    if (sumQSq > 0 && Number.isFinite(sumQSq) && sumQSq >= V * (1 - 1e-13)) {
+      const sqRaw = Array.from(q, (qi) => (qi * qi) / sumQSq);
+      const sqSum = sqRaw.reduce((a, b) => a + b, 0);
+      if (sqSum > 0 && Number.isFinite(sqSum)) {
+        return {
+          probs: sqRaw.map((p) => p / sqSum),
+          methodUsed: "shin",
+          overround: V,
+          payoutRatio,
+          vig,
+          param: 1,
+        };
+      }
+    }
     const twoQSqOverV = new Float64Array(n);
     for (let i = 0; i < n; i++) {
       twoQSqOverV[i] = (2 * q[i] * q[i]) / V;
@@ -561,8 +587,8 @@ export function devigPoolProbabilities(rawInputs, method = "shin") {
       return s;
     };
 
-    let zLo = 1e-9;
-    let zHi = 1 - 1e-9;
+    let zLo = 1e-12;
+    let zHi = 1 - 1e-12;
     const sLo = evalSum(zLo);
     const sHi = evalSum(zHi);
     if (!(sLo > 1 + 1e-13 && sHi < 1 - 1e-13)) return null;
@@ -653,7 +679,28 @@ function buildPool(
 }
 
 function parsePoolTimestampMinutes(pool) {
-  if (!pool || typeof pool.updateTime !== "string") return null;
+  if (
+    !pool ||
+    typeof pool.updateDate !== "string" ||
+    typeof pool.updateTime !== "string"
+  ) {
+    return null;
+  }
+  const dm = /^(20\d{2})-(\d{2})-(\d{2})$/.exec(pool.updateDate.trim());
+  if (!dm) return null;
+  const yy = Number(dm[1]);
+  const mo = Number(dm[2]);
+  const dd = Number(dm[3]);
+  const utcMs = Date.UTC(yy, mo - 1, dd);
+  if (!Number.isFinite(utcMs)) return null;
+  const checkDate = new Date(utcMs);
+  if (
+    checkDate.getUTCFullYear() !== yy ||
+    checkDate.getUTCMonth() + 1 !== mo ||
+    checkDate.getUTCDate() !== dd
+  ) {
+    return null;
+  }
   const tm = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(pool.updateTime.trim());
   if (!tm) return null;
   const hh = Number(tm[1]);
@@ -662,38 +709,14 @@ function parsePoolTimestampMinutes(pool) {
   if (!(hh >= 0 && hh < 24 && mm >= 0 && mm < 60 && ss >= 0 && ss < 60)) {
     return null;
   }
-  const todMin = hh * 60 + mm + ss / 60;
-  if (typeof pool.updateDate === "string") {
-    const dm = /^(20\d{2})-(\d{2})-(\d{2})$/.exec(pool.updateDate.trim());
-    if (dm) {
-      const baseUtcMin = Math.round(
-        Date.UTC(Number(dm[1]), Number(dm[2]) - 1, Number(dm[3])) / 60_000
-      );
-      if (Number.isFinite(baseUtcMin)) return baseUtcMin + todMin;
-    }
-  }
-  return todMin;
+  return Math.round(utcMs / 60_000) + hh * 60 + mm + ss / 60;
 }
 
 function resolveNormalizedMatchPoolTimestamps(pools) {
   const codes = ["HAD", "HHAD", "HAFU", "TTG", "CRS"];
   const raw = {};
-  let hasExplicitDate = false;
-  let hasLateEvening = false;
   for (const c of codes) {
-    const p = pools?.[c];
-    const v = parsePoolTimestampMinutes(p);
-    raw[c] = v;
-    if (p?.updateDate) hasExplicitDate = true;
-    if (v !== null && v >= 16 * 60 && v < 24 * 60) hasLateEvening = true;
-  }
-  if (!hasExplicitDate && hasLateEvening) {
-    // Sporttery daily selling window spans 11:00 -> 01:00/03:00 (+1d); wrap post-midnight times when updateDate is absent
-    for (const c of codes) {
-      if (raw[c] !== null && raw[c] < 7 * 60) {
-        raw[c] += 1440;
-      }
-    }
+    raw[c] = parsePoolTimestampMinutes(pools?.[c]);
   }
   return raw;
 }
@@ -1639,13 +1662,6 @@ export function calibrateMatchCoherentModel(match) {
     // Only apply upward lag pull toward the cross-pool prior when explicit updateDate + updateTime
     // prove the sub-pool genuinely lagged behind the main pool by >= 30 minutes without fresher contradiction.
     const normTs = resolveNormalizedMatchPoolTimestamps(rawPools);
-    const hasExplicitDate = Boolean(
-      rawPools.HAD?.updateDate ||
-      rawPools.HHAD?.updateDate ||
-      rawPools.TTG?.updateDate ||
-      rawPools.HAFU?.updateDate ||
-      rawPools.CRS?.updateDate
-    );
     const ttgTs = ttgTarget ? normTs.TTG : null;
     const hafuTs = hafuTarget ? normTs.HAFU : null;
     const crsTs = crsTarget ? normTs.CRS : null;
@@ -1658,7 +1674,6 @@ export function calibrateMatchCoherentModel(match) {
 
     let crsExactTtgSum = null;
     if (
-      hasExplicitDate &&
       crsTarget &&
       ttgTarget &&
       crsTs !== null &&
@@ -1676,18 +1691,15 @@ export function calibrateMatchCoherentModel(match) {
         }
       }
     }
-    const ttgLagValid = hasExplicitDate
-      ? ttgTs !== null &&
-        mainRefTs !== null &&
-        mainRefTs - ttgTs >= 30 &&
-        !(crsExactTtgSum !== null)
-      : true;
-    const hafuLagValid = hasExplicitDate
-      ? hafuTs !== null && mainRefTs !== null && mainRefTs - hafuTs >= 30
-      : true;
-    const crsLagValid = hasExplicitDate
-      ? crsTs !== null && mainRefTs !== null && mainRefTs - crsTs >= 30
-      : true;
+    const ttgLagValid =
+      ttgTs !== null &&
+      mainRefTs !== null &&
+      mainRefTs - ttgTs >= 30 &&
+      !(crsExactTtgSum !== null);
+    const hafuLagValid =
+      hafuTs !== null && mainRefTs !== null && mainRefTs - hafuTs >= 30;
+    const crsLagValid =
+      crsTs !== null && mainRefTs !== null && mainRefTs - crsTs >= 30;
 
     const tTtg = ttgTarget
       ? huberNormalize(
@@ -5117,23 +5129,47 @@ function tiltAtomicProbsByStance(baseProbs, match, stance) {
   const atomicLen = ATOMIC_TEMPLATES.length;
   const out = new Float64Array(atomicLen);
 
+  const homeBoost = Math.exp(0.22);
+  const drawBoost = Math.exp(0.24);
+  const dogBoost = Math.exp(0.28);
+
   let underdogFt = "a";
+  let deepAbsGl = 0;
+  let narrowFavBoost = 1;
   if (stance === "upset-watch") {
     let pH = 0;
     let pA = 0;
+    let pD = 0;
     for (let i = 0; i < atomicLen; i++) {
       const ft = ATOMIC_TEMPLATES[i].ft;
       if (ft === "h") pH += baseProbs[i];
       else if (ft === "a") pA += baseProbs[i];
+      else pD += baseProbs[i];
     }
     const gl = resolveGoalLineNum(match);
     const isAwayFav = Math.abs(pA - pH) > 1e-6 ? pA > pH : gl > 0;
     underdogFt = isAwayFav ? "h" : "a";
+    if (
+      Math.abs(gl) >= 2 &&
+      ((gl <= -2 && !isAwayFav) || (gl >= 2 && isAwayFav))
+    ) {
+      deepAbsGl = Math.abs(gl);
+      let pFavCover = 0;
+      for (let i = 0; i < atomicLen; i++) {
+        const favMargin = isAwayFav
+          ? -ATOMIC_TEMPLATES[i].goalDiff
+          : ATOMIC_TEMPLATES[i].goalDiff;
+        if (favMargin >= deepAbsGl) pFavCover += baseProbs[i];
+      }
+      const pDog = isAwayFav ? pH : pA;
+      const nonNarrowMass = pFavCover + pD + pDog;
+      if (nonNarrowMass > 1e-12 && pFavCover > 1e-12) {
+        const bNeutral =
+          (pFavCover + pD * drawBoost + pDog * dogBoost) / nonNarrowMass;
+        narrowFavBoost = bNeutral + 0.25 * Math.max(0, drawBoost - bNeutral);
+      }
+    }
   }
-
-  const homeBoost = Math.exp(0.22);
-  const drawBoost = Math.exp(0.24);
-  const dogBoost = Math.exp(0.28);
 
   let sum = 0;
   for (let i = 0; i < atomicLen; i++) {
@@ -5142,8 +5178,19 @@ function tiltAtomicProbsByStance(baseProbs, match, stance) {
     if (stance === "home-lean") {
       if (ft === "h") mult = homeBoost;
     } else if (stance === "upset-watch") {
-      if (ft === "d") mult = drawBoost;
-      else if (ft === underdogFt) mult = dogBoost;
+      if (ft === "d") {
+        mult = drawBoost;
+      } else if (ft === underdogFt) {
+        mult = dogBoost;
+      } else if (deepAbsGl >= 2) {
+        const favMargin =
+          underdogFt === "h"
+            ? -ATOMIC_TEMPLATES[i].goalDiff
+            : ATOMIC_TEMPLATES[i].goalDiff;
+        if (favMargin >= 1 && favMargin <= deepAbsGl - 1) {
+          mult = narrowFavBoost;
+        }
+      }
     }
     const w = baseProbs[i] * mult;
     out[i] = w;
@@ -5189,10 +5236,16 @@ function tiltAtomicProbsBySubjectiveDelta(
       }
     }
   }
-  if (!(pS > 0 && pS < 0.999)) {
+  if (!(pS > 0 && pS < 1 - 1e-9)) {
     return baseProbs;
   }
-  const pPrime = Math.min(0.98, Math.max(0.02, pS * (1 + delta / 100)));
+  const rawTarget = pS * (1 + delta / 100);
+  const pPrime =
+    delta > 0
+      ? pS < 0.98
+        ? Math.min(0.98, rawTarget)
+        : Math.min(1 - 1e-9, pS + (1 - pS) * Math.min(0.99, delta / 100))
+      : Math.min(pS, Math.max(1e-15, rawTarget));
   const hitScale = pPrime / pS;
   const missScale = (1 - pPrime) / (1 - pS);
   const out = new Float64Array(atomicLen);
@@ -5608,20 +5661,13 @@ function scanMatchAlphaCandidates(
     }
     const isMainPool = poolCode === "HAD" || poolCode === "HHAD";
     const curPoolTs = poolTsMap[poolCode] ?? null;
-    const hasExplicitScanDate = Boolean(
-      cal.pools?.HAD?.updateDate ||
-      cal.pools?.HHAD?.updateDate ||
-      cal.pools?.TTG?.updateDate ||
-      cal.pools?.HAFU?.updateDate ||
-      cal.pools?.CRS?.updateDate
-    );
-    const isUnverifiedSubPoolLag =
+    const isVerifiedSubPoolLag =
       !isMainPool &&
-      hasExplicitScanDate &&
       hasRealTsSpread &&
       curPoolTs !== null &&
       mainLatestTs !== null &&
-      mainLatestTs - curPoolTs < 30;
+      mainLatestTs - curPoolTs >= 30;
+    const isUnverifiedSubPoolLag = !isMainPool && !isVerifiedSubPoolLag;
     // Sub-pool updated strictly AFTER main pool (>1 min) moved first in live trading — not a stale lag candidate
     if (
       !isMainPool &&
@@ -5776,7 +5822,7 @@ function formatMatchAlphaScanSummary(scan) {
   return `五池定价严密：各玩法经经验贝叶斯收缩校准后最高期望返还 ${maxRetPct}（未达 101.0% 纯+EV门禁），无跨盘错价洼地`;
 }
 
-/** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + 比赛节奏相关性 + 跨盘错价扫描） */
+/** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + Dixon-Coles 低比分联动修正系数 ρ + 跨盘错价扫描） */
 export function analyzeMatchMicroQuant(m, precomputedCal) {
   const cal = precomputedCal ?? calibrateMatchCoherentModel(m);
   const scoreGrid = cal.scoreGrid;
@@ -5878,6 +5924,7 @@ export function analyzeMatchMicroQuant(m, precomputedCal) {
     microBadges.push({ text: `🔻${droppingOpts[0]}降水`, tone: "purple" });
   }
 
+  // paceCorrelation 为 Dixon-Coles {0:0, 1:0, 0:1, 1:1} 低比分联动修正系数 ρ（非全场总进球 Pearson 相关系数）
   const paceCorrelation = Number(cal.params.rho.toFixed(4));
   const paceLabel =
     paceCorrelation <= -0.05

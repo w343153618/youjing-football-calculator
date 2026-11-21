@@ -294,8 +294,20 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       id: "b1-pos-ev-lag",
       pools: {
         ...m0Base.pools,
+        HAD: {
+          ...m0Base.pools.HAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
+        HHAD: {
+          ...m0Base.pools.HHAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
         TTG: {
           ...m0Base.pools.TTG,
+          updateDate: "2026-11-20",
+          updateTime: "18:30:00",
           options: m0Base.pools.TTG.options.map((o) =>
             o.key === "s2" ? { ...o, odds: 4.65 } : o
           ),
@@ -426,8 +438,20 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       id: "b1-hafu-home-lag",
       pools: {
         ...m0Base.pools,
+        HAD: {
+          ...m0Base.pools.HAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
+        HHAD: {
+          ...m0Base.pools.HHAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
         HAFU: {
           ...m0Base.pools.HAFU,
+          updateDate: "2026-11-20",
+          updateTime: "18:30:00",
           options: m0Base.pools.HAFU.options.map((o) =>
             o.key === "hh" ? { ...o, odds: 4.8 } : o
           ),

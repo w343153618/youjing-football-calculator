@@ -1210,7 +1210,17 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
       raw.hhad.h = Math.max(1.06, 1 / (rawInvHh * scaleHd)).toFixed(2);
       raw.hhad.d = Math.max(1.06, 1 / (rawInvHd * scaleHd)).toFixed(2);
       if (opts?.lag) {
+        raw.had.updateDate = "2026-11-20";
+        raw.had.updateTime = "21:30:00";
+        raw.hhad.updateDate = "2026-11-20";
+        raw.hhad.updateTime = "21:30:00";
+        raw.ttg.updateDate = "2026-11-20";
+        raw.ttg.updateTime = "21:30:00";
+        raw.crs.updateDate = "2026-11-20";
+        raw.crs.updateTime = "21:30:00";
         if (opts.lag.poolCode === "TTG") {
+          raw.ttg.updateTime = "18:30:00";
+          raw.crs.updateTime = "18:30:00";
           raw.ttg[opts.lag.key] = String(
             Number((Number(raw.ttg[opts.lag.key]) * opts.lag.mult).toFixed(2))
           );
@@ -1219,6 +1229,7 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
             Number((Number(raw.hhad[opts.lag.key]) * opts.lag.mult).toFixed(2))
           );
         } else if (opts.lag.poolCode === "CRS") {
+          raw.crs.updateTime = "18:30:00";
           const pair = OFFICIAL_CRS_PAIRS.find(
             ([, l]: [string, string]) => l === opts.lag!.key
           )!;

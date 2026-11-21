@@ -277,14 +277,26 @@ describe("Seam 2: Bonus Optimizer, Five Archetypes, Equivalent Arbitrage & Stagg
     assert.ok(alphaRadar.totalCost <= 44);
     assert.ok(alphaRadar.savedCash >= 56);
 
-    // Also verify 36% guardrail when alpha-radar is actively triggered on a lagged sub-pool match
+    // Also verify 36% guardrail when alpha-radar is actively triggered on a timestamp-verified lagged sub-pool match
     const laggedMatch: MatchItem = {
       ...FALLBACK_MATCHES[0],
       id: "seam2-lag-alpha",
       pools: {
         ...FALLBACK_MATCHES[0].pools,
+        HAD: {
+          ...FALLBACK_MATCHES[0].pools.HAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
+        HHAD: {
+          ...FALLBACK_MATCHES[0].pools.HHAD,
+          updateDate: "2026-11-20",
+          updateTime: "21:30:00",
+        },
         TTG: {
           ...FALLBACK_MATCHES[0].pools.TTG,
+          updateDate: "2026-11-20",
+          updateTime: "18:30:00",
           options: FALLBACK_MATCHES[0].pools.TTG.options.map((o) =>
             o.key === "s2" ? { ...o, odds: 4.65 } : o
           ),

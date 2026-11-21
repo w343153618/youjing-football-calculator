@@ -1327,9 +1327,21 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
     // 6. A2-(b).1 & A2-(c).4: Slot ④ emits NO multi-leg resonance parlay when legal singles exist, and blocks negative-shrunk-EV non-single pair even under stance tilt
     const lagSingleA = structuredClone(FALLBACK_MATCHES[0]);
     lagSingleA.id = "LAG-SGL-A";
+    lagSingleA.pools.HAD.updateDate = "2026-11-20";
+    lagSingleA.pools.HAD.updateTime = "21:30:00";
+    lagSingleA.pools.HHAD.updateDate = "2026-11-20";
+    lagSingleA.pools.HHAD.updateTime = "21:30:00";
+    lagSingleA.pools.HAFU.updateDate = "2026-11-20";
+    lagSingleA.pools.HAFU.updateTime = "18:30:00";
     lagSingleA.pools.HAFU.options.find((o: any) => o.key === "dh")!.odds = 9.5;
     const lagSingleB = structuredClone(FALLBACK_MATCHES[2]);
     lagSingleB.id = "LAG-SGL-B";
+    lagSingleB.pools.HAD.updateDate = "2026-11-20";
+    lagSingleB.pools.HAD.updateTime = "21:30:00";
+    lagSingleB.pools.HHAD.updateDate = "2026-11-20";
+    lagSingleB.pools.HHAD.updateTime = "21:30:00";
+    lagSingleB.pools.HAFU.updateDate = "2026-11-20";
+    lagSingleB.pools.HAFU.updateTime = "18:30:00";
     lagSingleB.pools.HAFU.options.find((o: any) => o.key === "dh")!.odds = 12.0;
     const p4TwoSingles = generateParetoPortfolio(
       [lagSingleA, lagSingleB],

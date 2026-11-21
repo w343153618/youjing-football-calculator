@@ -5244,7 +5244,7 @@ export function SkinPhoneApp({
                     style={{ fontFamily: "var(--font-ui)" }}
                   >
                     <span>
-                      比赛节奏相关性 · {mq.paceLabel}（ρ=
+                      比赛节奏相关性 · {mq.paceLabel}（低比分联动修正系数 ρ=
                       {mq.paceCorrelation >= 0 ? "+" : ""}
                       {mq.paceCorrelation.toFixed(2)}）
                     </span>

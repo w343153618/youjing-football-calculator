@@ -2,6 +2,12 @@
   "schemaVersion": "1.0.0-real-sporttery-oos",
   "source": "https://webapi.sporttery.cn/gateway/uniform/football/getFixedBonusV1.qry?clientCode=3001",
   "description": "Frozen genuine China Sporttery settled 5-pool matches (closing fixed odds + official settled results, 0 synthetic profiles, 0 CRS tick violations).",
+  "meta": {
+    "timestampSemantics": "各玩法子对象（had/hhad/hafu/ttg/crs）的 updateDate + updateTime 为中国体彩 getFixedBonusV1.qry 官方末次固定奖金报价发布时间；记录顶层 matchDate + matchTime 镜像自胜平负末次报价时间（had.updateDate + had.updateTime），并非官方赛事开球时间（开球时刻须另查赛事头部接口，不可将顶层 matchTime 当作开球时间用于早晚场时间差检验）。",
+    "poolQuoteTimestampSource": "getFixedBonusV1.qry 各池末次固定奖金报价时间戳（updateDate + updateTime）",
+    "matchTimeFieldMeaning": "镜像 had.updateDate + had.updateTime（胜平负末次报价时间，非赛事开球时间）",
+    "settledResultAudit": "622 场完场赛果全量对齐中国体彩官方 90 分钟常规时间半全场与全场结算公告（含 11 场高比分非标准比分项校准）。"
+  },
   "matchCount": 622,
   "redTeamAudit112Range": [
     2042600,
@@ -82288,13 +82294,15 @@
         "s1saf": "0"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 0,
+        "ftAway": 9,
         "hadKey": "a",
         "hhadKey": "ha",
         "hafuKey": "aa",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "负其它",
+        "htHome": 0,
+        "htAway": 5
       },
       "cycle": 17
     },
@@ -85408,13 +85416,15 @@
         "s1saf": "-1"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 4,
+        "ftAway": 3,
         "hadKey": "h",
         "hhadKey": "hd",
         "hafuKey": "dh",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 1,
+        "htAway": 1
       },
       "cycle": 18
     },
@@ -87358,13 +87368,15 @@
         "s1saf": "0"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 7,
+        "ftAway": 4,
         "hadKey": "h",
         "hhadKey": "hh",
         "hafuKey": "ah",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 3,
+        "htAway": 4
       },
       "cycle": 18
     },
@@ -88723,13 +88735,15 @@
         "s1saf": "-1"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 0,
+        "ftAway": 6,
         "hadKey": "a",
         "hhadKey": "ha",
         "hafuKey": "aa",
         "ttgKey": "s6",
-        "crsLabel": "胜其它"
+        "crsLabel": "负其它",
+        "htHome": 0,
+        "htAway": 4
       },
       "cycle": 19
     },
@@ -90868,13 +90882,15 @@
         "s1saf": "0"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 1,
+        "ftAway": 9,
         "hadKey": "a",
         "hhadKey": "ha",
         "hafuKey": "aa",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "负其它",
+        "htHome": 0,
+        "htAway": 3
       },
       "cycle": 19
     },
@@ -93404,12 +93420,14 @@
       },
       "outcome": {
         "ftHome": 6,
-        "ftAway": 0,
+        "ftAway": 1,
         "hadKey": "h",
         "hhadKey": "hh",
         "hafuKey": "hh",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 4,
+        "htAway": 1
       },
       "cycle": 20
     },
@@ -105493,13 +105511,15 @@
         "s1saf": "0"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 4,
+        "ftAway": 3,
         "hadKey": "h",
         "hhadKey": "hd",
         "hafuKey": "dh",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 1,
+        "htAway": 1
       },
       "cycle": 22
     },
@@ -105883,13 +105903,15 @@
         "s1saf": "0"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 4,
+        "ftAway": 4,
         "hadKey": "d",
         "hhadKey": "ha",
         "hafuKey": "dd",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "平其它",
+        "htHome": 2,
+        "htAway": 2
       },
       "cycle": 22
     },
@@ -111733,13 +111755,15 @@
         "s1saf": "-1"
       },
       "outcome": {
-        "ftHome": 6,
+        "ftHome": 7,
         "ftAway": 0,
         "hadKey": "h",
         "hhadKey": "hh",
         "hafuKey": "hh",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 5,
+        "htAway": 0
       },
       "cycle": 23
     },
@@ -114074,12 +114098,14 @@
       },
       "outcome": {
         "ftHome": 6,
-        "ftAway": 0,
+        "ftAway": 1,
         "hadKey": "h",
         "hhadKey": "hh",
         "hafuKey": "hh",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 3,
+        "htAway": 0
       },
       "cycle": 24
     },
@@ -116023,13 +116049,15 @@
         "s1saf": "-1"
       },
       "outcome": {
-        "ftHome": 6,
-        "ftAway": 0,
+        "ftHome": 5,
+        "ftAway": 4,
         "hadKey": "h",
         "hhadKey": "hd",
         "hafuKey": "ah",
         "ttgKey": "s7",
-        "crsLabel": "胜其它"
+        "crsLabel": "胜其它",
+        "htHome": 1,
+        "htAway": 3
       },
       "cycle": 24
     },

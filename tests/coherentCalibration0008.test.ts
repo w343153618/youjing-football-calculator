@@ -100,7 +100,7 @@ describe("Spec 0008 · Seam A: Non-Linear Shin/Power De-Vigging & 4-Parameter Co
       `Expected 31-way CRS @180 longshot Shin (${shinCrs.probs[idx25]}) < 0.5 * Multiplicative (${multCrs.probs[idx25]})`
     );
 
-    // 3. Degenerate boundary fallbacks: V <= 1 + 1e-6 -> Power; O_i <= 1.0 or n < 2 -> Multiplicative
+    // 3. Degenerate boundary handling: V <= 1 + 1e-9 -> Power; O_i <= 1.0 stays continuous Shin (Spec 0014 AC 5); O_i <= 0 or n < 2 -> Multiplicative
     const zeroVig = devig([2.0, 2.0], "shin");
     assert.equal(zeroVig.methodUsed, "power");
     assert.ok(Math.abs(zeroVig.probs[0] - 0.5) < 1e-12);
@@ -111,11 +111,15 @@ describe("Spec 0008 · Seam A: Non-Linear Shin/Power De-Vigging & 4-Parameter Co
     assert.ok(Math.abs(underround.probs[0] + underround.probs[1] - 1) < 1e-12);
 
     const subUnitOdds = devig([0.95, 25.0], "shin");
-    assert.equal(subUnitOdds.methodUsed, "multiplicative");
+    assert.equal(subUnitOdds.methodUsed, "shin");
     assert.ok(subUnitOdds.probs.every((p: number) => p > 0 && p < 1));
     assert.ok(
       Math.abs(subUnitOdds.probs[0] + subUnitOdds.probs[1] - 1) < 1e-12
     );
+
+    const nonPositiveOdds = devig([0, 25.0], "shin");
+    assert.equal(nonPositiveOdds.methodUsed, "multiplicative");
+    assert.deepEqual(nonPositiveOdds.probs, [0, 1]);
 
     const singleOpt = devig([1.85], "shin");
     assert.equal(singleOpt.methodUsed, "multiplicative");

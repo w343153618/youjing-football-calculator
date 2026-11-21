@@ -32,6 +32,7 @@ export interface MatchPool {
   payoutRatio: number;
   vig: number;
   updateTime: string;
+  updateDate?: string;
   options: OddsOption[];
 }
 
@@ -70,6 +71,7 @@ export interface MatchMicroQuant {
   arbitrages: EquivalentArbItem[];
   steamSignal: string;
   microBadges: MicroBadge[];
+  /** Dixon-Coles {0:0, 1:0, 0:1, 1:1} 低比分联动修正系数 ρ（非全场进球 Pearson 相关系数） */
   paceCorrelation: number;
   paceLabel: "防守死锁" | "均衡节奏" | "开放对攻";
   alphaScanSummary: string;
