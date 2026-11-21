@@ -13,6 +13,8 @@ import {
   type BonusOptMode,
   type BridgeMatchCandidate,
   type EquivalentArbItem,
+  type LedgerOutcomeStatus,
+  type LedgerTicketSnapshot,
   type MatchItem,
   type PoolCode,
   type PortfolioKey,
@@ -40,7 +42,9 @@ import {
 import {
   buildMatchIntelDigest,
   buildRadarSignature,
+  computeSportteryCutoffStatus,
   createBetSlipController,
+  filterAndGroupRadarMatches,
   normalizeBudgetYuan,
   resolveComboTicketBreakdown,
   sortComboRows,
@@ -121,12 +125,16 @@ function splitTerminalPosterSlips(
   singleSlipCost?: number
 ): Array<{ key: string; left: string; right: string }> {
   const totalMult = Math.max(1, rawMultiple);
+  const unitSlipCost =
+    typeof singleSlipCost === "number" && singleSlipCost > 0 && totalMult > 0
+      ? Math.max(2, Math.round(singleSlipCost / totalMult))
+      : 2;
   if (totalMult <= 99) {
     return [
       {
         key: id,
         left,
-        right: `${modeLabel} · ${totalMult}倍 (¥${singleSlipCost ?? totalMult * 2})`,
+        right: `${modeLabel} · ${totalMult}倍 (¥${singleSlipCost ?? totalMult * unitSlipCost})`,
       },
     ];
   }
@@ -139,7 +147,7 @@ function splitTerminalPosterSlips(
     slips.push({
       key: `${id}-p${idx}`,
       left: `${left} [第${idx}/${slipCount}张]`,
-      right: `${modeLabel} · ${chunk}倍 (¥${chunk * 2})`,
+      right: `${modeLabel} · ${chunk}倍 (¥${chunk * unitSlipCost})`,
     });
     rem -= chunk;
     idx += 1;
@@ -155,6 +163,7 @@ interface LedgerDraftPayload {
   paperRefCost: number;
   minPayout: number;
   maxPayout: number;
+  snapshot?: LedgerTicketSnapshot;
 }
 
 interface StopLossInterceptState {
@@ -178,7 +187,26 @@ export function SkinPhoneApp({
   const [isDesktop, setIsDesktop] = useState<boolean>(
     () => !embedded && typeof window !== "undefined" && window.innerWidth >= 960
   );
-  const [dkRightTab, setDkRightTab] = useState<"audit" | "ledger">("audit");
+  const [dkRightTab, setDkRightTab] = useState<"audit" | "ledger" | "intel">(
+    "audit"
+  );
+  const [mobileCabin, setMobileCabin] = useState<"ledger" | "intel">("ledger");
+  const [ledgerFilter, setLedgerFilter] = useState<
+    "all" | "live" | "paper" | "pending"
+  >("all");
+  const [expandedLedgerIds, setExpandedLedgerIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [undoBanner, setUndoBanner] = useState<{
+    undoToken: string;
+    label: string;
+    seq: number;
+  } | null>(null);
+  const [radarSearchQuery, setRadarSearchQuery] = useState<string>("");
+  const [collapsedDayKeys, setCollapsedDayKeys] = useState<
+    Record<string, boolean>
+  >({});
+  const [cutoffTickNow, setCutoffTickNow] = useState<number>(() => Date.now());
   const [dkFocusStep, setDkFocusStep] = useState<1 | 2 | 3 | null>(null);
   const [customBudgetOpen, setCustomBudgetOpen] = useState<boolean>(false);
   const [customBudgetDraft, setCustomBudgetDraft] = useState<string>("100");
@@ -426,6 +454,13 @@ export function SkinPhoneApp({
     setStopLossPrompt(null);
     setEditingLimit(false);
     setWonPromptEntryId(null);
+    if ((bundle.newlySettledCount ?? 0) > 0) {
+      playTactileCue("defuse-celebrate");
+      showSpringToast(
+        layerRef.current,
+        `🎉 官方完场自动对奖：已自动结算 ${bundle.newlySettledCount} 笔账本订单`
+      );
+    }
     betCtrl.applyAuthenticatedBundle(bundle);
     setComboSelectedIds(bundle.matches.slice(0, 3).map((m) => m.id));
     setSyncSummary(bundle.syncNote);
@@ -560,6 +595,9 @@ export function SkinPhoneApp({
       document.title = "优竞体育内部专用 · 智能精算与风控工作台";
       setOfflineMode(false);
       betCtrl.applyMatchesSync(res);
+      if (res.ledger) {
+        syncLedgerState(res.ledger);
+      }
       const now = new Date();
       setSyncClock(
         `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(
@@ -567,7 +605,13 @@ export function SkinPhoneApp({
         ).padStart(2, "0")}`
       );
       setSyncSummary(res.syncNote);
-      if (toastOnDone) {
+      if ((res.newlySettledCount ?? 0) > 0) {
+        playTactileCue("defuse-celebrate");
+        showSpringToast(
+          layerRef.current,
+          `🎉 同步水位并自动对奖完成：新结 ${res.newlySettledCount} 笔订单`
+        );
+      } else if (toastOnDone) {
         showSpringToast(
           layerRef.current,
           `已加密同步 ${res.matches.length} 场官网实盘`
@@ -665,29 +709,40 @@ export function SkinPhoneApp({
     }
   }, [tab, mode, qFilter]);
 
-  // 6. Server Black-Box Quant Sync & Pre-Computed Match Filtering
-  const visibleMatches = useMemo(() => {
+  // 6. Server Black-Box Quant Sync, Official Sales Cutoff Ticker & Radar Match Grouping
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCutoffTickNow(Date.now());
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!undoBanner) return;
+    const timer = window.setTimeout(() => {
+      setUndoBanner(null);
+    }, 5500);
+    return () => window.clearTimeout(timer);
+  }, [undoBanner?.seq]);
+
+  const cutoffStatus = useMemo(
+    () => computeSportteryCutoffStatus(cutoffTickNow),
+    [cutoffTickNow]
+  );
+
+  const radarFiltered = useMemo(() => {
     const activeLeagues = Object.entries(leagueFilter)
       .filter(([, on]) => on)
       .map(([lg]) => lg);
-    let list = matches;
-    if (activeLeagues.length > 0)
-      list = list.filter((m) => activeLeagues.includes(m.league));
-    if (mode === "single" || qFilter === "single") {
-      list = list.filter((m) => m.pools.HAD.single || m.pools.HHAD.single);
-    } else if (qFilter === "low-vig") {
-      list = list.filter((m) => m.pools.HAD.vig < 0.1228);
-    } else if (qFilter === "drop") {
-      list = list.filter((m) =>
-        Object.values(m.pools).some((p) =>
-          p.options.some((o) => o.trend === -1)
-        )
-      );
-    } else if (qFilter === "arb") {
-      list = list.filter((m) => (m.microQuant?.arbitrages?.length ?? 0) > 0);
-    }
-    return list.length > 0 ? list : matches;
-  }, [matches, mode, qFilter, leagueFilter]);
+    return filterAndGroupRadarMatches(matches, {
+      searchQuery: radarSearchQuery,
+      mode,
+      qFilter,
+      activeLeagues,
+    });
+  }, [matches, radarSearchQuery, mode, qFilter, leagueFilter]);
+
+  const visibleMatches = radarFiltered.filteredMatches;
 
   const resolvedTargets = useMemo(() => {
     const found = matches.filter((m) => targetIds.includes(m.id));
@@ -1093,11 +1148,8 @@ export function SkinPhoneApp({
   };
 
   const buildCurrentLedgerDraft = (): LedgerDraftPayload | null => {
-    if (
-      effectiveReport.matchCount === 0 ||
-      !effectiveReport.canCheckout ||
-      effectiveReport.totalCost <= 0
-    ) {
+    const sealed = betCtrl.buildSealedLedgerDraft();
+    if (!sealed) {
       shudderDangerElement(auditCockpitRef.current ?? slipRef.current);
       haptic(14);
       showSpringToast(
@@ -1107,18 +1159,7 @@ export function SkinPhoneApp({
       );
       return null;
     }
-    const title = appliedPlan
-      ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${appliedPlan.lines.length}张)`
-      : `${effectiveReport.modeLabel} · ${effectiveReport.betCount}注方案`;
-    return {
-      title,
-      modeLabel: effectiveReport.modeLabel,
-      betCount: Math.max(1, effectiveReport.betCount),
-      cost: effectiveReport.totalCost,
-      paperRefCost: effectiveReport.totalCost,
-      minPayout: effectiveReport.minPayout,
-      maxPayout: effectiveReport.maxPayout,
-    };
+    return sealed;
   };
 
   const submitLedgerEntry = async (
@@ -1139,6 +1180,7 @@ export function SkinPhoneApp({
         paperRefCost: kind === "paper" ? draft.paperRefCost : undefined,
         minPayout: draft.minPayout,
         maxPayout: draft.maxPayout,
+        snapshot: draft.snapshot,
         forceConfirmed,
       });
       syncLedgerState(res.ledger);
@@ -1154,14 +1196,17 @@ export function SkinPhoneApp({
         return;
       }
       setStopLossPrompt(null);
+      if (sheet?.type === "poster") setSheet(null);
       haptic(14);
       playTactileCue(kind === "paper" ? "optimize-arpeggio" : "ticket-stamp");
       showSpringToast(
         layerRef.current,
         kind === "live"
-          ? `已记入实买账本（本金 ¥${draft.cost}）`
+          ? `已封存出票快照并记入实买账本（本金 ¥${draft.cost}）`
           : `已存为 0 成本模拟观察单（拟投 ¥${draft.paperRefCost}）`
       );
+      setMobileCabin("ledger");
+      setLedgerFilter("all");
       setTab("ledger");
       setDkRightTab("ledger");
     } catch (err) {
@@ -1220,7 +1265,7 @@ export function SkinPhoneApp({
 
   const handleSettleEntry = async (
     entry: LedgerEntry,
-    status: "pending" | "won" | "lost",
+    status: LedgerOutcomeStatus,
     customReturn?: number
   ) => {
     if (ledgerBusy) return;
@@ -1231,23 +1276,28 @@ export function SkinPhoneApp({
         entryId: entry.id,
         status,
         settledReturn:
-          status === "won" && entry.kind === "live" ? customReturn : undefined,
+          (status === "won" || status === "partial") && entry.kind === "live"
+            ? customReturn
+            : undefined,
       });
       if (res.ok) {
         syncLedgerState(res.ledger);
         setWonPromptEntryId(null);
         haptic(10);
-        if (status === "won") playTactileCue("defuse-celebrate");
+        const updatedStatus = res.entry?.status ?? status;
+        if (updatedStatus === "won") playTactileCue("defuse-celebrate");
         const msg =
-          status === "pending"
-            ? "已重置为待开奖状态"
-            : status === "won"
-              ? entry.kind === "live"
-                ? "已结算红单并更新累计净盈亏"
-                : "已标记模拟观察单命中"
-              : entry.kind === "paper"
-                ? `已标记未中 · 计入累计免损 ¥${entry.paperRefCost.toFixed(0)}`
-                : "已结算黑单并更新累计净盈亏";
+          updatedStatus === "pending"
+            ? "已恢复自动对奖跟踪状态"
+            : updatedStatus === "partial"
+              ? "已按实派结算为局部回血单"
+              : updatedStatus === "won"
+                ? entry.kind === "live"
+                  ? "已结算红单并更新累计净盈亏"
+                  : "已标记模拟观察单命中"
+                : entry.kind === "paper"
+                  ? `已标记未中 · 计入累计免损 ¥${entry.paperRefCost.toFixed(0)}`
+                  : "已结算黑单并更新累计净盈亏";
         showSpringToast(layerRef.current, msg);
       }
     } catch (err) {
@@ -1273,7 +1323,18 @@ export function SkinPhoneApp({
         syncLedgerState(res.ledger);
         if (wonPromptEntryId === entryId) setWonPromptEntryId(null);
         haptic(8);
-        showSpringToast(layerRef.current, "已删除该条账本记录");
+        if (res.undoToken) {
+          setUndoBanner({
+            undoToken: res.undoToken,
+            label:
+              (res.lockedStopLossStake ?? 0) > 0
+                ? `已移除亏损实买单（当日止损额度 ¥${res.lockedStopLossStake} 保持锁死防上头）`
+                : "已删除该笔账本订单",
+            seq: Date.now(),
+          });
+        } else {
+          showSpringToast(layerRef.current, "已删除该条账本记录");
+        }
       }
     } catch (err) {
       if (err instanceof TypeError) setOfflineMode(true);
@@ -1284,6 +1345,160 @@ export function SkinPhoneApp({
     } finally {
       setLedgerBusy(false);
     }
+  };
+
+  const handleUndoDelete = async () => {
+    if (!undoBanner?.undoToken || ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: "restore-entry",
+        undoToken: undoBanner.undoToken,
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        setUndoBanner(null);
+        haptic(10);
+        playTactileCue("optimize-arpeggio");
+        showSpringToast(
+          layerRef.current,
+          `已无损恢复 ${res.restoredCount ?? 1} 笔账本记录`
+        );
+      }
+    } catch (err) {
+      showSpringToast(
+        layerRef.current,
+        (err as Error)?.message || "撤销窗口已过期"
+      );
+      setUndoBanner(null);
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const handleClearSettledPaper = async () => {
+    if (ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: "clear-settled-paper",
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        haptic(10);
+        if ((res.clearedCount ?? 0) > 0 && res.undoToken) {
+          setUndoBanner({
+            undoToken: res.undoToken,
+            label: `已清理 ${res.clearedCount} 笔已结模拟观察单`,
+            seq: Date.now(),
+          });
+        } else {
+          showSpringToast(layerRef.current, "暂无需要清理的已结模拟单");
+        }
+      }
+    } catch (err) {
+      showSpringToast(
+        layerRef.current,
+        (err as Error)?.message || "清理已结模拟单失败"
+      );
+    } finally {
+      setLedgerBusy(false);
+    }
+  };
+
+  const lastAutoSettleAtRef = useRef<number>(0);
+  const handleRefreshLedgerAutoSettle = async (manualTrigger = false) => {
+    if (ledgerBusy) return;
+    if (!manualTrigger && Date.now() - lastAutoSettleAtRef.current < 45_000) {
+      return;
+    }
+    lastAutoSettleAtRef.current = Date.now();
+    if (manualTrigger) setLedgerBusy(true);
+    try {
+      const res = await mutateServerLedger({
+        action: "auto-settle",
+        forceRefresh: manualTrigger,
+      });
+      if (res.ok) {
+        syncLedgerState(res.ledger);
+        if ((res.newlySettledCount ?? 0) > 0) {
+          playTactileCue("defuse-celebrate");
+          showSpringToast(
+            layerRef.current,
+            `🎉 已按体彩官方完场赛果自动结算 ${res.newlySettledCount} 笔订单`
+          );
+        } else if (manualTrigger) {
+          showSpringToast(
+            layerRef.current,
+            "已核对体彩官方最新赛果 · 待开订单暂未完场"
+          );
+        }
+      }
+    } catch {
+      if (manualTrigger) {
+        showSpringToast(layerRef.current, "赛果同步繁忙，请稍后再试");
+      }
+    } finally {
+      if (manualTrigger) setLedgerBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    const ledgerActive =
+      (tab === "ledger" && mobileCabin === "ledger") ||
+      (isDesktop && !embedded && dkRightTab === "ledger");
+    if (!ledgerActive || !authUser) return;
+    const hasPendingSnap = ledger.entries.some(
+      (e) =>
+        Boolean(e.snapshot?.lines?.length) &&
+        !e.manualOverride &&
+        (e.status === "pending" || !e.settlementDetail)
+    );
+    if (hasPendingSnap) {
+      void handleRefreshLedgerAutoSettle(false);
+    }
+  }, [tab, mobileCabin, isDesktop, embedded, dkRightTab, authUser?.id]);
+
+  const copyShopkeeperWeChatSlipUI = async (triggerEl?: HTMLElement | null) => {
+    const text = betCtrl.formatShopkeeperWeChatSlip({
+      useConsolidated: Boolean(planSpec?.consolidateTickets),
+    });
+    if (!text) {
+      showSpringToast(layerRef.current, "当前方案暂无法生成出票口令");
+      return;
+    }
+    let copied = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch {
+      copied = false;
+    }
+    if (!copied) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand("copy");
+        ta.remove();
+      } catch {
+        copied = false;
+      }
+    }
+    haptic(10);
+    playTactileCue("optimize-arpeggio");
+    if (triggerEl) burstCelebrationSparks(triggerEl, 18);
+    showSpringToast(
+      layerRef.current,
+      copied
+        ? "📋 已复制店主微信打票口令，可直接去微信粘贴发送"
+        : "已生成出票口令（当前浏览器限制自动剪贴板）"
+    );
   };
 
   const pickedMatchIds = useMemo(
@@ -1406,29 +1621,58 @@ export function SkinPhoneApp({
     (manualReport.underwaterCount > 0 || manualReport.avgVigLossPer100 > 19);
 
   const filterStripNode = (
-    <div className="fstrip num">
-      {(
-        [
-          ["all", "全部"],
-          ["low-vig", "浅抽水"],
-          ["drop", "🔻急降水"],
-          ["arb", "省钱差价"],
-        ] as const
-      ).map(([fid, flbl]) => (
-        <button
-          key={fid}
-          type="button"
-          data-spring="0.9"
-          onClick={() => {
-            haptic(5);
-            setQFilter(fid);
-          }}
-          className={`fchip ${qFilter === fid ? "on" : ""}`}
+    <>
+      <div className="fstrip num">
+        {(
+          [
+            ["all", "全部"],
+            ["low-vig", "浅抽水"],
+            ["drop", "🔻急降水"],
+            ["arb", "省钱差价"],
+          ] as const
+        ).map(([fid, flbl]) => (
+          <button
+            key={fid}
+            type="button"
+            data-spring="0.9"
+            onClick={() => {
+              haptic(5);
+              setQFilter(fid);
+            }}
+            className={`fchip ${qFilter === fid ? "on" : ""}`}
+          >
+            {flbl}
+          </button>
+        ))}
+      </div>
+      <div className="radar-toolbar num">
+        <div className="radar-search-wrap">
+          <input
+            type="text"
+            value={radarSearchQuery}
+            onChange={(e) => setRadarSearchQuery(e.target.value)}
+            placeholder="🔍 搜编号(如008)/队名/联赛"
+            className="radar-search-input"
+          />
+          {radarSearchQuery && (
+            <button
+              type="button"
+              className="radar-search-clear"
+              title="清空搜索"
+              onClick={() => setRadarSearchQuery("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
+        <span
+          className={`cutoff-pill ${cutoffStatus.level}`}
+          title="中国体彩线下实体店每日官方销售截止参考（平日22:00 / 周末23:00）"
         >
-          {flbl}
-        </button>
-      ))}
-    </div>
+          {cutoffStatus.badgeText}
+        </span>
+      </div>
+    </>
   );
 
   const bridgeCandidates = insights.bridgeCandidates ?? [];
@@ -1496,9 +1740,382 @@ export function SkinPhoneApp({
       </div>
     ) : null;
 
+  const renderSingleRadarMatchCard = (m: MatchItem) => {
+    const mq = m.microQuant;
+    const extN = extraCountOf(m.id);
+    const crsSelected = picks
+      .filter((p) => p.matchId === m.id && p.poolCode === "CRS")
+      .map((p) => p.optionLabel);
+
+    const hP = (m.pools.HAD.options[0]?.fairProb ?? 0.45) * 100;
+    const dP = (m.pools.HAD.options[1]?.fairProb ?? 0.27) * 100;
+    const aP = (m.pools.HAD.options[2]?.fairProb ?? 0.28) * 100;
+
+    return (
+      <div key={m.id} className="card enter">
+        {/* Layer 1: Full Match Meta + Single Status + Update Time */}
+        <div className="meta">
+          <div className="meta-l">
+            <span className="num no">{m.matchNumStr}</span>
+            <span>{m.league}</span>
+            {m.pools.HAD.single ? (
+              <span className="tag" title="胜平负已开单关">
+                单
+              </span>
+            ) : (
+              <span style={{ fontSize: 9.5, opacity: 0.72 }}>仅半/比单关</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="more num"
+            data-spring="0.9"
+            onClick={() => setSheet({ type: "more", matchId: m.id })}
+          >
+            <span>{m.kickoff} · 全玩法</span>
+            <span className="more-ind">
+              {extN > 0 ? (
+                <b className="badge num">+{extN}</b>
+              ) : (
+                <svg
+                  width="8"
+                  height="8"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="9 5 16 12 9 19" />
+                </svg>
+              )}
+            </span>
+          </button>
+        </div>
+
+        {/* Layer 2: Mini Visual Probability Tug-of-War Bar right on the card! */}
+        <div
+          className="mini-prob"
+          title={`去水真实胜率：主${hP.toFixed(0)}% / 平${dP.toFixed(0)}% / 客${aP.toFixed(0)}%`}
+          onClick={() => setSheet({ type: "intel", matchId: m.id })}
+        >
+          <i style={{ width: `${hP}%` }} />
+          <i style={{ width: `${dP}%` }} />
+          <i style={{ width: `${aP}%` }} />
+        </div>
+
+        {/* Layer 3: Rich Quant Micro-Pills (xG + Card-Pan + Vig Compare + Arbitrage) */}
+        <div
+          className="qstrip num"
+          onClick={() => setSheet({ type: "intel", matchId: m.id })}
+        >
+          <span className="qpill">
+            xG {mq.homeXG}:{mq.awayXG}
+          </span>
+          <span
+            className={`qpill ${mq.oneGoalShareOfWins >= 0.5 ? "warn" : ""}`}
+          >
+            赢1球卡盘 {(mq.oneGoalShareOfWins * 100).toFixed(0)}%
+          </span>
+          <span className="qpill">
+            主抽{(m.pools.HAD.vig * 100).toFixed(1)}%/半
+            {(m.pools.HAFU.vig * 100).toFixed(0)}%
+          </span>
+          {mq.arbitrages[0] && (
+            <span className="qpill hi">省+{mq.arbitrages[0].edgePct}%</span>
+          )}
+        </div>
+
+        {/* Layer 4: Mode-Specific Odds Matrix with True Fair Prob % inside EVERY button */}
+        {mode === "zjq" ? (
+          <>
+            <div
+              className="duel"
+              data-spring="0.98"
+              onClick={() => setSheet({ type: "intel", matchId: m.id })}
+            >
+              <div className="side">
+                <TeamCrest name={m.home} />
+                <span className="tn">{m.home}</span>
+              </div>
+              <span className="dash" />
+              <div className="side r">
+                <span className="tn">{m.away}</span>
+                <TeamCrest name={m.away} />
+              </div>
+            </div>
+            {m.pools.TTG.selling === false ||
+            m.pools.TTG.options.length === 0 ? (
+              <button
+                type="button"
+                className="key wide unsold num"
+                onClick={(e) => togglePick(e.currentTarget, m, "TTG", "closed")}
+              >
+                总进球玩法暂未开售
+              </button>
+            ) : (
+              <div className="grid-keys c4">
+                {m.pools.TTG.options.map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    data-spring="0.86"
+                    onClick={(e) =>
+                      togglePick(e.currentTarget, m, "TTG", opt.key)
+                    }
+                    className={`key cell num ${isPicked(m.id, "TTG", opt.key) ? "on" : ""} ${
+                      isPoolMutexLocked(m, "TTG") ? "mutex-lock" : ""
+                    }`}
+                  >
+                    <small>
+                      {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
+                    </small>
+                    <b>
+                      {opt.odds.toFixed(2)}
+                      {renderTrendArrow(opt.trend)}
+                    </b>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : mode === "bqc" ? (
+          <>
+            <div
+              className="duel"
+              data-spring="0.98"
+              onClick={() => setSheet({ type: "intel", matchId: m.id })}
+            >
+              <div className="side">
+                <TeamCrest name={m.home} />
+                <span className="tn">{m.home}</span>
+              </div>
+              <span className="dash" />
+              <div className="side r">
+                <span className="tn">{m.away}</span>
+                <TeamCrest name={m.away} />
+              </div>
+            </div>
+            {m.pools.HAFU.selling === false ||
+            m.pools.HAFU.options.length === 0 ? (
+              <button
+                type="button"
+                className="key wide unsold num"
+                onClick={(e) =>
+                  togglePick(e.currentTarget, m, "HAFU", "closed")
+                }
+              >
+                半全场玩法暂未开售
+              </button>
+            ) : (
+              <div className="grid-keys c3">
+                {m.pools.HAFU.options.map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    data-spring="0.86"
+                    onClick={(e) =>
+                      togglePick(e.currentTarget, m, "HAFU", opt.key)
+                    }
+                    className={`key cell num ${isPicked(m.id, "HAFU", opt.key) ? "on" : ""} ${
+                      isPoolMutexLocked(m, "HAFU") ? "mutex-lock" : ""
+                    }`}
+                  >
+                    <small>
+                      {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                    </small>
+                    <b>
+                      {opt.odds.toFixed(2)}
+                      {renderTrendArrow(opt.trend)}
+                    </b>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : mode === "bf" ? (
+          <>
+            <div
+              className="duel"
+              data-spring="0.98"
+              onClick={() => setSheet({ type: "intel", matchId: m.id })}
+            >
+              <div className="side">
+                <TeamCrest name={m.home} />
+                <span className="tn">{m.home}</span>
+              </div>
+              <span className="dash" />
+              <div className="side r">
+                <span className="tn">{m.away}</span>
+                <TeamCrest name={m.away} />
+              </div>
+            </div>
+            {m.pools.CRS.selling === false ||
+            m.pools.CRS.options.length === 0 ? (
+              <button
+                type="button"
+                className="key wide unsold num"
+                onClick={(e) => togglePick(e.currentTarget, m, "CRS", "closed")}
+              >
+                比分玩法暂未开售
+              </button>
+            ) : (
+              <button
+                type="button"
+                data-spring="0.95"
+                onClick={() => setSheet({ type: "more", matchId: m.id })}
+                className={`key wide num ${crsSelected.length > 0 ? "on" : ""} ${
+                  isPoolMutexLocked(m, "CRS") ? "mutex-lock" : ""
+                }`}
+              >
+                {crsSelected.length > 0
+                  ? crsSelected.join(" · ")
+                  : "+ 展开全部 31 项比分选项 (含真率)"}
+              </button>
+            )}
+          </>
+        ) : (
+          <div className="mgrid">
+            <div
+              className="teams"
+              data-spring="0.97"
+              onClick={() => setSheet({ type: "intel", matchId: m.id })}
+            >
+              <div className="t">
+                <TeamCrest name={m.home} />
+                <span className="tn">{m.home}</span>
+                {m.homeRank && <span className="trank">#{m.homeRank}</span>}
+              </div>
+              <div className="t">
+                <TeamCrest name={m.away} />
+                <span className="tn">{m.away}</span>
+                {m.awayRank && <span className="trank">#{m.awayRank}</span>}
+              </div>
+            </div>
+            <div className="rq num">
+              <div>
+                {m.pools.HAD.selling === false ||
+                m.pools.HAD.options.length === 0 ? (
+                  <span className="rq-unsold">未</span>
+                ) : (
+                  <>
+                    <span>0</span>
+                    {m.pools.HAD.single && <i className="rq-sgl">单</i>}
+                  </>
+                )}
+              </div>
+              <div>
+                {m.pools.HHAD.selling === false ||
+                m.pools.HHAD.options.length === 0 ? (
+                  <span className="rq-unsold">未</span>
+                ) : (
+                  <>
+                    <span>
+                      {(m.pools.HHAD.goalLine ?? "-1").replace("-", "−")}
+                    </span>
+                    {m.pools.HHAD.single && <i className="rq-sgl">单</i>}
+                  </>
+                )}
+              </div>
+            </div>
+            {[0, 1, 2].map((idx) => {
+              const hadOpt = m.pools.HAD.options[idx];
+              const hhadOpt = m.pools.HHAD.options[idx];
+              const hadOpen = m.pools.HAD.selling !== false && Boolean(hadOpt);
+              const hhadOpen =
+                m.pools.HHAD.selling !== false && Boolean(hhadOpt);
+              return (
+                <div key={idx} className="kcol">
+                  {hadOpen && hadOpt ? (
+                    <button
+                      type="button"
+                      data-spring="0.88"
+                      onClick={(e) =>
+                        togglePick(e.currentTarget, m, "HAD", hadOpt.key)
+                      }
+                      className={`key k2 num ${isPicked(m.id, "HAD", hadOpt.key) ? "on" : ""} ${
+                        isPoolMutexLocked(m, "HAD") ? "mutex-lock" : ""
+                      }`}
+                    >
+                      <span className="ko">
+                        {hadOpt.odds.toFixed(2)}
+                        {renderTrendArrow(hadOpt.trend)}
+                      </span>
+                      <span className="kp">
+                        {(hadOpt.fairProb * 100).toFixed(0)}%
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) =>
+                        togglePick(e.currentTarget, m, "HAD", "closed")
+                      }
+                      className="key k2 unsold num"
+                    >
+                      <span className="ko">—</span>
+                      <span className="kp">未开售</span>
+                    </button>
+                  )}
+                  {hhadOpen && hhadOpt ? (
+                    <button
+                      type="button"
+                      data-spring="0.88"
+                      onClick={(e) =>
+                        togglePick(e.currentTarget, m, "HHAD", hhadOpt.key)
+                      }
+                      className={`key k2 num ${isPicked(m.id, "HHAD", hhadOpt.key) ? "on" : ""} ${
+                        isPoolMutexLocked(m, "HHAD") ? "mutex-lock" : ""
+                      }`}
+                    >
+                      <span className="ko">
+                        {hhadOpt.odds.toFixed(2)}
+                        {renderTrendArrow(hhadOpt.trend)}
+                      </span>
+                      <span className="kp">
+                        {(hhadOpt.fairProb * 100).toFixed(0)}%
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) =>
+                        togglePick(e.currentTarget, m, "HHAD", "closed")
+                      }
+                      className="key k2 unsold num"
+                    >
+                      <span className="ko">—</span>
+                      <span className="kp">未开售</span>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Layer 5: Inline Intelligence / Arbitrage Teaser Bar! */}
+        {(m.aiAlert || mq.arbitrages[0]) && (
+          <div
+            className="card-intel-bar"
+            onClick={() => setSheet({ type: "intel", matchId: m.id })}
+          >
+            <span>
+              {m.aiAlert
+                ? `扫地僧小高：${m.aiAlert.tag} · ${m.aiAlert.summary}`
+                : `💰 ${mq.arbitrages[0].detail}`}
+            </span>
+            <b>底牌 ›</b>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const matchContent = (
     <>
-      {["mix", "spf", "single"].includes(mode) && (
+      {["mix", "spf", "single"].includes(mode) && visibleMatches.length > 0 && (
         <div className="mgrid colhead enter">
           <span style={{ textAlign: "left" }}>球队 / 排名</span>
           <span>让</span>
@@ -1508,385 +2125,62 @@ export function SkinPhoneApp({
         </div>
       )}
 
-      {visibleMatches.map((m) => {
-        const mq = m.microQuant;
-        const extN = extraCountOf(m.id);
-        const crsSelected = picks
-          .filter((p) => p.matchId === m.id && p.poolCode === "CRS")
-          .map((p) => p.optionLabel);
-
-        const hP = (m.pools.HAD.options[0]?.fairProb ?? 0.45) * 100;
-        const dP = (m.pools.HAD.options[1]?.fairProb ?? 0.27) * 100;
-        const aP = (m.pools.HAD.options[2]?.fairProb ?? 0.28) * 100;
-
-        return (
-          <div key={m.id} className="card enter">
-            {/* Layer 1: Full Match Meta + Single Status + Update Time */}
-            <div className="meta">
-              <div className="meta-l">
-                <span className="num no">{m.matchNumStr}</span>
-                <span>{m.league}</span>
-                {m.pools.HAD.single ? (
-                  <span className="tag" title="胜平负已开单关">
-                    单
-                  </span>
-                ) : (
-                  <span style={{ fontSize: 9.5, opacity: 0.72 }}>
-                    仅半/比单关
-                  </span>
-                )}
-              </div>
+      {visibleMatches.length === 0 ? (
+        <div className="card enter">
+          <div
+            className="note-box"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <span>
+              未找到匹配「<strong>{radarSearchQuery || "当前筛选"}</strong>
+              」的在售赛事
+            </span>
+            {(radarSearchQuery || qFilter !== "all") && (
               <button
                 type="button"
-                className="more num"
-                data-spring="0.9"
-                onClick={() => setSheet({ type: "more", matchId: m.id })}
+                className="key mini dark"
+                onClick={() => {
+                  setRadarSearchQuery("");
+                  setQFilter("all");
+                }}
               >
-                <span>{m.kickoff} · 全玩法</span>
-                <span className="more-ind">
-                  {extN > 0 ? (
-                    <b className="badge num">+{extN}</b>
-                  ) : (
-                    <svg
-                      width="8"
-                      height="8"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="9 5 16 12 9 19" />
-                    </svg>
-                  )}
-                </span>
+                重置筛选
               </button>
-            </div>
-
-            {/* Layer 2: Mini Visual Probability Tug-of-War Bar right on the card! */}
-            <div
-              className="mini-prob"
-              title={`去水真实胜率：主${hP.toFixed(0)}% / 平${dP.toFixed(0)}% / 客${aP.toFixed(0)}%`}
-              onClick={() => setSheet({ type: "intel", matchId: m.id })}
-            >
-              <i style={{ width: `${hP}%` }} />
-              <i style={{ width: `${dP}%` }} />
-              <i style={{ width: `${aP}%` }} />
-            </div>
-
-            {/* Layer 3: Rich Quant Micro-Pills (xG + Card-Pan + Vig Compare + Arbitrage) */}
-            <div
-              className="qstrip num"
-              onClick={() => setSheet({ type: "intel", matchId: m.id })}
-            >
-              <span className="qpill">
-                xG {mq.homeXG}:{mq.awayXG}
-              </span>
-              <span
-                className={`qpill ${mq.oneGoalShareOfWins >= 0.5 ? "warn" : ""}`}
-              >
-                赢1球卡盘 {(mq.oneGoalShareOfWins * 100).toFixed(0)}%
-              </span>
-              <span className="qpill">
-                主抽{(m.pools.HAD.vig * 100).toFixed(1)}%/半
-                {(m.pools.HAFU.vig * 100).toFixed(0)}%
-              </span>
-              {mq.arbitrages[0] && (
-                <span className="qpill hi">省+{mq.arbitrages[0].edgePct}%</span>
-              )}
-            </div>
-
-            {/* Layer 4: Mode-Specific Odds Matrix with True Fair Prob % inside EVERY button */}
-            {mode === "zjq" ? (
-              <>
-                <div
-                  className="duel"
-                  data-spring="0.98"
-                  onClick={() => setSheet({ type: "intel", matchId: m.id })}
-                >
-                  <div className="side">
-                    <TeamCrest name={m.home} />
-                    <span className="tn">{m.home}</span>
-                  </div>
-                  <span className="dash" />
-                  <div className="side r">
-                    <span className="tn">{m.away}</span>
-                    <TeamCrest name={m.away} />
-                  </div>
-                </div>
-                {m.pools.TTG.selling === false ||
-                m.pools.TTG.options.length === 0 ? (
-                  <button
-                    type="button"
-                    className="key wide unsold num"
-                    onClick={(e) =>
-                      togglePick(e.currentTarget, m, "TTG", "closed")
-                    }
-                  >
-                    总进球玩法暂未开售
-                  </button>
-                ) : (
-                  <div className="grid-keys c4">
-                    {m.pools.TTG.options.map((opt) => (
-                      <button
-                        key={opt.key}
-                        type="button"
-                        data-spring="0.86"
-                        onClick={(e) =>
-                          togglePick(e.currentTarget, m, "TTG", opt.key)
-                        }
-                        className={`key cell num ${isPicked(m.id, "TTG", opt.key) ? "on" : ""} ${
-                          isPoolMutexLocked(m, "TTG") ? "mutex-lock" : ""
-                        }`}
-                      >
-                        <small>
-                          {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
-                        </small>
-                        <b>
-                          {opt.odds.toFixed(2)}
-                          {renderTrendArrow(opt.trend)}
-                        </b>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
-            ) : mode === "bqc" ? (
-              <>
-                <div
-                  className="duel"
-                  data-spring="0.98"
-                  onClick={() => setSheet({ type: "intel", matchId: m.id })}
-                >
-                  <div className="side">
-                    <TeamCrest name={m.home} />
-                    <span className="tn">{m.home}</span>
-                  </div>
-                  <span className="dash" />
-                  <div className="side r">
-                    <span className="tn">{m.away}</span>
-                    <TeamCrest name={m.away} />
-                  </div>
-                </div>
-                {m.pools.HAFU.selling === false ||
-                m.pools.HAFU.options.length === 0 ? (
-                  <button
-                    type="button"
-                    className="key wide unsold num"
-                    onClick={(e) =>
-                      togglePick(e.currentTarget, m, "HAFU", "closed")
-                    }
-                  >
-                    半全场玩法暂未开售
-                  </button>
-                ) : (
-                  <div className="grid-keys c3">
-                    {m.pools.HAFU.options.map((opt) => (
-                      <button
-                        key={opt.key}
-                        type="button"
-                        data-spring="0.86"
-                        onClick={(e) =>
-                          togglePick(e.currentTarget, m, "HAFU", opt.key)
-                        }
-                        className={`key cell num ${isPicked(m.id, "HAFU", opt.key) ? "on" : ""} ${
-                          isPoolMutexLocked(m, "HAFU") ? "mutex-lock" : ""
-                        }`}
-                      >
-                        <small>
-                          {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
-                        </small>
-                        <b>
-                          {opt.odds.toFixed(2)}
-                          {renderTrendArrow(opt.trend)}
-                        </b>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </>
-            ) : mode === "bf" ? (
-              <>
-                <div
-                  className="duel"
-                  data-spring="0.98"
-                  onClick={() => setSheet({ type: "intel", matchId: m.id })}
-                >
-                  <div className="side">
-                    <TeamCrest name={m.home} />
-                    <span className="tn">{m.home}</span>
-                  </div>
-                  <span className="dash" />
-                  <div className="side r">
-                    <span className="tn">{m.away}</span>
-                    <TeamCrest name={m.away} />
-                  </div>
-                </div>
-                {m.pools.CRS.selling === false ||
-                m.pools.CRS.options.length === 0 ? (
-                  <button
-                    type="button"
-                    className="key wide unsold num"
-                    onClick={(e) =>
-                      togglePick(e.currentTarget, m, "CRS", "closed")
-                    }
-                  >
-                    比分玩法暂未开售
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    data-spring="0.95"
-                    onClick={() => setSheet({ type: "more", matchId: m.id })}
-                    className={`key wide num ${crsSelected.length > 0 ? "on" : ""} ${
-                      isPoolMutexLocked(m, "CRS") ? "mutex-lock" : ""
-                    }`}
-                  >
-                    {crsSelected.length > 0
-                      ? crsSelected.join(" · ")
-                      : "+ 展开全部 31 项比分选项 (含真率)"}
-                  </button>
-                )}
-              </>
-            ) : (
-              <div className="mgrid">
-                <div
-                  className="teams"
-                  data-spring="0.97"
-                  onClick={() => setSheet({ type: "intel", matchId: m.id })}
-                >
-                  <div className="t">
-                    <TeamCrest name={m.home} />
-                    <span className="tn">{m.home}</span>
-                    {m.homeRank && <span className="trank">#{m.homeRank}</span>}
-                  </div>
-                  <div className="t">
-                    <TeamCrest name={m.away} />
-                    <span className="tn">{m.away}</span>
-                    {m.awayRank && <span className="trank">#{m.awayRank}</span>}
-                  </div>
-                </div>
-                <div className="rq num">
-                  <div>
-                    {m.pools.HAD.selling === false ||
-                    m.pools.HAD.options.length === 0 ? (
-                      <span className="rq-unsold">未</span>
-                    ) : (
-                      <>
-                        <span>0</span>
-                        {m.pools.HAD.single && <i className="rq-sgl">单</i>}
-                      </>
-                    )}
-                  </div>
-                  <div>
-                    {m.pools.HHAD.selling === false ||
-                    m.pools.HHAD.options.length === 0 ? (
-                      <span className="rq-unsold">未</span>
-                    ) : (
-                      <>
-                        <span>
-                          {(m.pools.HHAD.goalLine ?? "-1").replace("-", "−")}
-                        </span>
-                        {m.pools.HHAD.single && <i className="rq-sgl">单</i>}
-                      </>
-                    )}
-                  </div>
-                </div>
-                {[0, 1, 2].map((idx) => {
-                  const hadOpt = m.pools.HAD.options[idx];
-                  const hhadOpt = m.pools.HHAD.options[idx];
-                  const hadOpen =
-                    m.pools.HAD.selling !== false && Boolean(hadOpt);
-                  const hhadOpen =
-                    m.pools.HHAD.selling !== false && Boolean(hhadOpt);
-                  return (
-                    <div key={idx} className="kcol">
-                      {hadOpen && hadOpt ? (
-                        <button
-                          type="button"
-                          data-spring="0.88"
-                          onClick={(e) =>
-                            togglePick(e.currentTarget, m, "HAD", hadOpt.key)
-                          }
-                          className={`key k2 num ${isPicked(m.id, "HAD", hadOpt.key) ? "on" : ""} ${
-                            isPoolMutexLocked(m, "HAD") ? "mutex-lock" : ""
-                          }`}
-                        >
-                          <span className="ko">
-                            {hadOpt.odds.toFixed(2)}
-                            {renderTrendArrow(hadOpt.trend)}
-                          </span>
-                          <span className="kp">
-                            {(hadOpt.fairProb * 100).toFixed(0)}%
-                          </span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(e) =>
-                            togglePick(e.currentTarget, m, "HAD", "closed")
-                          }
-                          className="key k2 unsold num"
-                        >
-                          <span className="ko">—</span>
-                          <span className="kp">未开售</span>
-                        </button>
-                      )}
-                      {hhadOpen && hhadOpt ? (
-                        <button
-                          type="button"
-                          data-spring="0.88"
-                          onClick={(e) =>
-                            togglePick(e.currentTarget, m, "HHAD", hhadOpt.key)
-                          }
-                          className={`key k2 num ${isPicked(m.id, "HHAD", hhadOpt.key) ? "on" : ""} ${
-                            isPoolMutexLocked(m, "HHAD") ? "mutex-lock" : ""
-                          }`}
-                        >
-                          <span className="ko">
-                            {hhadOpt.odds.toFixed(2)}
-                            {renderTrendArrow(hhadOpt.trend)}
-                          </span>
-                          <span className="kp">
-                            {(hhadOpt.fairProb * 100).toFixed(0)}%
-                          </span>
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={(e) =>
-                            togglePick(e.currentTarget, m, "HHAD", "closed")
-                          }
-                          className="key k2 unsold num"
-                        >
-                          <span className="ko">—</span>
-                          <span className="kp">未开售</span>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Layer 5: Inline Intelligence / Arbitrage Teaser Bar! */}
-            {(m.aiAlert || mq.arbitrages[0]) && (
-              <div
-                className="card-intel-bar"
-                onClick={() => setSheet({ type: "intel", matchId: m.id })}
-              >
-                <span>
-                  {m.aiAlert
-                    ? `扫地僧小高：${m.aiAlert.tag} · ${m.aiAlert.summary}`
-                    : `💰 ${mq.arbitrages[0].detail}`}
-                </span>
-                <b>底牌 ›</b>
-              </div>
             )}
           </div>
-        );
-      })}
+        </div>
+      ) : radarFiltered.groups.length > 1 ? (
+        radarFiltered.groups.map((grp) => {
+          const isCollapsed = Boolean(collapsedDayKeys[grp.dayKey]);
+          return (
+            <div key={grp.dayKey}>
+              <button
+                type="button"
+                className="day-grp-hdr num"
+                onClick={() =>
+                  setCollapsedDayKeys((prev) => ({
+                    ...prev,
+                    [grp.dayKey]: !isCollapsed,
+                  }))
+                }
+              >
+                <span>📅 {grp.dayLabel}</span>
+                <span>
+                  {grp.matches.length} 场 {isCollapsed ? "▸ 展开" : "▾"}
+                </span>
+              </button>
+              {!isCollapsed && grp.matches.map(renderSingleRadarMatchCard)}
+            </div>
+          );
+        })
+      ) : (
+        visibleMatches.map(renderSingleRadarMatchCard)
+      )}
     </>
   );
 
@@ -3568,7 +3862,44 @@ export function SkinPhoneApp({
     </>
   );
 
-  const ledgerContent = (
+  const sessionStatusCardNode = authUser ? (
+    <div className="card opt-row enter" style={{ marginTop: 6 }}>
+      <div>
+        <b>
+          当前授权账号：{authUser.username}
+          {offlineMode ? "（离线重连保护中）" : "（长期在线免重登）"}
+        </b>
+        <div className="s num">
+          今日智能诊盘额度：
+          {authUser.aiEnabled
+            ? `${authUser.aiUsedToday}/${authUser.dailyAiLimit} 次`
+            : "未开通"}
+          {" · "}设备绑定 {authUser.boundDevicesCount}/
+          {authUser.maxDevices >= 99 ? "∞" : authUser.maxDevices} 台
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        {authUser.role === "superadmin" && (
+          <button
+            type="button"
+            className="key mini dark"
+            onClick={() => setAdminOpen(true)}
+          >
+            👑 总控台
+          </button>
+        )}
+        <button
+          type="button"
+          className="key mini"
+          onClick={() => void handleExplicitLogout()}
+        >
+          退出账号
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  const intelCabinContent = (
     <>
       {/* Sync Diff Battle Report */}
       <div className="card enter">
@@ -3942,7 +4273,31 @@ export function SkinPhoneApp({
             </SpringCollapseDrawer>
           );
         })}
+      {sessionStatusCardNode}
+    </>
+  );
 
+  const liveEntriesCount = ledger.entries.filter(
+    (e) => e.kind === "live"
+  ).length;
+  const paperEntriesCount = ledger.entries.filter(
+    (e) => e.kind === "paper"
+  ).length;
+  const pendingEntriesCount = ledger.entries.filter(
+    (e) => e.status === "pending"
+  ).length;
+  const settledPaperCount = ledger.entries.filter(
+    (e) => e.kind === "paper" && e.status !== "pending"
+  ).length;
+  const filteredLedgerEntries = ledger.entries.filter((e) => {
+    if (ledgerFilter === "live") return e.kind === "live";
+    if (ledgerFilter === "paper") return e.kind === "paper";
+    if (ledgerFilter === "pending") return e.status === "pending";
+    return true;
+  });
+
+  const ledgerCabinContent = (
+    <>
       {/* Daily Stop-Loss Guardrail Balance Card */}
       <div className="card bal enter">
         <div
@@ -3954,24 +4309,39 @@ export function SkinPhoneApp({
           }}
         >
           <span className="lbl">今日剩余止损护栏额度</span>
-          <button
-            type="button"
-            className="key mini"
-            data-spring="0.88"
-            onClick={() => {
-              setLimitDraft(String(ledger.dailyLimit));
-              setEditingLimit((v) => !v);
-            }}
-          >
-            {editingLimit ? "收起" : "⚙️ 设上限"}
-          </button>
+          <div style={{ display: "flex", gap: 5 }}>
+            <button
+              type="button"
+              className="key mini num"
+              data-spring="0.88"
+              disabled={ledgerBusy}
+              onClick={() => void handleRefreshLedgerAutoSettle(true)}
+              title="立即拉取中国体彩官方完场赛果自动对奖"
+            >
+              🔄 自动对奖
+            </button>
+            <button
+              type="button"
+              className="key mini"
+              data-spring="0.88"
+              onClick={() => {
+                setLimitDraft(String(ledger.dailyLimit));
+                setEditingLimit((v) => !v);
+              }}
+            >
+              {editingLimit ? "收起" : "⚙️ 设上限"}
+            </button>
+          </div>
         </div>
         <span ref={balValRef} className="v num">
           ¥{ledger.dailyRemaining.toFixed(2)}
         </span>
         <div className="small num" style={{ marginTop: 4 }}>
-          今日已投 ¥{ledger.dailyLiveSpent} / 护栏上限 ¥{ledger.dailyLimit} ·
-          北京时间00:00重置
+          今日已耗 ¥{ledger.dailyLiveSpent}
+          {(ledger.dailyLockedLossSpent ?? 0) > 0
+            ? `（含已删亏损单锁定 ¥${ledger.dailyLockedLossSpent}）`
+            : ""}{" "}
+          / 护栏上限 ¥{ledger.dailyLimit} · 北京时间00:00重置
         </div>
         {editingLimit && (
           <div
@@ -4029,8 +4399,12 @@ export function SkinPhoneApp({
         <div>
           <b className="num">{ledger.stats.liveWinRatePct.toFixed(1)}%</b>
           <span>
-            实买结算红单率 ({ledger.stats.liveWonCount}/
-            {ledger.stats.liveSettledCount})
+            真红单率 ({ledger.stats.liveWonCount}/
+            {ledger.stats.liveSettledCount}
+            {(ledger.stats.livePartialCount ?? 0) > 0
+              ? ` · 另${ledger.stats.livePartialCount}回血`
+              : ""}
+            )
           </span>
         </div>
         <div>
@@ -4044,29 +4418,100 @@ export function SkinPhoneApp({
             ¥{ledger.stats.paperSavedAmount.toFixed(0)}
           </b>
           <span>
-            模拟未中免损 ({ledger.stats.paperLostCount ?? 0}未中/
-            {ledger.stats.paperWonCount ?? 0}命中)
+            模拟免损 (
+            {(ledger.stats.paperLostCount ?? 0) +
+              (ledger.stats.paperPartialCount ?? 0)}
+            亏/
+            {ledger.stats.paperWonCount ?? 0}中)
           </span>
         </div>
       </div>
 
-      {/* Dual-Track Ledger History & Settlement Closure */}
-      <div className="sec-lbl enter">
-        <span>实买真金单 / 0成本模拟单双轨账本</span>
-        <span className="num">共 {ledger.entries.length} 笔</span>
+      {/* 5-Second Soft Undo Bar */}
+      {undoBanner && (
+        <div className="ledger-undo-bar enter num">
+          <span style={{ minWidth: 0 }}>{undoBanner.label}</span>
+          <button
+            type="button"
+            className="key mini"
+            style={{ flexShrink: 0 }}
+            disabled={ledgerBusy}
+            onClick={() => void handleUndoDelete()}
+          >
+            ↩️ 点此撤销
+          </button>
+        </div>
+      )}
+
+      {/* 4-Way Dual-Track Filter Strip + Batch Clear Settled Paper */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        <div className="fstrip num" style={{ flex: 1, minWidth: 0 }}>
+          {(
+            [
+              ["all", `全部(${ledger.entries.length})`],
+              ["live", `💰实买(${liveEntriesCount})`],
+              ["paper", `🧪模拟(${paperEntriesCount})`],
+              ["pending", `⏳待开(${pendingEntriesCount})`],
+            ] as const
+          ).map(([fk, fl]) => (
+            <button
+              key={fk}
+              type="button"
+              className={`fchip ${ledgerFilter === fk ? "on" : ""}`}
+              onClick={() => {
+                haptic(5);
+                setLedgerFilter(fk);
+              }}
+            >
+              {fl}
+            </button>
+          ))}
+        </div>
+        {settledPaperCount > 0 && (
+          <button
+            type="button"
+            className="key mini num"
+            disabled={ledgerBusy}
+            onClick={() => void handleClearSettledPaper()}
+            title="一键清理已开奖的模拟观察单（支持5秒撤销）"
+          >
+            🧹 清已结模拟({settledPaperCount})
+          </button>
+        )}
       </div>
-      {ledger.entries.length === 0 ? (
+
+      {filteredLedgerEntries.length === 0 ? (
         <div className="card enter">
           <div className="note-box">
-            暂无账本记录 · 在【审单锁利】台配好方案后点击「
-            <strong>记入实买</strong>」或「
-            <strong>存模拟单</strong>
-            」，即可按个人账号跨设备加密保存并复盘红黑盈亏。
+            {ledger.entries.length === 0 ? (
+              <>
+                暂无账本记录 · 在【审单锁利】或【防错打票单】点击「
+                <strong>记入实买</strong>」或「
+                <strong>存模拟单</strong>
+                」，系统自动封存出票水位并在完场后自动对奖。
+              </>
+            ) : (
+              <>当前筛选分类下暂无记录，点击上方「全部」可查看其余订单。</>
+            )}
           </div>
         </div>
       ) : (
-        ledger.entries.map((it) => {
+        filteredLedgerEntries.map((it) => {
           const isLive = it.kind === "live";
+          const detail = it.settlementDetail;
+          const hasAnatomy = Boolean(
+            (detail?.matches && detail.matches.length > 0) ||
+            (it.snapshot?.lines && it.snapshot.lines.length > 0)
+          );
+          const isExpanded = Boolean(expandedLedgerIds[it.id]);
           const defaultWinReturn =
             it.settledReturn > 0
               ? it.settledReturn
@@ -4075,18 +4520,34 @@ export function SkinPhoneApp({
                 : it.maxPayout > 0
                   ? it.maxPayout
                   : it.cost;
-          let badgeText = "⏳待开奖";
+
+          let badgeText =
+            detail?.settledMatchCount && it.status === "pending"
+              ? `⚡已红${detail.hitMatchCount}/${detail.totalMatchCount}场`
+              : "⏳待开奖";
           let badgeCls = "ledger-badge num";
           if (it.status === "won") {
             if (isLive) {
               badgeText =
-                it.netProfit >= 0
+                it.netProfit > 0
                   ? `🔴红单 +¥${it.netProfit.toFixed(2)}`
-                  : `🔴中奖 -¥${Math.abs(it.netProfit).toFixed(2)}`;
-              badgeCls = `ledger-badge num ${it.netProfit >= 0 ? "won" : "lost"}`;
-            } else {
-              badgeText = "🎯模拟命中(未实买)";
+                  : "⚖️刚回本 ¥0.00";
               badgeCls = "ledger-badge num won";
+            } else {
+              badgeText =
+                it.settledReturn > 0
+                  ? `🎯模拟命中 (拟派¥${it.settledReturn.toFixed(2)})`
+                  : "🎯模拟命中(未实买)";
+              badgeCls = "ledger-badge num won";
+            }
+          } else if (it.status === "partial") {
+            if (isLive) {
+              badgeText = `⚠️局部回血 -¥${Math.abs(it.netProfit).toFixed(2)} (派¥${it.settledReturn.toFixed(2)})`;
+              badgeCls = "ledger-badge num partial";
+            } else {
+              const savedNet = Math.max(0, it.paperRefCost - it.settledReturn);
+              badgeText = `🛡️模拟局部回血 · 少亏¥${savedNet.toFixed(0)}`;
+              badgeCls = "ledger-badge num partial";
             }
           } else if (it.status === "lost") {
             if (isLive) {
@@ -4098,23 +4559,251 @@ export function SkinPhoneApp({
             }
           }
 
+          const liveHedge =
+            it.status === "pending" && detail?.liveEarlyHedge?.available
+              ? detail.liveEarlyHedge
+              : null;
+
           return (
-            <div key={it.id} className="card ledger-entry enter">
-              <div className="ledger-entry-top">
+            <div
+              key={it.id}
+              className={`card ledger-entry enter ${isLive ? "is-live" : "is-paper"}`}
+            >
+              <div
+                className="ledger-entry-top"
+                style={{ cursor: hasAnatomy ? "pointer" : undefined }}
+                onClick={() => {
+                  if (!hasAnatomy) return;
+                  haptic(5);
+                  setExpandedLedgerIds((prev) => ({
+                    ...prev,
+                    [it.id]: !isExpanded,
+                  }));
+                }}
+              >
                 <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                      flexWrap: "wrap",
+                      marginBottom: 3,
+                    }}
+                  >
+                    <span
+                      className={`ledger-kind-stamp num ${isLive ? "live" : "paper"}`}
+                    >
+                      {isLive ? "💰 实买出票" : "🧪 模拟未买"}
+                    </span>
+                    {it.autoSettled && (
+                      <span className="qpill hi num">官方自动对奖</span>
+                    )}
+                    {it.manualOverride && (
+                      <span className="qpill num">手工校准</span>
+                    )}
+                  </div>
                   <b style={{ fontSize: 13, display: "block" }}>{it.title}</b>
                   <div className="small num">
                     {isLive
-                      ? `实买真金单 · 本金¥${it.cost}${
+                      ? `本金 ¥${it.cost.toFixed(2)}${
                           it.minPayout > 0
-                            ? ` · 保底¥${it.minPayout.toFixed(2)}`
+                            ? ` · 预计保底 ¥${it.minPayout.toFixed(2)}`
                             : ""
-                        }${it.settledReturn > 0 ? ` · 实派¥${it.settledReturn.toFixed(2)}` : ""}`
-                      : `0成本模拟观察单 · 拟投¥${it.paperRefCost}`}
+                        }${it.settledReturn > 0 ? ` · 实派 ¥${it.settledReturn.toFixed(2)}` : ""}`
+                      : `0成本模拟观察 · 拟投 ¥${it.paperRefCost.toFixed(2)}${
+                          it.settledReturn > 0
+                            ? ` · 拟派 ¥${it.settledReturn.toFixed(2)}`
+                            : ""
+                        }`}
                   </div>
                 </div>
                 <span className={badgeCls}>{badgeText}</span>
               </div>
+
+              {/* ⚡ Live Early-Hit Staggered Hedge Alert right on the pending card! */}
+              {liveHedge && (
+                <div
+                  className="note-box alert num"
+                  style={{ margin: 0, padding: "7px 9px" }}
+                >
+                  <strong>
+                    {liveHedge.hedgeMode === "lock-profit"
+                      ? `⚡ 前序已全红！末场开球前补单可稳锁净利 +¥${liveHedge.lockedNetProfit.toFixed(2)}`
+                      : liveHedge.hedgeMode === "break-even"
+                        ? "⚖️ 前序已全红！末场开球前补单可零损锁回本金"
+                        : `⚠️ 前序已全红！末场补单可减损锁回（少亏 -¥${Math.abs(liveHedge.lockedNetProfit).toFixed(2)}）`}
+                  </strong>
+                  <div className="small" style={{ marginTop: 2 }}>
+                    末场 {liveHedge.lateMatchTitle}({liveHedge.lateKickoff})
+                    暂未开球：去店里单关补买{" "}
+                    <b>
+                      {liveHedge.oppositeLabel} (¥{liveHedge.hedgeCost})
+                    </b>
+                    ，无论末场赛果如何均可锁定回款！
+                  </div>
+                </div>
+              )}
+
+              {/* Flip / Expand Order Anatomy View */}
+              {hasAnatomy && isExpanded && detail && (
+                <div className="ledger-anatomy num">
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: 11.5,
+                      fontWeight: 600,
+                    }}
+                  >
+                    <span>{detail.progressSummary}</span>
+                    {it.status === "partial" && isLive && (
+                      <span style={{ color: "var(--warn, #d97706)" }}>
+                        挽回{" "}
+                        {Math.round(
+                          (it.settledReturn / Math.max(1, it.cost)) * 100
+                        )}
+                        % 本金 · 净亏 -¥{Math.abs(it.netProfit).toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Layer 1: Per-Match Official Score & Pick Red/Black */}
+                  {detail.matches.length > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      {detail.matches.map((mOut) => (
+                        <div key={mOut.matchId} className="ledger-anat-match">
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 6,
+                              fontSize: 11.5,
+                            }}
+                          >
+                            <b>
+                              {mOut.isBanker ? "📌【胆】" : ""}
+                              {mOut.matchNumStr} {mOut.home} vs {mOut.away}
+                            </b>
+                            <span
+                              style={{
+                                fontWeight: 700,
+                                color:
+                                  mOut.state === "hit"
+                                    ? "var(--live)"
+                                    : mOut.state === "void"
+                                      ? "var(--warn)"
+                                      : mOut.state === "miss"
+                                        ? "var(--text-3)"
+                                        : "var(--text-2)",
+                              }}
+                            >
+                              {mOut.state === "void"
+                                ? "⚪ 无效场次(按1.0算)"
+                                : mOut.fullScore
+                                  ? `完场 ${mOut.fullScore}${mOut.halfScore ? ` (半${mOut.halfScore})` : ""}`
+                                  : "⏳ 待完场"}
+                            </span>
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              gap: 4,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            {mOut.picks.map((pk, pIdx) => (
+                              <span
+                                key={`${mOut.matchId}-${pk.poolCode}-${pk.optionKey}-${pIdx}`}
+                                className={`ledger-pick-chip ${pk.state}`}
+                              >
+                                {pk.poolCode === "HHAD" && mOut.goalLine
+                                  ? `让(${mOut.goalLine})`
+                                  : pk.poolCode}
+                                ·{pk.optionLabel}@{pk.odds.toFixed(2)}{" "}
+                                {pk.state === "hit"
+                                  ? "🔴中"
+                                  : pk.state === "miss"
+                                    ? "⚫未中"
+                                    : pk.state === "void"
+                                      ? "⚪1.0"
+                                      : "⏳"}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Layer 2: Per-Ticket Payout Breakdown */}
+                  {detail.tickets.length > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 4,
+                      }}
+                    >
+                      <div
+                        className="small"
+                        style={{ margin: "2px 0 0", fontWeight: 600 }}
+                      >
+                        逐张实票拆解（命中 {detail.hitTicketCount}/
+                        {detail.totalTicketCount} 张）：
+                      </div>
+                      {detail.tickets.slice(0, 24).map((tk, tIdx) => (
+                        <div key={tk.id} className="ledger-anat-ticket">
+                          <span style={{ minWidth: 0 }}>
+                            <b>票{tIdx + 1}</b>{" "}
+                            {tk.legs
+                              .map(
+                                (lg) =>
+                                  `${lg.matchNumStr.slice(-3)}[${lg.optionLabel}@${lg.odds.toFixed(2)}]`
+                              )
+                              .join("×")}{" "}
+                            ({tk.modeLabel}×{tk.multiple}倍)
+                          </span>
+                          <b
+                            style={{
+                              flexShrink: 0,
+                              color:
+                                tk.status === "won" ||
+                                tk.status === "void-refund"
+                                  ? "var(--live)"
+                                  : tk.status === "lost"
+                                    ? "var(--text-3)"
+                                    : "var(--text-2)",
+                            }}
+                          >
+                            {tk.status === "won"
+                              ? `🔴 +¥${tk.payout.toFixed(2)}`
+                              : tk.status === "void-refund"
+                                ? `⚪ 退¥${tk.payout.toFixed(2)}`
+                                : tk.status === "lost"
+                                  ? "⚫ ¥0"
+                                  : `⏳ 可派¥${(tk.potentialPayout ?? 0).toFixed(2)}`}
+                          </b>
+                        </div>
+                      ))}
+                      {detail.tickets.length > 24 && (
+                        <div className="small">
+                          其余 {detail.tickets.length - 24}{" "}
+                          张子票已合并计入总派奖
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {isLive && wonPromptEntryId === it.id && (
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -4124,7 +4813,7 @@ export function SkinPhoneApp({
                     step={0.01}
                     value={wonPayoutDraft}
                     onChange={(e) => setWonPayoutDraft(e.target.value)}
-                    placeholder="实际到手派奖金额"
+                    placeholder="实际到手派奖金额（低于本金自动标局部回血）"
                     className="ledger-input num"
                   />
                   <button
@@ -4154,9 +4843,26 @@ export function SkinPhoneApp({
 
               <div className="ledger-acts">
                 <div className="ledger-acts-grp">
+                  {hasAnatomy && (
+                    <button
+                      type="button"
+                      className={`key mini num ${isExpanded ? "on" : ""}`}
+                      onClick={() => {
+                        haptic(5);
+                        setExpandedLedgerIds((prev) => ({
+                          ...prev,
+                          [it.id]: !isExpanded,
+                        }));
+                      }}
+                    >
+                      {isExpanded ? "▴ 收起明细" : "🔍 实票明细"}
+                    </button>
+                  )}
                   <button
                     type="button"
-                    className={`key mini ${it.status === "won" ? "on" : ""}`}
+                    className={`key mini ${
+                      it.status === "won" || it.status === "partial" ? "on" : ""
+                    }`}
                     disabled={ledgerBusy}
                     onClick={() => {
                       if (isLive) {
@@ -4171,7 +4877,7 @@ export function SkinPhoneApp({
                       }
                     }}
                   >
-                    红单
+                    {isLive ? "改派奖" : "记命中"}
                   </button>
                   <button
                     type="button"
@@ -4181,14 +4887,14 @@ export function SkinPhoneApp({
                   >
                     黑单
                   </button>
-                  {it.status !== "pending" && (
+                  {(it.status !== "pending" || it.manualOverride) && (
                     <button
                       type="button"
                       className="key mini"
                       disabled={ledgerBusy}
                       onClick={() => void handleSettleEntry(it, "pending")}
                     >
-                      重置待开
+                      自动对奖
                     </button>
                   )}
                 </div>
@@ -4198,7 +4904,7 @@ export function SkinPhoneApp({
                   disabled={ledgerBusy}
                   onClick={() => void handleDeleteEntry(it.id)}
                 >
-                  删除
+                  🗑️ 删除
                 </button>
               </div>
             </div>
@@ -4206,45 +4912,12 @@ export function SkinPhoneApp({
         })
       )}
 
-      {/* Member Session Continuity Status & Explicit Logout */}
-      {authUser && (
-        <div className="card opt-row enter" style={{ marginTop: 6 }}>
-          <div>
-            <b>
-              当前授权账号：{authUser.username}
-              {offlineMode ? "（离线重连保护中）" : "（长期在线免重登）"}
-            </b>
-            <div className="s num">
-              今日智能诊盘额度：
-              {authUser.aiEnabled
-                ? `${authUser.aiUsedToday}/${authUser.dailyAiLimit} 次`
-                : "未开通"}
-              {" · "}设备绑定 {authUser.boundDevicesCount}/
-              {authUser.maxDevices >= 99 ? "∞" : authUser.maxDevices} 台
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {authUser.role === "superadmin" && (
-              <button
-                type="button"
-                className="key mini dark"
-                onClick={() => setAdminOpen(true)}
-              >
-                👑 总控台
-              </button>
-            )}
-            <button
-              type="button"
-              className="key mini"
-              onClick={() => void handleExplicitLogout()}
-            >
-              退出账号
-            </button>
-          </div>
-        </div>
-      )}
+      {sessionStatusCardNode}
     </>
   );
+
+  const ledgerContent =
+    mobileCabin === "intel" ? intelCabinContent : ledgerCabinContent;
 
   const overlayLayerNode = (
     <div ref={layerRef} className="layer">
@@ -4746,17 +5419,47 @@ export function SkinPhoneApp({
           </div>
         </div>
 
-        <button
-          type="button"
-          className="key dark full"
-          data-spring="0.94"
-          onClick={() => {
-            showSpringToast(layerRef.current, "实票已全部核对无误");
-            setSheet(null);
-          }}
-        >
-          核对完毕
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          <button
+            type="button"
+            className="key dark full"
+            data-spring="0.94"
+            onClick={(e) => void copyShopkeeperWeChatSlipUI(e.currentTarget)}
+          >
+            📋 一键复制发店主微信口令
+          </button>
+          <div className="two">
+            <button
+              type="button"
+              className="key"
+              data-spring="0.92"
+              disabled={ledgerBusy}
+              onClick={() => recordToLedger("paper")}
+            >
+              🧪 存 0 成本模拟单
+            </button>
+            <button
+              type="button"
+              className="key dark"
+              data-spring="0.92"
+              disabled={ledgerBusy}
+              onClick={() => recordToLedger("live")}
+            >
+              💰 已发店主·记实买
+            </button>
+          </div>
+          <button
+            type="button"
+            className="key full"
+            data-spring="0.94"
+            onClick={() => {
+              showSpringToast(layerRef.current, "实票已全部核对无误");
+              setSheet(null);
+            }}
+          >
+            仅关闭打票单
+          </button>
+        </div>
       </SpringSheet>
 
       {/* Sheet 4: 联赛筛选 */}
@@ -6118,14 +6821,15 @@ export function SkinPhoneApp({
               <div className="dk-col-scroll">{archetypesContent}</div>
             </section>
 
-            {/* Column 3: ③ 五维审单锁利 & 情报止损账本 */}
+            {/* Column 3: ③ 五维审单锁利 / 双轨账本 / 小高情报舱 */}
             <section ref={desktopAuditColRef} className="dk-col dk-col-right">
               <div className="dk-col-head">
                 <div className="dk-col-head-row" style={{ marginBottom: 0 }}>
                   <SpringSegmented
                     options={[
                       ["audit", "③ 🛡️ 五维审单锁利"],
-                      ["ledger", "🧹 情报与止损账本"],
+                      ["ledger", "📒 双轨账本"],
+                      ["intel", "🧹 小高情报舱"],
                     ]}
                     value={dkRightTab}
                     onChange={setDkRightTab}
@@ -6156,7 +6860,11 @@ export function SkinPhoneApp({
                 </div>
               </div>
               <div className="dk-col-scroll">
-                {dkRightTab === "audit" ? auditContent : ledgerContent}
+                {dkRightTab === "audit"
+                  ? auditContent
+                  : dkRightTab === "intel"
+                    ? intelCabinContent
+                    : ledgerCabinContent}
               </div>
             </section>
           </div>
@@ -6368,6 +7076,18 @@ export function SkinPhoneApp({
                 skinKey={skin}
               />
             </>
+          )}
+
+          {tab === "ledger" && (
+            <SpringSegmented
+              options={[
+                ["ledger", `📒 双轨账本(${ledger.entries.length})`],
+                ["intel", `🧹 小高情报舱(${matches.length})`],
+              ]}
+              value={mobileCabin}
+              onChange={setMobileCabin}
+              skinKey={skin}
+            />
           )}
         </div>
 

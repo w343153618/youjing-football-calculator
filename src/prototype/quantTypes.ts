@@ -80,6 +80,8 @@ export interface MatchItem {
   matchNumStr: string;
   league: string;
   kickoff: string;
+  businessDate?: string;
+  matchDate?: string;
   home: string;
   away: string;
   homeRank?: string;
@@ -437,3 +439,123 @@ export const EMPTY_WORKSPACE_RESPONSE: QuantWorkspaceResponse = {
   subjectiveEVPct: 0,
   allWarnings: [],
 };
+
+// ==================== Spec 0013 · Sealed Print-Time Ledger Snapshot & Auto-Settlement Types ====================
+
+export type LedgerOutcomeStatus = "pending" | "won" | "partial" | "lost";
+
+export interface LedgerSnapshotPick {
+  poolCode: PoolCode;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  goalLine?: string;
+}
+
+export interface LedgerSnapshotMatch {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  businessDate?: string;
+  goalLine?: string;
+  isBanker?: boolean;
+  picks: LedgerSnapshotPick[];
+}
+
+export interface LedgerSnapshotLeg {
+  matchId: string;
+  matchNumStr?: string;
+  home?: string;
+  away?: string;
+  kickoff?: string;
+  poolCode: PoolCode;
+  optionKey: string;
+  optionLabel?: string;
+  odds: number;
+  goalLine?: string;
+}
+
+export interface LedgerSnapshotLine {
+  id: string;
+  modeLabel: string;
+  multiple: number;
+  legs: LedgerSnapshotLeg[];
+}
+
+export interface LedgerTicketSnapshot {
+  matches: LedgerSnapshotMatch[];
+  lines: LedgerSnapshotLine[];
+}
+
+export interface LedgerMatchOutcome {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  goalLine?: string;
+  isBanker: boolean;
+  state: "pending" | "hit" | "miss" | "void";
+  halfScore: string;
+  fullScore: string;
+  picks: Array<{
+    poolCode: PoolCode;
+    optionKey: string;
+    optionLabel: string;
+    odds: number;
+    state: "pending" | "hit" | "miss" | "void";
+  }>;
+}
+
+export interface LedgerTicketOutcome {
+  id: string;
+  modeLabel: string;
+  multiple: number;
+  cost: number;
+  status: "pending" | "won" | "lost" | "void-refund";
+  payout: number;
+  potentialPayout?: number;
+  legs: Array<{
+    matchId: string;
+    matchNumStr: string;
+    home: string;
+    away: string;
+    poolCode: PoolCode;
+    optionKey: string;
+    optionLabel: string;
+    odds: number;
+    state: "pending" | "hit" | "miss" | "void";
+  }>;
+}
+
+export interface LedgerLiveEarlyHedge {
+  available: boolean;
+  lateMatchId: string;
+  lateMatchTitle: string;
+  lateKickoff: string;
+  survivingTargetReturn: number;
+  hedgeCost: number;
+  lockedNetProfit: number;
+  oppositeLabel: string;
+  oppositeOdds: number;
+  hedgeMode: "lock-profit" | "break-even" | "reduce-loss";
+}
+
+export interface LedgerSettlementDetail {
+  status: LedgerOutcomeStatus;
+  settledReturn: number;
+  netProfit: number;
+  hitTicketCount: number;
+  totalTicketCount: number;
+  hitMatchCount: number;
+  settledMatchCount: number;
+  totalMatchCount: number;
+  earlyEliminated: boolean;
+  lockedFloorReturn: number;
+  progressSummary: string;
+  liveEarlyHedge: LedgerLiveEarlyHedge | null;
+  matches: LedgerMatchOutcome[];
+  tickets: LedgerTicketOutcome[];
+}

@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   FALLBACK_MATCHES,
   evaluateQuantWorkspace,
+  fetchOfficialMatchResultsServer,
   fetchOfficialMatchesServer,
 } from "./quantEngine.mjs";
 import {
@@ -338,6 +339,7 @@ function setBoundedMap(map, key, val, maxCap) {
  */
 export function createSecurityAndQuantGateway(opts = {}) {
   const snapshotFile = opts.snapshotFile || null;
+  const resultsCacheFile = opts.resultsCacheFile || null;
   const banStoreFile = opts.banStoreFile || null;
   const persistDelayMs = opts.persistDelayMs ?? 150;
   const fspImpl = opts.fspImpl || fsp;
@@ -352,6 +354,53 @@ export function createSecurityAndQuantGateway(opts = {}) {
   const replayWindowMs = opts.replayWindowMs ?? 60_000;
   const fuseLoopback = Boolean(opts.fuseLoopback);
   const fetchMatchesFn = opts.fetchMatches || fetchOfficialMatchesServer;
+  const fetchResultsFn =
+    opts.fetchResults ||
+    ((forceRefresh = false) =>
+      fetchOfficialMatchResultsServer({
+        nowMs: nowFn(),
+        cacheFilePath: resultsCacheFile,
+        forceRefresh,
+      }));
+
+  async function resolveSyncedUserLedger(
+    userId,
+    liveMatches,
+    forceRefresh = false
+  ) {
+    if (!ledgerManager || !userId) {
+      return {
+        ledger: undefined,
+        newlySettledCount: 0,
+        newlySettledTitles: [],
+      };
+    }
+    if (!forceRefresh && !ledgerManager.hasPendingSnapshots?.(userId)) {
+      return {
+        ledger: ledgerManager.getUserLedger(userId),
+        newlySettledCount: 0,
+        newlySettledTitles: [],
+      };
+    }
+    try {
+      const resultsById = await fetchResultsFn(forceRefresh);
+      const settled = ledgerManager.autoSettleUserLedger(userId, {
+        resultsById,
+        liveMatchesById: liveMatches,
+      });
+      return {
+        ledger: settled.ledger,
+        newlySettledCount: settled.newlySettledCount || 0,
+        newlySettledTitles: settled.newlySettledTitles || [],
+      };
+    } catch {
+      return {
+        ledger: ledgerManager.getUserLedger(userId),
+        newlySettledCount: 0,
+        newlySettledTitles: [],
+      };
+    }
+  }
 
   const sessions = new Map();
   const fusedIps = new Map(); // ip -> expiresAtMs (48h whole-computer network ban)
@@ -1041,6 +1090,11 @@ export function createSecurityAndQuantGateway(opts = {}) {
         );
       }
       res.setHeader("Set-Cookie", cookiesOut);
+      const syncedBootstrapLedger =
+        accountManager && authRes.user?.id
+          ? await resolveSyncedUserLedger(authRes.user.id, matches, false)
+          : { ledger: undefined, newlySettledCount: 0, newlySettledTitles: [] };
+
       sendJson(res, 200, {
         ok: true,
         sid,
@@ -1052,10 +1106,8 @@ export function createSecurityAndQuantGateway(opts = {}) {
                 authenticated: true,
                 user: authRes.user,
                 authToken: rawAuthToken,
-                ledger:
-                  ledgerManager && authRes.user?.id
-                    ? ledgerManager.getUserLedger(authRes.user.id)
-                    : undefined,
+                ledger: syncedBootstrapLedger.ledger,
+                newlySettledCount: syncedBootstrapLedger.newlySettledCount,
                 ...bundle,
               }
             : bundle
@@ -1130,6 +1182,14 @@ export function createSecurityAndQuantGateway(opts = {}) {
           const sessionMatches = mergeSessionAlerts(matches, sess);
           const bundle = buildInitialWorkspaceBundle(sessionMatches, syncNote);
 
+          const syncedLoginLedger = loginRes.user?.id
+            ? await resolveSyncedUserLedger(
+                loginRes.user.id,
+                sessionMatches,
+                false
+              )
+            : { ledger: undefined, newlySettledCount: 0 };
+
           res.setHeader(
             "Set-Cookie",
             `yj_auth_tok=${loginRes.authToken}${cookieSuffix(req, 31536000)}`
@@ -1138,10 +1198,8 @@ export function createSecurityAndQuantGateway(opts = {}) {
             authenticated: true,
             user: loginRes.user,
             authToken: loginRes.authToken,
-            ledger:
-              ledgerManager && loginRes.user?.id
-                ? ledgerManager.getUserLedger(loginRes.user.id)
-                : undefined,
+            ledger: syncedLoginLedger.ledger,
+            newlySettledCount: syncedLoginLedger.newlySettledCount,
             ...bundle,
           };
         }
@@ -1310,7 +1368,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
         ip,
         {
           endpoint: "ledger/mutate",
-          maxBodyBytes: 64_000,
+          maxBodyBytes: 256_000,
           requireAuth: true,
           fallbackError: "账本安全校验失败或会话已过期",
           onDomainError: (err) => {
@@ -1321,8 +1379,43 @@ export function createSecurityAndQuantGateway(opts = {}) {
             sendJson(res, 400, { ok: false, error: safeMsg });
           },
         },
-        async ({ data, user }) => {
-          return ledgerManager.mutateUserLedger(user.id, data || {});
+        async ({ sess, data, user }) => {
+          const act = String(data?.action || "");
+          if (act === "auto-settle") {
+            const { matches } = await ensureMatchesLoaded(false);
+            const sessionMatches = mergeSessionAlerts(matches, sess);
+            const synced = await resolveSyncedUserLedger(
+              user.id,
+              sessionMatches,
+              Boolean(data?.forceRefresh)
+            );
+            return {
+              ok: true,
+              newlySettledCount: synced.newlySettledCount,
+              newlySettledTitles: synced.newlySettledTitles,
+              ledger: synced.ledger,
+            };
+          }
+          const mutated = ledgerManager.mutateUserLedger(user.id, data || {});
+          if (
+            mutated.ok &&
+            act === "add-entry" &&
+            ledgerManager.hasPendingSnapshots?.(user.id)
+          ) {
+            const { matches } = await ensureMatchesLoaded(false);
+            const sessionMatches = mergeSessionAlerts(matches, sess);
+            const synced = await resolveSyncedUserLedger(
+              user.id,
+              sessionMatches,
+              false
+            );
+            return {
+              ...mutated,
+              ledger: synced.ledger,
+              newlySettledCount: synced.newlySettledCount,
+            };
+          }
+          return mutated;
         }
       );
     }
@@ -1359,14 +1452,23 @@ export function createSecurityAndQuantGateway(opts = {}) {
           requireAuth: true,
           fallbackError: "同步校验失败",
         },
-        async ({ sess, data }) => {
+        async ({ sess, data, user }) => {
           const { matches, syncNote } = await ensureMatchesLoaded(true);
           const sessionMatches = mergeSessionAlerts(matches, sess);
           const workspace = evaluateQuantWorkspace(
             data?.workspaceParams || {},
             sessionMatches
           );
-          return { matches: sessionMatches, syncNote, workspace };
+          const syncedLedger = user?.id
+            ? await resolveSyncedUserLedger(user.id, sessionMatches, true)
+            : { ledger: undefined, newlySettledCount: 0 };
+          return {
+            matches: sessionMatches,
+            syncNote,
+            workspace,
+            ledger: syncedLedger.ledger,
+            newlySettledCount: syncedLedger.newlySettledCount,
+          };
         }
       );
     }

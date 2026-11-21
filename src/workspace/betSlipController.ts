@@ -8,6 +8,9 @@ import {
   type BridgeMatchCandidate,
   type ComboRow,
   type EquivalentArbItem,
+  type LedgerSnapshotLine,
+  type LedgerSnapshotMatch,
+  type LedgerTicketSnapshot,
   type MatchItem,
   type PassSelectionSpec,
   type PlanTicketLine,
@@ -2259,5 +2262,365 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       emit();
       void scheduleRefresh();
     },
+
+    buildSealedLedgerDraft(): SealedLedgerDraft | null {
+      const effectiveReport = state.workspace.effectiveReport;
+      const manualReport = state.workspace.manualReport;
+      const appliedPlan = state.planSpec ? state.workspace.appliedPlan : null;
+      if (
+        effectiveReport.matchCount === 0 ||
+        !effectiveReport.canCheckout ||
+        effectiveReport.totalCost <= 0
+      ) {
+        return null;
+      }
+
+      const bankerSet = new Set(
+        effectiveReport.bankerMatchIds ??
+          manualReport.bankerMatchIds ??
+          state.passSpec.bankerMatchIds ??
+          []
+      );
+      const matchById = new Map(state.matches.map((m) => [m.id, m]));
+
+      const lines: LedgerSnapshotLine[] = appliedPlan
+        ? appliedPlan.lines.map((ln, idx) => ({
+            id: ln.id || `ap_${idx + 1}`,
+            modeLabel: ln.modeLabel,
+            multiple: Math.max(1, Math.round(ln.multiple || 1)),
+            legs: ln.legs.map((lg) => {
+              const m = matchById.get(lg.matchId);
+              return {
+                matchId: lg.matchId,
+                matchNumStr: lg.matchNumStr || m?.matchNumStr,
+                home: lg.home || m?.home,
+                away: lg.away || m?.away,
+                kickoff: lg.kickoff || m?.kickoff,
+                poolCode: lg.poolCode,
+                optionKey: lg.optionKey,
+                optionLabel: lg.optionLabel,
+                odds: lg.odds,
+                goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+              };
+            }),
+          }))
+        : (effectiveReport.tickets ?? []).map((tk, idx) => {
+            const legs = tk.legs ?? [];
+            const passTxt =
+              legs.length === 1
+                ? "单关"
+                : `${legs.length}串1${
+                    bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
+                  }`;
+            return {
+              id: tk.id || `tk_${idx + 1}`,
+              modeLabel: passTxt,
+              multiple: Math.max(1, Math.round(state.multiple || 1)),
+              legs: legs.map((lg) => {
+                const m = matchById.get(lg.matchId);
+                return {
+                  matchId: lg.matchId,
+                  matchNumStr: lg.matchNumStr || m?.matchNumStr,
+                  home: lg.home || m?.home,
+                  away: lg.away || m?.away,
+                  kickoff: m?.kickoff,
+                  poolCode: lg.poolCode,
+                  optionKey: lg.optionKey,
+                  optionLabel: lg.optionLabel,
+                  odds: lg.odds,
+                  goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+                };
+              }),
+            };
+          });
+
+      const matchMap = new Map<string, LedgerSnapshotMatch>();
+      for (const ln of lines) {
+        for (const lg of ln.legs) {
+          const m = matchById.get(lg.matchId);
+          let entry = matchMap.get(lg.matchId);
+          if (!entry) {
+            entry = {
+              matchId: lg.matchId,
+              matchNumStr: lg.matchNumStr || m?.matchNumStr || lg.matchId,
+              home: lg.home || m?.home || "",
+              away: lg.away || m?.away || "",
+              kickoff: lg.kickoff || m?.kickoff || "",
+              businessDate: m?.businessDate,
+              goalLine: lg.goalLine ?? m?.pools?.HHAD?.goalLine ?? "-1",
+              isBanker: bankerSet.has(lg.matchId),
+              picks: [],
+            };
+            matchMap.set(lg.matchId, entry);
+          }
+          if (
+            !entry.picks.some(
+              (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+            )
+          ) {
+            entry.picks.push({
+              poolCode: lg.poolCode,
+              optionKey: lg.optionKey,
+              optionLabel: lg.optionLabel || lg.optionKey,
+              odds: lg.odds,
+              goalLine: entry.goalLine,
+            });
+          }
+        }
+      }
+
+      const title = appliedPlan
+        ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${appliedPlan.lines.length}张)`
+        : `${effectiveReport.modeLabel} · ${effectiveReport.betCount}注方案`;
+
+      return {
+        title,
+        modeLabel: effectiveReport.modeLabel,
+        betCount: Math.max(1, effectiveReport.betCount),
+        cost: effectiveReport.totalCost,
+        paperRefCost: effectiveReport.totalCost,
+        minPayout: effectiveReport.minPayout,
+        maxPayout: effectiveReport.maxPayout,
+        snapshot:
+          lines.length > 0
+            ? {
+                matches: Array.from(matchMap.values()),
+                lines,
+              }
+            : undefined,
+      };
+    },
+
+    formatShopkeeperWeChatSlip(opts?: { useConsolidated?: boolean }): string {
+      const effectiveReport = state.workspace.effectiveReport;
+      const manualReport = state.workspace.manualReport;
+      const appliedPlan = state.planSpec ? state.workspace.appliedPlan : null;
+      if (!effectiveReport.canCheckout || effectiveReport.totalCost <= 0) {
+        return "";
+      }
+
+      const bankerSet = new Set(
+        effectiveReport.bankerMatchIds ??
+          manualReport.bankerMatchIds ??
+          state.passSpec.bankerMatchIds ??
+          []
+      );
+      const useConsolidated =
+        opts?.useConsolidated ?? Boolean(state.planSpec?.consolidateTickets);
+
+      const slipRows: string[] = [];
+      let physicalSlipSeq = 0;
+
+      const pushSplitSlips = (
+        legsDesc: string,
+        modeLabel: string,
+        totalMult: number,
+        totalLineCost?: number
+      ) => {
+        const cleanMult = Math.max(1, Math.round(totalMult || 1));
+        const unitCost =
+          typeof totalLineCost === "number" &&
+          totalLineCost > 0 &&
+          cleanMult > 0
+            ? Math.max(2, Math.round(totalLineCost / cleanMult))
+            : 2;
+        let rem = cleanMult;
+        let partIdx = 0;
+        const totalParts = Math.ceil(cleanMult / 99);
+        while (rem > 0) {
+          const chunk = Math.min(99, rem);
+          const chunkCost = unitCost * chunk;
+          physicalSlipSeq += 1;
+          partIdx += 1;
+          const partTag =
+            totalParts > 1 ? `[分票${partIdx}/${totalParts}]` : "";
+          slipRows.push(
+            `票${physicalSlipSeq}${partTag}：${legsDesc} ｜ ${modeLabel} × ${chunk}倍 = ¥${chunkCost}`
+          );
+          rem -= chunk;
+        }
+      };
+
+      if (appliedPlan) {
+        const sourceLines =
+          useConsolidated &&
+          Array.isArray(appliedPlan.consolidatedLines) &&
+          appliedPlan.consolidatedLines.length > 0
+            ? appliedPlan.consolidatedLines
+            : appliedPlan.lines;
+        for (const ln of sourceLines) {
+          const legsDesc = ln.legs
+            .map(
+              (g) =>
+                `${bankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr}${g.home}(${g.poolName}·${g.optionLabel})`
+            )
+            .join(" + ");
+          pushSplitSlips(legsDesc, ln.modeLabel, ln.multiple, ln.cost);
+        }
+      } else if (
+        Array.isArray(effectiveReport.tickets) &&
+        effectiveReport.tickets.length > 0
+      ) {
+        for (const tk of effectiveReport.tickets) {
+          const legs = tk.legs ?? [];
+          const legsDesc = legs
+            .map(
+              (g) =>
+                `${bankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr}${g.home}(${g.poolName}·${g.optionLabel})`
+            )
+            .join(" + ");
+          const passTxt =
+            legs.length === 1
+              ? "单关"
+              : `${legs.length}串1${
+                  bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
+                }`;
+          pushSplitSlips(legsDesc, passTxt, state.multiple);
+        }
+      }
+
+      const header = `【竞彩出票单 · 共${physicalSlipSeq}张实票 · 合计 ¥${effectiveReport.totalCost}】`;
+      const footer = "请核对票面固定赔率后出票拍照，谢谢！";
+      return [header, ...slipRows, footer].join("\n");
+    },
+  };
+}
+
+export interface SealedLedgerDraft {
+  title: string;
+  modeLabel: string;
+  betCount: number;
+  cost: number;
+  paperRefCost: number;
+  minPayout: number;
+  maxPayout: number;
+  snapshot?: LedgerTicketSnapshot;
+}
+
+export interface SportteryCutoffStatus {
+  level: "normal" | "urgent" | "closed";
+  cutoffLabel: "22:00" | "23:00";
+  remainingMinutes: number;
+  badgeText: string;
+}
+
+/**
+ * 计算中国体彩竞彩足球线下终端每日官方停售红线倒计时（北京时间：工作日 11:00-22:00，周末 11:00-23:00）
+ */
+export function computeSportteryCutoffStatus(
+  nowMs: number = Date.now()
+): SportteryCutoffStatus {
+  const bj = new Date(nowMs + 8 * 3600_000);
+  const dow = bj.getUTCDay(); // 0 = Sun, 6 = Sat
+  const isWeekend = dow === 0 || dow === 6;
+  const cutoffLabel: "22:00" | "23:00" = isWeekend ? "23:00" : "22:00";
+  const cutoffMinutes = isWeekend ? 23 * 60 : 22 * 60;
+  const openMinutes = 11 * 60;
+  const curMinutes = bj.getUTCHours() * 60 + bj.getUTCMinutes();
+
+  if (curMinutes < openMinutes || curMinutes >= cutoffMinutes) {
+    return {
+      level: "closed",
+      cutoffLabel,
+      remainingMinutes: 0,
+      badgeText: `休市 · 11:00-${cutoffLabel}出票`,
+    };
+  }
+
+  const remainingMinutes = cutoffMinutes - curMinutes;
+  const hrs = Math.floor(remainingMinutes / 60);
+  const mins = remainingMinutes % 60;
+  const remText = hrs > 0 ? `${hrs}h${mins}m` : `${mins}m`;
+  if (remainingMinutes <= 30) {
+    return {
+      level: "urgent",
+      cutoffLabel,
+      remainingMinutes,
+      badgeText: `⚠️ 距${cutoffLabel}停售 ${remText}`,
+    };
+  }
+  return {
+    level: "normal",
+    cutoffLabel,
+    remainingMinutes,
+    badgeText: `⏰ 距${cutoffLabel}停售 ${remText}`,
+  };
+}
+
+export interface RadarMatchDayGroup {
+  dayKey: string;
+  dayLabel: string;
+  matches: MatchItem[];
+}
+
+/**
+ * 赛事雷达编号/队名/联赛即时过滤与按比赛日分组（搜不到时诚实返回空列表，绝不静默回退全盘）
+ */
+export function filterAndGroupRadarMatches(
+  matches: MatchItem[],
+  opts: {
+    searchQuery?: string;
+    mode?: MatchMode;
+    qFilter?: string;
+    activeLeagues?: string[];
+  } = {}
+): {
+  totalCount: number;
+  filteredMatches: MatchItem[];
+  groups: RadarMatchDayGroup[];
+} {
+  let list = Array.isArray(matches) ? matches : [];
+  const activeLeagues = opts.activeLeagues ?? [];
+  if (activeLeagues.length > 0) {
+    list = list.filter((m) => activeLeagues.includes(m.league));
+  }
+  if (opts.mode === "single" || opts.qFilter === "single") {
+    const sub = list.filter((m) => m.pools.HAD.single || m.pools.HHAD.single);
+    if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
+  } else if (opts.qFilter === "low-vig") {
+    const sub = list.filter((m) => m.pools.HAD.vig < 0.1228);
+    if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
+  } else if (opts.qFilter === "drop") {
+    const sub = list.filter((m) =>
+      Object.values(m.pools).some((p) => p.options.some((o) => o.trend === -1))
+    );
+    if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
+  } else if (opts.qFilter === "arb") {
+    const sub = list.filter((m) => (m.microQuant?.arbitrages?.length ?? 0) > 0);
+    if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
+  }
+
+  const q = String(opts.searchQuery || "")
+    .trim()
+    .toLowerCase();
+  if (q) {
+    list = list.filter((m) => {
+      const hay =
+        `${m.matchNumStr} ${m.home} ${m.away} ${m.league}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }
+
+  const weekdayRe = new RegExp("^(周[一二三四五六日])");
+  const groupMap = new Map<string, RadarMatchDayGroup>();
+  for (const m of list) {
+    const weekdayPrefix = m.matchNumStr?.match(weekdayRe)?.[1] || "当期";
+    const datePart = m.businessDate || m.matchDate || "";
+    const dayKey = datePart ? `${datePart}_${weekdayPrefix}` : weekdayPrefix;
+    const dayLabel = datePart
+      ? `${weekdayPrefix} · ${datePart.slice(5)}`
+      : `${weekdayPrefix}赛事`;
+    let grp = groupMap.get(dayKey);
+    if (!grp) {
+      grp = { dayKey, dayLabel, matches: [] };
+      groupMap.set(dayKey, grp);
+    }
+    grp.matches.push(m);
+  }
+
+  return {
+    totalCount: list.length,
+    filteredMatches: list,
+    groups: Array.from(groupMap.values()),
   };
 }

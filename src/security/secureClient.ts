@@ -1,4 +1,7 @@
 import type {
+  LedgerOutcomeStatus,
+  LedgerSettlementDetail,
+  LedgerTicketSnapshot,
   MatchItem,
   QuantWorkspaceParams,
   QuantWorkspaceResponse,
@@ -63,9 +66,13 @@ export interface LedgerEntry {
   paperRefCost: number;
   minPayout: number;
   maxPayout: number;
-  status: "pending" | "won" | "lost";
+  status: LedgerOutcomeStatus;
   settledReturn: number;
   netProfit: number;
+  manualOverride?: boolean;
+  autoSettled?: boolean;
+  snapshot?: LedgerTicketSnapshot;
+  settlementDetail?: LedgerSettlementDetail;
   createdAt: number;
   settledAt: number | null;
 }
@@ -73,12 +80,14 @@ export interface LedgerEntry {
 export interface LedgerStats {
   liveSettledCount: number;
   liveWonCount: number;
+  livePartialCount?: number;
   liveWinRatePct: number;
   liveTotalStaked: number;
   liveNetProfit: number;
   liveRoiPct: number;
   paperCount: number;
   paperLostCount?: number;
+  paperPartialCount?: number;
   paperWonCount?: number;
   paperSavedAmount: number;
 }
@@ -87,6 +96,7 @@ export interface UserLedgerSnapshot {
   dailyLimit: number;
   usageDate: string;
   dailyLiveSpent: number;
+  dailyLockedLossSpent?: number;
   dailyRemaining: number;
   entries: LedgerEntry[];
   stats: LedgerStats;
@@ -104,21 +114,31 @@ export type LedgerMutatePayload =
       paperRefCost?: number;
       minPayout: number;
       maxPayout: number;
+      snapshot?: LedgerTicketSnapshot;
       forceConfirmed?: boolean;
     }
   | {
       action: "settle-entry";
       entryId: string;
-      status: "pending" | "won" | "lost";
+      status: LedgerOutcomeStatus;
       settledReturn?: number;
     }
-  | { action: "delete-entry"; entryId: string };
+  | { action: "delete-entry"; entryId: string }
+  | { action: "clear-settled-paper" }
+  | { action: "restore-entry"; undoToken?: string }
+  | { action: "auto-settle"; forceRefresh?: boolean };
 
 export type LedgerMutateResponse =
   | {
       ok: true;
       entry?: LedgerEntry;
       deletedId?: string;
+      undoToken?: string;
+      lockedStopLossStake?: number;
+      clearedCount?: number;
+      restoredCount?: number;
+      newlySettledCount?: number;
+      newlySettledTitles?: string[];
       ledger: UserLedgerSnapshot;
     }
   | {
@@ -139,6 +159,7 @@ export interface AuthenticatedWorkspaceBundle {
   initialPicks: SelectedPick[];
   workspace: QuantWorkspaceResponse;
   ledger?: UserLedgerSnapshot;
+  newlySettledCount?: number;
 }
 
 export type BootstrapResult =
@@ -705,11 +726,15 @@ export async function requestServerMatchesSync(
   matches: MatchItem[];
   syncNote: string;
   workspace: QuantWorkspaceResponse;
+  ledger?: UserLedgerSnapshot;
+  newlySettledCount?: number;
 }> {
   return postEncryptedApi<{
     matches: MatchItem[];
     syncNote: string;
     workspace: QuantWorkspaceResponse;
+    ledger?: UserLedgerSnapshot;
+    newlySettledCount?: number;
   }>("quant/sync", { workspaceParams });
 }
 

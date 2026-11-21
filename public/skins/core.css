@@ -3420,6 +3420,194 @@ button {
   margin-bottom: 8px;
 }
 
+/* =========================================================
+   Spec 0013 · Dual-Track Visual Distinction, Ticket Anatomy,
+   5s Undo Bar, Radar Search / Day Group & Official Cutoff Pill
+   ========================================================= */
+.ledger-entry.is-live {
+  border-left: 4px solid var(--live);
+  box-shadow: var(--card-sh);
+}
+.ledger-entry.is-paper {
+  border: 1.5px dashed var(--line-strong, rgba(120, 138, 165, 0.45));
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 9px,
+    rgba(120, 145, 180, 0.045) 9px,
+    rgba(120, 145, 180, 0.045) 18px
+  );
+}
+.ledger-kind-stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+.ledger-kind-stamp.live {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--live);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+}
+.ledger-kind-stamp.paper {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px dashed rgba(120, 138, 165, 0.55);
+}
+.ledger-badge.partial {
+  color: var(--warn, #d97706);
+  background: rgba(245, 158, 11, 0.16);
+}
+.ledger-anatomy {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 10px;
+  border-radius: var(--key-r);
+  background: var(--tile);
+  border: 0.5px solid var(--line);
+}
+.ledger-anat-match {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: var(--card);
+  border: 0.5px solid var(--line);
+}
+.ledger-anat-ticket {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--card);
+  border: 0.5px solid var(--line);
+  font-size: 11px;
+}
+.ledger-pick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--tile);
+  color: var(--text-2);
+}
+.ledger-pick-chip.hit {
+  background: rgba(229, 72, 77, 0.15);
+  color: var(--live);
+}
+.ledger-pick-chip.miss {
+  background: rgba(120, 130, 145, 0.14);
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+.ledger-pick-chip.void {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--warn, #d97706);
+}
+.ledger-undo-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 11px;
+  border-radius: var(--r);
+  background: var(--mark);
+  color: var(--bg, #fff);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.radar-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  min-width: 0;
+}
+.radar-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.radar-search-input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 24px 0 8px;
+  border-radius: var(--key-r);
+  border: 0.5px solid var(--line);
+  background: var(--tile);
+  color: var(--text);
+  font-size: 11.5px;
+  outline: none;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+.radar-search-clear {
+  position: absolute;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.cutoff-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--key-r);
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--tile);
+  color: var(--text-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cutoff-pill.urgent {
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--warn, #d97706);
+  border: 0.5px solid rgba(245, 158, 11, 0.45);
+}
+.cutoff-pill.closed {
+  opacity: 0.72;
+}
+.day-grp-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  margin: 4px 0;
+  border-radius: var(--key-r);
+  border: 0.5px solid var(--line);
+  background: var(--tile);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .tflip-face,
   .sdrawer-body,

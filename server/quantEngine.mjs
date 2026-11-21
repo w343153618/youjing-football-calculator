@@ -6556,6 +6556,8 @@ export function parseSportteryRawJson(json) {
         matchNumStr: m.matchNumStr,
         league: m.leagueAbbName,
         kickoff: (m.matchTime ?? "").slice(0, 5),
+        businessDate: m.businessDate ? String(m.businessDate) : undefined,
+        matchDate: m.matchDate ? String(m.matchDate) : undefined,
         home: m.homeTeamAbbName,
         away: m.awayTeamAbbName,
         homeRank: String(m.homeRank || "").replace(/\D+/g, "") || undefined,
@@ -15510,5 +15512,758 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     fivePlans,
     subjectiveEVPct,
     allWarnings,
+  };
+}
+
+// ==================== Spec 0013 · Official Sporttery Result Auto-Settlement ====================
+
+const EXPLICIT_OFFICIAL_CRS_SCORES = new Set(
+  OFFICIAL_CRS_PAIRS.map(([, lbl]) => lbl).filter((lbl) =>
+    /^\d+:\d+$/.test(lbl)
+  )
+);
+
+function parseScorePair(raw) {
+  const s = String(raw ?? "").trim();
+  const m = s.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const a = Number(m[2]);
+  if (!Number.isInteger(h) || !Number.isInteger(a) || h < 0 || a < 0) {
+    return null;
+  }
+  return [h, a];
+}
+
+function isVoidSportteryResultItem(r) {
+  const statusStr = String(r?.matchResultStatus ?? "").trim();
+  const poolStatus = String(r?.poolStatus ?? "")
+    .trim()
+    .toLowerCase();
+  const resStatus = String(r?.resultStatus ?? "").trim();
+  const s999 = String(r?.sectionsNo999 ?? "").trim();
+  const s1 = String(r?.sectionsNo1 ?? "").trim();
+  if (statusStr === "3" || poolStatus === "refund" || poolStatus === "cancel") {
+    return true;
+  }
+  const combined = `${resStatus}|${s999}|${s1}`;
+  return /无效|取消|腰斩|退票|中断/.test(combined);
+}
+
+/**
+ * 解析中国体彩官方完场赛果 JSON（getUniformMatchResultV1.qry）
+ * 返回 Map<matchId, OfficialMatchResult>
+ */
+export function parseSportteryResultsJson(rawJson) {
+  const list = Array.isArray(rawJson)
+    ? rawJson
+    : Array.isArray(rawJson?.value?.matchResult)
+      ? rawJson.value.matchResult
+      : [];
+  const map = new Map();
+  for (const r of list) {
+    if (!r || r.matchId === undefined || r.matchId === null) continue;
+    const matchId = String(r.matchId).trim();
+    if (!matchId) continue;
+    const matchNumStr = String(r.matchNumStr || "").trim();
+    const home = String(r.homeTeam || r.allHomeTeam || "").trim();
+    const away = String(r.awayTeam || r.allAwayTeam || "").trim();
+    const matchDate = String(r.matchDate || "").trim();
+    const goalLine = r.goalLine !== undefined ? String(r.goalLine) : undefined;
+
+    if (isVoidSportteryResultItem(r)) {
+      map.set(matchId, {
+        matchId,
+        matchNumStr,
+        home,
+        away,
+        matchDate,
+        goalLine,
+        settled: true,
+        isVoid: true,
+        halfScore: "无效场次",
+        fullScore: "无效场次",
+        h1: null,
+        a1: null,
+        h2: null,
+        a2: null,
+      });
+      continue;
+    }
+
+    const statusStr = String(r.matchResultStatus ?? "").trim();
+    const poolStatus = String(r.poolStatus ?? "")
+      .trim()
+      .toLowerCase();
+    const fullPair = parseScorePair(r.sectionsNo999);
+    const halfPair = parseScorePair(r.sectionsNo1);
+    const isOfficiallyFinished =
+      Boolean(fullPair) &&
+      statusStr !== "1" &&
+      (statusStr === "2" || poolStatus === "payout" || statusStr === "");
+
+    if (!isOfficiallyFinished || !fullPair) {
+      map.set(matchId, {
+        matchId,
+        matchNumStr,
+        home,
+        away,
+        matchDate,
+        goalLine,
+        settled: false,
+        isVoid: false,
+        halfScore: halfPair ? `${halfPair[0]}:${halfPair[1]}` : "",
+        fullScore: "",
+        h1: null,
+        a1: null,
+        h2: null,
+        a2: null,
+      });
+      continue;
+    }
+
+    map.set(matchId, {
+      matchId,
+      matchNumStr,
+      home,
+      away,
+      matchDate,
+      goalLine,
+      settled: true,
+      isVoid: false,
+      halfScore: halfPair ? `${halfPair[0]}:${halfPair[1]}` : "",
+      fullScore: `${fullPair[0]}:${fullPair[1]}`,
+      h1: halfPair ? halfPair[0] : null,
+      a1: halfPair ? halfPair[1] : null,
+      h2: fullPair[0],
+      a2: fullPair[1],
+    });
+  }
+  return map;
+}
+
+let OFFICIAL_RESULTS_MEM_CACHE = {
+  key: "",
+  fetchedAt: 0,
+  resultsById: new Map(),
+};
+
+/**
+ * 服务端拉取中国体彩官方完场赛果（带 180 秒内存热缓存与磁盘快照回退）
+ */
+export async function fetchOfficialMatchResultsServer(opts = {}) {
+  const nowMs = Number.isFinite(Number(opts.nowMs))
+    ? Number(opts.nowMs)
+    : Date.now();
+  const toBjDate = (ms) =>
+    new Date(ms + 8 * 3600_000).toISOString().slice(0, 10);
+  const endDate = opts.endDate || toBjDate(nowMs + 86_400_000);
+  const beginDate = opts.beginDate || toBjDate(nowMs - 14 * 86_400_000);
+  const cacheKey = `${beginDate}..${endDate}`;
+  const ttlMs = Number.isFinite(Number(opts.ttlMs))
+    ? Number(opts.ttlMs)
+    : 180_000;
+
+  if (
+    !opts.forceRefresh &&
+    OFFICIAL_RESULTS_MEM_CACHE.key === cacheKey &&
+    nowMs - OFFICIAL_RESULTS_MEM_CACHE.fetchedAt < ttlMs &&
+    OFFICIAL_RESULTS_MEM_CACHE.resultsById.size > 0
+  ) {
+    return OFFICIAL_RESULTS_MEM_CACHE.resultsById;
+  }
+
+  const fetchImpl = opts.fetchFn || globalThis.fetch;
+  const cacheFilePath = opts.cacheFilePath || null;
+  const merged = new Map();
+
+  try {
+    for (let pageNo = 1; pageNo <= 3; pageNo++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4500);
+      try {
+        const url = `https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry?matchBeginDate=${encodeURIComponent(
+          beginDate
+        )}&matchEndDate=${encodeURIComponent(
+          endDate
+        )}&leagueId=&pageSize=100&pageNo=${pageNo}&isFix=0&matchPage=1&pcOrWap=1`;
+        const res = await fetchImpl(url, {
+          signal: controller.signal,
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            Referer: "https://www.sporttery.cn/",
+            Accept: "application/json",
+          },
+        });
+        if (!res.ok) break;
+        const json = await res.json();
+        const pageMap = parseSportteryResultsJson(json);
+        for (const [k, v] of pageMap.entries()) {
+          merged.set(k, v);
+        }
+        const totalPages = Number(json?.value?.pages || 1);
+        if (pageNo >= totalPages || pageMap.size === 0) break;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (merged.size > 0) {
+      OFFICIAL_RESULTS_MEM_CACHE = {
+        key: cacheKey,
+        fetchedAt: nowMs,
+        resultsById: merged,
+      };
+      if (cacheFilePath) {
+        const serializable = Array.from(merged.values());
+        await fsp
+          .mkdir(path.dirname(cacheFilePath), { recursive: true })
+          .catch(() => {});
+        const tmp = `${cacheFilePath}.tmp.${process.pid}.${Date.now()}`;
+        await fsp
+          .writeFile(tmp, JSON.stringify(serializable), "utf8")
+          .then(() => fsp.rename(tmp, cacheFilePath))
+          .catch(() => fsp.unlink(tmp).catch(() => {}));
+      }
+      return merged;
+    }
+  } catch {
+    // fallback to disk cache below
+  }
+
+  if (cacheFilePath && fs.existsSync(cacheFilePath)) {
+    try {
+      const raw = JSON.parse(await fsp.readFile(cacheFilePath, "utf8"));
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (item && item.matchId) {
+            merged.set(String(item.matchId), item);
+          }
+        }
+      }
+    } catch {
+      // ignore corrupted cache
+    }
+  }
+  return merged;
+}
+
+function resolveOfficialCrsKey(h2, a2) {
+  const exact = `${h2}:${a2}`;
+  if (EXPLICIT_OFFICIAL_CRS_SCORES.has(exact)) return exact;
+  if (h2 > a2) return "胜其它";
+  if (h2 === a2) return "平其它";
+  return "负其它";
+}
+
+function evaluateSportteryPickOutcome(
+  poolCode,
+  optionKey,
+  res,
+  sealedGoalLine
+) {
+  if (!res || !res.settled) return "pending";
+  if (res.isVoid) return "void";
+  const h2 = res.h2;
+  const a2 = res.a2;
+  if (!Number.isInteger(h2) || !Number.isInteger(a2)) return "pending";
+  const code = String(poolCode || "").toUpperCase();
+  const key = String(optionKey || "").trim();
+
+  if (code === "HAD") {
+    const actual = h2 > a2 ? "h" : h2 === a2 ? "d" : "a";
+    return key === actual ? "hit" : "miss";
+  }
+  if (code === "HHAD") {
+    const rawGl = Number(sealedGoalLine ?? res.goalLine ?? -1);
+    const gl = Number.isFinite(rawGl) && rawGl !== 0 ? rawGl : -1;
+    const diff = h2 + gl - a2;
+    const actual = diff > 0 ? "hh" : diff === 0 ? "hd" : "ha";
+    return key === actual ? "hit" : "miss";
+  }
+  if (code === "TTG") {
+    const tot = h2 + a2;
+    const actual = tot >= 7 ? "s7" : `s${tot}`;
+    return key === actual ? "hit" : "miss";
+  }
+  if (code === "HAFU") {
+    if (!Number.isInteger(res.h1) || !Number.isInteger(res.a1)) {
+      return "pending";
+    }
+    const c1 = res.h1 > res.a1 ? "h" : res.h1 === res.a1 ? "d" : "a";
+    const c2 = h2 > a2 ? "h" : h2 === a2 ? "d" : "a";
+    return key === `${c1}${c2}` ? "hit" : "miss";
+  }
+  if (code === "CRS") {
+    const actual = resolveOfficialCrsKey(h2, a2);
+    return key === actual ? "hit" : "miss";
+  }
+  return "pending";
+}
+
+function computeCappedTicketLinePayout(legOdds, nonVoidCount, multiple) {
+  const cleanMult = Math.max(1, Math.round(Number(multiple) || 1));
+  if (nonVoidCount <= 0) {
+    return Number((2 * cleanMult).toFixed(2));
+  }
+  const rawUnit = bankerRoundParlayUnitPayout(legOdds);
+  const cap = statutorySingleBetCap(nonVoidCount);
+  const cappedUnit = Math.min(rawUnit, cap);
+  return Number((cappedUnit * cleanMult).toFixed(2));
+}
+
+function solveDiscreteHedgeSplit(totalCost, targetReturn, lateHome, bestCand) {
+  let hedgeCost = 2;
+  let lockedNetProfit = -totalCost;
+  let oppositeLabel = bestCand.label;
+
+  if (
+    bestCand.isPair &&
+    Number(bestCand.odds1) > 0 &&
+    Number(bestCand.odds2) > 0
+  ) {
+    const u1 = bankerRoundParlayUnitPayout([bestCand.odds1]);
+    const u2 = bankerRoundParlayUnitPayout([bestCand.odds2]);
+    const m1Mid = Math.max(1, Math.round(targetReturn / u1));
+    const m2Mid = Math.max(1, Math.round(targetReturn / u2));
+    let bestNet = -Infinity;
+    let bestM1 = m1Mid;
+    let bestM2 = m2Mid;
+    for (let m1 = Math.max(1, m1Mid - 3); m1 <= m1Mid + 3; m1++) {
+      for (let m2 = Math.max(1, m2Mid - 3); m2 <= m2Mid + 3; m2++) {
+        const cHedge = 2 * (m1 + m2);
+        const worstPay = Math.min(targetReturn, m1 * u1, m2 * u2);
+        const net = worstPay - totalCost - cHedge;
+        if (
+          net > bestNet + 1e-9 ||
+          (Math.abs(net - bestNet) <= 1e-9 && cHedge < 2 * (bestM1 + bestM2))
+        ) {
+          bestNet = net;
+          bestM1 = m1;
+          bestM2 = m2;
+        }
+      }
+    }
+    hedgeCost = 2 * (bestM1 + bestM2);
+    lockedNetProfit = Number(bestNet.toFixed(2));
+    oppositeLabel = `${lateHome} 反向【${bestCand.poolTag}·${bestCand.opt1Label}¥${2 * bestM1}+${bestCand.opt2Label}¥${2 * bestM2}】`;
+  } else {
+    const uSingle = bankerRoundParlayUnitPayout([bestCand.odds]);
+    const mMid = Math.max(1, Math.round(targetReturn / uSingle));
+    let bestNet = -Infinity;
+    let bestM = mMid;
+    for (let m = Math.max(1, mMid - 2); m <= mMid + 2; m++) {
+      const cHedge = 2 * m;
+      const worstPay = Math.min(targetReturn, m * uSingle);
+      const net = worstPay - totalCost - cHedge;
+      if (
+        net > bestNet + 1e-9 ||
+        (Math.abs(net - bestNet) <= 1e-9 && cHedge < 2 * bestM)
+      ) {
+        bestNet = net;
+        bestM = m;
+      }
+    }
+    hedgeCost = 2 * bestM;
+    lockedNetProfit = Number(bestNet.toFixed(2));
+  }
+
+  const hedgeMode =
+    lockedNetProfit > 0
+      ? "lock-profit"
+      : lockedNetProfit === 0
+        ? "break-even"
+        : "reduce-loss";
+  return {
+    hedgeCost,
+    lockedNetProfit,
+    oppositeLabel,
+    oppositeOdds: Number(bestCand.odds) || 0,
+    hedgeMode,
+  };
+}
+
+/**
+ * 基于封存的出票快照与中国体彩官方完场赛果执行五池精确算奖、局部回血定性与早场红单实时补单测算
+ */
+export function settleTicketSnapshotWithOfficialResults(
+  snapshot,
+  resultsInput,
+  opts = {}
+) {
+  const resultsById =
+    resultsInput instanceof Map
+      ? resultsInput
+      : parseSportteryResultsJson(resultsInput);
+  const liveInput = opts.liveMatchesById ?? null;
+  const liveById =
+    liveInput instanceof Map
+      ? liveInput
+      : Array.isArray(liveInput)
+        ? new Map(liveInput.filter(Boolean).map((m) => [String(m.id), m]))
+        : new Map();
+
+  const stakeCost = Math.max(0, Number(opts.stakeCost) || 0);
+  const paperRefCost = Math.max(0, Number(opts.paperRefCost) || 0);
+  const refStake = stakeCost > 0 ? stakeCost : paperRefCost;
+
+  const rawMatches = Array.isArray(snapshot?.matches) ? snapshot.matches : [];
+  const rawLines = Array.isArray(snapshot?.lines) ? snapshot.lines : [];
+
+  const matchMetaById = new Map();
+  for (const m of rawMatches) {
+    if (!m || !m.matchId) continue;
+    matchMetaById.set(String(m.matchId), m);
+  }
+  // Ensure matches referenced only in lines also appear in per-match breakdown
+  for (const ln of rawLines) {
+    for (const lg of ln?.legs || []) {
+      const mid = String(lg?.matchId || "");
+      if (!mid) continue;
+      if (!matchMetaById.has(mid)) {
+        const r = resultsById.get(mid);
+        matchMetaById.set(mid, {
+          matchId: mid,
+          matchNumStr: lg.matchNumStr || r?.matchNumStr || mid,
+          home: lg.home || r?.home || "主队",
+          away: lg.away || r?.away || "客队",
+          kickoff: lg.kickoff || "",
+          goalLine: lg.goalLine ?? r?.goalLine ?? "-1",
+          isBanker: false,
+          picks: [],
+        });
+      }
+      const meta = matchMetaById.get(mid);
+      const exists = (meta.picks || []).some(
+        (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+      );
+      if (!exists) {
+        meta.picks = [
+          ...(meta.picks || []),
+          {
+            poolCode: lg.poolCode,
+            optionKey: lg.optionKey,
+            optionLabel: lg.optionLabel || lg.optionKey,
+            odds: Number(lg.odds) || 1,
+          },
+        ];
+      }
+    }
+  }
+
+  const matchOutcomes = [];
+  let anyMatchPending = false;
+  let hitMatchCount = 0;
+  let settledMatchCount = 0;
+
+  for (const [mid, meta] of matchMetaById.entries()) {
+    const res = resultsById.get(mid);
+    const picksOut = (meta.picks || []).map((pk) => {
+      const state = evaluateSportteryPickOutcome(
+        pk.poolCode,
+        pk.optionKey,
+        res,
+        pk.goalLine ?? meta.goalLine
+      );
+      return {
+        poolCode: pk.poolCode,
+        optionKey: pk.optionKey,
+        optionLabel: pk.optionLabel || pk.optionKey,
+        odds: Number(pk.odds) || 1,
+        state,
+      };
+    });
+    const anyHit = picksOut.some((p) => p.state === "hit");
+    const allVoid =
+      picksOut.length > 0 && picksOut.every((p) => p.state === "void");
+    const anyPending =
+      !res || !res.settled || picksOut.some((p) => p.state === "pending");
+    const matchState = anyPending
+      ? "pending"
+      : allVoid
+        ? "void"
+        : anyHit
+          ? "hit"
+          : "miss";
+    if (matchState === "pending") {
+      anyMatchPending = true;
+    } else {
+      settledMatchCount += 1;
+      if (matchState === "hit") hitMatchCount += 1;
+    }
+    matchOutcomes.push({
+      matchId: mid,
+      matchNumStr: meta.matchNumStr || res?.matchNumStr || mid,
+      home: meta.home || res?.home || "",
+      away: meta.away || res?.away || "",
+      kickoff: meta.kickoff || "",
+      goalLine: meta.goalLine ?? res?.goalLine ?? undefined,
+      isBanker: Boolean(meta.isBanker),
+      state: matchState,
+      halfScore: res?.settled ? res.halfScore : "",
+      fullScore: res?.settled ? res.fullScore : "",
+      picks: picksOut,
+    });
+  }
+
+  const ticketOutcomes = [];
+  let settledReturnSum = 0;
+  let hitTicketCount = 0;
+  const survivingPendingTickets = [];
+
+  for (let idx = 0; idx < rawLines.length; idx++) {
+    const ln = rawLines[idx];
+    const mult = Math.max(1, Math.round(Number(ln?.multiple) || 1));
+    const legs = Array.isArray(ln?.legs) ? ln.legs : [];
+    if (legs.length === 0) continue;
+
+    const legStates = legs.map((lg) => {
+      const mid = String(lg.matchId || "");
+      const meta = matchMetaById.get(mid);
+      const res = resultsById.get(mid);
+      const state = evaluateSportteryPickOutcome(
+        lg.poolCode,
+        lg.optionKey,
+        res,
+        lg.goalLine ?? meta?.goalLine
+      );
+      return {
+        matchId: mid,
+        matchNumStr: lg.matchNumStr || meta?.matchNumStr || mid,
+        home: lg.home || meta?.home || "",
+        away: lg.away || meta?.away || "",
+        poolCode: lg.poolCode,
+        optionKey: lg.optionKey,
+        optionLabel: lg.optionLabel || lg.optionKey,
+        odds: Number(lg.odds) || 1,
+        state,
+      };
+    });
+
+    const hasMiss = legStates.some((l) => l.state === "miss");
+    const hasPending = legStates.some((l) => l.state === "pending");
+    const modeLabel =
+      ln.modeLabel || (legs.length === 1 ? "单关" : `${legs.length}串1`);
+    const lineCost = 2 * mult;
+
+    if (hasMiss) {
+      ticketOutcomes.push({
+        id: String(ln.id || `line_${idx + 1}`),
+        modeLabel,
+        multiple: mult,
+        cost: lineCost,
+        status: "lost",
+        payout: 0,
+        legs: legStates,
+      });
+    } else if (hasPending) {
+      const potentialOdds = legStates.map((l) =>
+        l.state === "void" ? 1.0 : l.odds
+      );
+      const potentialNonVoid = legStates.filter(
+        (l) => l.state !== "void"
+      ).length;
+      const potentialPayout = computeCappedTicketLinePayout(
+        potentialOdds,
+        potentialNonVoid,
+        mult
+      );
+      const item = {
+        id: String(ln.id || `line_${idx + 1}`),
+        modeLabel,
+        multiple: mult,
+        cost: lineCost,
+        status: "pending",
+        payout: 0,
+        potentialPayout,
+        legs: legStates,
+      };
+      ticketOutcomes.push(item);
+      survivingPendingTickets.push(item);
+    } else {
+      const effectiveOdds = legStates.map((l) =>
+        l.state === "void" ? 1.0 : l.odds
+      );
+      const nonVoidCount = legStates.filter((l) => l.state === "hit").length;
+      const payout = computeCappedTicketLinePayout(
+        effectiveOdds,
+        nonVoidCount,
+        mult
+      );
+      settledReturnSum += payout;
+      hitTicketCount += 1;
+      ticketOutcomes.push({
+        id: String(ln.id || `line_${idx + 1}`),
+        modeLabel,
+        multiple: mult,
+        cost: lineCost,
+        status: nonVoidCount === 0 ? "void-refund" : "won",
+        payout,
+        legs: legStates,
+      });
+    }
+  }
+
+  const settledReturn = Number(settledReturnSum.toFixed(2));
+  const totalTicketCount = ticketOutcomes.length;
+
+  if (totalTicketCount === 0) {
+    return {
+      status: "pending",
+      settledReturn: 0,
+      netProfit: 0,
+      hitTicketCount: 0,
+      totalTicketCount: 0,
+      hitMatchCount,
+      settledMatchCount,
+      totalMatchCount: matchOutcomes.length,
+      earlyEliminated: false,
+      lockedFloorReturn: 0,
+      progressSummary: "暂无实票快照",
+      liveEarlyHedge: null,
+      matches: matchOutcomes,
+      tickets: ticketOutcomes,
+    };
+  }
+
+  if (survivingPendingTickets.length === 0) {
+    const earlyEliminated = anyMatchPending && settledReturn === 0;
+    let status = "lost";
+    if (settledReturn > 0) {
+      status =
+        refStake > 0 && settledReturn + 1e-9 < refStake ? "partial" : "won";
+    }
+    const netProfit =
+      stakeCost > 0 ? Number((settledReturn - stakeCost).toFixed(2)) : 0;
+    const progressSummary =
+      status === "won"
+        ? `已完场兑奖 · 命中 ${hitTicketCount}/${totalTicketCount} 张实票`
+        : status === "partial"
+          ? `局部命中 ${hitTicketCount}/${totalTicketCount} 张 · 挽回 ¥${settledReturn.toFixed(2)}`
+          : earlyEliminated
+            ? "前序关键场次已失手 · 全单已提前黑单"
+            : "已完场开奖 · 未命中派奖组合";
+    return {
+      status,
+      settledReturn,
+      netProfit,
+      hitTicketCount,
+      totalTicketCount,
+      hitMatchCount,
+      settledMatchCount,
+      totalMatchCount: matchOutcomes.length,
+      earlyEliminated,
+      lockedFloorReturn: settledReturn,
+      progressSummary,
+      liveEarlyHedge: null,
+      matches: matchOutcomes,
+      tickets: ticketOutcomes,
+    };
+  }
+
+  // Still pending: check if all earlier legs hit and ONLY 1 pending match remains for live hedge!
+  let liveEarlyHedge = null;
+  const pendingMatchIds = new Set();
+  let anyEarlierHitOnSurviving = false;
+  for (const tk of survivingPendingTickets) {
+    for (const lg of tk.legs) {
+      if (lg.state === "pending") pendingMatchIds.add(lg.matchId);
+      if (lg.state === "hit") anyEarlierHitOnSurviving = true;
+    }
+  }
+
+  if (anyEarlierHitOnSurviving && pendingMatchIds.size === 1 && refStake > 0) {
+    const [lateId] = Array.from(pendingMatchIds);
+    const liveLate = liveById.get(lateId);
+    if (liveLate) {
+      const latePickMap = new Map();
+      const latePools = new Set();
+      let uniformAcrossSurviving = true;
+      for (const tk of survivingPendingTickets) {
+        const lateLegs = tk.legs.filter((l) => l.matchId === lateId);
+        if (lateLegs.length !== 1) {
+          uniformAcrossSurviving = false;
+          break;
+        }
+        const lg = lateLegs[0];
+        latePools.add(lg.poolCode);
+        const pkKey = `${lg.poolCode}:${lg.optionKey}`;
+        if (!latePickMap.has(pkKey)) {
+          latePickMap.set(pkKey, {
+            matchId: lateId,
+            matchNumStr: lg.matchNumStr,
+            home: liveLate.home || lg.home,
+            away: liveLate.away || lg.away,
+            poolCode: lg.poolCode,
+            optionKey: lg.optionKey,
+            optionLabel: lg.optionLabel,
+            odds: lg.odds,
+          });
+        }
+      }
+
+      if (uniformAcrossSurviving && latePools.size === 1) {
+        const latePicks = Array.from(latePickMap.values());
+        const resolved = resolveComplementaryLateHedge(liveLate, latePicks);
+        if (resolved.ok && resolved.candidate) {
+          // Minimum total payout across picked options if late match lands in latePicks
+          const optionPayouts = latePicks.map((pk) => {
+            const addPay = survivingPendingTickets
+              .filter((tk) =>
+                tk.legs.some(
+                  (l) =>
+                    l.matchId === lateId &&
+                    l.poolCode === pk.poolCode &&
+                    l.optionKey === pk.optionKey
+                )
+              )
+              .reduce((acc, tk) => acc + tk.potentialPayout, 0);
+            return Number((settledReturn + addPay).toFixed(2));
+          });
+          const survivingTargetReturn = Math.min(...optionPayouts);
+          if (survivingTargetReturn > 0) {
+            const split = solveDiscreteHedgeSplit(
+              refStake,
+              survivingTargetReturn,
+              liveLate.home || latePicks[0]?.home || "末场",
+              resolved.candidate
+            );
+            liveEarlyHedge = {
+              available: true,
+              lateMatchId: lateId,
+              lateMatchTitle:
+                `${liveLate.matchNumStr || ""} ${liveLate.home || ""}vs${liveLate.away || ""}`.trim(),
+              lateKickoff: liveLate.kickoff || "",
+              survivingTargetReturn,
+              ...split,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  const progressSummary =
+    settledMatchCount > 0
+      ? `进行中 · 已红 ${hitMatchCount}/${matchOutcomes.length} 场${
+          settledReturn > 0 ? `（已锁回血 ¥${settledReturn.toFixed(2)}）` : ""
+        }`
+      : `待开赛 · 共 ${matchOutcomes.length} 场 / ${totalTicketCount} 张实票`;
+
+  return {
+    status: "pending",
+    settledReturn: 0,
+    netProfit: 0,
+    hitTicketCount,
+    totalTicketCount,
+    hitMatchCount,
+    settledMatchCount,
+    totalMatchCount: matchOutcomes.length,
+    earlyEliminated: false,
+    lockedFloorReturn: settledReturn,
+    progressSummary,
+    liveEarlyHedge,
+    matches: matchOutcomes,
+    tickets: ticketOutcomes,
   };
 }
