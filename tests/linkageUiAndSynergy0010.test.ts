@@ -78,7 +78,7 @@ describe("Spec 0010 · Seam 1A: ¥10 Minimum Budget Floor & Ban Persistence Conc
       );
     }
 
-    // Odd custom budget (e.g., 15) rounds to nearest even ¥2 bet unit (16)
+    // Odd custom budget (e.g., 15) floors downward to even ¥2 bet unit (14) so totalCost never overspends budgetYuan (Spec #1 budget sovereignty)
     const plansAt15 = generateParetoPortfolio(
       [FALLBACK_MATCHES[0]],
       15,
@@ -88,7 +88,7 @@ describe("Spec 0010 · Seam 1A: ¥10 Minimum Budget Floor & Ban Persistence Conc
     );
     const alpha15 = plansAt15.find((p: any) => p.key === "alpha-radar");
     if (alpha15.available === false) {
-      assert.equal(alpha15.savedCash, 16);
+      assert.equal(alpha15.savedCash, 14);
     }
 
     // Part B: Concurrent tripFuse during slow writeFile must NOT drop newer ban or let stale writer overwrite newer file
@@ -619,9 +619,10 @@ describe("Spec 0010 · Seam 2B: Auto-Sync Radar Anchor, ¥10~¥20000 Even-Unit B
       "function",
       "Expected normalizeBudgetYuan helper on workspace seam"
     );
-    assert.equal(normalizeBudgetYuan(9), 10);
+    assert.equal(normalizeBudgetYuan(2), 2);
+    assert.equal(normalizeBudgetYuan(9), 8);
     assert.equal(normalizeBudgetYuan(10), 10);
-    assert.equal(normalizeBudgetYuan(15), 16);
+    assert.equal(normalizeBudgetYuan(15), 14);
     assert.equal(normalizeBudgetYuan(25000), 20000);
 
     const ctrl = betSlipModule.createBetSlipController({
@@ -651,10 +652,10 @@ describe("Spec 0010 · Seam 2B: Auto-Sync Radar Anchor, ¥10~¥20000 Even-Unit B
     assert.equal(ctrl.getState().anchorToRadarPicks, true);
     assert.equal(ctrl.isRadarSyncCurrent(), true);
 
-    // 2. Budget normalization via setBudget
+    // 2. Budget normalization via setBudget (Spec #1 floor-to-even in [2, 20000])
     ctrl.setBudget(15);
     await ctrl.flush();
-    assert.equal(ctrl.getState().budget, 16);
+    assert.equal(ctrl.getState().budget, 14);
     ctrl.setBudget(100);
     await ctrl.flush();
     assert.equal(ctrl.getState().budget, 100);

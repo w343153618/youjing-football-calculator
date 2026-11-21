@@ -138,6 +138,61 @@ interface StopLossInterceptState {
   overBy: number;
 }
 
+function SyntheticModePills({
+  mode,
+  canTrim2Way,
+  hasInherentBlindSpot = false,
+  compactMobile = false,
+  containerClassName,
+  containerStyle,
+  onSelect,
+}: {
+  mode: SyntheticSingleMode;
+  canTrim2Way: boolean;
+  hasInherentBlindSpot?: boolean;
+  compactMobile?: boolean;
+  containerClassName?: string;
+  containerStyle?: React.CSSProperties;
+  onSelect: (nextMode: SyntheticSingleMode) => void;
+}) {
+  const pillClass = (target: SyntheticSingleMode) =>
+    compactMobile
+      ? `m-bet-pill ${mode === target ? "hi" : ""}`
+      : `key mini ${mode === target ? "on" : ""}`;
+  const springAttr = compactMobile ? undefined : "0.88";
+  const sp = compactMobile ? "" : " ";
+  return (
+    <div className={containerClassName} style={containerStyle}>
+      <button
+        type="button"
+        data-spring={springAttr}
+        className={pillClass("full-3way")}
+        onClick={() => onSelect("full-3way")}
+      >
+        {hasInherentBlindSpot ? `🛡️${sp}常规比分覆盖` : `🛡️${sp}3项全包无死角`}
+      </button>
+      {canTrim2Way && (
+        <button
+          type="button"
+          data-spring={springAttr}
+          className={pillClass("trim-2way")}
+          onClick={() => onSelect("trim-2way")}
+        >
+          {`⚡${sp}2项省本搏常规`}
+        </button>
+      )}
+      <button
+        type="button"
+        data-spring={springAttr}
+        className={pillClass("off")}
+        onClick={() => onSelect("off")}
+      >
+        {`🌉${sp}搭1场过桥凑2串1`}
+      </button>
+    </div>
+  );
+}
+
 export function SkinPhoneApp({
   initialSkin,
   embedded,
@@ -753,7 +808,10 @@ export function SkinPhoneApp({
     );
   const isSyntheticPlayable =
     isSingleNonSingleContext &&
-    (manualReport.syntheticEffectiveOdds ?? 1.05) > 1.0;
+    (manualReport.syntheticEffectiveOdds ?? 1.05) > 1.0 &&
+    !manualReport.warnings.some((w) => w.id === "synthetic-unplayable");
+  const hasSyntheticInherentBlindSpot =
+    (manualReport.syntheticBlindSpotProb ?? 0) > 1e-9;
   const canTrimSynthetic2Way =
     isSyntheticPlayable &&
     (manualReport.syntheticRescuePicks?.length ?? 0) >= 3;
@@ -922,7 +980,12 @@ export function SkinPhoneApp({
     haptic(7);
     playTactileCue("tap-on");
     if (nextMode === "full-3way") {
-      showSpringToast(layerRef.current, "🛡️ 已切换：3项全包无死角配平合成单关");
+      showSpringToast(
+        layerRef.current,
+        hasSyntheticInherentBlindSpot
+          ? "🛡️ 已切换：常规比分覆盖配平合成单关"
+          : "🛡️ 已切换：3项全包无死角配平合成单关"
+      );
     } else if (nextMode === "trim-2way") {
       showSpringToast(
         layerRef.current,
@@ -2261,7 +2324,7 @@ export function SkinPhoneApp({
         <div className="budget-custom-row num">
           <input
             type="number"
-            min={10}
+            min={2}
             max={20000}
             step={2}
             value={customBudgetDraft}
@@ -2273,7 +2336,7 @@ export function SkinPhoneApp({
               setBudget(norm);
               setCustomBudgetDraft(String(norm));
             }}
-            placeholder="输入 ¥10~¥20,000（按¥2整数注对齐）"
+            placeholder="输入 ¥2~¥20,000（按¥2整数注向下对齐）"
             className="ledger-input num"
           />
           <button
@@ -2604,197 +2667,221 @@ export function SkinPhoneApp({
         )
       ) : (
         <>
-          {/* 外简内丰 3D 翻转总览大卡：正面 4 大核心 KPI · 背面逐张实票拆解与五池推导依据 */}
-          <TactileFlipCard
-            flipped={archFlipBack}
-            onFlipChange={setArchFlipBack}
-            flipToBackLabel={`🔄 翻转看 ${currentArch.lines.length} 张实票与依据 ›`}
-            flipToFrontLabel="↩ 返回方案核心指标"
-            frontHeader={
-              <div>
-                <div className="h2">
-                  {currentArch.badge} · {currentArch.title}
-                </div>
-                <div className="small">{currentArch.tagline}</div>
-              </div>
-            }
-            backHeader={
-              <div>
-                <div className="h2">
-                  {currentArch.shortTab} · 逐张实票构成与精算依据
-                </div>
-                <div className="small num">
-                  共 {currentArch.lines.length} 张实票 · 合计 ¥
-                  {currentArch.totalCost}
-                </div>
-              </div>
-            }
-            front={
-              <>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    marginBottom: 8,
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <span className="chip num">
-                    实投 ¥{currentArch.totalCost}
-                    {currentArch.savedCash > 0 && (
-                      <i>省¥{currentArch.savedCash}</i>
-                    )}
-                  </span>
-                  {currentArch.totalCost > budget && (
-                    <span className="qpill warn num">
-                      当前覆盖最少需 {currentArch.lines.length} 注 (¥
-                      {currentArch.totalCost})
-                    </span>
-                  )}
-                </div>
-
-                <div className="tiles num">
-                  {(() => {
-                    const objStrictPct =
-                      (currentArch.objectiveStrictNetGainProb ??
-                        currentArch.strictNetGainProb ??
-                        currentArch.profitProb) * 100;
-                    const objProfitPct =
-                      (currentArch.objectiveProfitProb ??
-                        currentArch.profitProb) * 100;
-                    const archObjBreakEvenPct = Math.max(
-                      0,
-                      objProfitPct - objStrictPct
-                    );
-                    const archSubjProfitPct =
-                      currentArch.subjectiveProjectedProfitProb != null
-                        ? currentArch.subjectiveProjectedProfitProb * 100
-                        : null;
-                    const subParts: string[] = [];
-                    if (archObjBreakEvenPct >= 0.05) {
-                      subParts.push(
-                        `另含 ${archObjBreakEvenPct.toFixed(1)}% 刚回本`
-                      );
-                    }
-                    if (archSubjProfitPct !== null) {
-                      subParts.push(
-                        `个人推演 ${archSubjProfitPct.toFixed(1)}%`
-                      );
-                    }
-                    subParts.push(
-                      `命中 ${(currentArch.winProb * 100).toFixed(1)}%`
-                    );
-                    return (
-                      <div className="tile">
-                        <span>严格净赚率</span>
-                        <b>{objStrictPct.toFixed(1)}%</b>
-                        <em>{subParts.join(" · ")}</em>
-                      </div>
-                    );
-                  })()}
-                  <div
-                    className={`tile ${(currentArch.underwaterCount ?? 0) > 0 ? "danger" : ""}`}
-                  >
-                    <span>
-                      {currentArch.missOneReturn !== null
-                        ? "错1场保命回血"
-                        : "命中返奖区间"}
-                    </span>
-                    <b>
-                      {currentArch.missOneReturn !== null
-                        ? `¥${currentArch.missOneReturn.toFixed(0)} (全中¥${currentArch.maxReturn.toFixed(0)})`
-                        : `¥${currentArch.minReturn.toFixed(0)}~${currentArch.maxReturn.toFixed(0)}`}
-                    </b>
-                    <em>
-                      {(currentArch.underwaterCount ?? 0) > 0
-                        ? `⚠️ 含 ${currentArch.underwaterCount} 组局部回血(<本金)`
-                        : "0 假中奖倒贴"}
-                    </em>
+          {(() => {
+            const archLogicalGroups =
+              currentArch.logicalGroupCount ?? currentArch.lines.length;
+            const archPhysicalTickets =
+              currentArch.physicalTicketCount ??
+              currentArch.lines.reduce(
+                (sum, ln) =>
+                  sum + Math.max(1, Math.ceil((ln.multiple || 1) / 99)),
+                0
+              );
+            const archHas99xSplit = archPhysicalTickets > archLogicalGroups;
+            const archGroupTicketSummary = archHas99xSplit
+              ? `${archLogicalGroups} 组 · ${archPhysicalTickets} 张票`
+              : `${archLogicalGroups} 组（${archPhysicalTickets} 张实票）`;
+            return (
+              /* 外简内丰 3D 翻转总览大卡：正面 4 大核心 KPI · 背面逐张实票拆解与五池推导依据 */
+              <TactileFlipCard
+                flipped={archFlipBack}
+                onFlipChange={setArchFlipBack}
+                flipToBackLabel={`🔄 翻转看 ${archGroupTicketSummary}与依据 ›`}
+                flipToFrontLabel="↩ 返回方案核心指标"
+                frontHeader={
+                  <div>
+                    <div className="h2">
+                      {currentArch.badge} · {currentArch.title}
+                    </div>
+                    <div className="small">{currentArch.tagline}</div>
                   </div>
-                  {(() => {
-                    const archObjEvPct =
-                      (currentArch.objectiveEVRate ??
-                        currentArch.expectedValueRate) * 100;
-                    const archSubjEvPct =
-                      currentArch.subjectiveProjectedEVRate != null
-                        ? currentArch.subjectiveProjectedEVRate * 100
-                        : null;
-                    const payoutReturnPct = Math.max(
-                      0,
-                      100 - currentArch.vigPct
-                    ).toFixed(1);
-                    return (
-                      <div className="tile">
-                        <span>客观数学期望与抽水</span>
+                }
+                backHeader={
+                  <div>
+                    <div className="h2">
+                      {currentArch.shortTab} · 逐张实票构成与精算依据
+                    </div>
+                    <div className="small num">
+                      共 {archGroupTicketSummary} · 合计 ¥
+                      {currentArch.totalCost}
+                    </div>
+                  </div>
+                }
+                front={
+                  <>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        marginBottom: 8,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span className="chip num">
+                        实投 ¥{currentArch.totalCost}
+                        {currentArch.savedCash > 0 && (
+                          <i>省¥{currentArch.savedCash}</i>
+                        )}
+                      </span>
+                      {currentArch.totalCost > budget && (
+                        <span className="qpill warn num">
+                          当前覆盖最少需 {currentArch.lines.length} 注 (¥
+                          {currentArch.totalCost})
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="tiles num">
+                      {(() => {
+                        const objStrictPct =
+                          (currentArch.objectiveStrictNetGainProb ??
+                            currentArch.strictNetGainProb ??
+                            currentArch.profitProb) * 100;
+                        const objProfitPct =
+                          (currentArch.objectiveProfitProb ??
+                            currentArch.profitProb) * 100;
+                        const archObjBreakEvenPct = Math.max(
+                          0,
+                          objProfitPct - objStrictPct
+                        );
+                        const archSubjProfitPct =
+                          currentArch.subjectiveProjectedProfitProb != null
+                            ? currentArch.subjectiveProjectedProfitProb * 100
+                            : null;
+                        const subParts: string[] = [];
+                        if (archObjBreakEvenPct >= 0.05) {
+                          subParts.push(
+                            `另含 ${archObjBreakEvenPct.toFixed(1)}% 刚回本`
+                          );
+                        }
+                        if (archSubjProfitPct !== null) {
+                          subParts.push(
+                            `个人推演 ${archSubjProfitPct.toFixed(1)}%`
+                          );
+                        }
+                        subParts.push(
+                          `命中 ${(currentArch.winProb * 100).toFixed(1)}%`
+                        );
+                        return (
+                          <div className="tile">
+                            <span>严格净赚率</span>
+                            <b>{objStrictPct.toFixed(1)}%</b>
+                            <em>{subParts.join(" · ")}</em>
+                          </div>
+                        );
+                      })()}
+                      <div
+                        className={`tile ${(currentArch.underwaterCount ?? 0) > 0 ? "danger" : ""}`}
+                      >
+                        <span>
+                          {currentArch.missOneReturn !== null
+                            ? "错1场保命回血"
+                            : "命中返奖区间"}
+                        </span>
                         <b>
-                          {archObjEvPct >= 0 ? "+" : ""}
-                          {archObjEvPct.toFixed(1)}%
+                          {currentArch.missOneReturn !== null
+                            ? `¥${currentArch.missOneReturn.toFixed(0)} (全中¥${currentArch.maxReturn.toFixed(0)})`
+                            : `¥${currentArch.minReturn.toFixed(0)}~${currentArch.maxReturn.toFixed(0)}`}
                         </b>
                         <em>
-                          {archSubjEvPct !== null
-                            ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
-                            : `票面返还 ${payoutReturnPct}%`}
+                          {(currentArch.underwaterCount ?? 0) > 0
+                            ? `⚠️ 含 ${currentArch.underwaterCount} 组局部回血(<本金)`
+                            : "0 假中奖倒贴"}
                         </em>
                       </div>
-                    );
-                  })()}
-                  <div className="tile">
-                    <span>店面合票张数</span>
-                    <b>{currentArch.lines.length} 张实票</b>
-                    <em>
-                      {typeof currentArch.wipeoutMiss2Prob === "number"
-                        ? `错≥2场击穿 ${(currentArch.wipeoutMiss2Prob * 100).toFixed(1)}%`
-                        : "点右上翻转看实票拆解"}
-                    </em>
-                  </div>
-                </div>
-              </>
-            }
-            back={
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {currentArch.lines.map((line) => (
+                      {(() => {
+                        const archObjEvPct =
+                          (currentArch.objectiveEVRate ??
+                            currentArch.expectedValueRate) * 100;
+                        const archSubjEvPct =
+                          currentArch.subjectiveProjectedEVRate != null
+                            ? currentArch.subjectiveProjectedEVRate * 100
+                            : null;
+                        const payoutReturnPct = Math.max(
+                          0,
+                          100 - currentArch.vigPct
+                        ).toFixed(1);
+                        return (
+                          <div className="tile">
+                            <span>客观数学期望与抽水</span>
+                            <b>
+                              {archObjEvPct >= 0 ? "+" : ""}
+                              {archObjEvPct.toFixed(1)}%
+                            </b>
+                            <em>
+                              {archSubjEvPct !== null
+                                ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
+                                : `票面返还 ${payoutReturnPct}%`}
+                            </em>
+                          </div>
+                        );
+                      })()}
+                      <div className="tile">
+                        <span>店面逻辑组与实票</span>
+                        <b>{archGroupTicketSummary}</b>
+                        <em>
+                          {typeof currentArch.wipeoutMiss2Prob === "number"
+                            ? `错≥2场击穿 ${(currentArch.wipeoutMiss2Prob * 100).toFixed(1)}%`
+                            : archHas99xSplit
+                              ? "含>99倍按终端上限自动拆票"
+                              : "点右上翻转看实票拆解"}
+                        </em>
+                      </div>
+                    </div>
+                  </>
+                }
+                back={
                   <div
-                    key={line.id}
-                    className="combo-item num"
-                    style={{ alignItems: "flex-start" }}
+                    style={{ display: "flex", flexDirection: "column", gap: 8 }}
                   >
-                    <div className="cdesc">
-                      <b>
-                        {line.legs
-                          .map(
-                            (g) =>
-                              `${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`
-                          )
-                          .join(" × ")}
-                      </b>
-                      <small>
-                        {line.roleLabel} · {line.modeLabel} · 真率{" "}
-                        {(line.prob * 100).toFixed(1)}% · {line.multiple}倍(¥
-                        {line.cost})
-                      </small>
-                    </div>
-                    <div className={`cpnl ${line.netProfit >= 0 ? "pos" : ""}`}>
-                      ¥{line.returnPayout.toFixed(2)}
-                      <small>
-                        {line.netProfit >= 0
-                          ? `净赚 +¥${line.netProfit.toFixed(1)}`
-                          : `保命回血 ¥${line.returnPayout.toFixed(0)}`}
-                      </small>
+                    {currentArch.lines.map((line) => (
+                      <div
+                        key={line.id}
+                        className="combo-item num"
+                        style={{ alignItems: "flex-start" }}
+                      >
+                        <div className="cdesc">
+                          <b>
+                            {line.legs
+                              .map(
+                                (g) =>
+                                  `${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`
+                              )
+                              .join(" × ")}
+                          </b>
+                          <small>
+                            {line.roleLabel} · {line.modeLabel} · 真率{" "}
+                            {(line.prob * 100).toFixed(1)}% · {line.multiple}
+                            倍(¥
+                            {line.cost})
+                          </small>
+                        </div>
+                        <div
+                          className={`cpnl ${line.netProfit >= 0 ? "pos" : ""}`}
+                        >
+                          ¥{line.returnPayout.toFixed(2)}
+                          <small>
+                            {line.netProfit >= 0
+                              ? `净赚 +¥${line.netProfit.toFixed(1)}`
+                              : `保命回血 ¥${line.returnPayout.toFixed(0)}`}
+                          </small>
+                        </div>
+                      </div>
+                    ))}
+
+                    <div className="note-box">
+                      <strong>精算师推导依据：</strong>
+                      {currentArch.reasons.map((r, idx) => (
+                        <div key={idx}>· {r}</div>
+                      ))}
                     </div>
                   </div>
-                ))}
-
-                <div className="note-box">
-                  <strong>精算师推导依据：</strong>
-                  {currentArch.reasons.map((r, idx) => (
-                    <div key={idx}>· {r}</div>
-                  ))}
-                </div>
-              </div>
-            }
-          />
+                }
+              />
+            );
+          })()}
 
           {/* Step ② 唯一核心下一步主按钮（无底部浮条遮挡） */}
           <button
@@ -3244,36 +3331,13 @@ export function SkinPhoneApp({
                   </strong>
                   {effectiveReport.syntheticHint}
                   {isSyntheticPlayable && (
-                    <div className="syn-mode-pills num">
-                      <button
-                        type="button"
-                        data-spring="0.88"
-                        className={`key mini ${syntheticSingleMode === "full-3way" ? "on" : ""}`}
-                        onClick={() => switchSyntheticSingleModeUI("full-3way")}
-                      >
-                        🛡️ 3项全包无死角
-                      </button>
-                      {canTrimSynthetic2Way && (
-                        <button
-                          type="button"
-                          data-spring="0.88"
-                          className={`key mini ${syntheticSingleMode === "trim-2way" ? "on" : ""}`}
-                          onClick={() =>
-                            switchSyntheticSingleModeUI("trim-2way")
-                          }
-                        >
-                          ⚡ 2项省本搏常规
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        data-spring="0.88"
-                        className={`key mini ${syntheticSingleMode === "off" ? "on" : ""}`}
-                        onClick={() => switchSyntheticSingleModeUI("off")}
-                      >
-                        🌉 搭1场过桥凑2串1
-                      </button>
-                    </div>
+                    <SyntheticModePills
+                      mode={syntheticSingleMode}
+                      canTrim2Way={canTrimSynthetic2Way}
+                      hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+                      containerClassName="syn-mode-pills num"
+                      onSelect={switchSyntheticSingleModeUI}
+                    />
                   )}
                 </div>
               )}
@@ -6182,34 +6246,13 @@ export function SkinPhoneApp({
           <span className="small num" style={{ margin: 0, fontWeight: 600 }}>
             🛡️ 单场未开单关 · 自动合成单关模式（选满第 2 场自动恢复原盘串关）：
           </span>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              data-spring="0.88"
-              className={`key mini ${syntheticSingleMode === "full-3way" ? "on" : ""}`}
-              onClick={() => switchSyntheticSingleModeUI("full-3way")}
-            >
-              🛡️ 3项全包无死角
-            </button>
-            {canTrimSynthetic2Way && (
-              <button
-                type="button"
-                data-spring="0.88"
-                className={`key mini ${syntheticSingleMode === "trim-2way" ? "on" : ""}`}
-                onClick={() => switchSyntheticSingleModeUI("trim-2way")}
-              >
-                ⚡ 2项省本搏常规
-              </button>
-            )}
-            <button
-              type="button"
-              data-spring="0.88"
-              className={`key mini ${syntheticSingleMode === "off" ? "on" : ""}`}
-              onClick={() => switchSyntheticSingleModeUI("off")}
-            >
-              🌉 搭1场过桥凑2串1
-            </button>
-          </div>
+          <SyntheticModePills
+            mode={syntheticSingleMode}
+            canTrim2Way={canTrimSynthetic2Way}
+            hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+            containerStyle={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            onSelect={switchSyntheticSingleModeUI}
+          />
         </div>
       )}
       {showBridgeFinder && (
@@ -6505,31 +6548,14 @@ export function SkinPhoneApp({
   ) : (
     <div ref={slipRef} className="m-betbar num">
       {isSyntheticPlayable && (
-        <div className="m-syn-strip">
-          <button
-            type="button"
-            className={`m-bet-pill ${syntheticSingleMode === "full-3way" ? "hi" : ""}`}
-            onClick={() => switchSyntheticSingleModeUI("full-3way")}
-          >
-            🛡️3项全包无死角
-          </button>
-          {canTrimSynthetic2Way && (
-            <button
-              type="button"
-              className={`m-bet-pill ${syntheticSingleMode === "trim-2way" ? "hi" : ""}`}
-              onClick={() => switchSyntheticSingleModeUI("trim-2way")}
-            >
-              ⚡2项省本搏常规
-            </button>
-          )}
-          <button
-            type="button"
-            className={`m-bet-pill ${syntheticSingleMode === "off" ? "hi" : ""}`}
-            onClick={() => switchSyntheticSingleModeUI("off")}
-          >
-            🌉搭1场过桥凑2串1
-          </button>
-        </div>
+        <SyntheticModePills
+          mode={syntheticSingleMode}
+          canTrim2Way={canTrimSynthetic2Way}
+          hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+          compactMobile
+          containerClassName="m-syn-strip"
+          onSelect={switchSyntheticSingleModeUI}
+        />
       )}
       {showBridgeFinder && (
         <div

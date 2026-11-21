@@ -23,7 +23,10 @@ import {
   deriveSessionSubkeys,
   encryptEnvelope,
 } from "../server/securityShield.mjs";
-import { createBetSlipController } from "../src/workspace/betSlipController.ts";
+import {
+  createBetSlipController,
+  normalizeBudgetYuan,
+} from "../src/workspace/betSlipController.ts";
 import type {
   MatchItem,
   PoolCode,
@@ -2395,6 +2398,779 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
         appSrc.includes("3项全包无死角") &&
         appSrc.includes("2项省本搏常规"),
       "SkinPhoneApp.tsx must render 1-tap synthetic-single mode pills (3项全包无死角 / 2项省本搏常规 / 过桥凑2串1)"
+    );
+  });
+});
+
+describe("Slice 13: Two-Axis Code-Review Remediation", () => {
+  it("Slice 13.1 (Finding #1): computes exact 139-state blindSpotProb when CRS synthetic single omits straddling 胜其它/平其它/负其它 and emits honest synthetic-blind-spot warning without claiming 无死角", () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 12) }],
+      },
+    }) as MatchItem[];
+    const baseM = oosMatches.find((m) => m.pools.HHAD.goalLine === "-1")!;
+    assert.ok(baseM, "Expected a -1 goalLine match in OOS fixture");
+
+    const nonSingleMinus1: MatchItem = {
+      ...baseM,
+      id: "rev-crs-blindspot-m1",
+      pools: {
+        ...baseM.pools,
+        HAD: { ...baseM.pools.HAD, single: false },
+        HHAD: { ...baseM.pools.HHAD, goalLine: "-1", single: false },
+        CRS: { ...baseM.pools.CRS, single: true },
+      },
+    };
+    const hdOpt = nonSingleMinus1.pools.HHAD.options.find(
+      (o) => o.key === "hd"
+    )!;
+    const hdPick: SelectedPick = {
+      matchId: nonSingleMinus1.id,
+      matchNumStr: nonSingleMinus1.matchNumStr,
+      home: nonSingleMinus1.home,
+      away: nonSingleMinus1.away,
+      poolCode: "HHAD",
+      poolName: nonSingleMinus1.pools.HHAD.name,
+      singleAllowed: false,
+      optionKey: hdOpt.key,
+      optionLabel: hdOpt.label,
+      odds: hdOpt.odds,
+      fairProb: hdOpt.fairProb,
+    };
+
+    // Independent truth: P(HHAD(-1) hd) = P(1:0) + P(2:1) + P(3:2) + P(4:3, 5:4, ... inside 胜其它)
+    const p10 = nonSingleMinus1.pools.CRS.options.find(
+      (o) => o.label === "1:0"
+    )!.fairProb;
+    const p21 = nonSingleMinus1.pools.CRS.options.find(
+      (o) => o.label === "2:1"
+    )!.fairProb;
+    const p32 = nonSingleMinus1.pools.CRS.options.find(
+      (o) => o.label === "3:2"
+    )!.fairProb;
+    const expectedHdBlindSpot = hdOpt.fairProb - (p10 + p21 + p32);
+    assert.ok(
+      expectedHdBlindSpot > 1e-6,
+      `Expected non-zero 4:3/5:4 mass inside 胜其它, got ${expectedHdBlindSpot}`
+    );
+
+    const wsHd = evaluateQuantWorkspace(
+      { picks: [hdPick], multiple: 5, syntheticSingleMode: "full-3way" },
+      [nonSingleMinus1]
+    );
+    assert.equal(wsHd.effectiveReport.canCheckout, true);
+    assert.equal(wsHd.effectiveReport.syntheticAutoMounted, true);
+    assert.deepEqual(
+      wsHd.effectiveReport.tickets?.map((t) => t.legs?.[0]?.optionLabel),
+      ["1:0", "2:1", "3:2"]
+    );
+    assert.ok(
+      (wsHd.effectiveReport.syntheticBlindSpotProb ?? 0) > 1e-6 &&
+        Math.abs(
+          (wsHd.effectiveReport.syntheticBlindSpotProb ?? 0) -
+            expectedHdBlindSpot
+        ) < 1e-6,
+      `Expected exact blindSpotProb ${expectedHdBlindSpot}, got ${wsHd.effectiveReport.syntheticBlindSpotProb}`
+    );
+    assert.ok(
+      wsHd.effectiveReport.syntheticBlindSpotLabel?.includes("胜其它") &&
+        wsHd.effectiveReport.syntheticBlindSpotLabel?.includes("4:3"),
+      `Expected descriptive blindSpotLabel mentioning 胜其它 & 4:3, got ${wsHd.effectiveReport.syntheticBlindSpotLabel}`
+    );
+    assert.ok(
+      wsHd.effectiveReport.warnings.some(
+        (w) => w.id === "synthetic-blind-spot"
+      ),
+      "CRS synthetic single with blindSpotProb > 1e-9 must emit synthetic-blind-spot warning"
+    );
+    const allDisplayedCopy = [
+      wsHd.manualReport.syntheticHint ?? "",
+      wsHd.effectiveReport.syntheticHint ?? "",
+      wsHd.effectiveReport.modeLabel ?? "",
+      wsHd.appliedPlan?.shortTab ?? "",
+      wsHd.appliedPlan?.badge ?? "",
+      wsHd.appliedPlan?.title ?? "",
+      ...(wsHd.appliedPlan?.reasons ?? []),
+    ].join(" | ");
+    assert.equal(
+      allDisplayedCopy.includes("100% 等价") ||
+        allDisplayedCopy.includes("无死角") ||
+        allDisplayedCopy.includes("0% 漏网死角"),
+      false,
+      `Must NEVER claim 100% 等价 / 无死角 / 0% 漏网死角 when blindSpotProb > 1e-9: ${allDisplayedCopy}`
+    );
+
+    // Case 2: Real OOS match 2041506 where HHAD(-1) 让胜 (hh) ALSO omits straddling 胜其它 (mounts 9 explicit >=2-margin CRS options)
+    const raw2041506 = JSON.parse(
+      JSON.stringify(
+        rawFixture.matches.find((m: any) => m.matchId === "2041506")
+      )
+    );
+    assert.ok(raw2041506, "Expected real OOS match 2041506");
+    raw2041506.had = { ...raw2041506.had, single: "0" };
+    raw2041506.hhad = { ...raw2041506.hhad, single: "0" };
+    const [oos2041506] = parseSportteryRawJson({
+      value: { matchInfoList: [{ subMatchList: [raw2041506] }] },
+    }) as MatchItem[];
+    const hh2041 = oos2041506.pools.HHAD.options.find((o) => o.key === "hh")!;
+    const hd2041 = oos2041506.pools.HHAD.options.find((o) => o.key === "hd")!;
+    const pWinOther2041 = oos2041506.pools.CRS.options.find(
+      (o) => o.label === "胜其它"
+    )!.fairProb;
+
+    const wsHh2041 = evaluateQuantWorkspace(
+      {
+        picks: [
+          {
+            matchId: oos2041506.id,
+            matchNumStr: oos2041506.matchNumStr,
+            home: oos2041506.home,
+            away: oos2041506.away,
+            poolCode: "HHAD",
+            poolName: oos2041506.pools.HHAD.name,
+            singleAllowed: false,
+            optionKey: hh2041.key,
+            optionLabel: hh2041.label,
+            odds: hh2041.odds,
+            fairProb: hh2041.fairProb,
+          },
+        ],
+        multiple: 5,
+        syntheticSingleMode: "full-3way",
+      },
+      [oos2041506]
+    );
+    const wsHd2041 = evaluateQuantWorkspace(
+      {
+        picks: [
+          {
+            matchId: oos2041506.id,
+            matchNumStr: oos2041506.matchNumStr,
+            home: oos2041506.home,
+            away: oos2041506.away,
+            poolCode: "HHAD",
+            poolName: oos2041506.pools.HHAD.name,
+            singleAllowed: false,
+            optionKey: hd2041.key,
+            optionLabel: hd2041.label,
+            odds: hd2041.odds,
+            fairProb: hd2041.fairProb,
+          },
+        ],
+        multiple: 5,
+        syntheticSingleMode: "full-3way",
+      },
+      [oos2041506]
+    );
+
+    assert.equal(wsHh2041.effectiveReport.syntheticAutoMounted, true);
+    const mountedHhLabels =
+      wsHh2041.effectiveReport.tickets?.map((t) => t.legs?.[0]?.optionLabel) ??
+      [];
+    assert.equal(mountedHhLabels.includes("胜其它"), false);
+    const coveredHhProb = mountedHhLabels.reduce(
+      (sum, lbl) =>
+        sum +
+        (oos2041506.pools.CRS.options.find((o) => o.label === lbl)?.fairProb ??
+          0),
+      0
+    );
+    const expectedHhBlindSpot = hh2041.fairProb - coveredHhProb;
+    assert.ok(expectedHhBlindSpot > 1e-6);
+    assert.ok(
+      Math.abs(
+        (wsHh2041.effectiveReport.syntheticBlindSpotProb ?? 0) -
+          expectedHhBlindSpot
+      ) < 1e-6,
+      `Expected 让胜 omitting 胜其它 blindSpotProb=${expectedHhBlindSpot}, got ${wsHh2041.effectiveReport.syntheticBlindSpotProb}`
+    );
+    // Axiomatic partition law: mass(goalDiff=1 inside 胜其它) + blindSpot(让胜 omitting 胜其它) === P(CRS 胜其它)!
+    const explicit1Goal2041 = ["1:0", "2:1", "3:2"].reduce(
+      (sum, lbl) =>
+        sum +
+        (oos2041506.pools.CRS.options.find((o) => o.label === lbl)?.fairProb ??
+          0),
+      0
+    );
+    const hdMassInWinOther2041 = hd2041.fairProb - explicit1Goal2041;
+    assert.ok(
+      Math.abs(
+        hdMassInWinOther2041 +
+          (wsHh2041.effectiveReport.syntheticBlindSpotProb ?? 0) -
+          pWinOther2041
+      ) < 1e-6,
+      "1-goal mass in 胜其它 + 让胜 blind spot in 胜其它 must sum to exact P(胜其它)"
+    );
+    // And because hdMassInWinOther2041 > 50% of P(胜其它), wsHd2041 includes 胜其它 with 0% blind spot
+    assert.equal(wsHd2041.effectiveReport.syntheticBlindSpotProb, 0);
+    assert.ok(
+      wsHh2041.effectiveReport.syntheticBlindSpotLabel?.includes("胜其它")
+    );
+    assert.ok(
+      wsHh2041.effectiveReport.warnings.some(
+        (w) => w.id === "synthetic-blind-spot"
+      )
+    );
+    assert.equal(
+      (wsHh2041.effectiveReport.syntheticHint ?? "").includes("无死角") ||
+        (wsHh2041.effectiveReport.syntheticHint ?? "").includes("0% 漏网死角"),
+      false
+    );
+  });
+
+  it("Slice 13.2 (Finding #2): prevents activeSwapTip on a 1-match slip from recommending non-single HAD duplex and keeps planSpec=null in applyEquivalentSwap so auto-synthetic checkout never collapses to ¥0", async () => {
+    const m0 = FALLBACK_MATCHES[0] as MatchItem;
+    const m2 = FALLBACK_MATCHES[2] as MatchItem;
+    const swapTrapMatch: MatchItem = {
+      ...m0,
+      id: "rev-swap-trap-m1",
+      pools: {
+        ...m0.pools,
+        HAD: {
+          ...m0.pools.HAD,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: 1.92, trend: 0, fairProb: 0.46 },
+            { key: "d", label: "平", odds: 3.65, trend: 0, fairProb: 0.28 },
+            { key: "a", label: "客胜", odds: 4.35, trend: 0, fairProb: 0.26 },
+          ],
+        },
+        HHAD: {
+          ...m0.pools.HHAD,
+          goalLine: "-1",
+          single: false,
+          options: [
+            { key: "hh", label: "让胜", odds: 3.55, trend: 0, fairProb: 0.23 },
+            { key: "hd", label: "让平", odds: 3.45, trend: 0, fairProb: 0.23 },
+            { key: "ha", label: "让负", odds: 1.72, trend: 0, fairProb: 0.54 },
+          ],
+        },
+        HAFU: {
+          ...m0.pools.HAFU,
+          single: true,
+        },
+      },
+    };
+
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      [swapTrapMatch, m2],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 10 }, [swapTrapMatch, m2])
+    );
+    ctrl.setDirectMultiple(20);
+    ctrl.togglePick(swapTrapMatch, "HHAD", "ha");
+    await ctrl.flush();
+
+    // 1. On 1-match slip (both auto-synthetic mode AND off mode), activeSwapTip MUST NOT recommend non-single HAD[d+a]
+    const ws1Auto = ctrl.getState().workspace;
+    assert.equal(ws1Auto.effectiveReport.canCheckout, true);
+    assert.equal(ws1Auto.effectiveReport.syntheticAutoMounted, true);
+    if (ws1Auto.insights.activeSwapTip) {
+      assert.ok(
+        ws1Auto.insights.activeSwapTip.betterPicks.every(
+          (bp) => swapTrapMatch.pools[bp.poolCode]?.single === true
+        ),
+        `1-match activeSwapTip must never recommend non-single pool: got ${JSON.stringify(ws1Auto.insights.activeSwapTip.betterPicks)}`
+      );
+    }
+
+    ctrl.setSyntheticSingleMode("off");
+    await ctrl.flush();
+    const ws1Off = ctrl.getState().workspace;
+    if (ws1Off.insights.activeSwapTip) {
+      assert.ok(
+        ws1Off.insights.activeSwapTip.betterPicks.every(
+          (bp) => swapTrapMatch.pools[bp.poolCode]?.single === true
+        ),
+        `1-match activeSwapTip (off mode) must never recommend non-single pool: got ${JSON.stringify(ws1Off.insights.activeSwapTip.betterPicks)}`
+      );
+    }
+    ctrl.setSyntheticSingleMode("full-3way");
+    await ctrl.flush();
+
+    // Verify the same match DOES surface HAD[d+a] swap tip when paired in a 2-match parlay
+    ctrl.togglePick(m2, "HAD", "h");
+    await ctrl.flush();
+    const ws2Parlay = ctrl.getState().workspace;
+    assert.ok(
+      ws2Parlay.insights.activeSwapTip &&
+        ws2Parlay.insights.activeSwapTip.matchId === swapTrapMatch.id &&
+        ws2Parlay.insights.activeSwapTip.betterPicks.length === 2,
+      "On a 2-match parlay, the genuine HAD[平+客胜] equivalent swap tip remains active"
+    );
+    const parlayDuplexArb = ws2Parlay.insights.activeSwapTip!;
+
+    // 2. Back on 1-match slip: invoking applyEquivalentSwap with a non-single duplex MUST keep planSpec = null so auto-synthetic stays playable (never collapsing to 应付 ¥0)
+    ctrl.removeMatchFromSlip(m2.id);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().picks.length, 1);
+    const swapped = ctrl.applyEquivalentSwap(parlayDuplexArb);
+    await ctrl.flush();
+    assert.equal(swapped, true);
+    assert.equal(
+      ctrl.getState().planSpec,
+      null,
+      "applyEquivalentSwap on 1 non-single match must keep planSpec=null instead of setting { kind: 'bonus' }"
+    );
+    assert.equal(
+      ctrl.getState().workspace.effectiveReport.canCheckout,
+      true,
+      "Auto-synthetic 6-way HAFU checkout must stay active (never collapsing to 应付 ¥0)"
+    );
+    assert.ok(ctrl.getState().workspace.effectiveReport.totalCost > 0);
+    assert.equal(
+      ctrl.getState().workspace.effectiveReport.syntheticAutoMounted,
+      true
+    );
+
+    // 3. Also verify a genuinely single-open 1-match pick rejects swapping into non-single duplex even if pick.singleAllowed were forged
+    const singleHhadMatch: MatchItem = {
+      ...swapTrapMatch,
+      id: "rev-swap-sgl-hhad",
+      pools: {
+        ...swapTrapMatch.pools,
+        HAD: { ...swapTrapMatch.pools.HAD, single: false },
+        HHAD: { ...swapTrapMatch.pools.HHAD, single: true },
+      },
+    };
+    const ctrlSgl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrlSgl.initializeMatches(
+      [singleHhadMatch],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 10 }, [singleHhadMatch])
+    );
+    ctrlSgl.togglePick(singleHhadMatch, "HHAD", "ha");
+    await ctrlSgl.flush();
+    assert.equal(
+      ctrlSgl.getState().workspace.effectiveReport.canCheckout,
+      true
+    );
+    const rejectedBreakSingle = ctrlSgl.applyEquivalentSwap({
+      ...parlayDuplexArb,
+      matchId: singleHhadMatch.id,
+    });
+    assert.equal(
+      rejectedBreakSingle,
+      false,
+      "applyEquivalentSwap must refuse breaking 1-match single eligibility"
+    );
+  });
+
+  it("Slice 13.3 (Finding #3): aligns Grounded Engine 2 APP_GROUND_TRUTH_MANUAL_SPEC and UserManualModal.tsx with ADR-0015 mutex-free switching, 3-way auto-balanced synthetic single, and 0ms parlay restoration", async () => {
+    let capturedSysPrompt = "";
+    const qaEngine = createManualQaEngine({
+      accountManager: {
+        consumeAiQuota: () => ({ ok: true, remaining: 9 }),
+        recordQaViolation: () => ({
+          locked: false,
+          strikeCount: 1,
+          maxAllowed: 4,
+        }),
+      },
+      xiaogaoService: {
+        invokeWithAutoFailover: async (
+          _apiKey: string,
+          messages: Array<{ role: string; content: string }>
+        ) => {
+          capturedSysPrompt = messages[0]?.content ?? "";
+          return {
+            content: JSON.stringify({
+              outOfScope: false,
+              section: "quickstart",
+              answer:
+                "只选1场未开单关主胜时，前台保留原主胜高亮，出票层自动挂载胜胜+平胜+负胜3项全包反比例配平合成单关；再选第2场自动恢复低抽水原盘串关。",
+            }),
+          };
+        },
+      },
+      getApiKey: () => "test-key",
+    });
+
+    const res = await qaEngine.answerManualQuestion({
+      userId: "u-adr15",
+      question:
+        "如果我在赛事雷达只选了1场没有开单关的胜平负主胜，又想点同场的让球或再加选第2场凑2串1，系统会怎么处理出票与还原？",
+      ip: "127.0.0.1",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.source, "grounded-ai");
+    assert.ok(capturedSysPrompt.length > 200);
+
+    // Must abolish legacy mutex-block / 0-yuan dead-end claims in Grounded Engine 2 spec
+    assert.equal(
+      capturedSysPrompt.includes("标「互斥」拦截提示") ||
+        capturedSysPrompt.includes("仅选 1 场未开单关时投注额归 0 元"),
+      false,
+      "APP_GROUND_TRUTH_MANUAL_SPEC must remove legacy 互斥-block and 0-yuan dead-end descriptions"
+    );
+    assert.ok(
+      capturedSysPrompt.includes("撤销切换") &&
+        capturedSysPrompt.includes("3项全包无死角") &&
+        capturedSysPrompt.includes("2项省本搏常规") &&
+        capturedSysPrompt.includes("≤ 1.00") &&
+        capturedSysPrompt.includes("恢复低抽水原盘串关"),
+      "APP_GROUND_TRUTH_MANUAL_SPEC must describe smooth cross-pool switch + undo, 3-way balanced HAFU modes, <=1.00 honest block, and 0ms parlay restoration"
+    );
+
+    const manualModalSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "src/manual/UserManualModal.tsx"),
+      "utf8"
+    );
+    assert.equal(
+      manualModalSrc.includes("勾选默认开单关的半全场 `胜胜 + 平胜`"),
+      false,
+      "UserManualModal.tsx must replace legacy manual 2-way `胜胜 + 平胜` instruction"
+    );
+    assert.ok(
+      manualModalSrc.includes("胜胜 + 平胜 + 负胜") &&
+        manualModalSrc.includes("反比例") &&
+        manualModalSrc.includes("2项省本搏常规"),
+      "UserManualModal.tsx must document 3-way 胜胜+平胜+负胜 inverse-odds auto-balancing + optional 2-way comeback trade-off"
+    );
+  });
+
+  it("Slice 13.4 (Finding #4): wires logicalGroupCount / physicalTicketCount into SkinPhoneApp.tsx KPI tile #4 across all 4 slots and allows >= ¥2 floor-to-even custom budgets in normalizeBudgetYuan", async () => {
+    // 1. normalizeBudgetYuan accepts ¥2..¥8 and floors odd inputs downward (never overspending)
+    assert.equal(normalizeBudgetYuan(NaN), 10);
+    assert.equal(normalizeBudgetYuan(0), 10);
+    assert.equal(normalizeBudgetYuan(-5), 10);
+    assert.equal(normalizeBudgetYuan(1), 2);
+    assert.equal(normalizeBudgetYuan(2), 2);
+    assert.equal(normalizeBudgetYuan(3), 2);
+    assert.equal(normalizeBudgetYuan(4), 4);
+    assert.equal(normalizeBudgetYuan(7), 6);
+    assert.equal(normalizeBudgetYuan(8), 8);
+    assert.equal(normalizeBudgetYuan(9), 8);
+    assert.equal(normalizeBudgetYuan(11), 10);
+    assert.equal(normalizeBudgetYuan(15), 14);
+    assert.equal(normalizeBudgetYuan(20000), 20000);
+    assert.equal(normalizeBudgetYuan(25000), 20000);
+
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
+    );
+    assert.equal(ctrl.setBudget(6), 6);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().budget, 6);
+    assert.equal(ctrl.setBudget(11), 10);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().budget, 10);
+    assert.equal(ctrl.setBudget(2), 2);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().budget, 2);
+
+    // 2. All 4 Pareto slots expose logicalGroupCount & physicalTicketCount (with physicalTicketCount > logicalGroupCount when >99x)
+    const plansAt5000 = generateParetoPortfolio(
+      (FALLBACK_MATCHES as MatchItem[]).slice(0, 3),
+      5000,
+      "objective",
+      false,
+      []
+    );
+    assert.equal(plansAt5000.length, 4);
+    let saw99xSplit = false;
+    for (const p of plansAt5000) {
+      assert.equal(typeof p.logicalGroupCount, "number");
+      assert.equal(typeof p.physicalTicketCount, "number");
+      if (p.available) {
+        assert.equal(p.logicalGroupCount, p.lines.length);
+        const expectedPhys = p.lines.reduce(
+          (s: number, l: any) => s + Math.ceil(l.multiple / 99),
+          0
+        );
+        assert.equal(p.physicalTicketCount, expectedPhys);
+        if (p.physicalTicketCount > p.logicalGroupCount) {
+          saw99xSplit = true;
+        }
+      }
+    }
+    assert.equal(
+      saw99xSplit,
+      true,
+      "At ¥5,000 budget, at least one Pareto slot must exhibit >99x split (physicalTicketCount > logicalGroupCount)"
+    );
+
+    // 3. SkinPhoneApp.tsx consumes logicalGroupCount & physicalTicketCount in KPI tile #4 (店面逻辑组与实票) and allows min={2} custom budget
+    const appSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      appSrc.includes("店面逻辑组与实票") &&
+        appSrc.includes("currentArch.logicalGroupCount") &&
+        appSrc.includes("currentArch.physicalTicketCount") &&
+        appSrc.includes("组 · ") &&
+        appSrc.includes("张票") &&
+        appSrc.includes("组（") &&
+        appSrc.includes("张实票）"),
+      "SkinPhoneApp.tsx KPI tile #4 must consume currentArch.logicalGroupCount & currentArch.physicalTicketCount and distinguish >99x split vs 1:1 slips"
+    );
+    assert.equal(
+      appSrc.includes("<span>店面合票张数</span>"),
+      false,
+      "Legacy KPI tile #4 label 店面合票张数 must be replaced by 店面逻辑组与实票"
+    );
+    assert.ok(
+      appSrc.includes("min={2}"),
+      "Custom budget input in SkinPhoneApp.tsx must allow min={2}"
+    );
+  });
+
+  it("Slice 13.5 (Finding #5): floors odd budgetYuan downward in generateParetoPortfolio and prevents cleanBudget = ¥2 overspend in Slot ① (and all 4 slots) across M=1..8", () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 16) }],
+      },
+    }) as MatchItem[];
+
+    const makePrimaryAnchor = (m: MatchItem): SelectedPick => {
+      const pool = m.pools.HAD.selling !== false ? m.pools.HAD : m.pools.HHAD;
+      const pCode: PoolCode = m.pools.HAD.selling !== false ? "HAD" : "HHAD";
+      const opt = pool.options[0];
+      return {
+        matchId: m.id,
+        matchNumStr: m.matchNumStr,
+        home: m.home,
+        away: m.away,
+        poolCode: pCode,
+        poolName: pool.name,
+        singleAllowed: pool.single,
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        odds: opt.odds,
+        fairProb: opt.fairProb,
+      };
+    };
+
+    // 1. Sweep b in [2, 3, 4, 5, 7, 11, 15, 99] across M = 1..8 (both unanchored & radar-anchored)
+    for (const b of [2, 3, 4, 5, 7, 11, 15, 99]) {
+      const expectedClean = Math.max(2, Math.min(20000, Math.floor(b / 2) * 2));
+      for (let mCount = 1; mCount <= 8; mCount++) {
+        const slate = oosMatches.slice(0, mCount);
+        const anchors = slate.map(makePrimaryAnchor);
+        for (const anc of [[], anchors]) {
+          const plans = generateParetoPortfolio(
+            slate,
+            b,
+            "objective",
+            false,
+            anc
+          );
+          assert.equal(plans.length, 4);
+          for (const p of plans) {
+            assert.ok(
+              p.totalCost <= b && p.totalCost <= expectedClean,
+              `Overspend at b=${b} (clean=${expectedClean}), M=${mCount}, anchored=${anc.length > 0}, slot=${p.key}: totalCost=${p.totalCost}`
+            );
+            assert.equal(
+              p.totalCost + p.savedCash,
+              expectedClean,
+              `Budget conservation broken at b=${b} (clean=${expectedClean}), M=${mCount}, slot=${p.key}: totalCost=${p.totalCost} + savedCash=${p.savedCash}`
+            );
+            if (p.available) {
+              assert.ok(p.lines.length >= 1 && p.totalCost >= 2);
+              assert.equal(
+                p.lines.reduce((s: number, l: any) => s + l.cost, 0),
+                p.totalCost
+              );
+            } else {
+              assert.equal(p.totalCost, 0);
+              assert.equal(p.savedCash, expectedClean);
+              assert.equal(p.lines.length, 0);
+            }
+          }
+        }
+      }
+    }
+
+    // 2. When M >= 2 at ¥2 has NO feasible main-pool M串1 (e.g. HAD & HHAD suspended), Slot ① marks available: false with savedCash = 2 (NEVER spending ¥4!)
+    const noMainParlaySlate: MatchItem[] = oosMatches
+      .slice(0, 3)
+      .map((m, idx) => ({
+        ...m,
+        id: `rev-nomain-2yuan-${idx}`,
+        pools: {
+          ...m.pools,
+          HAD: { ...m.pools.HAD, selling: false, single: false },
+          HHAD: { ...m.pools.HHAD, selling: false, single: false },
+        },
+      }));
+    const impossibleAt2 = generateParetoPortfolio(
+      noMainParlaySlate,
+      2,
+      "objective",
+      false,
+      []
+    );
+    const slot1ImpossibleAt2 = impossibleAt2[0];
+    assert.equal(slot1ImpossibleAt2.available, false);
+    assert.equal(slot1ImpossibleAt2.totalCost, 0);
+    assert.equal(slot1ImpossibleAt2.savedCash, 2);
+    assert.ok(
+      typeof slot1ImpossibleAt2.emptyReason === "string" &&
+        slot1ImpossibleAt2.emptyReason.length > 0
+    );
+
+    // 3. Multi-single +EV alpha match at budgetYuan = 2 & 3 also obeys totalCost <= 2 in Slot ④
+    const multiAlphaMatch: MatchItem = {
+      ...oosMatches[0],
+      id: "rev-alpha-2yuan",
+      pools: {
+        ...oosMatches[0].pools,
+        HAFU: {
+          ...oosMatches[0].pools.HAFU,
+          single: true,
+          options: oosMatches[0].pools.HAFU.options.map((o) =>
+            o.key === "hh" || o.key === "dh"
+              ? { ...o, odds: Number((o.odds * 1.45).toFixed(2)) }
+              : o
+          ),
+        },
+      },
+    };
+    for (const b of [2, 3]) {
+      for (const unlock of [false, true]) {
+        const alphaPlans = generateParetoPortfolio(
+          [multiAlphaMatch],
+          b,
+          "objective",
+          unlock,
+          []
+        );
+        for (const p of alphaPlans) {
+          assert.ok(
+            p.totalCost <= 2,
+            `Slot ${p.key} at b=${b}, unlock=${unlock} overspent: ${p.totalCost}`
+          );
+          assert.equal(p.totalCost + p.savedCash, 2);
+        }
+      }
+    }
+  });
+
+  it("Slice 13.6 (Finding #6): unifies SkinPhoneApp.tsx synthetic playability gate with synthetic-unplayable warning check and deduplicates <SyntheticModePills /> across all 3 placements", () => {
+    const appSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+
+    // 1. Playability gate checks both syntheticEffectiveOdds > 1.0 AND absence of synthetic-unplayable warning
+    assert.ok(
+      appSrc.includes('w.id === "synthetic-unplayable"') &&
+        appSrc.includes("manualReport.syntheticEffectiveOdds"),
+      "SkinPhoneApp.tsx isSyntheticPlayable must check !manualReport.warnings.some((w) => w.id === 'synthetic-unplayable')"
+    );
+
+    // 2. Single reusable SyntheticModePills helper rendered across all 3 placements (no 3x copy-paste of button markup)
+    const defCount = (appSrc.match(/function SyntheticModePills\b/g) ?? [])
+      .length;
+    const callCount = (appSrc.match(/<SyntheticModePills\b/g) ?? []).length;
+    const trimLabelCount = (appSrc.match(/2项省本搏常规/g) ?? []).length;
+    const bridgeLabelCount = (appSrc.match(/搭1场过桥凑2串1/g) ?? []).length;
+
+    assert.equal(
+      defCount,
+      1,
+      "Expected exactly 1 reusable SyntheticModePills component definition in SkinPhoneApp.tsx"
+    );
+    assert.equal(
+      callCount,
+      3,
+      `Expected <SyntheticModePills /> to be reused at all 3 placements (audit note, desktop bar, mobile bar), got ${callCount}`
+    );
+    assert.equal(
+      trimLabelCount,
+      2,
+      `Expected '2项省本搏常规' to appear only once in <SyntheticModePills /> + once in toast (no 3x pill copy-paste), got ${trimLabelCount}`
+    );
+    assert.equal(
+      bridgeLabelCount,
+      1,
+      `Expected '搭1场过桥凑2串1' pill label to live in 1 place instead of 3x copy-paste, got ${bridgeLabelCount}`
+    );
+
+    // 3. Behavioral boundary: when continuous synEff = 1.001 > 1.0 yet 999x terminal cap blocks discrete breakeven (0.01 * m1 >= 10 requires m1 >= 1000 > 999), manualReport emits synthetic-unplayable so UI gate suppresses mode pills!
+    const m0 = FALLBACK_MATCHES[0] as MatchItem;
+    const discTrapMatch: MatchItem = {
+      ...m0,
+      id: "rev-disc-999-unplayable",
+      pools: {
+        ...m0.pools,
+        HAD: { ...m0.pools.HAD, single: false },
+        HAFU: {
+          ...m0.pools.HAFU,
+          single: true,
+          options: m0.pools.HAFU.options.map((o) =>
+            o.key === "hh" ? { ...o, odds: 1.005 } : { ...o, odds: 1250 }
+          ),
+        },
+      },
+    };
+    const wsDiscTrap = evaluateQuantWorkspace(
+      {
+        picks: [
+          {
+            matchId: discTrapMatch.id,
+            matchNumStr: "周六088",
+            home: discTrapMatch.home,
+            away: discTrapMatch.away,
+            poolCode: "HAD",
+            poolName: "胜平负",
+            singleAllowed: false,
+            optionKey: "h",
+            optionLabel: "主胜",
+            odds: 1.01,
+            fairProb: 0.9,
+          },
+          {
+            matchId: discTrapMatch.id,
+            matchNumStr: "周六088",
+            home: discTrapMatch.home,
+            away: discTrapMatch.away,
+            poolCode: "HAD",
+            poolName: "胜平负",
+            singleAllowed: false,
+            optionKey: "d",
+            optionLabel: "平",
+            odds: 18.0,
+            fairProb: 0.08,
+          },
+        ],
+        multiple: 5,
+      },
+      [discTrapMatch]
+    );
+    assert.ok((wsDiscTrap.manualReport.syntheticEffectiveOdds ?? 0) > 1.0);
+    assert.equal(wsDiscTrap.effectiveReport.canCheckout, false);
+    assert.equal(
+      wsDiscTrap.manualReport.warnings.some(
+        (w) => w.id === "synthetic-unplayable"
+      ),
+      true,
+      "999x discrete unplayable boundary with synEff > 1.0 must emit synthetic-unplayable warning"
     );
   });
 });

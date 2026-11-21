@@ -367,9 +367,8 @@ export interface StanceDeltaSummary {
 
 export function normalizeBudgetYuan(rawBudget: number): number {
   const num = Number(rawBudget);
-  if (!Number.isFinite(num)) return 10;
-  const clamped = Math.max(10, Math.min(20000, num));
-  return Math.max(10, Math.min(20000, Math.round(clamped / 2) * 2));
+  if (!Number.isFinite(num) || num <= 0) return 10;
+  return Math.max(2, Math.min(20000, Math.floor(num / 2) * 2));
 }
 
 function buildPlanTicketSignature(plan?: ArchetypePlan | null): string {
@@ -2058,8 +2057,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         prevMatchSet.size === 1 &&
         nextMatchSet.size === 1 &&
         state.picks.length > 0 &&
-        state.picks.every((p) => p.singleAllowed) &&
-        nextPicks.some((p) => !p.singleAllowed)
+        state.picks.every(isAuthoritativePickSingle) &&
+        nextPicks.some((p) => !isAuthoritativePickSingle(p))
       ) {
         return false;
       }
@@ -2102,8 +2101,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         isOneToTwoSplit && state.multiple >= 2
           ? Math.max(1, Math.ceil(state.multiple / 2))
           : state.multiple;
+      const isSingleMatchWithNonSinglePick =
+        nextMatchSet.size === 1 &&
+        nextPicks.some((p) => !isAuthoritativePickSingle(p));
       const nextPlanSpec: AppliedPlanSpec =
-        arb.betterPicks.length >= 2 && estBetCount > 0 && estBetCount <= 512
+        arb.betterPicks.length >= 2 &&
+        estBetCount > 0 &&
+        estBetCount <= 512 &&
+        !isSingleMatchWithNonSinglePick
           ? {
               kind: "bonus",
               optMode: "equal",

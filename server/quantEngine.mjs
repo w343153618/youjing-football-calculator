@@ -2616,7 +2616,7 @@ function executeBilinearMitmStripJoin(
   leftStates,
   rightZero,
   rightHit,
-  strips,
+  bands,
   canFastBulkStats,
   metricsOnly,
   totalCostCents,
@@ -2635,6 +2635,60 @@ function executeBilinearMitmStripJoin(
   evalExactCross,
   addExactPairToBin
 ) {
+  let globalRightMinIntra = Infinity;
+  let globalRightMaxIntra = 0;
+  let globalRightMinSumO = Infinity;
+  let globalRightMaxSumO = 0;
+  let globalRightPSum = 0;
+  let globalRightProbIntra = 0;
+  let globalRightProbUIntra = 0;
+  let globalRightProbCIntra = 0;
+  let globalRightProbSumO = 0;
+  let globalRightBestR = null;
+  for (let bi = 0; bi < bands.length; bi++) {
+    const bd = bands[bi];
+    if (bd.minIntra < globalRightMinIntra) globalRightMinIntra = bd.minIntra;
+    if (bd.maxIntra > globalRightMaxIntra) globalRightMaxIntra = bd.maxIntra;
+    if (bd.minSumO < globalRightMinSumO) globalRightMinSumO = bd.minSumO;
+    if (bd.maxSumO > globalRightMaxSumO) globalRightMaxSumO = bd.maxSumO;
+    globalRightPSum += bd.pSum;
+    globalRightProbIntra += bd.sumProbIntra;
+    globalRightProbSumO += bd.sumProbSumO;
+    if (!metricsOnly && bd.bestR) {
+      globalRightProbUIntra += bd.sumProbUIntra;
+      globalRightProbCIntra += bd.sumProbCIntra;
+      if (!globalRightBestR || bd.bestR.prob > globalRightBestR.prob) {
+        globalRightBestR = bd.bestR;
+      }
+    }
+  }
+
+  const accumulateBlock = (L, blk, lb, ub) => {
+    const lp = L.prob * blk.pSum;
+    const b = binIndexOf(lb);
+    bProb[b] += lp;
+    bExpPay[b] +=
+      L.prob *
+      (blk.pSum * L.intra +
+        blk.sumProbIntra +
+        refScale * L.sumO * blk.sumProbSumO);
+    if (lb < bMinC[b]) bMinC[b] = Math.max(1, lb);
+    if (ub > bMaxC[b]) bMaxC[b] = ub;
+    if (!metricsOnly && blk.bestR) {
+      bExpUnit[b] +=
+        L.prob *
+        (blk.pSum * L.uIntra +
+          blk.sumProbUIntra +
+          200 * L.sumO * blk.sumProbSumO);
+      bExpClip[b] += L.prob * (blk.pSum * L.cIntra + blk.sumProbCIntra);
+      const repP = L.prob * blk.bestR.prob;
+      if (repP > bBestP[b]) {
+        bBestP[b] = repP;
+        writeRepState(b, L, blk.bestR);
+      }
+    }
+  };
+
   for (let u = 0; u < leftStates.length; u++) {
     const L = leftStates[u];
     for (let z = 0; z < rightZero.length; z++) {
@@ -2666,83 +2720,120 @@ function executeBilinearMitmStripJoin(
       continue;
     }
 
-    for (let s = 0; s < strips.length; s++) {
-      const st = strips[s];
-      const lb =
+    const lScaledSumO = refScale * L.sumO;
+    if (canFastBulkStats && bands.length > 1) {
+      const allLb =
         L.intra +
-        st.minIntra +
-        Math.floor(refScale * L.sumO * st.minSumO + minCrossErr);
-      const ub =
+        globalRightMinIntra +
+        Math.floor(lScaledSumO * globalRightMinSumO + minCrossErr);
+      const allUb =
         L.intra +
-        st.maxIntra +
-        Math.ceil(refScale * L.sumO * st.maxSumO + maxCrossErr);
-      if (ub <= 0) continue;
-
-      if (
-        canFastBulkStats &&
-        ((lb > 0 && ub < totalCostCents) || lb > totalCostCents)
-      ) {
-        const lp = L.prob * st.pSum;
-        const b = binIndexOf(lb);
+        globalRightMaxIntra +
+        Math.ceil(lScaledSumO * globalRightMaxSumO + maxCrossErr);
+      if ((allLb > 0 && allUb < totalCostCents) || allLb > totalCostCents) {
+        const lp = L.prob * globalRightPSum;
+        const b = binIndexOf(allLb);
         bProb[b] += lp;
-        const expPayBlock =
+        bExpPay[b] +=
           L.prob *
-          (st.pSum * L.intra +
-            st.sumProbIntra +
-            refScale * L.sumO * st.sumProbSumO);
-        bExpPay[b] += expPayBlock;
-        if (lb < bMinC[b]) bMinC[b] = Math.max(1, lb);
-        if (ub > bMaxC[b]) bMaxC[b] = ub;
-        if (!metricsOnly) {
+          (globalRightPSum * L.intra +
+            globalRightProbIntra +
+            lScaledSumO * globalRightProbSumO);
+        if (allLb < bMinC[b]) bMinC[b] = Math.max(1, allLb);
+        if (allUb > bMaxC[b]) bMaxC[b] = allUb;
+        if (!metricsOnly && globalRightBestR) {
           bExpUnit[b] +=
             L.prob *
-            (st.pSum * L.uIntra +
-              st.sumProbUIntra +
-              200 * L.sumO * st.sumProbSumO);
-          bExpClip[b] += L.prob * (st.pSum * L.cIntra + st.sumProbCIntra);
-          const repP = L.prob * st.bestR.prob;
+            (globalRightPSum * L.uIntra +
+              globalRightProbUIntra +
+              200 * L.sumO * globalRightProbSumO);
+          bExpClip[b] +=
+            L.prob * (globalRightPSum * L.cIntra + globalRightProbCIntra);
+          const repP = L.prob * globalRightBestR.prob;
           if (repP > bBestP[b]) {
             bBestP[b] = repP;
-            writeRepState(b, L, st.bestR);
+            writeRepState(b, L, globalRightBestR);
           }
         }
         continue;
       }
+    }
 
-      const sub = st.sub;
-      for (let v = 0; v < sub.length; v++) {
-        const R = sub[v];
-        const baseApprox = L.intra + R.intra + refScale * L.sumO * R.sumO;
-        const pairLb = Math.floor(baseApprox + minCrossErr);
-        const pairUb = Math.ceil(baseApprox + maxCrossErr);
-        if (pairUb <= 0) continue;
+    for (let bi = 0; bi < bands.length; bi++) {
+      const bd = bands[bi];
+      const bdLb =
+        L.intra +
+        bd.minIntra +
+        Math.floor(lScaledSumO * bd.minSumO + minCrossErr);
+      const bdUb =
+        L.intra +
+        bd.maxIntra +
+        Math.ceil(lScaledSumO * bd.maxSumO + maxCrossErr);
+      if (bdUb <= 0) continue;
+      if (
+        canFastBulkStats &&
+        ((bdLb > 0 && bdUb < totalCostCents) || bdLb > totalCostCents)
+      ) {
+        accumulateBlock(L, bd, bdLb, bdUb);
+        continue;
+      }
+
+      const bStrips = bd.strips;
+      for (let s = 0; s < bStrips.length; s++) {
+        const st = bStrips[s];
+        const lb =
+          L.intra +
+          st.minIntra +
+          Math.floor(lScaledSumO * st.minSumO + minCrossErr);
+        const ub =
+          L.intra +
+          st.maxIntra +
+          Math.ceil(lScaledSumO * st.maxSumO + maxCrossErr);
+        if (ub <= 0) continue;
+
         if (
           canFastBulkStats &&
-          ((pairLb > 0 && pairUb < totalCostCents) || pairLb > totalCostCents)
+          ((lb > 0 && ub < totalCostCents) || lb > totalCostCents)
         ) {
-          const lp = L.prob * R.prob;
-          const b = binIndexOf(pairLb);
-          bProb[b] += lp;
-          bExpPay[b] += lp * baseApprox;
-          if (pairLb < bMinC[b]) bMinC[b] = Math.max(1, pairLb);
-          if (pairUb > bMaxC[b]) bMaxC[b] = pairUb;
-          if (!metricsOnly) {
-            bExpUnit[b] += lp * (L.uIntra + R.uIntra + 200 * L.sumO * R.sumO);
-            bExpClip[b] += lp * (L.cIntra + R.cIntra);
-            if (lp > bBestP[b]) {
-              bBestP[b] = lp;
-              writeRepState(b, L, R);
+          accumulateBlock(L, st, lb, ub);
+          continue;
+        }
+
+        const sub = st.sub;
+        for (let v = 0; v < sub.length; v++) {
+          const R = sub[v];
+          const baseApprox = L.intra + R.intra + lScaledSumO * R.sumO;
+          const pairLb = Math.floor(baseApprox + minCrossErr);
+          const pairUb = Math.ceil(baseApprox + maxCrossErr);
+          if (pairUb <= 0) continue;
+          if (
+            canFastBulkStats &&
+            ((pairLb > 0 && pairUb < totalCostCents) || pairLb > totalCostCents)
+          ) {
+            const lp = L.prob * R.prob;
+            const b = binIndexOf(pairLb);
+            bProb[b] += lp;
+            bExpPay[b] += lp * baseApprox;
+            if (pairLb < bMinC[b]) bMinC[b] = Math.max(1, pairLb);
+            if (pairUb > bMaxC[b]) bMaxC[b] = pairUb;
+            if (!metricsOnly) {
+              bExpUnit[b] += lp * (L.uIntra + R.uIntra + 200 * L.sumO * R.sumO);
+              bExpClip[b] += lp * (L.cIntra + R.cIntra);
+              if (lp > bBestP[b]) {
+                bBestP[b] = lp;
+                writeRepState(b, L, R);
+              }
             }
+          } else {
+            const cross = evalExactCross(L, R);
+            addExactPairToBin(
+              L,
+              R,
+              L.intra + R.intra + cross[0],
+              L.uIntra + R.uIntra + cross[1],
+              L.cIntra + R.cIntra + cross[2]
+            );
           }
-        } else {
-          const [cPay, cUnit, cClip] = evalExactCross(L, R);
-          addExactPairToBin(
-            L,
-            R,
-            L.intra + R.intra + cPay,
-            L.uIntra + R.uIntra + cUnit,
-            L.cIntra + R.cIntra + cClip
-          );
         }
       }
     }
@@ -4096,26 +4187,49 @@ function evaluateTicketsOnQuotientSpace(
     const leftStates = buildHalfStates(0, ML);
     const rightStates = buildHalfStates(ML, MR);
 
+    const rightStateLens = Int32Array.from(
+      { length: MR },
+      (_, j) => mStates[ML + j].length
+    );
+    const crossPayGrid = Array.from({ length: ML }, (_, i) =>
+      Array.from({ length: MR }, (_, j) => pairPay[i][ML + j])
+    );
+    const crossUnitGrid = !metricsOnly
+      ? Array.from({ length: ML }, (_, i) =>
+          Array.from({ length: MR }, (_, j) => pairUnit[i][ML + j])
+        )
+      : null;
+    const crossClipGrid = !metricsOnly
+      ? Array.from({ length: ML }, (_, i) =>
+          Array.from({ length: MR }, (_, j) => pairClip[i][ML + j])
+        )
+      : null;
+    const crossOut = new Float64Array(3);
+
     const evalExactCross = (L, R) => {
       let cPay = 0;
       let cUnit = 0;
       let cClip = 0;
+      const ls = L.s;
+      const rs = R.s;
       for (let i = 0; i < ML; i++) {
-        const si = L.s[i];
-        if (mStates[i][si].jIdx < 0) continue;
+        const si = ls[i];
+        const payRow = crossPayGrid[i];
+        const unitRow = !metricsOnly ? crossUnitGrid[i] : null;
+        const clipRow = !metricsOnly ? crossClipGrid[i] : null;
         for (let j = 0; j < MR; j++) {
-          const mR = ML + j;
-          const sj = R.s[j];
-          if (mStates[mR][sj].jIdx < 0) continue;
-          const idx = si * mStates[mR].length + sj;
-          cPay += pairPay[i][mR][idx];
+          const idx = si * rightStateLens[j] + rs[j];
+          cPay += payRow[j][idx];
           if (!metricsOnly) {
-            cUnit += pairUnit[i][mR][idx];
-            cClip += pairClip[i][mR][idx];
+            cUnit += unitRow[j][idx];
+            cClip += clipRow[j][idx];
           }
         }
       }
-      return [cPay, cUnit, cClip];
+      crossOut[0] = cPay;
+      crossOut[1] = cUnit;
+      crossOut[2] = cClip;
+      return crossOut;
     };
 
     const BINS = 96;
@@ -4129,12 +4243,23 @@ function evaluateTicketsOnQuotientSpace(
     const bRepOpt = !metricsOnly ? new Int32Array(BINS * M).fill(-1) : null;
     const invCostScale = 48 / Math.max(1, totalCostCents);
 
-    const binIndexOf = (payC) =>
-      payC < totalCostCents
-        ? Math.min(47, (payC * invCostScale) | 0)
-        : (48 +
-            Math.min(47, Math.log1p((payC - totalCostCents) * 0.01) * 6.0)) |
-          0;
+    const logBinCeil = new Float64Array(48);
+    for (let k = 0; k < 48; k++) {
+      logBinCeil[k] = totalCostCents + Math.expm1((k + 1) / 6.0) * 100;
+    }
+    const binIndexOf = (payC) => {
+      if (payC < totalCostCents) {
+        return Math.min(47, (payC * invCostScale) | 0);
+      }
+      let lo = 0;
+      let hi = 47;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (payC < logBinCeil[mid]) hi = mid;
+        else lo = mid + 1;
+      }
+      return 48 + lo;
+    };
 
     const writeRepState = (b, L, R) => {
       const baseOff = b * M;
@@ -4168,54 +4293,97 @@ function evaluateTicketsOnQuotientSpace(
     };
 
     const rightZero = rightStates.filter((r) => r.hits === 0);
-    const rightHit = rightStates
+    const rightByIntra = rightStates
       .filter((r) => r.hits > 0)
-      .sort((a, b) => a.sumO - b.sumO || a.intra - b.intra);
-
-    const STRIP_TARGET = 32;
-    const stripCount = Math.min(
-      STRIP_TARGET,
-      Math.max(1, Math.ceil(rightHit.length / 96))
+      .sort((a, b) => a.intra - b.intra || a.sumO - b.sumO);
+    const rightHit = [...rightByIntra].sort(
+      (a, b) => a.sumO - b.sumO || a.intra - b.intra
     );
-    const strips = [];
-    for (let s = 0; s < stripCount; s++) {
-      const lo = Math.floor((s * rightHit.length) / stripCount);
-      const hi = Math.floor(((s + 1) * rightHit.length) / stripCount);
-      if (lo >= hi) continue;
-      const sub = rightHit.slice(lo, hi);
-      let minIntra = Infinity;
-      let maxIntra = 0;
-      let pSum = 0;
-      let sumProbIntra = 0;
-      let sumProbUIntra = 0;
-      let sumProbCIntra = 0;
-      let sumProbSumO = 0;
-      let bestR = sub[0];
-      for (let i = 0; i < sub.length; i++) {
-        const r = sub[i];
-        if (r.intra < minIntra) minIntra = r.intra;
-        if (r.intra > maxIntra) maxIntra = r.intra;
-        pSum += r.prob;
-        sumProbIntra += r.prob * r.intra;
-        sumProbSumO += r.prob * r.sumO;
-        if (!metricsOnly) {
-          sumProbUIntra += r.prob * r.uIntra;
-          sumProbCIntra += r.prob * r.cIntra;
-          if (r.prob > bestR.prob) bestR = r;
+
+    const INTRA_BANDS =
+      rightByIntra.length >= 256
+        ? Math.min(16, Math.max(4, Math.ceil(rightByIntra.length / 256)))
+        : 1;
+    const bands = [];
+    for (let ib = 0; ib < INTRA_BANDS; ib++) {
+      const iLo = Math.floor((ib * rightByIntra.length) / INTRA_BANDS);
+      const iHi = Math.floor(((ib + 1) * rightByIntra.length) / INTRA_BANDS);
+      if (iLo >= iHi) continue;
+      const bandArr = rightByIntra
+        .slice(iLo, iHi)
+        .sort((a, b) => a.sumO - b.sumO || a.intra - b.intra);
+      const sCount = Math.min(16, Math.max(1, Math.ceil(bandArr.length / 16)));
+      const bStrips = [];
+      let bdMinIntra = Infinity;
+      let bdMaxIntra = 0;
+      let bdPSum = 0;
+      let bdProbIntra = 0;
+      let bdProbUIntra = 0;
+      let bdProbCIntra = 0;
+      let bdProbSumO = 0;
+      let bdBestR = bandArr[0];
+      for (let s = 0; s < sCount; s++) {
+        const lo = Math.floor((s * bandArr.length) / sCount);
+        const hi = Math.floor(((s + 1) * bandArr.length) / sCount);
+        if (lo >= hi) continue;
+        const sub = bandArr.slice(lo, hi);
+        let minIntra = Infinity;
+        let maxIntra = 0;
+        let pSum = 0;
+        let sumProbIntra = 0;
+        let sumProbUIntra = 0;
+        let sumProbCIntra = 0;
+        let sumProbSumO = 0;
+        let bestR = sub[0];
+        for (let i = 0; i < sub.length; i++) {
+          const r = sub[i];
+          if (r.intra < minIntra) minIntra = r.intra;
+          if (r.intra > maxIntra) maxIntra = r.intra;
+          pSum += r.prob;
+          sumProbIntra += r.prob * r.intra;
+          sumProbSumO += r.prob * r.sumO;
+          if (!metricsOnly) {
+            sumProbUIntra += r.prob * r.uIntra;
+            sumProbCIntra += r.prob * r.cIntra;
+            if (r.prob > bestR.prob) bestR = r;
+          }
         }
+        if (minIntra < bdMinIntra) bdMinIntra = minIntra;
+        if (maxIntra > bdMaxIntra) bdMaxIntra = maxIntra;
+        bdPSum += pSum;
+        bdProbIntra += sumProbIntra;
+        bdProbSumO += sumProbSumO;
+        if (!metricsOnly) {
+          bdProbUIntra += sumProbUIntra;
+          bdProbCIntra += sumProbCIntra;
+          if (bestR.prob > bdBestR.prob) bdBestR = bestR;
+        }
+        bStrips.push({
+          sub,
+          pSum,
+          minSumO: sub[0].sumO,
+          maxSumO: sub[sub.length - 1].sumO,
+          minIntra,
+          maxIntra,
+          sumProbIntra,
+          sumProbUIntra,
+          sumProbCIntra,
+          sumProbSumO,
+          bestR,
+        });
       }
-      strips.push({
-        sub,
-        pSum,
-        minSumO: sub[0].sumO,
-        maxSumO: sub[sub.length - 1].sumO,
-        minIntra,
-        maxIntra,
-        sumProbIntra,
-        sumProbUIntra,
-        sumProbCIntra,
-        sumProbSumO,
-        bestR,
+      bands.push({
+        strips: bStrips,
+        pSum: bdPSum,
+        minSumO: bandArr[0].sumO,
+        maxSumO: bandArr[bandArr.length - 1].sumO,
+        minIntra: bdMinIntra,
+        maxIntra: bdMaxIntra,
+        sumProbIntra: bdProbIntra,
+        sumProbUIntra: bdProbUIntra,
+        sumProbCIntra: bdProbCIntra,
+        sumProbSumO: bdProbSumO,
+        bestR: bdBestR,
       });
     }
 
@@ -4226,7 +4394,7 @@ function evaluateTicketsOnQuotientSpace(
       leftStates,
       rightZero,
       rightHit,
-      strips,
+      bands,
       canFastBulkStats,
       metricsOnly,
       totalCostCents,
@@ -4338,7 +4506,7 @@ function evaluateTicketsOnQuotientSpace(
             sufMinIntraR[v] +
             Math.floor(refScale * L.sumO * R.sumO + minCrossErr);
           if (lb >= globalMinWinCents) break;
-          const [cPay] = evalExactCross(L, R);
+          const cPay = evalExactCross(L, R)[0];
           const tot = L.intra + R.intra + cPay;
           if (tot > 0 && tot < globalMinWinCents) globalMinWinCents = tot;
         }
@@ -4374,7 +4542,7 @@ function evaluateTicketsOnQuotientSpace(
             sufMaxIntraR[v] +
             Math.ceil(refScale * L.sumO * R.sumO + maxCrossErr);
           if (ub <= globalMaxWinCents) break;
-          const [cPay] = evalExactCross(L, R);
+          const cPay = evalExactCross(L, R)[0];
           const tot = L.intra + R.intra + cPay;
           if (tot > globalMaxWinCents) globalMaxWinCents = tot;
         }
@@ -4534,15 +4702,20 @@ function evaluateTicketsOnQuotientSpace(
     const invCostScale = 48 / Math.max(1, totalCostCents);
     const MAX_SCALAR_LEAVES = 450_000;
     let visitedScalarLeaves = 0;
+    const deltaOut = new Float64Array(3);
     const sumMaskDelta = (msk, oPay, oUnit, oClip) => {
-      if (msk === 0) return [0, 0, 0];
+      if (msk === 0) {
+        deltaOut[0] = 0;
+        deltaOut[1] = 0;
+        deltaOut[2] = 0;
+        return deltaOut;
+      }
       if ((msk & (msk - 1)) === 0) {
         const j = 31 - Math.clz32(msk);
-        return [
-          oPay[j],
-          !metricsOnly ? oUnit[j] : 0,
-          !metricsOnly ? oClip[j] : 0,
-        ];
+        deltaOut[0] = oPay[j];
+        deltaOut[1] = !metricsOnly ? oUnit[j] : 0;
+        deltaOut[2] = !metricsOnly ? oClip[j] : 0;
+        return deltaOut;
       }
       let aPay = 0;
       let aUnit = 0;
@@ -4558,7 +4731,10 @@ function evaluateTicketsOnQuotientSpace(
         }
         v &= v - 1;
       }
-      return [aPay, aUnit, aClip];
+      deltaOut[0] = aPay;
+      deltaOut[1] = aUnit;
+      deltaOut[2] = aClip;
+      return deltaOut;
     };
     const walkScalar = (m, curProb, accPay, accUnit, accClip) => {
       if (visitedScalarLeaves >= MAX_SCALAR_LEAVES) return;
@@ -4606,12 +4782,10 @@ function evaluateTicketsOnQuotientSpace(
       if (m === M - 1) {
         visitedScalarLeaves += sLen;
         for (let s = 0; s < sLen; s++) {
-          const [addPay, addUnit, addClip] = sumMaskDelta(
-            mArr[s],
-            oPay,
-            oUnit,
-            oClip
-          );
+          const dVal = sumMaskDelta(mArr[s], oPay, oUnit, oClip);
+          const addPay = dVal[0];
+          const addUnit = dVal[1];
+          const addClip = dVal[2];
           const totPay = accPay + addPay;
           if (totPay <= 0) continue;
           const lp = curProb * pArr[s];
@@ -4648,12 +4822,10 @@ function evaluateTicketsOnQuotientSpace(
       for (let s = 0; s < sLen; s++) {
         if (visitedScalarLeaves >= MAX_SCALAR_LEAVES) break;
         const msk = mArr[s];
-        const [addPay, addUnit, addClip] = sumMaskDelta(
-          msk,
-          oPay,
-          oUnit,
-          oClip
-        );
+        const dVal = sumMaskDelta(msk, oPay, oUnit, oClip);
+        const addPay = dVal[0];
+        const addUnit = dVal[1];
+        const addClip = dVal[2];
         curMask[m] = msk;
         if (!metricsOnly) chosenS[m] = s;
         walkScalar(
@@ -6982,6 +7154,62 @@ const HAFU_KEYS_BY_FT = {
   a: ["aa", "da", "ha"],
 };
 
+function formatSyntheticBlindSpotPct(prob) {
+  const pct = Math.max(0, Number(prob || 0)) * 100;
+  if (pct <= 0) return "0.0";
+  if (pct >= 0.1) return pct.toFixed(1);
+  if (pct >= 0.01) return pct.toFixed(2);
+  return "<0.01";
+}
+
+function computeSyntheticUncoveredStats(
+  targetMask,
+  atomicProbs,
+  chosenPicks,
+  gl
+) {
+  const coveredMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+    const tpl = ATOMIC_TEMPLATES[t];
+    if (
+      chosenPicks.some((p) =>
+        doesOptionHitAtomicTemplate(
+          p.poolCode,
+          p.optionKey,
+          p.optionLabel,
+          gl,
+          tpl
+        )
+      )
+    ) {
+      coveredMask[t] = 1;
+    }
+  }
+  let uncoveredProb = 0;
+  const missedCrsLabels = new Set();
+  const missedCatchAllScores = [];
+  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+    if (targetMask[t] && !coveredMask[t]) {
+      uncoveredProb += atomicProbs[t] || 0;
+      const tpl = ATOMIC_TEMPLATES[t];
+      if (tpl.crsKey) missedCrsLabels.add(tpl.crsKey);
+      const exactLbl = `${tpl.homeGoals}:${tpl.awayGoals}`;
+      if (
+        !CRS_INDEX_BY_KEY.has(exactLbl) &&
+        !missedCatchAllScores.includes(exactLbl)
+      ) {
+        missedCatchAllScores.push(exactLbl);
+      }
+    }
+  }
+  return {
+    uncoveredProb: uncoveredProb <= 1e-12 ? 0 : uncoveredProb,
+    coveredMask,
+    missedCrsLabels: Array.from(missedCrsLabels),
+    missedCatchAllScores,
+  };
+}
+
 function resolveSyntheticSingleBundle(
   m,
   matchPicks,
@@ -7106,8 +7334,16 @@ function resolveSyntheticSingleBundle(
           activePicks: fullPicks,
           modeUsed: "full-3way",
           synEff,
-          blindSpotProb: 0,
+          blindSpotProb: computeSyntheticUncoveredStats(
+            targetMask,
+            atomicProbs,
+            fullPicks,
+            gl
+          ).uncoveredProb,
           blindSpotLabel: null,
+          targetMask,
+          atomicProbs,
+          gl,
         };
       }
     }
@@ -7216,6 +7452,13 @@ function resolveSyntheticSingleBundle(
             (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
             0
           );
+        const activeHafuUncov = computeSyntheticUncoveredStats(
+          targetMask,
+          atomicProbs,
+          activePicks,
+          gl
+        );
+        blindSpotProb = activeHafuUncov.uncoveredProb;
         return {
           poolCode: "HAFU",
           fullPicks,
@@ -7225,6 +7468,9 @@ function resolveSyntheticSingleBundle(
           fullSynEff,
           blindSpotProb,
           blindSpotLabel,
+          targetMask,
+          atomicProbs,
+          gl,
         };
       }
     }
@@ -7281,8 +7527,6 @@ function resolveSyntheticSingleBundle(
       const fullPicks = crsOpts.map((o) => toPick("CRS", o));
       let activePicks = fullPicks;
       let modeUsed = "full-3way";
-      let blindSpotProb = 0;
-      let blindSpotLabel = null;
       if (mode === "trim-2way" && fullPicks.length >= 4) {
         const sortedByProb = [...fullPicks].sort(
           (a, b) => b.fairProb - a.fairProb
@@ -7296,12 +7540,36 @@ function resolveSyntheticSingleBundle(
         if (kept.length >= 2 && dropped.length > 0) {
           activePicks = kept;
           modeUsed = "trim-2way";
-          blindSpotProb = dropped.reduce((a, p) => a + p.fairProb, 0);
-          blindSpotLabel = `高赔长尾比分（${dropped
-            .slice(0, 3)
-            .map((p) => p.optionLabel)
-            .join("/")}${dropped.length > 3 ? "等" : ""}）`;
         }
+      }
+      const activeCrsUncov = computeSyntheticUncoveredStats(
+        targetMask,
+        atomicProbs,
+        activePicks,
+        gl
+      );
+      const blindSpotProb = activeCrsUncov.uncoveredProb;
+      let blindSpotLabel = null;
+      if (blindSpotProb > 1e-9) {
+        const catchAllNames = activeCrsUncov.missedCrsLabels.filter(
+          (lbl) => lbl === "胜其它" || lbl === "平其它" || lbl === "负其它"
+        );
+        const explicitNames = activeCrsUncov.missedCrsLabels.filter(
+          (lbl) => lbl !== "胜其它" && lbl !== "平其它" && lbl !== "负其它"
+        );
+        const catchExamples = activeCrsUncov.missedCatchAllScores.slice(0, 2);
+        const catchDesc =
+          catchAllNames.length > 0
+            ? `跨界大比分「${catchAllNames.join("/")}」${catchExamples.length > 0 ? `（含 ${catchExamples.join("/")} 等）` : ""}`
+            : "";
+        const expDesc =
+          explicitNames.length > 0
+            ? `高赔长尾比分（${explicitNames.slice(0, 3).join("/")}${explicitNames.length > 3 ? "等" : ""}）`
+            : "";
+        blindSpotLabel =
+          expDesc && catchDesc
+            ? `${expDesc}及${catchDesc}`
+            : catchDesc || expDesc || "未覆盖长尾比分";
       }
       const synEff =
         1 /
@@ -7323,6 +7591,9 @@ function resolveSyntheticSingleBundle(
           ),
         blindSpotProb,
         blindSpotLabel,
+        targetMask,
+        atomicProbs,
+        gl,
       };
     }
   }
@@ -7490,11 +7761,28 @@ function buildAutoSyntheticSinglePlan(m, bundle, rawMultiple, rawPickCount) {
     };
   });
 
+  const exactBlindSpotProb =
+    bundle.targetMask && bundle.atomicProbs
+      ? computeSyntheticUncoveredStats(
+          bundle.targetMask,
+          bundle.atomicProbs,
+          activePicks,
+          bundle.gl ?? resolveGoalLineNum(m)
+        ).uncoveredProb
+      : Number(bundle.blindSpotProb ?? 0);
+  const hasBlindSpot = exactBlindSpotProb > 1e-9;
+  const bsPctStr = formatSyntheticBlindSpotPct(exactBlindSpotProb);
   const isTrim2 = bundle.modeUsed === "trim-2way";
-  const shortTab = isTrim2 ? "合成单关·2项省本" : "合成单关·无死角";
+  const shortTab = isTrim2
+    ? "合成单关·2项省本"
+    : hasBlindSpot
+      ? "合成单关·比分配平"
+      : "合成单关·无死角";
   const badge = isTrim2
     ? "⚡ 合成单关（2项省本搏常规）"
-    : "🛡️ 合成单关（全包无死角配平）";
+    : hasBlindSpot
+      ? "🛡️ 合成单关（常规比分覆盖配平）"
+      : "🛡️ 合成单关（全包无死角配平）";
   const outPlan = {
     key: "max-profit-prob",
     available: true,
@@ -7502,7 +7790,9 @@ function buildAutoSyntheticSinglePlan(m, bundle, rawMultiple, rawPickCount) {
     badge,
     title: isTrim2
       ? "省去半场落后逆转分支 · 抬升常规命中返奖乘数"
-      : "100% 等价覆盖原方向 · 反比例整数配平 0 假中奖",
+      : hasBlindSpot
+        ? "覆盖目标方向常规比分 · 反比例整数配平 0 假中奖"
+        : "100% 等价覆盖原方向 · 反比例整数配平 0 假中奖",
     tagline: `总投入 ¥${actualCost} · 等效@${synEff.toFixed(2)} · 保底返 ¥${minPay.toFixed(1)} ~ 最高 ¥${maxPay.toFixed(1)}`,
     totalCost: actualCost,
     savedCash: 0,
@@ -7528,8 +7818,10 @@ function buildAutoSyntheticSinglePlan(m, bundle, rawMultiple, rawPickCount) {
     vigPct: 0,
     reasons: [
       isTrim2 && bundle.blindSpotLabel
-        ? `省去「${bundle.blindSpotLabel}」（漏网风险 ${(bundle.blindSpotProb * 100).toFixed(1)}%），合成等效水位提升至 @${synEff.toFixed(2)}`
-        : `100% 等价覆盖原选赛果（0% 漏网死角），按水位反比例精密配平整数倍，等效水位 @${synEff.toFixed(2)}`,
+        ? `省去「${bundle.blindSpotLabel}」（漏网风险 ${bsPctStr}%），合成等效水位提升至 @${synEff.toFixed(2)}`
+        : hasBlindSpot
+          ? `覆盖目标常规比分并按水位反比例精密配平（等效水位 @${synEff.toFixed(2)}）；诚实披露：未含${bundle.blindSpotLabel || "跨界其它比分"}（存在 ${bsPctStr}% 漏网死角）`
+          : `100% 等价覆盖原选赛果（0% 漏网死角），按水位反比例精密配平整数倍，等效水位 @${synEff.toFixed(2)}`,
     ],
     lines,
   };
@@ -7666,6 +7958,8 @@ export function computeTruthReport(
   let syntheticHint = null;
   let syntheticRescuePicks = null;
   let syntheticEffectiveOdds = undefined;
+  let syntheticBlindSpotProb = undefined;
+  let syntheticBlindSpotLabel = undefined;
   if (matchCount === 1 && !hasSameMatchCrossPoolConflict) {
     const m = Array.isArray(matches)
       ? matches.find((x) => x.id === matchGroups[0][0].matchId)
@@ -7674,12 +7968,17 @@ export function computeTruthReport(
       const bundle = resolveSyntheticSingleBundle(
         m,
         matchGroups[0],
-        "full-3way"
+        "full-3way",
+        matchAtomicMap?.get(m.id) ?? null
       );
       if (bundle && bundle.fullPicks.length >= 1) {
         const synEff = bundle.fullSynEff ?? bundle.synEff;
         syntheticEffectiveOdds = Number(synEff.toFixed(4));
         syntheticRescuePicks = bundle.fullPicks;
+        const fullBsProb = Number(bundle.blindSpotProb ?? 0);
+        syntheticBlindSpotProb =
+          fullBsProb <= 1e-9 ? 0 : Number(fullBsProb.toFixed(8));
+        syntheticBlindSpotLabel = bundle.blindSpotLabel ?? null;
         const labelList =
           bundle.fullPicks.length <= 4
             ? bundle.fullPicks.map((p) => p.optionLabel).join("+")
@@ -7690,8 +7989,10 @@ export function computeTruthReport(
         const poolTitle = m.pools[bundle.poolCode]?.name || bundle.poolCode;
         syntheticHint =
           synEff > 1.0 + 1e-9
-            ? `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关全包「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（0% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
-            : `${m.matchNumStr} 当前所选玩法未开单关，且借道${poolTitle}全包「${labelList}」合成等效水位仅 ${synEff.toFixed(2)}（≤ 1.00 必亏盘），已拦截单场亏本废票，强烈建议搭 1 场过桥配菜场凑 2串1！`;
+            ? fullBsProb > 1e-9
+              ? `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关覆盖「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（⚠️ 未含${bundle.blindSpotLabel || "跨界其它比分"}，存在 ${formatSyntheticBlindSpotPct(fullBsProb)}% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
+              : `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关全包「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（0% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
+            : `${m.matchNumStr} 当前所选玩法未开单关，且借道${poolTitle}覆盖「${labelList}」合成等效水位仅 ${synEff.toFixed(2)}（≤ 1.00 必亏盘），已拦截单场亏本废票，强烈建议搭 1 场过桥配菜场凑 2串1！`;
       }
     }
   }
@@ -7832,6 +8133,12 @@ export function computeTruthReport(
     });
     if (syntheticEffectiveOdds !== undefined) {
       blockedOne.syntheticEffectiveOdds = syntheticEffectiveOdds;
+    }
+    if (syntheticBlindSpotProb !== undefined) {
+      blockedOne.syntheticBlindSpotProb = syntheticBlindSpotProb;
+    }
+    if (syntheticBlindSpotLabel !== undefined) {
+      blockedOne.syntheticBlindSpotLabel = syntheticBlindSpotLabel;
     }
     return blockedOne;
   }
@@ -8110,21 +8417,41 @@ export function computeTruthReport(
   const betCount = rawTickets.length;
   const totalCost = betCount * 2 * multiple;
 
+  const pickDescByRef = new Map();
+  for (let i = 0; i < picks.length; i++) {
+    const pk = picks[i];
+    pickDescByRef.set(
+      pk,
+      `${pk.matchNumStr}[${pk.optionLabel}@${pk.odds.toFixed(2)}]`
+    );
+  }
   const ticketRows = rawTickets.map((t, idx) => {
-    const legOdds = t.legs.map((it) => it.odds);
-    const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
-    const prob = t.legs.reduce((acc, it) => acc * it.fairProb, 1);
+    const lgs = t.legs;
+    let prob = 1;
+    let nonVoid = 0;
+    const legOdds = new Array(lgs.length);
+    for (let j = 0; j < lgs.length; j++) {
+      const it = lgs[j];
+      legOdds[j] = it.odds;
+      prob *= it.fairProb;
+      if (Math.abs(Number(it.odds) - 1.0) > 1e-9) nonVoid++;
+    }
+    const cap = statutorySingleBetCap(Math.max(1, nonVoid));
     const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
     const unitCapped = Math.min(cap, unitBeforeCap);
     const cappedClipped = Math.max(0, (unitBeforeCap - unitCapped) * multiple);
     const totalPayout = Math.round(unitCapped * multiple * 100) / 100;
     const netProfit = Math.round((totalPayout - totalCost) * 100) / 100;
+    const desc =
+      lgs.length === 2
+        ? `${pickDescByRef.get(lgs[0])} × ${pickDescByRef.get(lgs[1])}`
+        : lgs.length === 1
+          ? pickDescByRef.get(lgs[0])
+          : lgs.map((i) => pickDescByRef.get(i)).join(" × ");
     return {
       id: `tk-${idx}`,
-      desc: t.legs
-        .map((i) => `${i.matchNumStr}[${i.optionLabel}@${i.odds.toFixed(2)}]`)
-        .join(" × "),
-      legs: t.legs,
+      desc,
+      legs: lgs,
       matchIndices: t.matchIndices,
       multiple,
       cost: multiple * 2,
@@ -10524,8 +10851,9 @@ function solveFullSlatePartitionDutching(
 ) {
   const M = selected.length;
   if (M < 3) return [];
-  const rawTargetNotes = Math.max(2, Math.floor(targetBudgetYuan / 2));
-  const maxNotes = Math.max(2, Math.min(500, rawTargetNotes));
+  const rawTargetNotes = Math.floor(targetBudgetYuan / 2);
+  if (rawTargetNotes < 2) return [];
+  const maxNotes = Math.min(500, rawTargetNotes);
 
   const mainSinglePoolOf = (m) => {
     const hadOk =
@@ -10689,20 +11017,19 @@ function solveFullSlatePartitionDutching(
   let bestUnionProb = -1;
   let bestEvScore = -Infinity;
 
-  const noteTrials = Array.from(
-    new Set([
-      maxNotes,
-      Math.max(2, maxNotes - 1),
-      Math.max(2, Math.floor(maxNotes * 0.95)),
-    ])
-  );
-
   for (let pIdx = 0; pIdx < partitions.length; pIdx++) {
     const blocks = partitions[pIdx];
     const R = blocks.length;
-    if (R < 2) continue;
+    if (R < 2 || maxNotes < R) continue;
     const blockItemLists = blocks.map(buildBlockItems);
     if (blockItemLists.some((b) => !b)) continue;
+    const noteTrials = Array.from(
+      new Set([
+        maxNotes,
+        Math.max(R, maxNotes - 1),
+        Math.max(R, Math.floor(maxNotes * 0.95)),
+      ])
+    ).filter((n) => n >= R && n <= maxNotes);
 
     for (const N of noteTrials) {
       if (N < R) continue;
@@ -11088,9 +11415,7 @@ export function generateParetoPortfolio(
   const rawBudgetVal = Number(budgetYuan);
   const cleanBudget =
     Number.isFinite(rawBudgetVal) && rawBudgetVal > 0
-      ? rawBudgetVal < 4
-        ? Math.max(2, Math.floor(rawBudgetVal / 2) * 2)
-        : Math.min(20_000, Math.round(rawBudgetVal / 2) * 2)
+      ? Math.max(2, Math.min(20_000, Math.floor(rawBudgetVal / 2) * 2))
       : 100;
   if (!Array.isArray(targetMatches) || targetMatches.length === 0) return [];
 
@@ -12008,9 +12333,11 @@ export function generateParetoPortfolio(
         for (let idx = 0; idx < passCap; idx++) {
           const m = selected[idx];
           const pCode = prof[idx];
-          const opts = (m.pools[pCode]?.options ?? [])
-            .map((o) => legOf(m, pCode, o.key))
-            .filter(Boolean);
+          const pPool = m.pools[pCode];
+          const opts =
+            pPool && pPool.selling !== false && Array.isArray(pPool.options)
+              ? pPool.options.map((o) => legOf(m, pCode, o.key)).filter(Boolean)
+              : [];
           if (opts.length === 0) break;
           const next = [];
           for (let a = 0; a < mCartesian.length; a++) {
@@ -12346,16 +12673,25 @@ export function generateParetoPortfolio(
   ];
   if (slot1AnchoredTwoMatchNote) slot1Reasons.push(slot1AnchoredTwoMatchNote);
 
+  const slot1TotalSpend = slot1Lines.reduce((a, l) => a + l.cost, 0);
+  const slot1Valid = slot1Lines.length > 0 && slot1TotalSpend <= cleanBudget;
   const slot1Plan = packSlot({
     key: "max-profit-prob",
+    available: slot1Valid,
+    emptyReason: slot1Valid
+      ? null
+      : `当前预算 ¥${cleanBudget} 下无法构造满足零倒贴与体彩单注法定封顶约束的有效注单（已全额保留 ¥${cleanBudget}）`,
     shortTab: "🛡️ 稳健保本",
     badge: "🛡️ 稳健保本极值",
-    title: "覆盖态零假中奖 · 真赚钱率最大化",
-    tagline:
-      slot1BreakEvenCount > 0
+    title: slot1Valid
+      ? "覆盖态零假中奖 · 真赚钱率最大化"
+      : "当前预算或限赔约束下无合法零倒贴注单",
+    tagline: !slot1Valid
+      ? `已替你拦截超额或封顶废票 · 全额保留 ¥${cleanBudget}`
+      : slot1BreakEvenCount > 0
         ? "覆盖范围内 100% 保本不亏（含刚退本金保护支）· 彻底杜绝中奖倒贴"
         : "覆盖范围内命中任一组合 100% 净赚 · 彻底杜绝中奖倒贴",
-    lines: slot1Lines,
+    lines: slot1Valid ? slot1Lines : [],
     reasons: slot1Reasons,
   });
   if (slot1Plan.available && slot1BreakEvenCount > 0) {
@@ -13946,11 +14282,12 @@ export function generateParetoPortfolio(
 
   let alphaSpecs = [];
   let selectedAlphaCands = [];
+  const maxAlphaNotes = Math.max(1, Math.floor(aggBudget / 2));
 
   if (selected.length === 1) {
     // Single-match checkout legality gate: ONLY single-capable +EV options can check out alone at a Sporttery shop
     const legalSingles = rawAlphaPool.filter((c) => c.singleAllowed);
-    for (const c of legalSingles.slice(0, 2)) {
+    for (const c of legalSingles.slice(0, Math.min(2, maxAlphaNotes))) {
       if (appendSingleAlphaSpecs(c, "ar")) selectedAlphaCands.push(c);
     }
   } else if (rawAlphaPool.length > 0) {
@@ -13964,9 +14301,11 @@ export function generateParetoPortfolio(
     }
 
     // 1. Prefer single-capable +EV tickets directly (zero parlay vig compound loss!)
-    const topSingles = rawAlphaPool.filter((c) => c.singleAllowed).slice(0, 2);
+    const topSingles = rawAlphaPool
+      .filter((c) => c.singleAllowed)
+      .slice(0, Math.min(2, maxAlphaNotes));
     for (const c of topSingles) {
-      if (alphaSpecs.length >= 4) break;
+      if (alphaSpecs.length >= Math.min(4, maxAlphaNotes)) break;
       if (appendSingleAlphaSpecs(c, "ar-sgl")) {
         selectedAlphaCands.push(c);
       }
@@ -14071,7 +14410,10 @@ export function generateParetoPortfolio(
   if (alphaSpecs.length === 0 || selectedAlphaCands.length === 0) {
     slot4Plan = buildEmptyAlphaSlot();
   } else {
-    const targetNotes = Math.max(alphaSpecs.length, Math.floor(aggBudget / 2));
+    const targetNotes = Math.min(
+      Math.floor(cleanBudget / 2),
+      Math.max(alphaSpecs.length, maxAlphaNotes)
+    );
     const wSum = alphaSpecs.reduce((a, s) => a + s.weight, 0) || 1;
     let rem = targetNotes - alphaSpecs.length;
     const mults = alphaSpecs.map(() => 1);
@@ -14920,10 +15262,10 @@ export function computeProOrderInsights(
     const mpicks = swapSourcePicks.filter((p) => p.matchId === m.id);
     const arbitrages = computeEquivalentArbitrages(m);
     const matchedArb = arbitrages.find((arb) => {
+      const isSingleMatchSlip =
+        pickedMatches.length === 1 || Number(report?.matchCount) === 1;
       if (
-        pickedMatches.length === 1 &&
-        report?.canCheckout === true &&
-        !isAutoSynthetic &&
+        isSingleMatchSlip &&
         !arb.betterPicks.every(
           (bp) =>
             m.pools?.[bp.poolCode]?.selling !== false &&
@@ -16326,6 +16668,8 @@ function applySandboxToPlan(
       ? jointEval.realProfitProb
       : null,
     underwaterCount: jointEval.underwaterCount,
+    logicalGroupCount: lines.length,
+    physicalTicketCount: countPhysical99xSlips(lines),
     zeroPayoutProb: Math.max(0, 1 - winProb),
     missOneReturn,
     consolidateTickets: effectiveConsolidate,
@@ -17029,17 +17373,17 @@ export function evaluateQuantWorkspace(params, matchesInput) {
                 sandboxBundle.atomicMap?.get(singleMatch.id) ?? null
               )
             : objBundle;
+          const rawSynBlindSpotProb =
+            shiftedBundle?.blindSpotProb ?? objBundle.blindSpotProb ?? 0;
           autoSyntheticMeta = {
             modeUsed: objBundle.modeUsed,
             synEff: Number(builtSyn.synEff.toFixed(4)),
-            blindSpotProb: Number(
-              (
-                shiftedBundle?.blindSpotProb ??
-                objBundle.blindSpotProb ??
-                0
-              ).toFixed(6)
-            ),
-            blindSpotLabel: objBundle.blindSpotLabel ?? null,
+            blindSpotProb:
+              rawSynBlindSpotProb <= 1e-9
+                ? 0
+                : Number(rawSynBlindSpotProb.toFixed(8)),
+            blindSpotLabel:
+              shiftedBundle?.blindSpotLabel ?? objBundle.blindSpotLabel ?? null,
             poolName:
               singleMatch.pools[objBundle.poolCode]?.name || objBundle.poolCode,
             activeLabels: objBundle.activePicks.map((p) => p.optionLabel),
@@ -17078,36 +17422,53 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       autoSyntheticMeta.activeLabels.length <= 4
         ? autoSyntheticMeta.activeLabels.join("+")
         : `${autoSyntheticMeta.activeLabels.slice(0, 3).join("+")}等${autoSyntheticMeta.activeLabels.length}项`;
+    const hasSynBlindSpot = autoSyntheticMeta.blindSpotProb > 1e-9;
     effectiveReport.modeLabel =
       autoSyntheticMeta.modeUsed === "trim-2way"
         ? "合成单关·2项省本"
-        : autoSyntheticMeta.activeLabels.length === 3
-          ? "合成单关·3项无死角"
-          : "合成单关·无死角";
+        : hasSynBlindSpot
+          ? "合成单关·比分配平"
+          : autoSyntheticMeta.activeLabels.length === 3
+            ? "合成单关·3项无死角"
+            : "合成单关·无死角";
     effectiveReport.syntheticAutoMounted = true;
     effectiveReport.syntheticModeUsed = autoSyntheticMeta.modeUsed;
     effectiveReport.syntheticEffectiveOdds = autoSyntheticMeta.synEff;
     effectiveReport.syntheticBlindSpotProb = autoSyntheticMeta.blindSpotProb;
     effectiveReport.syntheticBlindSpotLabel = autoSyntheticMeta.blindSpotLabel;
     effectiveReport.syntheticRescuePicks = manualReport.syntheticRescuePicks;
-    if (
-      autoSyntheticMeta.modeUsed === "trim-2way" &&
-      autoSyntheticMeta.blindSpotProb > 0 &&
-      autoSyntheticMeta.blindSpotLabel
-    ) {
-      const bsPct = (autoSyntheticMeta.blindSpotProb * 100).toFixed(1);
-      effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 已挂载【2项省本搏常规】${autoSyntheticMeta.poolName}单关「${labelStr}」（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 注意省去了「${autoSyntheticMeta.blindSpotLabel}」（存在 ${bsPct}% 逆转漏网死角）。`;
-      effectiveReport.warnings = [
-        {
-          id: "synthetic-blind-spot",
-          severity: "warn",
-          title: `⚠️ 2项省本模式存在 ${(autoSyntheticMeta.blindSpotProb * 100).toFixed(1)}% 逆转漏网风险`,
-          detail: `当前省去了「${autoSyntheticMeta.blindSpotLabel}」（校准发生率 ${bsPct}%）；若想 100% 锁定原赛果方向无死角，请切回「🛡️ 3项全包无死角」。`,
-        },
-        ...effectiveReport.warnings.filter(
-          (w) => w.id !== "synthetic-blind-spot"
-        ),
-      ];
+    if (hasSynBlindSpot) {
+      const bsPct = formatSyntheticBlindSpotPct(
+        autoSyntheticMeta.blindSpotProb
+      );
+      const bsDesc = autoSyntheticMeta.blindSpotLabel || "极端长尾比分";
+      if (autoSyntheticMeta.modeUsed === "trim-2way") {
+        effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 已挂载【2项省本搏常规】${autoSyntheticMeta.poolName}单关「${labelStr}」（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 注意省去了「${bsDesc}」（存在 ${bsPct}% 逆转漏网死角）。`;
+        effectiveReport.warnings = [
+          {
+            id: "synthetic-blind-spot",
+            severity: "warn",
+            title: `⚠️ 2项省本模式存在 ${bsPct}% 逆转漏网风险`,
+            detail: `当前省去了「${bsDesc}」（校准发生率 ${bsPct}%）；若想完整覆盖常规分支，请切回全包档或搭 1 场凑 2串1。`,
+          },
+          ...effectiveReport.warnings.filter(
+            (w) => w.id !== "synthetic-blind-spot"
+          ),
+        ];
+      } else {
+        effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 原选玩法未开单关，已自动挂载${autoSyntheticMeta.poolName}单关「${labelStr}」反比例配平（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 因体彩「其它」项跨界混含非目标分差未纳入，存在 ${bsPct}% 漏网死角（${bsDesc}）！选满第 2 场将自动恢复原盘串关。`;
+        effectiveReport.warnings = [
+          {
+            id: "synthetic-blind-spot",
+            severity: "warn",
+            title: `⚠️ 比分合成单关存在 ${bsPct}% 极端比分漏网死角`,
+            detail: `体彩比分池「胜其它/平其它/负其它」同时混杂其他分差，当前配平「${labelStr}」未含${bsDesc}（校准发生率 ${bsPct}%）；若需锁定原盘方向零漏网，可搭 1 场过桥配菜凑 2串1。`,
+          },
+          ...effectiveReport.warnings.filter(
+            (w) => w.id !== "synthetic-blind-spot"
+          ),
+        ];
+      }
     } else {
       effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 原选玩法未开单关，已自动挂载 100% 等价无死角${autoSyntheticMeta.poolName}单关「${labelStr}」反比例配平（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost} · 0% 漏网死角）！继续选第 2 场将自动恢复低抽水原盘串关。`;
     }
