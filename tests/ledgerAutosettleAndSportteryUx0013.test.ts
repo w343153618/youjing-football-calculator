@@ -1095,25 +1095,82 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
       assert.equal(q3.source, "local-kb");
       assert.ok(q3.answer.includes("不退") || q3.answer.includes("锁死"));
 
-      const appSrc = fs.readFileSync(
-        path.join(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-        "utf8"
-      );
+      const { createBetSlipController } =
+        await import("../src/workspace/betSlipController.ts");
+      const {
+        DESKTOP_RIGHT_CABIN_TABS,
+        buildLedgerEntryPresentation,
+        buildMobileTab4CabinOptions,
+      } = await import("../src/mobile/cabins/cabinViewModels.ts");
       const cssSrc = fs.readFileSync(
         path.join(process.cwd(), "public/skins/core.css"),
         "utf8"
       );
-      assert.ok(
-        appSrc.includes("is-live") && appSrc.includes("is-paper"),
-        "SkinPhoneApp must distinguish live vs paper ledger cards visually"
+      const wechatCtrl = createBetSlipController({
+        debounceMs: 0,
+        computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      });
+      wechatCtrl.initializeMatches(
+        FALLBACK_MATCHES as MatchItem[],
+        [],
+        evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
       );
+      wechatCtrl.togglePick(FALLBACK_MATCHES[0] as MatchItem, "HAD", "h");
+      wechatCtrl.togglePick(FALLBACK_MATCHES[1] as MatchItem, "HAD", "h");
+      await wechatCtrl.flush();
+      const wechatSlip = wechatCtrl.formatShopkeeperWeChatSlip();
       assert.ok(
-        appSrc.includes("一键复制发店主微信口令"),
-        "Poster sheet must include 1-tap WeChat shopkeeper slip copy button"
+        wechatSlip.includes("【竞彩出票单") &&
+          wechatSlip.includes("请核对票面固定赔率后出票"),
+        "Shopkeeper WeChat slip formatter must output compact terminal order instructions"
       );
+      const livePres = buildLedgerEntryPresentation({
+        id: "lv1",
+        kind: "live",
+        title: "2串1 · 1注方案",
+        modeLabel: "2串1",
+        betCount: 1,
+        cost: 20,
+        paperRefCost: 20,
+        minPayout: 48,
+        maxPayout: 48,
+        status: "pending",
+        settledReturn: 0,
+        netProfit: 0,
+        createdAt: Date.now(),
+        settledAt: null,
+      });
+      const paperPres = buildLedgerEntryPresentation({
+        ...{
+          id: "pp1",
+          kind: "paper" as const,
+          title: "2串1 · 1注方案",
+          modeLabel: "2串1",
+          betCount: 1,
+          cost: 0,
+          paperRefCost: 20,
+          minPayout: 48,
+          maxPayout: 48,
+          status: "pending" as const,
+          settledReturn: 0,
+          netProfit: 0,
+          createdAt: Date.now(),
+          settledAt: null,
+        },
+      });
+      assert.equal(livePres.cardToneClass, "is-live");
+      assert.equal(paperPres.cardToneClass, "is-paper");
+      const tab4Opts = buildMobileTab4CabinOptions(2, 6);
       assert.ok(
-        appSrc.includes("小高情报舱") && appSrc.includes("双轨账本"),
-        "Tab 4 must split Dual-Track Ledger and XiaoGao Intel Cabin cleanly"
+        tab4Opts[0][1].includes("双轨账本") &&
+          tab4Opts[1][1].includes("小高情报舱") &&
+          DESKTOP_RIGHT_CABIN_TABS.some(([, lbl]) =>
+            lbl.includes("双轨账本")
+          ) &&
+          DESKTOP_RIGHT_CABIN_TABS.some(([, lbl]) =>
+            lbl.includes("小高情报舱")
+          ),
+        "Tab 4 & Desktop right cabin must split Dual-Track Ledger and XiaoGao Intel Cabin cleanly"
       );
       assert.ok(
         cssSrc.includes(".ledger-entry.is-live") &&

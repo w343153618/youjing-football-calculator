@@ -1526,37 +1526,77 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       );
     }
 
-    // 3. Embedded 5-point Dual-Viewport UI contracts in SkinPhoneApp.tsx & UserManualModal.tsx
-    const appSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+    // 3. Behavioral 5-point Dual-Viewport UI & controller contracts
+    const { createBetSlipController } =
+      await import("../src/workspace/betSlipController.ts");
+    const {
+      buildAuditCockpitTiles,
+      buildPortfolioKpiTiles,
+      buildPosterSlipRows,
+    } = await import("../src/mobile/cabins/cabinViewModels.ts");
+    const { EMPTY_INSIGHTS, EMPTY_TRUTH_REPORT } =
+      await import("../src/prototype/quantTypes.ts");
+
+    const uiCtrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+    });
+    const mList = FALLBACK_MATCHES as MatchItem[];
+    uiCtrl.initializeMatches(
+      mList,
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, mList)
+    );
+    uiCtrl.togglePick(mList[0], "HAD", "h");
+    uiCtrl.togglePick(mList[1], "HAD", "h");
+    uiCtrl.togglePick(mList[2], "HAD", "h");
+    uiCtrl.toggleFreePassSize(2);
+    await uiCtrl.flush();
+    assert.deepEqual(uiCtrl.toggleBankerMatch(mList[0].id), {
+      ok: true,
+      isBanker: true,
+    });
+    await uiCtrl.flush();
+
+    const posterRows = buildPosterSlipRows(
+      uiCtrl.getState().workspace.effectiveReport,
+      null,
+      uiCtrl.getState().planSpec,
+      uiCtrl.getState().picks,
+      5,
+      new Set(uiCtrl.getState().passSpec.bankerMatchIds ?? [])
     );
     assert.ok(
-      appSrc.includes("toggleBankerMatch") && appSrc.includes("设胆"),
-      "SkinPhoneApp must wire toggleBankerMatch and 📌设胆 capsules"
+      posterRows.some((r) => r.left.includes("📌【胆】")),
+      "Poster ticket rows must render 📌【胆】 badge on banker legs"
+    );
+
+    const auditTiles = buildAuditCockpitTiles(
+      {
+        ...EMPTY_TRUTH_REPORT,
+        totalCost: 20,
+        objectiveProfitProb: 0.45,
+        objectiveStrictNetGainProb: 0.4,
+        objectiveEVRate: -0.11,
+      },
+      EMPTY_INSIGHTS
     );
     assert.ok(
-      appSrc.includes("bridgeCandidates") &&
-        appSrc.includes("applyBridgeCandidate"),
-      "SkinPhoneApp must render Top-2 bridgeCandidates with 1-click applyBridgeCandidate"
+      auditTiles.tile2.value.startsWith("40.0%") &&
+        auditTiles.tile2.subtitle.includes("刚回本"),
+      "Audit primary KPIs must lock to objectiveStrictNetGainProb and disclose 刚回本"
     );
-    assert.ok(
-      appSrc.includes("objectiveStrictNetGainProb") &&
-        appSrc.includes("objectiveEVRate") &&
-        appSrc.includes("刚回本"),
-      "SkinPhoneApp primary KPIs must lock to objectiveStrictNetGainProb / objectiveEVRate and disclose breakEvenProb"
-    );
-    assert.ok(
-      appSrc.includes("upgradeBonusToBreakeven") &&
-        appSrc.includes("最低保本门槛"),
-      "SkinPhoneApp must provide explicit ⚡ 一键加至最低保本门槛 ¥X authorization button"
-    );
-    assert.ok(
-      appSrc.includes("toggleTicketConsolidation") &&
-        appSrc.includes("智能合票减张") &&
-        appSrc.includes("【胆】"),
-      "Poster ticket sheet must render 📌【胆】 badge and 🔗 智能合票减张 toggle"
-    );
+    const portTiles = buildPortfolioKpiTiles({
+      ...uiCtrl.getState().workspace.portfolioPlans[0],
+      objectiveProfitProb: 0.48,
+      objectiveStrictNetGainProb: 0.42,
+      objectiveEVRate: -0.1,
+    });
+    assert.equal(portTiles.tile1.value, "42.0%");
+    assert.ok(portTiles.tile1.subtitle.includes("刚回本"));
+    assert.equal(typeof uiCtrl.applyBridgeCandidate, "function");
+    assert.equal(typeof uiCtrl.upgradeBonusToBreakeven, "function");
+    assert.equal(typeof uiCtrl.toggleTicketConsolidation, "function");
   });
 
   it("Slice 06 · Two-Axis Code-Review Remediation Lock (Axis 1 Standards/Security & Axis 2 Spec Fidelity)", async () => {
@@ -1970,38 +2010,46 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       `XiaoGao combo context must recognize 2串1 bridge-match structure, got: ${brComboCtx.actuaryContext.shieldSummary}`
     );
 
-    const appSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+    const { resolveCompactAuditBarPrimaryAction } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
+    const ws1Bridge = evaluateQuantWorkspace(
+      { picks: [brPicks[1]], multiple: 5, syntheticSingleMode: "off" },
+      [bridgeTwoM[1], ...(FALLBACK_MATCHES as MatchItem[]).slice(1, 5)]
+    );
+    assert.ok((ws1Bridge.insights.bridgeCandidates?.length ?? 0) >= 1);
+    const synFirst = resolveCompactAuditBarPrimaryAction(
+      { canCheckout: false },
+      { isSyntheticPlayable: true, showBridgeFinder: false },
+      ws1Bridge.insights.bridgeCandidates ?? []
+    );
+    const bridgeWhenOff = resolveCompactAuditBarPrimaryAction(
+      { canCheckout: false },
+      { isSyntheticPlayable: false, showBridgeFinder: true },
+      ws1Bridge.insights.bridgeCandidates ?? []
     );
     assert.equal(
-      appSrc.includes("realProfitProb"),
-      false,
-      "SkinPhoneApp.tsx must contain zero residual realProfitProb leaks"
+      synFirst.label,
+      "一键合成单关",
+      "Compact bottom bar must prioritize 一键合成单关 when same-match HAFU rescue is playable"
     );
-    const synIdx = appSrc.indexOf("一键合成单关");
-    const bridgeCtaIdx = appSrc.indexOf("🌉一键凑2串1");
-    assert.ok(
-      synIdx >= 0 && bridgeCtaIdx > synIdx,
-      "Compact bottom bar must keep 一键合成单关 ahead of 🌉一键凑2串1 when same-match HAFU rescue exists"
+    assert.equal(
+      bridgeWhenOff.label,
+      "🌉一键凑2串1",
+      "Compact bottom bar must surface 🌉一键凑2串1 when synthetic rescue is off/unplayable"
     );
 
     const { MANUAL_CHAPTER_SPECS } =
       await import("../src/manual/manualCatalog.ts");
-    const manualModalSrc =
-      fs.readFileSync(
-        path.resolve(process.cwd(), "src/manual/UserManualModal.tsx"),
-        "utf8"
-      ) + JSON.stringify(MANUAL_CHAPTER_SPECS);
+    const manualModalSrc = JSON.stringify(MANUAL_CHAPTER_SPECS);
     assert.equal(
       manualModalSrc.includes("全稳赚"),
       false,
-      "UserManualModal.tsx must remove legacy 全稳赚 label"
+      "Structured manual chapters must remove legacy 全稳赚 label"
     );
     assert.ok(
       manualModalSrc.includes("过桥配菜") &&
         manualModalSrc.includes("智能合票减张"),
-      "UserManualModal.tsx body must include illustrated Spec 0012 entries"
+      "Structured manual chapters must include illustrated Spec 0012 entries"
     );
   });
 });

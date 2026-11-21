@@ -598,23 +598,33 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       path.join(repoRoot, "src/workspace/betSlipController.ts"),
       "utf8"
     );
-    const appSrc = fs.readFileSync(
-      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
+    const wbSrc = fs.readFileSync(
+      path.join(repoRoot, "src/workspace/workbenchController.ts"),
       "utf8"
     );
     const stageSrc = fs.readFileSync(
       path.join(repoRoot, "src/studio/ComparisonStage.tsx"),
       "utf8"
     );
-    const manualSrc = [
-      "src/manual/UserManualModal.tsx",
-      "src/manual/manualCatalog.ts",
-      "src/manual/manualChapters.tsx",
-    ]
-      .map((rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8"))
-      .join("\n");
+    const { createWorkbenchController } =
+      await import("../src/workspace/workbenchController.ts");
+    const {
+      DESKTOP_WORKBENCH_COLUMNS,
+      buildPortfolioSlotOptions,
+      formatPaceCorrelationTileLabel,
+    } = await import("../src/mobile/cabins/cabinViewModels.ts");
+    const {
+      MANUAL_CHAPTER_SPECS,
+      MANUAL_TOPICS,
+      QUICK_QA_PILLS: quickPills,
+    } = await import("../src/manual/manualCatalog.ts");
+    const manualCatalogText = JSON.stringify({
+      MANUAL_TOPICS,
+      MANUAL_CHAPTER_SPECS,
+      quickPills,
+    });
 
-    // 1. Strict client-server math isolation: zero calibration/Poisson/optimization formulas or server/quantEngine imports in src/
+    // 1. Strict client-server math isolation: zero calibration/Poisson/optimization formulas or server/quantEngine imports in workspace controllers
     const forbiddenClientMathRe =
       /server\/quantEngine|Math\.exp\s*\(|solveShin|calibrateMatchCoherent|DixonColes|COVERING_WHEELS|generateParetoPortfolio/;
     assert.equal(
@@ -623,19 +633,19 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       "betSlipController.ts must contain zero probability calibration or portfolio optimization math"
     );
     assert.equal(
-      forbiddenClientMathRe.test(appSrc),
+      forbiddenClientMathRe.test(wbSrc),
       false,
-      "SkinPhoneApp.tsx must contain zero probability calibration or portfolio optimization math"
+      "workbenchController.ts must contain zero probability calibration or portfolio optimization math"
     );
 
-    // 2. Zero underlying LLM vendor/model names across client & manual views
+    // 2. Zero underlying LLM vendor/model names across client controllers, ComparisonStage & manual catalog
     const vendorLeakRe =
       /deepseek|glm-\d|opencode|chatgpt|openai|claude|anthropic|qwen|doubao|豆包|kimi|moonshot/i;
     for (const [name, src] of [
       ["betSlipController.ts", ctrlSrc],
-      ["SkinPhoneApp.tsx", appSrc],
+      ["workbenchController.ts", wbSrc],
       ["ComparisonStage.tsx", stageSrc],
-      ["UserManualModal.tsx", manualSrc],
+      ["manualCatalog.ts", manualCatalogText],
     ] as const) {
       assert.equal(
         vendorLeakRe.test(src),
@@ -644,49 +654,82 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       );
     }
 
-    // 3. Dual-viewport 3+1 portfolio contracts in SkinPhoneApp.tsx & ComparisonStage.tsx
-    assert.ok(
-      /useState<PortfolioKey>\(['"]max-ev-utility['"]\)/.test(appSrc),
+    // 3. Behavioral 3+1 portfolio & pace/alpha micro-quant contracts via createWorkbenchController + cabinViewModels
+    const wb = createWorkbenchController({
+      debounceMs: 0,
+      quantPort: {
+        computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      },
+    });
+    const mList = FALLBACK_MATCHES as MatchItem[];
+    wb.betSlip.initializeMatches(
+      mList,
+      [],
+      evaluateQuantWorkspace(
+        {
+          picks: [],
+          multiple: 5,
+          targetIds: [mList[0].id, mList[1].id],
+          budget: 100,
+          stance: "objective",
+          unlockFullAgg: false,
+        },
+        mList
+      )
+    );
+    assert.equal(
+      wb.getState().playabilityGates.currentArch?.key,
+      "max-ev-utility",
       "Default selected portfolio slot must be max-ev-utility"
     );
-    assert.ok(
-      appSrc.includes("workspace.portfolioPlans"),
-      "Must read workspace.portfolioPlans"
-    );
-    for (const requiredLabel of [
-      "稳健保本",
-      "期望效用",
-      "容错缩水",
-      "错价雷达·空仓",
-      "🎯 3+1 精算配单",
-      "五池闭合校准 · 3+1 帕累托精算配单",
-      "去 3+1 精算配单",
-      "切往【① 稳健保本】主方案",
-      "比赛节奏相关性",
-      "mq.paceLabel",
-      "mq.paceCorrelation",
-      "mq.alphaScanSummary",
-    ]) {
-      assert.ok(
-        appSrc.includes(requiredLabel),
-        `SkinPhoneApp.tsx must include "${requiredLabel}"`
-      );
-    }
+    assert.equal(wb.getState().betSlipState.workspace.portfolioPlans.length, 4);
+    wb.setActivePortfolioKey("max-profit-prob");
     assert.equal(
-      appSrc.includes("五流派"),
-      false,
-      "SkinPhoneApp.tsx must replace all legacy 五流派 UI labels with 精算配单"
+      wb.getState().playabilityGates.currentArch?.key,
+      "max-profit-prob",
+      "Switching active portfolio key must select ① 稳健保本"
     );
+
+    const slotOptions = buildPortfolioSlotOptions(
+      wb
+        .getState()
+        .betSlipState.workspace.portfolioPlans.map((p) =>
+          p.key === "alpha-radar" ? { ...p, available: false } : p
+        )
+    );
+    assert.deepEqual(
+      slotOptions.map(([, label]) => label),
+      ["稳健保本", "期望效用", "容错缩水", "错价雷达·空仓"]
+    );
+    assert.ok(DESKTOP_WORKBENCH_COLUMNS[1].includes("🎯 3+1 精算配单"));
+    assert.equal(
+      JSON.stringify({ DESKTOP_WORKBENCH_COLUMNS, slotOptions }).includes(
+        "五流派"
+      ),
+      false,
+      "3+1 view-models must replace all legacy 五流派 UI labels with 精算配单"
+    );
+
+    const sampleMq = mList[0].microQuant;
+    const paceTile = formatPaceCorrelationTileLabel(sampleMq);
+    assert.ok(
+      paceTile.includes("比赛节奏相关性") &&
+        paceTile.includes(sampleMq.paceLabel) &&
+        typeof sampleMq.alphaScanSummary === "string" &&
+        sampleMq.alphaScanSummary.length > 0
+    );
+    wb.dispose();
+
     assert.ok(
       /label:\s*['"]精算配单['"]/.test(stageSrc),
       "ComparisonStage.tsx action pill must be updated to 精算配单"
     );
     assert.equal(stageSrc.includes("五流派"), false);
 
-    // 4. Illustrated UserManualModal contracts + every QUICK_QA_PILLS item hits local-kb in 0ms
+    // 4. Structured manual catalog contracts + every QUICK_QA_PILLS item hits local-kb in 0ms
     assert.ok(
-      /shortTitle:\s*['"]3\+1精算配单['"]/.test(manualSrc),
-      'UserManualModal.tsx must include shortTitle: "3+1精算配单"'
+      MANUAL_TOPICS.some((t) => t.shortTitle === "3+1精算配单"),
+      'MANUAL_TOPICS must include shortTitle: "3+1精算配单"'
     );
     for (const manualToken of [
       "3+1 精算配单",
@@ -697,13 +740,11 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       "五池联合校准",
     ]) {
       assert.ok(
-        manualSrc.includes(manualToken),
-        `UserManualModal.tsx must include "${manualToken}"`
+        manualCatalogText.includes(manualToken),
+        `Structured manual catalog must include "${manualToken}"`
       );
     }
 
-    const { QUICK_QA_PILLS: quickPills } =
-      await import("../src/manual/manualCatalog.ts");
     assert.ok(quickPills.length >= 10, "Should expose curated quick Q&A pills");
 
     const qa = createManualQaEngine({

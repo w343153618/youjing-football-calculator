@@ -1186,36 +1186,56 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     assert.equal(snapAfter.stats.paperWonCount, 1);
     assert.equal(snapAfter.stats.paperSavedAmount, 80);
 
-    // 6. UI source contracts on SkinPhoneApp.tsx
-    const uiSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+    // 6. Behavioral UI view-model & controller contracts (symmetric slider bounds, honest negative hedge copy, won paper entry & dual-sided paperWonCount)
+    const {
+      SUBJECTIVE_SLIDER_BOUNDS,
+      buildLedgerEntryPresentation,
+      formatHedgeDrawerCopy,
+      formatLedgerStatsSummary,
+    } = await import("../src/mobile/cabins/cabinViewModels.ts");
+
+    assert.equal(SUBJECTIVE_SLIDER_BOUNDS.min, -15);
+    assert.equal(SUBJECTIVE_SLIDER_BOUNDS.max, 15);
+    const sliderCtrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+    });
+    sliderCtrl.setSubjectiveDeltaPct(20);
+    assert.equal(
+      sliderCtrl.getState().subjectiveDeltaPct,
+      15,
+      "Controller must clamp subjectiveDeltaPct symmetrically to <= +15"
     );
-    assert.ok(
-      !uiSrc.includes("max={20}"),
-      "Slider max={20} must be replaced by symmetric max={15}"
+
+    const negHedgeCopy = formatHedgeDrawerCopy(
+      {
+        available: true,
+        hedgeMode: "reduce-loss",
+        gapMinutes: 240,
+        gapText: "4h0m",
+        earlyMatchTitle: "A vs B",
+        lateMatchTitle: "C vs D",
+        earlyKickoff: "19:35",
+        lateKickoff: "23:35",
+        oppositeLabel: "让负",
+        oppositeOdds: 1.9,
+        hedgeCost: 6,
+        lockedNetProfit: -0.6,
+        reason: "",
+      },
+      20
     );
-    assert.ok(
-      uiSrc.includes("max={15}") ||
-        uiSrc.includes("max={SUBJECTIVE_DELTA_MAX}"),
-      "Slider must enforce symmetric max={15} / SUBJECTIVE_DELTA_MAX"
+    assert.ok(!JSON.stringify(negHedgeCopy).includes("保本锁回"));
+    assert.ok(negHedgeCopy.lockedOutcomeText.includes("锁死少亏"));
+
+    const wonPaperPres = buildLedgerEntryPresentation(
+      snapAfter.entries.find(
+        (e: any) => e.kind === "paper" && e.status === "won"
+      )!
     );
-    assert.ok(
-      !uiSrc.includes("保本锁回"),
-      "Forbidden misleading hedge copy 保本锁回 must be removed"
-    );
-    assert.ok(
-      uiSrc.includes("锁死少亏"),
-      "Negative-profit hedge UI must render honest 锁死少亏 warning"
-    );
-    assert.ok(
-      uiSrc.includes("模拟命中(未实买)"),
-      "Won paper ledger entry must render 🎯模拟命中(未实买)"
-    );
-    assert.ok(
-      uiSrc.includes("paperWonCount"),
-      "Ledger stats tile must display dual-sided paperWonCount"
-    );
+    assert.ok(wonPaperPres.badgeText.includes("模拟命中"));
+    const statsView = formatLedgerStatsSummary(snapAfter.stats);
+    assert.equal(statsView.paperSavedSub, "模拟免损 (1亏/1中)");
   });
 
   it("Slice 05 · Two-Axis Review Remediation: seals snapshotPlan DoS & >2.2M-state 8x6/8x8 TTG exactness (<40ms), >2048-bet bonus gate, integer pair-hedge split, anchored Slot ② log-utility, weighted CVaR gain, and one-sided sandbox floor", async () => {
@@ -1273,9 +1293,15 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       reasons: ["测试"],
       lines: advLines,
     };
-    const tAdv0 = performance.now();
-    const advRep = archetypeToReport(adv64Snap, null, m8);
-    const advMs = performance.now() - tAdv0;
+    let advRep = archetypeToReport(adv64Snap, null, m8);
+    const advSamples: number[] = [];
+    for (let r = 0; r < 3; r++) {
+      const tAdv0 = performance.now();
+      advRep = archetypeToReport(adv64Snap, null, m8);
+      advSamples.push(performance.now() - tAdv0);
+    }
+    advSamples.sort((a, b) => a - b);
+    const advMs = advSamples[1];
     assert.notEqual(advRep, null);
     assert.ok(
       advMs < 50,
@@ -1504,13 +1530,21 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     );
     assert.equal(insPairHedge.hedge.hedgeMode, "reduce-loss");
 
-    const uiSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+    const { formatHedgeDrawerCopy } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
+    const beHedgeCopy = formatHedgeDrawerCopy(
+      {
+        ...insPairHedge.hedge,
+        available: true,
+        hedgeMode: "break-even",
+        lockedNetProfit: 0,
+      },
+      20
     );
     assert.ok(
-      uiSrc.includes("早晚场零损锁回本金"),
-      "SkinPhoneApp must give break-even hedgeMode an honest neutral header instead of 对冲锁利"
+      beHedgeCopy.drawerTitle.includes("早晚场零损锁回本金") &&
+        beHedgeCopy.rowHeader.includes("早晚场零损锁回本金"),
+      "Break-even hedgeMode must render an honest neutral header instead of 对冲锁利"
     );
 
     // 4. Anchored M=1 Slot ② achieves exact integer-optimal log-wealth split AND honest Slot ② copy

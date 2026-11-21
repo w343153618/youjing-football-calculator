@@ -1202,3 +1202,5 @@ export function createWorkbenchController(
     },
   };
 }
+
+export type WorkbenchController = ReturnType<typeof createWorkbenchController>;

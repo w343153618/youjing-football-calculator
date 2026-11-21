@@ -913,31 +913,108 @@ describe("Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
       assert.equal(reparsed.maxPayout, 10_000_000);
       assert.equal(reparsed.betCount, 100_000);
 
-      // Verify SkinPhoneApp.tsx has removed hardcoded fake ledger items, static percentages & stale pre-midnight guard
-      const skinAppSrc = fs.readFileSync(
-        path.resolve(process.cwd(), "src/mobile/SkinPhoneApp.tsx"),
-        "utf8"
+      // Behavioral verification via headless workbench + stats view-model:
+      // 1. Fresh workbench contains zero fake entries or static percentages
+      // 2. recordToLedger delegates unconditionally to server ledgerPort (never pre-blocking on stale local dailyRemaining before Beijing 00:00 rollover)
+      const { FALLBACK_MATCHES, evaluateQuantWorkspace } =
+        await import("../server/quantEngine.mjs");
+      const { createWorkbenchController } =
+        await import("../src/workspace/workbenchController.ts");
+      const { formatLedgerStatsSummary } =
+        await import("../src/mobile/cabins/cabinViewModels.ts");
+      let serverMutateCalled = false;
+      const wbRollover = createWorkbenchController({
+        debounceMs: 0,
+        quantPort: {
+          computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+        },
+        authPort: {
+          bootstrap: async () => ({
+            authenticated: true,
+            user: {
+              ...u2.user,
+              firstLoginAt: Date.now(),
+              expiresAt: Date.now() + 86400_000,
+              remainingMs: 86400_000,
+              boundDevicesCount: 1,
+              boundDevices: [],
+              aiUsedToday: 0,
+              violationCount: 0,
+              failedLoginCount: 0,
+              loginLockedUntil: null,
+            },
+            authToken: "tok_rollover",
+            matches: FALLBACK_MATCHES as any,
+            syncNote: "ok",
+            initialPicks: [],
+            workspace: evaluateQuantWorkspace(
+              { picks: [], multiple: 5 },
+              FALLBACK_MATCHES
+            ),
+            ledger: {
+              dailyLimit: 100,
+              usageDate: "2026-11-20",
+              dailyLiveSpent: 100,
+              dailyRemaining: 0,
+              entries: [],
+              stats: {
+                liveSettledCount: 0,
+                liveWonCount: 0,
+                liveWinRatePct: 0,
+                liveTotalStaked: 0,
+                liveNetProfit: 0,
+                liveRoiPct: 0,
+                paperCount: 0,
+                paperSavedAmount: 0,
+              },
+            },
+          }),
+        },
+        ledgerPort: {
+          mutate: async (payload) => {
+            serverMutateCalled = payload.action === "add-entry";
+            return {
+              ok: true,
+              ledger: {
+                dailyLimit: 100,
+                usageDate: "2026-11-21",
+                dailyLiveSpent: 20,
+                dailyRemaining: 80,
+                entries: [],
+                stats: {
+                  liveSettledCount: 0,
+                  liveWonCount: 0,
+                  liveWinRatePct: 0,
+                  liveTotalStaked: 0,
+                  liveNetProfit: 0,
+                  liveRoiPct: 0,
+                  paperCount: 0,
+                  paperSavedAmount: 0,
+                },
+              },
+            };
+          },
+        },
+      });
+      await wbRollover.bootstrapHandshake();
+      assert.equal(wbRollover.getState().ledger.entries.length, 0);
+      const freshStats = formatLedgerStatsSummary(
+        wbRollover.getState().ledger.stats
       );
+      assert.equal(freshStats.netProfitText, "¥0.00");
+      assert.equal(freshStats.winRateText, "0.0%");
+
+      wbRollover.betSlip.togglePick(FALLBACK_MATCHES[0] as any, "HAD", "h");
+      wbRollover.betSlip.togglePick(FALLBACK_MATCHES[1] as any, "HAD", "h");
+      await wbRollover.betSlip.flush();
+      const postMidnightRes = await wbRollover.recordToLedger("live");
       assert.equal(
-        skinAppSrc.includes("+19.4%"),
-        false,
-        "Hardcoded +19.4% stat must be removed"
+        serverMutateCalled,
+        true,
+        "recordToLedger must delegate directly to server mutate endpoint even when cached dailyRemaining is 0"
       );
-      assert.equal(
-        skinAppSrc.includes("-62.0%"),
-        false,
-        "Hardcoded -62.0% stat must be removed"
-      );
-      assert.equal(
-        skinAppSrc.includes("高危转0成本模拟单"),
-        false,
-        "Hardcoded fake ledger item l2 must be removed"
-      );
-      assert.equal(
-        skinAppSrc.includes("draft.cost > ledger.dailyRemaining"),
-        false,
-        "recordToLedger must delegate directly to server mutate endpoint so Beijing 00:00 reset is never short-circuited"
-      );
+      assert.equal(postMidnightRes.ok, true);
+      wbRollover.dispose();
     } finally {
       globalThis.fetch = prevFetch;
       if (prevStorageDesc) {

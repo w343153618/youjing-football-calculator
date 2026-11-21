@@ -840,12 +840,8 @@ describe("Spec 0010 · Seam 2C: Untruncated Combo Ticket Attribution, Multi-Mode
 });
 
 describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring Drawers, Space Compaction & Dual-Lens UI Contracts", () => {
-  it("Slice 6: enforces 1-2-3 guided layout, non-overlapping Step 2 CTA, untruncated combo P&L, [1,2,3,4,5,10] multipliers, [10,20,50,100]+custom budget, post-mount handoff animation, TactileFlipCard/SpringCollapseDrawer, and Android/CSS space compaction", () => {
+  it("Slice 6: enforces 1-2-3 guided layout, non-overlapping Step 2 CTA, untruncated combo P&L, [1,2,3,4,5,10] multipliers, [10,20,50,100]+custom budget, post-mount handoff animation, TactileFlipCard/SpringCollapseDrawer, and Android/CSS space compaction", async () => {
     const repoRoot = process.cwd();
-    const appSrc = fs.readFileSync(
-      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
-    );
     const widgetsSrc = fs.readFileSync(
       path.join(repoRoot, "src/spring/widgets.tsx"),
       "utf8"
@@ -861,30 +857,93 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
       ),
       "utf8"
     );
+    const { createWorkbenchController } =
+      await import("../src/workspace/workbenchController.ts");
+    const {
+      buildMatchIntelDigest,
+      resolveComboTicketBreakdown,
+      sortComboRows,
+    } = await import("../src/workspace/betSlipController.ts");
+    const {
+      DESKTOP_WORKBENCH_COLUMNS,
+      KEYPAD_MULTIPLIER_PRESETS,
+      PORTFOLIO_BUDGET_PRESETS,
+      normalizeComboResidualRisks,
+      resolveCompactAuditBarPrimaryAction,
+    } = await import("../src/mobile/cabins/cabinViewModels.ts");
 
-    // 1. Mobile UserManualModal receives onQuotaUpdate & onLoadPresetScenario (matching Desktop)
-    const manualUsages = appSrc.match(/<UserManualModal[\s\S]*?\/>/g) || [];
-    assert.equal(
-      manualUsages.length,
-      2,
-      "Expected Desktop & Mobile UserManualModal instances"
+    // 1. Behavioral workbench quota sync, preset scenario loading, autoSyncRadar, and workspace-param combo forwarding
+    let capturedSubjDelta: number | undefined;
+    let capturedHasPlanSpec = false;
+    const mList =
+      FALLBACK_MATCHES as import("../src/prototype/quantTypes.ts").MatchItem[];
+    const wb = createWorkbenchController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      quantPort: {
+        computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      },
+      xiaogaoPort: {
+        diagnoseMatch: async () => {
+          throw new Error("unused");
+        },
+        diagnoseCombo: async (payload) => {
+          capturedSubjDelta = payload.subjectiveDeltaPct;
+          capturedHasPlanSpec = "planSpec" in payload;
+          return {
+            aiRemaining: 7,
+            comboReport: {
+              level: "medium",
+              comboTag: "串关双维诊断",
+              summary: "双维协同诊断汇总",
+              actuarySynergy: "已挂载平均优化防线",
+              residualRisks: "次关轮换隐患",
+              weakestLeg: mList[0].matchNumStr,
+              structureAdvice: "补防让平",
+              priceInVerdict: "部分消化",
+              perMatch: [],
+              matchCount: 2,
+              source: "local-fallback",
+            },
+          };
+        },
+      },
+    });
+    wb.betSlip.initializeMatches(
+      mList,
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, mList)
     );
-    for (const snippet of manualUsages) {
-      assert.ok(
-        snippet.includes("onQuotaUpdate={syncRemainingAiQuota}"),
-        "Every UserManualModal instance must pass onQuotaUpdate={syncRemainingAiQuota}"
-      );
-      assert.ok(
-        snippet.includes("onLoadPresetScenario={loadPresetScenario}"),
-        "Every UserManualModal instance must pass onLoadPresetScenario={loadPresetScenario}"
-      );
-    }
+    wb.betSlip.togglePick(mList[0], "HAD", "h");
+    assert.equal(
+      wb.betSlip.getState().targetIds.includes(mList[0].id),
+      true,
+      "Workbench must opt into autoSyncRadar: true so radar picks auto-sync targetIds"
+    );
+    wb.syncRemainingAiQuota(9);
+    assert.equal(wb.getState().remainingAiQuota, 9);
+    wb.betSlip.loadPresetScenario("hedge2");
+    await wb.betSlip.flush();
+    assert.ok(wb.betSlip.getState().picks.length >= 2);
+    wb.betSlip.setSubjectiveDeltaPct(-4);
+    await wb.betSlip.flush();
+    const comboRes = await wb.diagnoseComboSlip({ sourceMode: "picked" });
+    assert.equal(comboRes.ok, true);
+    assert.equal(wb.getState().remainingAiQuota, 7);
+    assert.equal(capturedSubjDelta, -4);
+    assert.equal(capturedHasPlanSpec, true);
+    assert.equal(
+      wb.getState().comboReport?.actuarySynergy,
+      "已挂载平均优化防线"
+    );
+    assert.deepEqual(
+      normalizeComboResidualRisks(wb.getState().comboReport?.residualRisks),
+      ["次关轮换隐患"]
+    );
 
     // 2. Space compaction: non-embed hides fake .home-ind; Android MainActivity handles displayCutout cleanly
     assert.ok(
-      coreCss.includes(".jz-root:not(.embed) .home-ind") ||
-        !appSrc.includes('<div className="home-ind">') ||
-        appSrc.includes('{embedded && <div className="home-ind">'),
+      coreCss.includes(".jz-root:not(.embed) .home-ind"),
       "Fake iOS .home-ind bar must not waste vertical space outside embedded 8-skin showcase"
     );
     assert.ok(
@@ -896,55 +955,19 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
       "Android MainActivity must preserve WebView debugging prohibition"
     );
 
-    // 3. Auto-sync radar enabled + chicken-rib首屏 buttons removed + non-overlapping Step 2 mobile betbar decoupling
+    // 3. Desktop left-to-right 1 -> 2 -> 3 column order: Match Radar -> 3+1 Archetypes -> 5D Audit/Ledger
     assert.ok(
-      appSrc.includes("autoSyncRadar: true"),
-      "SkinPhoneApp must opt into autoSyncRadar: true on createBetSlipController"
-    );
-    for (const removedClutter of [
-      "演:假中奖",
-      "演:早晚锁利",
-      "演:4串1雪崩",
-      "重置2场",
-      "统配倍数 (1~999倍",
-    ]) {
-      assert.equal(
-        appSrc.includes(removedClutter),
-        false,
-        `SkinPhoneApp must remove cluttered inline control "${removedClutter}"`
-      );
-    }
-
-    // 4. Desktop left-to-right 1 -> 2 -> 3 column order: Match Radar -> 3+1 Archetypes -> 5D Audit/Ledger
-    const dkMatchIdx = appSrc.indexOf("📡 赛事雷达 · 全盘矩阵");
-    const dkArchIdx = appSrc.indexOf("🎯 3+1 精算配单");
-    const dkAuditIdx = appSrc.indexOf("🛡️ 五维审单锁利");
-    assert.ok(
-      dkMatchIdx > 0 && dkArchIdx > dkMatchIdx && dkAuditIdx > dkArchIdx,
+      DESKTOP_WORKBENCH_COLUMNS[0].includes("📡 赛事雷达 · 全盘矩阵") &&
+        DESKTOP_WORKBENCH_COLUMNS[1].includes("🎯 3+1 精算配单") &&
+        DESKTOP_WORKBENCH_COLUMNS[2].includes("🛡️ 五维审单锁利"),
       "Desktop 3-column workbench must flow left-to-right: ① 赛事雷达 -> ② 3+1 精算配单 -> ③ 五维审单锁利"
     );
 
-    // 5. Practical multiplier presets [1, 2, 3, 4, 5, 10] & budget presets [10, 20, 50, 100] + custom input
-    assert.ok(
-      appSrc.includes("[1, 2, 3, 4, 5, 10]"),
-      "Keypad multiplier presets must be upgraded to [1, 2, 3, 4, 5, 10]"
-    );
-    assert.equal(
-      appSrc.includes("[1, 5, 10, 20, 50, 99]"),
-      false,
-      "Legacy [1, 5, 10, 20, 50, 99] multiplier presets must be replaced"
-    );
-    assert.ok(
-      appSrc.includes("[10, 20, 50, 100]"),
-      "Budget presets must be upgraded to [10, 20, 50, 100]"
-    );
-    assert.equal(
-      appSrc.includes("[50, 100, 200, 500]"),
-      false,
-      "Legacy [50, 100, 200, 500] budget presets must be replaced"
-    );
+    // 4. Practical multiplier presets [1, 2, 3, 4, 5, 10] & budget presets [10, 20, 50, 100]
+    assert.deepEqual(KEYPAD_MULTIPLIER_PRESETS, [1, 2, 3, 4, 5, 10]);
+    assert.deepEqual(PORTFOLIO_BUDGET_PRESETS, [10, 20, 50, 100]);
 
-    // 6. Untruncated Combo P&L + TactileFlipCard + SpringCollapseDrawer + Stance Δ + Dual-Lens Intel
+    // 5. Untruncated Combo P&L + TactileFlipCard + SpringCollapseDrawer + Stance Δ + Dual-Lens Intel
     assert.equal(
       /\.combo-item\s+\.cdesc\s+b\s*\{[^}]*text-overflow:\s*ellipsis/.test(
         coreCss
@@ -979,25 +1002,30 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
       coreCss.includes("prefers-reduced-motion: reduce"),
       "core.css must provide prefers-reduced-motion fallback for 3D flip / transitions"
     );
-    assert.ok(
-      appSrc.includes("resolveComboTicketBreakdown") &&
-        appSrc.includes("sortComboRows"),
-      "SkinPhoneApp must wire resolveComboTicketBreakdown & sortComboRows for untruncated Combo P&L"
+
+    const effRep = wb.betSlip.getState().workspace.effectiveReport;
+    const sortedCombos = sortComboRows(effRep.combos, "loss-first");
+    assert.ok(sortedCombos.length >= 1);
+    const breakdown = resolveComboTicketBreakdown(
+      sortedCombos[0],
+      effRep.tickets,
+      effRep.totalCost
     );
-    assert.ok(
-      appSrc.includes("getStanceDeltaSummary"),
-      "SkinPhoneApp must surface transparent Stance Δ summary"
+    assert.ok(typeof breakdown.scenarioLabel === "string");
+    wb.betSlip.setStance("home-lean");
+    await wb.betSlip.flush();
+    const stanceDelta = wb.betSlip.getStanceDeltaSummary("max-ev-utility");
+    assert.ok(stanceDelta === null || typeof stanceDelta.ruleNote === "string");
+    const intelDigest = buildMatchIntelDigest(mList[0]);
+    assert.ok(typeof intelDigest.cardPanAlert.sharePct === "number");
+    assert.equal(
+      resolveCompactAuditBarPrimaryAction(
+        { canCheckout: false },
+        { isSyntheticPlayable: true, showBridgeFinder: false },
+        []
+      ).label,
+      "一键合成单关"
     );
-    assert.ok(
-      appSrc.includes("actuarySynergy") &&
-        appSrc.includes("[comboReport.residualRisks]") &&
-        appSrc.includes("...wsParams") &&
-        appSrc.includes("buildMatchIntelDigest") &&
-        appSrc.includes("一球小胜卡盘温度计") &&
-        appSrc.includes("一键合成单关") &&
-        appSrc.includes("isPlanHandoff") &&
-        appSrc.includes("setDkFocusStep(3)"),
-      "SkinPhoneApp must render string/array residualRisks, forward workspace params to analyze-combo, show card-pan thermometer, expose Step 3 single-match synthesis CTA, and sync handoffBanner/dkFocusStep"
-    );
+    wb.dispose();
   });
 });

@@ -39,19 +39,52 @@ If a change contradicts an existing ADR in `docs/adr/`, surface it explicitly ra
 
 ## Module navigation anchors & test conventions
 
-Use `grep` on these stable symbol anchors instead of scanning line offsets in large files:
+Use `grep` on these stable symbol anchors instead of scanning line offsets across deep modules:
 
 - **`server/quantEngine.mjs`**:
-  - Calibration & de-vigging: `function devigPoolProbabilities`, `export function calibrateMatchCoherentModel`, `function scanMatchAlphaCandidates`
-  - Quotient state space & statutory payout: `export function bankerRoundParlayUnitPayout`, `function evaluateTicketsOnQuotientSpace`, `const canUseExactBilinearMitm`, `function computeSyntheticUncoveredStats`, `function resolveSyntheticSingleBundle`, `export function computeTruthReport`
-  - `3+1` Pareto solvers: `function isGenuinePairCoveringDesign`, `function computeSurvivingMissOneFloor`, `function allocateWheelMeanCvar`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `export function generateParetoPortfolio`
-  - Staggered hedge, insights, bonus, synthetic single & sandbox: `function resolveComplementaryLateHedge`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `function buildAutoSyntheticSinglePlan`, `function applySandboxToPlan`, `export function evaluateQuantWorkspace`
-- **`server/manualQaEngine.mjs`** (keep both ground-truth surfaces synchronized whenever product rules change):
-  - 0ms local curated entries: `const LOCAL_CURATED_QA`
-  - Grounded Engine-2 system spec (`>42` char queries): `const APP_GROUND_TRUTH_MANUAL_SPEC`
+  - Pure in-process actuarial facade & LRU workspace cache: `const WORKSPACE_PARETO_CACHE`, `export function evaluateQuantWorkspace`, `export function settleTicketSnapshotWithOfficialResults`
+- **`server/quant/statutoryRules.mjs`**:
+  - China Sporttery banker's rounding, statutory caps & pass tables: `export function bankerRoundCents`, `export function bankerRoundParlayUnitPayout`, `export function statutorySingleBetCap`, `export const POOL_MAX_PASS`, `export const OFFICIAL_COMBO_PASS_TABLE`
+- **`server/quant/coherentCalibration.mjs`**:
+  - Shin/Power de-vigging, 5-pool KL/IPF calibration & alpha scanner: `export function devigPoolProbabilities`, `export function calibrateMatchCoherentModel`, `export function tiltAtomicProbsByStance`, `export function scanMatchAlphaCandidates`, `export function analyzeMatchMicroQuant`
+- **`server/quant/quotientStateSpace.mjs`**:
+  - Quotient state-space DP & exact hit-matrix evaluation: `export function canonicalTicketLegSig`, `export function evaluateMetricsViaHitMatrix`, `export function evaluateTicketsOnQuotientSpace`
+- **`server/quant/paretoPortfolio.mjs`**:
+  - `3+1` Pareto solvers (`0-1` knapsack, log-wealth shield, `C(v,k,t)` covering wheel & pure `+EV` alpha): `export function computeSurvivingMissOneFloor`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `function isGenuinePairCoveringDesign`, `export function generateParetoPortfolio`
+- **`server/quant/reportAndSettlement.mjs`**:
+  - Truth report, bonus optimization, synthetic single, staggered hedge & snapshot settlement: `export function resolveSyntheticSingleBundle`, `export function computeTruthReport`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `export function applySandboxToPlan`, `export function archetypeToReport`, `export function settleTicketSnapshotOnResultsMap`
+- **`server/sportteryFeed.mjs`**:
+  - Upstream Sporttery live odds & 90-minute match result feed I/O adapter: `export const FALLBACK_MATCHES`, `export function parseSportteryRawJson`, `export async function fetchOfficialMatchesServer`, `export function parseSportteryResultsJson`, `export async function fetchOfficialMatchResultsServer`
+- **`server/securityShield.mjs`**:
+  - Transport ECDH/AES-GCM/HMAC envelope, anti-scraper decoy & 48h `hwFp`/IP fuse: `export function deriveSessionSubkeys`, `export function encryptEnvelope`, `export function decryptEnvelope`, `export function createSecurityShield`
+- **`server/appRoutes.mjs`**:
+  - Authenticated domain route dispatcher & XiaoGao match-alert reconciliation: `export function reconcileComboAlertsToMatchMap`, `export function createAppRoutes`
+- **`server/ledgerManager.mjs`**:
+  - Single authoritative print-snapshot sealer & Dual-Track Stop-Loss Ledger: `export function sealAuthoritativePrintSnapshot`, `export function createLedgerManager`
+- **`server/manualQaEngine.mjs`**:
+  - Derived Iron-Cage Manual Q&A (`0ms` local KB -> Grounded Engine-2 spec): `export const LOCAL_CURATED_QA`, `export function buildAppGroundTruthManualSpec`, `export const APP_GROUND_TRUTH_MANUAL_SPEC`, `export function createManualQaEngine`
+- **`src/workspace/betSlipController.ts`**:
+  - Pure bet-slip state machine, unified playability gates & WeChat shopkeeper slip: `export function createBetSlipController`, `export function resolveComboTicketBreakdown`, `export function buildMatchIntelDigest`, `export function splitTerminalPosterSlips`
+- **`src/workspace/workbenchController.ts`**:
+  - Headless client workbench orchestrator (session, ledger, stop-loss, 5s undo, 45s auto-settle & XiaoGao): `export function createWorkbenchController`, `export type WorkbenchController`
+- **`src/manual/manualCatalog.ts`**:
+  - Structured manual topic catalog, quick Q&A pills, bigram search & chapter specs: `export const MANUAL_TOPICS`, `export const QUICK_QA_PILLS`, `export function resolveManualNavigation`, `export const MANUAL_CHAPTER_SPECS`
+- **`src/manual/manualChapters.tsx`**:
+  - Illustrated SVG schematics & Q&A panel renderers: `export function ManualChapterContent`, `export function ManualQaSection`
+- **`src/manual/UserManualModal.tsx`**:
+  - Thin illustrated manual modal shell (`<= 350L`): `export function UserManualModal`
 - **`src/mobile/SkinPhoneApp.tsx`**:
-  - Workspace selectors, synthetic mode pills & `>512` bonus gate: `const manualBonusLineCount`, `SyntheticModePills`
-  - Step 3 audit cockpit & equalizer: `PayoutEqualizerBars`, `防坑雷达 · 弹性保本 · 省钱动作`
-  - Staggered hedge & sandbox drawer: `早场红单减损补单`, `SUBJECTIVE_DELTA_MIN`
+  - Responsive dual-viewport shell (`<= 800L`, desktop `>= 960px` 3-column & mobile `< 960px` 4-tab): `export function SkinPhoneApp`, `createWorkbenchController`
+- **`src/mobile/cabins/cabinViewModels.ts`**:
+  - Shared pure cabin view-models (zero JSX, directly imported by `node --test` & cabins): `export function formatPortfolioGroupAndTicketMetric`, `export function buildPortfolioKpiTiles`, `export function buildAuditCockpitTiles`, `export function formatHedgeDrawerCopy`, `export function buildSyntheticModePillSpecs`, `export function resolveCompactAuditBarPrimaryAction`, `export function buildLedgerEntryPresentation`
+- **Pure-render cabin views (`src/mobile/cabins/*.tsx`) & shell choreography**:
+  - `src/mobile/cabins/MatchRadarCabin.tsx`: `export function MatchRadarCabin`
+  - `src/mobile/cabins/ParetoPortfolioCabin.tsx`: `export function ParetoPortfolioCabin`
+  - `src/mobile/cabins/AuditCockpitCabin.tsx`: `export function AuditCockpitCabin`
+  - `src/mobile/cabins/IntelCabin.tsx`: `export function IntelCabin`
+  - `src/mobile/cabins/LedgerCabin.tsx`: `export function LedgerCabin`
+  - `src/mobile/cabins/BottomSheetsLayer.tsx`: `export function BottomSheetsLayer`
+  - `src/mobile/cabins/PersistentBetBar.tsx`: `export function SyntheticModePills`, `export function PersistentBetBar`
+  - `src/mobile/cabins/useShellChoreography.ts`: `export function useShellChoreography`
 - **`tests/*.test.ts` import convention**:
-  - Node's native TypeScript test runner (`node --test tests/*.test.ts`) resolves local TypeScript modules with explicit `.ts` extensions (e.g. `import { createBetSlipController } from "../src/workspace/betSlipController.ts"`).
+  - Node's native TypeScript test runner (`node --test tests/*.test.ts`) resolves local TypeScript modules with explicit `.ts` extensions (e.g. `import { createWorkbenchController } from "../src/workspace/workbenchController.ts"`).

@@ -869,18 +869,17 @@ describe("Spec #1 (0014) · Ticket #2: OOS Fixture Remediation, Upstream Calibra
       `Expected Manual Q&A to clarify paceCorrelation as 低比分联动修正系数, got: ${qaRes.answer}`
     );
 
-    const appSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
-    );
-    assert.ok(
-      appSrc.includes("比赛节奏相关性") &&
-        appSrc.includes("低比分联动修正系数"),
-      "SkinPhoneApp.tsx pace tile must clarify ρ as 低比分联动修正系数"
-    );
+    const { formatPaceCorrelationTileLabel } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
     for (const sampleMatch of (FALLBACK_MATCHES as MatchItem[]).slice(0, 4)) {
       const cal = calibrateMatchCoherentModel(sampleMatch);
       const mq = analyzeMatchMicroQuant(sampleMatch, cal);
+      const paceLabelText = formatPaceCorrelationTileLabel(mq);
+      assert.ok(
+        paceLabelText.includes("比赛节奏相关性") &&
+          paceLabelText.includes("低比分联动修正系数"),
+        "Pace tile view-model must clarify ρ as 低比分联动修正系数"
+      );
       assert.equal(
         mq.paceCorrelation,
         Number(cal.params.rho.toFixed(4)),
@@ -2378,30 +2377,44 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       fs.rmSync(tmpRuntimeDir, { recursive: true, force: true });
     }
 
-    // 5. Dual-Viewport UI & CSS Source Contracts
-    const appSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
-    );
+    // 5. Behavioral cross-pool undo, synthetic mode pills & CSS mutex-free contracts
+    const { buildSyntheticModePillSpecs } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
     const coreCss = fs.readFileSync(
       path.join(REPO_ROOT, "public/skins/core.css"),
       "utf8"
     );
     assert.equal(
-      appSrc.includes("mutex-lock") || coreCss.includes("mutex-lock"),
+      coreCss.includes("mutex-lock"),
       false,
-      "SkinPhoneApp.tsx and core.css must completely remove .mutex-lock visual locking"
+      "core.css must completely remove .mutex-lock visual locking"
     );
-    assert.ok(
-      appSrc.includes("undoLastPoolSwitch") && appSrc.includes("撤销切换"),
-      "SkinPhoneApp.tsx must wire 1-tap 撤销切换 to betCtrl.undoLastPoolSwitch()"
+
+    const undoCtrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+    });
+    const mListUndo = FALLBACK_MATCHES as MatchItem[];
+    undoCtrl.initializeMatches(
+      mListUndo,
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, mListUndo)
     );
-    assert.ok(
-      appSrc.includes("setSyntheticSingleMode") &&
-        appSrc.includes("3项全包无死角") &&
-        appSrc.includes("2项省本搏常规"),
-      "SkinPhoneApp.tsx must render 1-tap synthetic-single mode pills (3项全包无死角 / 2项省本搏常规 / 过桥凑2串1)"
+    undoCtrl.togglePick(mListUndo[0], "HAD", "h");
+    undoCtrl.togglePick(mListUndo[1], "HAD", "h");
+    undoCtrl.togglePick(mListUndo[0], "HHAD", "hh");
+    assert.notEqual(undoCtrl.getState().lastPoolSwitchUndo, null);
+    assert.equal(undoCtrl.undoLastPoolSwitch(), true);
+    assert.equal(undoCtrl.getState().lastPoolSwitchUndo, null);
+    assert.equal(undoCtrl.getState().picks[0].poolCode, "HAD");
+
+    const modePills = buildSyntheticModePillSpecs(true, false, false);
+    assert.deepEqual(
+      modePills.map((p) => p.label),
+      ["🛡️ 3项全包无死角", "⚡ 2项省本搏常规", "🌉 搭1场过桥凑2串1"]
     );
+    undoCtrl.setSyntheticSingleMode("trim-2way");
+    assert.equal(undoCtrl.getState().syntheticSingleMode, "trim-2way");
   });
 });
 
@@ -2912,30 +2925,36 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       "At ¥5,000 budget, at least one Pareto slot must exhibit >99x split (physicalTicketCount > logicalGroupCount)"
     );
 
-    // 3. SkinPhoneApp.tsx consumes logicalGroupCount & physicalTicketCount in KPI tile #4 (店面逻辑组与实票) and allows min={2} custom budget
-    const appSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
-    );
-    assert.ok(
-      appSrc.includes("店面逻辑组与实票") &&
-        appSrc.includes("currentArch.logicalGroupCount") &&
-        appSrc.includes("currentArch.physicalTicketCount") &&
-        appSrc.includes("组 · ") &&
-        appSrc.includes("张票") &&
-        appSrc.includes("组（") &&
-        appSrc.includes("张实票）"),
-      "SkinPhoneApp.tsx KPI tile #4 must consume currentArch.logicalGroupCount & currentArch.physicalTicketCount and distinguish >99x split vs 1:1 slips"
-    );
+    // 3. Pure KPI tile #4 view-model consumes logicalGroupCount & physicalTicketCount (店面逻辑组与实票) and allows min={2} custom budget
+    const {
+      PORTFOLIO_CUSTOM_BUDGET_LIMITS,
+      formatPortfolioGroupAndTicketMetric,
+    } = await import("../src/mobile/cabins/cabinViewModels.ts");
+    const splitPlanSample = plansAt5000.find(
+      (p: any) => p.available && p.physicalTicketCount > p.logicalGroupCount
+    )!;
+    const splitMetric = formatPortfolioGroupAndTicketMetric(splitPlanSample);
+    assert.equal(splitMetric.tileLabel, "店面逻辑组与实票");
     assert.equal(
-      appSrc.includes("<span>店面合票张数</span>"),
+      splitMetric.summary,
+      `${splitPlanSample.logicalGroupCount} 组 · ${splitPlanSample.physicalTicketCount} 张票`
+    );
+    const plansAt20 = generateParetoPortfolio(
+      (FALLBACK_MATCHES as MatchItem[]).slice(0, 2),
+      20,
+      "objective",
       false,
-      "Legacy KPI tile #4 label 店面合票张数 must be replaced by 店面逻辑组与实票"
+      []
     );
-    assert.ok(
-      appSrc.includes("min={2}"),
-      "Custom budget input in SkinPhoneApp.tsx must allow min={2}"
+    const oneToOnePlan = plansAt20.find(
+      (p: any) => p.available && p.physicalTicketCount === p.logicalGroupCount
+    )!;
+    const oneToOneMetric = formatPortfolioGroupAndTicketMetric(oneToOnePlan);
+    assert.equal(
+      oneToOneMetric.summary,
+      `${oneToOnePlan.logicalGroupCount} 组（${oneToOnePlan.physicalTicketCount} 张实票）`
     );
+    assert.equal(PORTFOLIO_CUSTOM_BUDGET_LIMITS.min, 2);
   });
 
   it("Slice 13.5 (Finding #5): floors odd budgetYuan downward in generateParetoPortfolio and prevents cleanBudget = ¥2 overspend in Slot ① (and all 4 slots) across M=1..8", () => {
@@ -3073,48 +3092,26 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
     }
   });
 
-  it("Slice 13.6 (Finding #6): unifies SkinPhoneApp.tsx synthetic playability gate with synthetic-unplayable warning check and deduplicates <SyntheticModePills /> across all 3 placements", () => {
-    const appSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+  it("Slice 13.6 (Finding #6): unifies synthetic playability gate with synthetic-unplayable warning check in getPlayabilityGates() and shares buildSyntheticModePillSpecs across desktop, audit, and mobile placements", async () => {
+    const { buildSyntheticModePillSpecs } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
+    const fullDesktopPills = buildSyntheticModePillSpecs(true, false, false);
+    const compactMobilePills = buildSyntheticModePillSpecs(true, false, true);
+    const blindSpotPills = buildSyntheticModePillSpecs(false, true, false);
+    assert.deepEqual(
+      fullDesktopPills.map((p) => p.label),
+      ["🛡️ 3项全包无死角", "⚡ 2项省本搏常规", "🌉 搭1场过桥凑2串1"]
+    );
+    assert.deepEqual(
+      compactMobilePills.map((p) => p.label),
+      ["🛡️3项全包无死角", "⚡2项省本搏常规", "🌉搭1场过桥凑2串1"]
+    );
+    assert.deepEqual(
+      blindSpotPills.map((p) => p.label),
+      ["🛡️ 常规比分覆盖", "🌉 搭1场过桥凑2串1"]
     );
 
-    // 1. Playability gate checks both syntheticEffectiveOdds > 1.0 AND absence of synthetic-unplayable warning
-    assert.ok(
-      appSrc.includes('w.id === "synthetic-unplayable"') &&
-        appSrc.includes("manualReport.syntheticEffectiveOdds"),
-      "SkinPhoneApp.tsx isSyntheticPlayable must check !manualReport.warnings.some((w) => w.id === 'synthetic-unplayable')"
-    );
-
-    // 2. Single reusable SyntheticModePills helper rendered across all 3 placements (no 3x copy-paste of button markup)
-    const defCount = (appSrc.match(/function SyntheticModePills\b/g) ?? [])
-      .length;
-    const callCount = (appSrc.match(/<SyntheticModePills\b/g) ?? []).length;
-    const trimLabelCount = (appSrc.match(/2项省本搏常规/g) ?? []).length;
-    const bridgeLabelCount = (appSrc.match(/搭1场过桥凑2串1/g) ?? []).length;
-
-    assert.equal(
-      defCount,
-      1,
-      "Expected exactly 1 reusable SyntheticModePills component definition in SkinPhoneApp.tsx"
-    );
-    assert.equal(
-      callCount,
-      3,
-      `Expected <SyntheticModePills /> to be reused at all 3 placements (audit note, desktop bar, mobile bar), got ${callCount}`
-    );
-    assert.equal(
-      trimLabelCount,
-      2,
-      `Expected '2项省本搏常规' to appear only once in <SyntheticModePills /> + once in toast (no 3x pill copy-paste), got ${trimLabelCount}`
-    );
-    assert.equal(
-      bridgeLabelCount,
-      1,
-      `Expected '搭1场过桥凑2串1' pill label to live in 1 place instead of 3x copy-paste, got ${bridgeLabelCount}`
-    );
-
-    // 3. Behavioral boundary: when continuous synEff = 1.001 > 1.0 yet 999x terminal cap blocks discrete breakeven (0.01 * m1 >= 10 requires m1 >= 1000 > 999), manualReport emits synthetic-unplayable so UI gate suppresses mode pills!
+    // Behavioral boundary: when continuous synEff = 1.001 > 1.0 yet 999x terminal cap blocks discrete breakeven, manualReport emits synthetic-unplayable AND getPlayabilityGates().isSyntheticPlayable MUST be false!
     const m0 = FALLBACK_MATCHES[0] as MatchItem;
     const discTrapMatch: MatchItem = {
       ...m0,
@@ -3131,38 +3128,36 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
         },
       },
     };
-    const wsDiscTrap = evaluateQuantWorkspace(
+    const trapPicks: SelectedPick[] = [
       {
-        picks: [
-          {
-            matchId: discTrapMatch.id,
-            matchNumStr: "周六088",
-            home: discTrapMatch.home,
-            away: discTrapMatch.away,
-            poolCode: "HAD",
-            poolName: "胜平负",
-            singleAllowed: false,
-            optionKey: "h",
-            optionLabel: "主胜",
-            odds: 1.01,
-            fairProb: 0.9,
-          },
-          {
-            matchId: discTrapMatch.id,
-            matchNumStr: "周六088",
-            home: discTrapMatch.home,
-            away: discTrapMatch.away,
-            poolCode: "HAD",
-            poolName: "胜平负",
-            singleAllowed: false,
-            optionKey: "d",
-            optionLabel: "平",
-            odds: 18.0,
-            fairProb: 0.08,
-          },
-        ],
-        multiple: 5,
+        matchId: discTrapMatch.id,
+        matchNumStr: "周六088",
+        home: discTrapMatch.home,
+        away: discTrapMatch.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: false,
+        optionKey: "h",
+        optionLabel: "主胜",
+        odds: 1.01,
+        fairProb: 0.9,
       },
+      {
+        matchId: discTrapMatch.id,
+        matchNumStr: "周六088",
+        home: discTrapMatch.home,
+        away: discTrapMatch.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: false,
+        optionKey: "d",
+        optionLabel: "平",
+        odds: 18.0,
+        fairProb: 0.08,
+      },
+    ];
+    const wsDiscTrap = evaluateQuantWorkspace(
+      { picks: trapPicks, multiple: 5 },
       [discTrapMatch]
     );
     assert.ok((wsDiscTrap.manualReport.syntheticEffectiveOdds ?? 0) > 1.0);
@@ -3173,6 +3168,17 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       ),
       true,
       "999x discrete unplayable boundary with synEff > 1.0 must emit synthetic-unplayable warning"
+    );
+
+    const gateCtrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+    });
+    gateCtrl.initializeMatches([discTrapMatch], trapPicks, wsDiscTrap);
+    assert.equal(
+      gateCtrl.getPlayabilityGates().isSyntheticPlayable,
+      false,
+      "getPlayabilityGates().isSyntheticPlayable must suppress mode pills whenever synthetic-unplayable warning is present"
     );
   });
 });

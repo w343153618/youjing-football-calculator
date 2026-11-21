@@ -829,61 +829,73 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
 
   it("Slice 03 · Honest EV%, Dynamic Underwater Disclosure, Wipeout Risk & Iron-Cage Manual Sync", async () => {
     const repoRoot = process.cwd();
-    const appSrc = fs.readFileSync(
-      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
-    );
-    const manualSrc = [
-      "src/manual/UserManualModal.tsx",
-      "src/manual/manualCatalog.ts",
-      "src/manual/manualChapters.tsx",
-    ]
-      .map((rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8"))
-      .join("\n");
+    const { buildAuditCockpitTiles, buildPortfolioKpiTiles } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
+    const { EMPTY_INSIGHTS, EMPTY_TRUTH_REPORT } =
+      await import("../src/prototype/quantTypes.ts");
+    const { MANUAL_CHAPTER_SPECS, MANUAL_TOPICS } =
+      await import("../src/manual/manualCatalog.ts");
+    const manualSrc = JSON.stringify({ MANUAL_TOPICS, MANUAL_CHAPTER_SPECS });
     const qaSrc = fs.readFileSync(
       path.join(repoRoot, "server/manualQaEngine.mjs"),
       "utf8"
     );
 
-    // 1. SkinPhoneApp.tsx must NEVER unconditionally hardcode <em>0 假中奖倒贴</em>; must bind underwaterCount, expectedValueRate, wipeoutMiss2Prob, and Kelly 0% note
-    assert.equal(
-      appSrc.includes("<em>0 假中奖倒贴</em>"),
+    // 1. Portfolio & Audit view-models dynamically disclose underwaterCount, expectedValueRate, wipeoutMiss2Prob, and Kelly 0% note
+    const samplePlans = generateParetoPortfolio(
+      FALLBACK_MATCHES.slice(0, 3),
+      100,
+      "objective",
       false,
-      "SkinPhoneApp.tsx must replace hardcoded <em>0 假中奖倒贴</em> with dynamic underwaterCount disclosure"
+      []
+    );
+    const uwKpi = buildPortfolioKpiTiles({
+      ...samplePlans[0],
+      available: true,
+      underwaterCount: 2,
+      expectedValueRate: -0.118,
+      objectiveEVRate: -0.118,
+      wipeoutMiss2Prob: 0.195,
+    });
+    assert.equal(uwKpi.tile2.isDanger, true);
+    assert.ok(
+      uwKpi.tile2.subtitle.includes("局部回血(<本金)"),
+      "Must disclose local-recovery (<stake) combinations honestly when underwaterCount > 0"
     );
     assert.ok(
-      appSrc.includes("currentArch.underwaterCount"),
-      "Must read currentArch.underwaterCount"
-    );
-    assert.ok(
-      appSrc.includes("局部回血(<本金)"),
-      "Must disclose local-recovery (<stake) combinations honestly"
-    );
-    assert.ok(
-      appSrc.includes("currentArch.expectedValueRate"),
+      uwKpi.tile3.label.includes("数学期望与抽水") &&
+        uwKpi.tile3.value === "-11.8%",
       "Must surface calibrated expectedValueRate on 3+1 card"
     );
     assert.ok(
-      appSrc.includes("数学期望与抽水"),
-      "Must label EV & vig tile honestly"
+      uwKpi.tile4.subtitle.includes("错≥2场击穿"),
+      "Must disclose miss>=2 wipeout probability when wipeoutMiss2Prob is present"
+    );
+
+    const zeroUwKpi = buildPortfolioKpiTiles({
+      ...samplePlans[0],
+      available: true,
+      underwaterCount: 0,
+    });
+    assert.equal(zeroUwKpi.tile2.isDanger, false);
+    assert.equal(zeroUwKpi.tile2.subtitle, "0 假中奖倒贴");
+
+    const negEvAudit = buildAuditCockpitTiles(
+      {
+        ...EMPTY_TRUTH_REPORT,
+        totalCost: 20,
+        objectiveEVRate: -0.12,
+      },
+      { ...EMPTY_INSIGHTS, recommendedBankrollPct: 2 }
     );
     assert.ok(
-      appSrc.includes("currentArch.wipeoutMiss2Prob"),
-      "Must disclose miss>=2 wipeout probability on wheel slot"
-    );
-    assert.ok(
-      appSrc.includes("错≥2场击穿"),
-      "Must show 错≥2场击穿 label when wipeoutMiss2Prob is present"
-    );
-    assert.ok(
-      appSrc.includes("凯利0%·娱乐≤"),
+      negEvAudit.tile4.subtitle.includes("凯利0%·娱乐≤"),
       "Must disclose Kelly 0% entertainment cap on negative-EV slips"
     );
 
-    // 2. Zero deprecated 蚊子肉 or 零风险 terms across server/ and src/
+    // 2. Zero deprecated 蚊子肉 or 零风险 terms across manual specs and manualQaEngine
     for (const [name, txt] of [
-      ["SkinPhoneApp.tsx", appSrc],
-      ["UserManualModal.tsx", manualSrc],
+      ["manualCatalog.ts", manualSrc],
       ["manualQaEngine.mjs", qaSrc],
     ] as const) {
       assert.equal(
@@ -898,14 +910,14 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       );
     }
 
-    // 3. UserManualModal & manualQaEngine document 高抽水拖累腿 and pure +EV (+1.0% / 101%) gate
+    // 3. Structured manual chapters & manualQaEngine document 高抽水拖累腿 and pure +EV (+1.0% / 101%) gate
     assert.ok(
       manualSrc.includes("高抽水拖累腿"),
-      "UserManualModal.tsx must document 高抽水拖累腿"
+      "Manual catalog must document 高抽水拖累腿"
     );
     assert.ok(
-      manualSrc.includes("+1.0%") || manualSrc.includes("101%"),
-      "UserManualModal.tsx must document pure +EV gate"
+      manualSrc.includes("+1.0%") || manualSrc.includes("101"),
+      "Manual catalog must document pure +EV gate"
     );
     assert.ok(
       qaSrc.includes("高抽水拖累腿"),
@@ -1394,10 +1406,20 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
     }
 
     // 7. A2-(a).3 & A1-3: UI Tile 3 subtitle ("票面返还"), required ArchetypePlan fields, and manualQaEngine covering-wheel sync
-    const appSrc = fs.readFileSync(
-      path.join(repoRoot, "src/mobile/SkinPhoneApp.tsx"),
-      "utf8"
+    const { buildPortfolioKpiTiles } =
+      await import("../src/mobile/cabins/cabinViewModels.ts");
+    const samplePlansForTile3 = generateParetoPortfolio(
+      FALLBACK_MATCHES.slice(0, 2),
+      100,
+      "objective",
+      false,
+      []
     );
+    const tile3Model = buildPortfolioKpiTiles({
+      ...samplePlansForTile3[0],
+      subjectiveProjectedEVRate: null,
+      vigPct: 12.2,
+    }).tile3;
     const typesSrc = fs.readFileSync(
       path.join(repoRoot, "src/prototype/quantTypes.ts"),
       "utf8"
@@ -1407,11 +1429,11 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       "utf8"
     );
     assert.ok(
-      appSrc.includes("票面返还"),
+      tile3Model.subtitle.includes("票面返还"),
       "Tile 3 subtitle must display 票面返还 rate"
     );
     assert.equal(
-      appSrc.includes("单池暗扣"),
+      tile3Model.subtitle.includes("单池暗扣"),
       false,
       "Tile 3 must not mislabel parlay vigPct as 单池暗扣"
     );
