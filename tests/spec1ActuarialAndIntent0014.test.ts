@@ -872,3 +872,810 @@ describe("Spec #1 (0014) · Ticket #2: OOS Fixture Remediation, Upstream Calibra
     );
   });
 });
+
+describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, Same-Budget Utility Shield & Honest Taxonomy", () => {
+  it("Slice 6 (Ticket #3 AC 1 & AC 2): enforces match-order permutation invariance, abolishes 84% pure-spear underspend arbitrage, restores 3~8-match shield structures, and guarantees 0 broken shields + budget conservation across 1~8 matches × ¥10~¥20,000", () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 64) }],
+      },
+    }) as MatchItem[];
+
+    // 1. Match-order permutation invariance across all 4 slots (catches .map(evPrimaryLegOf) index-as-minProbFloor bug!)
+    const permSlate = oosMatches.slice(0, 4);
+    const permutations = [
+      [0, 1, 2, 3],
+      [1, 0, 3, 2],
+      [2, 3, 1, 0],
+      [3, 2, 0, 1],
+      [3, 0, 2, 1],
+    ];
+    const serializePlans = (plans: any[]) =>
+      plans.map((p) => ({
+        key: p.key,
+        available: p.available,
+        totalCost: p.totalCost,
+        savedCash: p.savedCash,
+        minReturn: p.minReturn,
+        maxReturn: p.maxReturn,
+        winProb: Number((p.winProb ?? 0).toFixed(12)),
+        profitProb: Number((p.profitProb ?? 0).toFixed(12)),
+        expectedValueRate: Number((p.expectedValueRate ?? 0).toFixed(12)),
+        underwaterCount: p.underwaterCount,
+        lines: p.lines.map((l: any) => ({
+          multiple: l.multiple,
+          cost: l.cost,
+          returnPayout: l.returnPayout,
+          legs: l.legs
+            .map((g: any) => `${g.matchId}:${g.poolCode}:${g.optionKey}`)
+            .sort(),
+        })),
+      }));
+
+    const basePermRef = serializePlans(
+      generateParetoPortfolio(permSlate, 100, "objective", false, [])
+    );
+    for (const perm of permutations.slice(1)) {
+      const reordered = perm.map((idx) => permSlate[idx]);
+      const permOut = serializePlans(
+        generateParetoPortfolio(reordered, 100, "objective", false, [])
+      );
+      assert.deepEqual(
+        permOut,
+        basePermRef,
+        `Objective Pareto 3+1 output must be strictly invariant under match permutation ${JSON.stringify(perm)}`
+      );
+    }
+
+    // 2. Abolish pure-spear 84% voluntary underspend & restore genuine 主攻+单翻护盾 across 3~8 matches at ¥100
+    for (const mCount of [3, 4, 5, 6, 7, 8]) {
+      let shieldedCount = 0;
+      let totalSlates = 0;
+      for (let off = 0; off + mCount <= 48; off += 4) {
+        const sub = oosMatches.slice(off, off + mCount);
+        const s2 = generateParetoPortfolio(sub, 100, "objective", false, [])[1];
+        totalSlates += 1;
+        assert.equal(s2.available, true);
+        assert.equal(s2.underwaterCount, 0);
+        assert.equal(s2.totalCost + s2.savedCash, 100);
+        if (s2.lines.length === 1) {
+          assert.equal(
+            s2.totalCost,
+            100,
+            `1-line pure spear at ¥100 must spend full ¥100 (no 84% = ¥84 underspend arbitrage!), got ¥${s2.totalCost}`
+          );
+        } else {
+          shieldedCount += 1;
+        }
+      }
+      assert.ok(
+        shieldedCount >= Math.ceil(totalSlates * 0.4),
+        `Expected genuine multi-line 主攻+单翻护盾 restoration on M=${mCount} at ¥100 (got ${shieldedCount}/${totalSlates} shielded)`
+      );
+    }
+
+    // 3. Full matrix 1~8 matches × ¥10~¥20,000: per-line multiple <= 999, totalCost <= budget, totalCost + savedCash === budget, underwaterCount === 0!
+    const budgets = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
+    for (const mCount of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      for (const b of budgets) {
+        for (const slate of [
+          FALLBACK_MATCHES.slice(0, mCount) as MatchItem[],
+          oosMatches.slice(0, mCount),
+          oosMatches.slice(8, 8 + mCount),
+        ]) {
+          const s2 = generateParetoPortfolio(
+            slate,
+            b,
+            "objective",
+            false,
+            []
+          )[1];
+          assert.equal(s2.key, "max-ev-utility");
+          assert.equal(s2.available, true);
+          assert.ok(
+            s2.totalCost <= b,
+            `M=${mCount}, B=${b}: totalCost ${s2.totalCost} > ${b}`
+          );
+          assert.equal(
+            s2.totalCost + s2.savedCash,
+            b,
+            `M=${mCount}, B=${b}: totalCost(${s2.totalCost}) + savedCash(${s2.savedCash}) !== ${b}`
+          );
+          assert.equal(
+            s2.underwaterCount,
+            0,
+            `M=${mCount}, B=${b}: broken shield detected (underwaterCount=${s2.underwaterCount}, minReturn=${s2.minReturn}, totalCost=${s2.totalCost})`
+          );
+          assert.ok(
+            s2.minReturn >= s2.totalCost - 1e-6,
+            `M=${mCount}, B=${b}: minReturn ${s2.minReturn} < totalCost ${s2.totalCost}`
+          );
+          for (const ln of s2.lines) {
+            assert.ok(
+              ln.multiple >= 1 && ln.multiple <= 999,
+              `M=${mCount}, B=${b}: line multiple ${ln.multiple} outside [1, 999]`
+            );
+          }
+        }
+      }
+    }
+
+    // Specifically sweep all 64 real OOS single matches at ¥10,000 & ¥100 (catches the 286/909 broken shields at ¥10,000 & 794/1,418 suboptimal 3-line splits at ¥100!)
+    for (const m of oosMatches) {
+      const s2At10k = generateParetoPortfolio(
+        [m],
+        10000,
+        "objective",
+        false,
+        []
+      )[1];
+      assert.equal(
+        s2At10k.underwaterCount,
+        0,
+        `Single OOS match ${m.id} at ¥10,000 suffered broken shield: cost=${s2At10k.totalCost}, minReturn=${s2At10k.minReturn}`
+      );
+      assert.equal(s2At10k.totalCost + s2At10k.savedCash, 10000);
+
+      const s2At100 = generateParetoPortfolio(
+        [m],
+        100,
+        "objective",
+        false,
+        []
+      )[1];
+      assert.equal(s2At100.underwaterCount, 0);
+      if (s2At100.lines.length === 3) {
+        // Verify exact log-wealth utility optimality over all zero-underwater 3-line splits with m2 < N * 0.45 at same totalCost!
+        const cTot = s2At100.totalCost;
+        const nTot = cTot / 2;
+        const GAMMA = 0.65;
+        const [l0, l1, l2] = s2At100.lines;
+        const pMiss = Math.max(0, 1 - l0.prob - l1.prob - l2.prob);
+        const evalU3 = (m0: number, m1: number, m2: number) =>
+          l0.prob *
+            Math.log(
+              Math.max(1e-6, 1 + (GAMMA * (m0 * l0.unitPayout - cTot)) / 100)
+            ) +
+          l1.prob *
+            Math.log(
+              Math.max(1e-6, 1 + (GAMMA * (m1 * l1.unitPayout - cTot)) / 100)
+            ) +
+          l2.prob *
+            Math.log(
+              Math.max(1e-6, 1 + (GAMMA * (m2 * l2.unitPayout - cTot)) / 100)
+            ) +
+          pMiss * Math.log(Math.max(1e-6, 1 - (GAMMA * cTot) / 100));
+        const actualU = evalU3(l0.multiple, l1.multiple, l2.multiple);
+        let bestU = -Infinity;
+        for (let m2 = 1; m2 < nTot * 0.45; m2++) {
+          if (m2 * l2.unitPayout < cTot - 1e-6) continue;
+          for (let m0 = 1; m0 <= nTot - m2 - 1; m0++) {
+            const m1 = nTot - m2 - m0;
+            if (m0 * l0.unitPayout < cTot - 1e-6) continue;
+            if (m1 * l1.unitPayout < cTot - 1e-6) continue;
+            if (m0 < Math.ceil((nTot - m2) / 2)) continue;
+            bestU = Math.max(bestU, evalU3(m0, m1, m2));
+          }
+        }
+        assert.ok(
+          actualU >= bestU - 1e-12,
+          `Single OOS match ${m.id} 3-line split (${l0.multiple},${l1.multiple},${l2.multiple}) utility ${actualU} < optimal ${bestU}`
+        );
+      }
+    }
+  });
+
+  it("Slice 7 (Ticket #3 AC 3): enforces strict totalCost <= budget on Slot ③ (max-cvar-wheel) across 1~8 matches × ¥4~¥20,000, degrades gracefully to disjoint-block parlays at ¥4~¥10, and marks available:false only below ¥4", () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 120) }],
+      },
+    }) as MatchItem[];
+
+    // 1. Sweep M=4 and M=5 across 24 real OOS slates at ¥10 (reproduces the 315/315 ¥12 & 103/243 ¥20 budget overrun!)
+    for (const mCount of [4, 5, 6, 7, 8]) {
+      for (let i = 0; i + mCount <= 120; i += 5) {
+        const slate = oosMatches.slice(i, i + mCount);
+        const s3 = generateParetoPortfolio(
+          slate,
+          10,
+          "objective",
+          false,
+          []
+        )[2];
+        assert.equal(s3.key, "max-cvar-wheel");
+        assert.equal(
+          s3.available,
+          true,
+          `M=${mCount} at ¥10 must be available`
+        );
+        assert.ok(
+          s3.totalCost >= 4 && s3.totalCost <= 10,
+          `M=${mCount} at ¥10 overrun! Expected totalCost in [4, 10], got ¥${s3.totalCost} (${s3.title})`
+        );
+        assert.equal(s3.totalCost + s3.savedCash, 10);
+        assert.ok(s3.lines.length >= 2 && s3.lines.length <= 5);
+        assert.ok(
+          (s3.missOneReturn ?? 0) > 0,
+          `M=${mCount} at ¥10 disjoint-block fallback must preserve miss-1 return > 0, got ${s3.missOneReturn}`
+        );
+      }
+    }
+
+    // 2. Full small-to-large budget matrix [4, 6, 8, 10, 20, 100, 5000, 20000] across M=1..8 + workspace checkout apply check
+    for (const mCount of [1, 2, 3, 4, 5, 6, 7, 8]) {
+      const slate = oosMatches.slice(0, mCount);
+      for (const b of [4, 6, 8, 10, 20, 100, 5000, 20000]) {
+        const plans = generateParetoPortfolio(slate, b, "objective", false, []);
+        const s3 = plans[2];
+        assert.equal(
+          s3.available,
+          true,
+          `M=${mCount} at ¥${b} (>= ¥4) must keep Slot ③ available`
+        );
+        assert.ok(
+          s3.totalCost > 0 && s3.totalCost <= b,
+          `M=${mCount} at ¥${b}: Slot ③ totalCost ${s3.totalCost} exceeded budget ${b}`
+        );
+        assert.equal(s3.totalCost + s3.savedCash, b);
+        for (const ln of s3.lines) {
+          assert.ok(ln.multiple >= 1 && ln.multiple <= 999);
+        }
+      }
+    }
+
+    // Verify evaluateQuantWorkspace applying max-cvar-wheel at budget=10 on 4 matches never charges ¥12 in effectiveReport
+    const fourOos = oosMatches.slice(0, 4);
+    const ws10Wheel = evaluateQuantWorkspace(
+      {
+        picks: [],
+        multiple: 1,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "archetype",
+          key: "max-cvar-wheel",
+          scaleMultiple: 1,
+        },
+        targetIds: fourOos.map((m) => m.id),
+        budget: 10,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      fourOos
+    );
+    assert.equal(ws10Wheel.portfolioPlans[2].available, true);
+    assert.ok(ws10Wheel.portfolioPlans[2].totalCost <= 10);
+    assert.ok(ws10Wheel.effectiveReport.totalCost <= 10);
+
+    // 3. Budget < ¥4 (budget = 2 -> 1 note) honestly marks Slot ③ available: false across M=1..8
+    for (const mCount of [1, 2, 4, 8]) {
+      const slate = oosMatches.slice(0, mCount);
+      const s3Under4 = generateParetoPortfolio(
+        slate,
+        2,
+        "objective",
+        false,
+        []
+      )[2];
+      assert.equal(s3Under4.available, false);
+      assert.equal(s3Under4.totalCost, 0);
+      assert.equal(s3Under4.savedCash, 2);
+      assert.equal(s3Under4.lines.length, 0);
+      assert.ok(
+        typeof s3Under4.emptyReason === "string" &&
+          s3Under4.emptyReason.includes("¥4"),
+        `Expected < ¥4 emptyReason on M=${mCount}, got: ${s3Under4.emptyReason}`
+      );
+    }
+  });
+
+  it("Slice 8 (Ticket #3 AC 4): classifies 8-match 4×6串1 dual complement honestly as 独立分块容错串 (zero false 旋转矩阵缩水 on miss-2-leaky v>=6 designs) and distinguishes <=10 logical groups from 99x physical shop slips", () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 64) }],
+      },
+    }) as MatchItem[];
+
+    // 1. Construct 8 strong-favorite matches where 4×6串1 dual complement wins at budget=8 (4 notes) & budget=100
+    const eightFavs: MatchItem[] = FALLBACK_MATCHES.slice(0, 8).map(
+      (fm, idx) => ({
+        ...(fm as MatchItem),
+        id: `ac4-8fav-${idx}`,
+        matchNumStr: `周六30${idx + 1}`,
+        pools: {
+          ...(fm as MatchItem).pools,
+          HHAD: { ...(fm as MatchItem).pools.HHAD, selling: false },
+          HAFU: { ...(fm as MatchItem).pools.HAFU, selling: false },
+          TTG: { ...(fm as MatchItem).pools.TTG, selling: false },
+          CRS: { ...(fm as MatchItem).pools.CRS, selling: false },
+          HAD: {
+            ...(fm as MatchItem).pools.HAD,
+            selling: true,
+            single: false,
+            payoutRatio: 0.89,
+            vig: 0.11,
+            options: [
+              {
+                key: "h",
+                label: "主胜",
+                odds: 1.26,
+                trend: 0,
+                fairProb: 0.706,
+                shinProb: 0.706,
+              },
+              {
+                key: "d",
+                label: "平",
+                odds: 5.2,
+                trend: 0,
+                fairProb: 0.171,
+                shinProb: 0.171,
+              },
+              {
+                key: "a",
+                label: "客胜",
+                odds: 7.2,
+                trend: 0,
+                fairProb: 0.123,
+                shinProb: 0.123,
+              },
+            ],
+          },
+        },
+      })
+    );
+
+    const s3EightAt8 = generateParetoPortfolio(
+      eightFavs,
+      8,
+      "objective",
+      false,
+      []
+    )[2] as any;
+    assert.equal(s3EightAt8.available, true);
+    assert.equal(s3EightAt8.totalCost, 8);
+    if (s3EightAt8.lines.some((l: any) => l.legs.length === 6)) {
+      assert.equal(
+        s3EightAt8.title.includes("旋转矩阵缩水"),
+        false,
+        `8-match 4×6串1 dual complement wipes out on 24/28 miss-2 pairs and MUST NOT be crowned 旋转矩阵缩水: ${s3EightAt8.title}`
+      );
+      assert.ok(
+        s3EightAt8.title.includes("独立分块容错串"),
+        `Expected 4×6串1 dual complement to be classified honestly as 独立分块容错串, got: ${s3EightAt8.title}`
+      );
+    }
+
+    const s3EightAt100 = generateParetoPortfolio(
+      eightFavs,
+      100,
+      "objective",
+      false,
+      []
+    )[2] as any;
+    if (
+      s3EightAt100.lines
+        .filter((l: any) => l.legs.length < 8)
+        .some((l: any) => l.legs.length === 6)
+    ) {
+      assert.equal(
+        s3EightAt100.title.includes("旋转矩阵缩水"),
+        false,
+        `8-match 4×6串1 at ¥100 must NOT be crowned 旋转矩阵缩水: ${s3EightAt100.title}`
+      );
+      assert.ok(s3EightAt100.title.includes("独立分块容错串"));
+    }
+
+    // Universal invariant across M=6..8 OOS slates: any design crowned "旋转矩阵缩水" MUST survive 100% of miss-2 pairs (0 miss-2 wipeout)!
+    const hasZeroMiss2WipeoutOnLines = (mIds: string[], lines: any[]) => {
+      const v = mIds.length;
+      const subBlocks = lines
+        .filter((l) => l.legs.length < v)
+        .map((l) => new Set(l.legs.map((g: any) => g.matchId)));
+      if (subBlocks.length === 0) return false;
+      for (let i = 0; i < v; i++) {
+        for (let j = i + 1; j < v; j++) {
+          const missA = mIds[i];
+          const missB = mIds[j];
+          const survives = subBlocks.some(
+            (s) => !s.has(missA) && !s.has(missB)
+          );
+          if (!survives) return false;
+        }
+      }
+      return true;
+    };
+
+    for (const v of [6, 7, 8]) {
+      for (let off = 0; off + v <= 64; off += 4) {
+        const slate = oosMatches.slice(off, off + v);
+        for (const b of [8, 20, 100, 200]) {
+          const s3 = generateParetoPortfolio(
+            slate,
+            b,
+            "objective",
+            false,
+            []
+          )[2] as any;
+          if (s3.title.includes("旋转矩阵缩水")) {
+            assert.equal(
+              hasZeroMiss2WipeoutOnLines(
+                slate.map((m) => m.id),
+                s3.lines
+              ),
+              true,
+              `v=${v}, B=${b}: design "${s3.title}" crowned 旋转矩阵缩水 despite having miss-2 wipeout gaps!`
+            );
+          }
+        }
+      }
+    }
+
+    // Genuine C(6,3,2), C(7,3,2), C(8,4,2) still earn "旋转矩阵缩水" on balanced slates at ¥200
+    const balanced6 = oosMatches.slice(0, 6);
+    const s3Bal6 = generateParetoPortfolio(
+      balanced6,
+      200,
+      "objective",
+      false,
+      []
+    )[2] as any;
+    if (s3Bal6.title.includes("C(6,3,2)")) {
+      assert.ok(s3Bal6.title.includes("旋转矩阵缩水"));
+    }
+
+    // 2. Distinguish logicalGroupCount (<= 10) vs 99x physicalTicketCount on normal (¥100) and large (¥10,000) budgets
+    const sixOos = oosMatches.slice(0, 6);
+    const s3Normal = generateParetoPortfolio(
+      sixOos,
+      100,
+      "objective",
+      false,
+      []
+    )[2] as any;
+    assert.equal(s3Normal.logicalGroupCount, s3Normal.lines.length);
+    assert.ok(s3Normal.logicalGroupCount <= 10);
+    assert.equal(
+      s3Normal.physicalTicketCount,
+      s3Normal.lines.reduce(
+        (a: number, l: any) => a + Math.ceil(l.multiple / 99),
+        0
+      )
+    );
+
+    const s3Large10k = generateParetoPortfolio(
+      sixOos,
+      10000,
+      "objective",
+      false,
+      []
+    )[2] as any;
+    const expectedPhysical = s3Large10k.lines.reduce(
+      (a: number, l: any) => a + Math.ceil(l.multiple / 99),
+      0
+    );
+    assert.equal(s3Large10k.logicalGroupCount, s3Large10k.lines.length);
+    assert.ok(s3Large10k.logicalGroupCount <= 10);
+    assert.equal(s3Large10k.physicalTicketCount, expectedPhysical);
+    assert.ok(
+      s3Large10k.physicalTicketCount > s3Large10k.logicalGroupCount * 4,
+      `Expected ¥10,000 wheel physical 99x slip count (${s3Large10k.physicalTicketCount}) >> logical groups (${s3Large10k.logicalGroupCount})`
+    );
+    assert.ok(
+      s3Large10k.title.includes("逻辑组合") &&
+        s3Large10k.title.includes(`${expectedPhysical}张纸质实票`),
+      `Large-budget wheel title must distinguish logical groups from ${expectedPhysical} physical 99x slips, got: ${s3Large10k.title}`
+    );
+    assert.ok(
+      s3Large10k.reasons[0].includes("逻辑组合") &&
+        s3Large10k.reasons[0].includes("99") &&
+        s3Large10k.reasons[0].includes(`${expectedPhysical}`),
+      `Large-budget wheel reasons[0] must explain 99x physical slip count, got: ${s3Large10k.reasons[0]}`
+    );
+  });
+
+  it("Slice 9 (Ticket #3 AC 5): prioritizes strictNetGainProb over breakEvenProb in Slot ① (including ¥4,000 scaling), surfaces dynamic bestObservedReturnPct & 101.0% gap in empty Slot ④, and aligns Manual Q&A + UserManualModal honesty", async () => {
+    const rawFixture = JSON.parse(
+      fs.readFileSync(REAL_OOS_FIXTURE_PATH, "utf8")
+    );
+    const oosMatches = parseSportteryRawJson({
+      value: {
+        matchInfoList: [{ subMatchList: rawFixture.matches.slice(0, 64) }],
+      },
+    }) as MatchItem[];
+
+    // 1a. Direct trade-off: pure refund [2.00, 2.00] (strictNetGainProb=0, breakEvenProb=0.89) vs strict net-gain [2.00, 7.50] (strictNetGainProb=0.56) at ¥20
+    const strictVsRefundMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[1] as MatchItem),
+      id: "ac5-strict-vs-refund",
+      pools: {
+        ...(FALLBACK_MATCHES[1] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAD,
+          single: true,
+          selling: true,
+          options: [
+            {
+              key: "h",
+              label: "主胜",
+              odds: 2.0,
+              trend: 0,
+              fairProb: 0.45,
+              shinProb: 0.45,
+            },
+            {
+              key: "d",
+              label: "平",
+              odds: 2.0,
+              trend: 0,
+              fairProb: 0.44,
+              shinProb: 0.44,
+            },
+            {
+              key: "a",
+              label: "客胜",
+              odds: 7.5,
+              trend: 0,
+              fairProb: 0.11,
+              shinProb: 0.11,
+            },
+          ],
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.TTG,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[1] as MatchItem).pools.CRS,
+          selling: false,
+        },
+      },
+    };
+    const slot1Strict = generateParetoPortfolio(
+      [strictVsRefundMatch],
+      20,
+      "objective",
+      false,
+      []
+    )[0] as any;
+    assert.equal(slot1Strict.underwaterCount, 0);
+    assert.ok(
+      slot1Strict.strictNetGainProb > 0.5,
+      `Slot ① must prioritize strictNetGainProb (>0.50 via {h,a}) over 0%-net-gain pure refund {h,d}, got strict=${slot1Strict.strictNetGainProb}, breakEven=${slot1Strict.breakEvenProb}`
+    );
+
+    // 1b. Large-budget ¥4,000 single-match strictNetGainProb: zero 1-note transfer improvement on same chosen options & same totalCost!
+    const exactDivisor4kMatch: MatchItem = {
+      ...(FALLBACK_MATCHES[0] as MatchItem),
+      id: "ac5-4k-divisor",
+      pools: {
+        ...(FALLBACK_MATCHES[0] as MatchItem).pools,
+        HAD: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAD,
+          selling: false,
+        },
+        HHAD: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.HHAD,
+          selling: false,
+        },
+        CRS: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.CRS,
+          selling: false,
+        },
+        HAFU: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.HAFU,
+          selling: false,
+        },
+        TTG: {
+          ...(FALLBACK_MATCHES[0] as MatchItem).pools.TTG,
+          single: true,
+          selling: true,
+          options: [
+            {
+              key: "s2",
+              label: "2球",
+              odds: 1.37,
+              trend: 0,
+              fairProb: 0.7517,
+              shinProb: 0.7517,
+            },
+            {
+              key: "s3",
+              label: "3球",
+              odds: 9.75,
+              trend: 0,
+              fairProb: 0.0824,
+              shinProb: 0.0824,
+            },
+            {
+              key: "s4",
+              label: "4球",
+              odds: 140.0,
+              trend: 0,
+              fairProb: 0.02,
+              shinProb: 0.02,
+            },
+            {
+              key: "s0",
+              label: "0球",
+              odds: 18.0,
+              trend: 0,
+              fairProb: 0.0459,
+              shinProb: 0.0459,
+            },
+            {
+              key: "s1",
+              label: "1球",
+              odds: 12.0,
+              trend: 0,
+              fairProb: 0.05,
+              shinProb: 0.05,
+            },
+            {
+              key: "s5",
+              label: "5球",
+              odds: 35.0,
+              trend: 0,
+              fairProb: 0.02,
+              shinProb: 0.02,
+            },
+            {
+              key: "s6",
+              label: "6球",
+              odds: 60.0,
+              trend: 0,
+              fairProb: 0.015,
+              shinProb: 0.015,
+            },
+            {
+              key: "s7",
+              label: "7+球",
+              odds: 80.0,
+              trend: 0,
+              fairProb: 0.015,
+              shinProb: 0.015,
+            },
+          ],
+        },
+      },
+    };
+    for (const m of [exactDivisor4kMatch, ...oosMatches]) {
+      const s1At4k = generateParetoPortfolio(
+        [m],
+        4000,
+        "objective",
+        false,
+        []
+      )[0] as any;
+      assert.equal(s1At4k.underwaterCount, 0);
+      assert.equal(s1At4k.totalCost + s1At4k.savedCash, 4000);
+      const cTot = s1At4k.totalCost;
+      const curStrict = s1At4k.lines
+        .filter((l: any) => l.returnPayout > cTot + 1e-6)
+        .reduce((a: number, l: any) => a + l.prob, 0);
+      // Verify NO 1-note move from line i to line j preserves zero-underwater while strictly increasing strictNetGainProb!
+      for (let i = 0; i < s1At4k.lines.length; i++) {
+        const li = s1At4k.lines[i];
+        if (li.multiple <= 1) continue;
+        if ((li.multiple - 1) * li.unitPayout < cTot - 1e-6) continue;
+        for (let j = 0; j < s1At4k.lines.length; j++) {
+          if (i === j) continue;
+          const lj = s1At4k.lines[j];
+          if (lj.multiple >= 999) continue;
+          const movedStrict = s1At4k.lines.reduce(
+            (acc: number, lk: any, k: number) => {
+              const multK =
+                k === i
+                  ? lk.multiple - 1
+                  : k === j
+                    ? lk.multiple + 1
+                    : lk.multiple;
+              return acc + (multK * lk.unitPayout > cTot + 1e-6 ? lk.prob : 0);
+            },
+            0
+          );
+          assert.ok(
+            movedStrict <= curStrict + 1e-12,
+            `Match ${m.id} at ¥4,000 left strictNetGainProb on the table: moving 1 note ${i}->${j} lifts ${curStrict} -> ${movedStrict}`
+          );
+        }
+      }
+    }
+
+    // 2. Slot ④ empty state dynamically exposes bestObservedReturnPct & gap to 101.0% while preserving >= 101% + positive-EV gate
+    const s4OosA = generateParetoPortfolio(
+      oosMatches.slice(0, 2),
+      100,
+      "objective",
+      false,
+      []
+    )[3] as any;
+    const s4OosB = generateParetoPortfolio(
+      oosMatches.slice(10, 14),
+      100,
+      "objective",
+      false,
+      []
+    )[3] as any;
+    for (const s4 of [s4OosA, s4OosB]) {
+      assert.equal(s4.available, false);
+      assert.equal(s4.totalCost, 0);
+      assert.equal(s4.savedCash, 100);
+      assert.ok(
+        typeof s4.bestObservedReturnPct === "number" &&
+          s4.bestObservedReturnPct > 75 &&
+          s4.bestObservedReturnPct < 101,
+        `Expected bestObservedReturnPct in (75, 101), got ${s4.bestObservedReturnPct}`
+      );
+      assert.equal(
+        s4.alphaThresholdGapPct,
+        Number((101.0 - s4.bestObservedReturnPct).toFixed(1))
+      );
+      const expectedPhrase = `当前所选场次最高校准单腿返还率 ${s4.bestObservedReturnPct.toFixed(1)}%（距 101.0% 正期望门槛差 ${s4.alphaThresholdGapPct.toFixed(1)} 个百分点）`;
+      assert.ok(
+        s4.emptyReason?.includes(expectedPhrase),
+        `Expected emptyReason to include "${expectedPhrase}", got: ${s4.emptyReason}`
+      );
+    }
+
+    // 3. Iron-Cage Manual Q&A & UserManualModal honest copy verification
+    const qa = createManualQaEngine({});
+    const resAlpha = await qa.answerManualQuestion({
+      userId: "u-ac5-alpha",
+      question: "为什么错价雷达总是空仓？",
+      ip: "127.0.0.1",
+    });
+    assert.equal(resAlpha.ok, true);
+    assert.equal(resAlpha.source, "local-kb");
+    assert.ok(
+      resAlpha.answer.includes("常态") &&
+        resAlpha.answer.includes("101") &&
+        resAlpha.answer.includes("最高校准单腿返还率"),
+      `qa-alpha-empty must state empty state is normal under tight pricing and mention 最高校准单腿返还率, got: ${resAlpha.answer}`
+    );
+
+    const resWheel = await qa.answerManualQuestion({
+      userId: "u-ac5-wheel",
+      question: "什么是旋转矩阵缩水？",
+      ip: "127.0.0.1",
+    });
+    assert.equal(resWheel.ok, true);
+    assert.equal(resWheel.source, "local-kb");
+    assert.ok(
+      resWheel.answer.includes("独立分块容错串") &&
+        resWheel.answer.includes("逻辑组合") &&
+        resWheel.answer.includes("99"),
+      `qa-covering-wheel must distinguish 独立分块容错串 and <=10 组逻辑组合 vs 99x physical slips, got: ${resWheel.answer}`
+    );
+
+    const manualSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "src/manual/UserManualModal.tsx"),
+      "utf8"
+    );
+    assert.ok(
+      manualSrc.includes("独立分块容错串") &&
+        manualSrc.includes("逻辑组合") &&
+        manualSrc.includes("99") &&
+        manualSrc.includes("最高校准单腿返还率"),
+      "UserManualModal.tsx must reflect honest taxonomy, 99x slip distinction, and empty-alpha ceiling disclosure"
+    );
+  });
+});

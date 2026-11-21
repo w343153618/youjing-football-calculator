@@ -257,6 +257,10 @@ export interface ArchetypePlan {
   subjectiveProjectedEVRate?: number | null;
   subjectiveProjectedProfitProb?: number | null;
   underwaterCount: number;
+  logicalGroupCount?: number;
+  physicalTicketCount?: number;
+  bestObservedReturnPct?: number | null;
+  alphaThresholdGapPct?: number | null;
   zeroPayoutProb?: number | null;
   wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
