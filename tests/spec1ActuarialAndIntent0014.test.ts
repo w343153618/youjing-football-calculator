@@ -6,12 +6,24 @@ import {
   FALLBACK_MATCHES,
   OFFICIAL_CRS_PAIRS,
   calibrateMatchCoherentModel,
+  computeTruthReport,
   devigPoolProbabilities,
   evaluateQuantWorkspace,
   generateParetoPortfolio,
   parseSportteryRawJson,
+  parseSportteryResultsJson,
+  settleTicketSnapshotWithOfficialResults,
 } from "../server/quantEngine.mjs";
+import { createLedgerManager } from "../server/ledgerManager.mjs";
 import { createManualQaEngine } from "../server/manualQaEngine.mjs";
+import { createYouJingRuntime } from "../server/runtimeApp.mjs";
+import {
+  computeEnvelopeHmacHex,
+  decryptEnvelope,
+  deriveSessionSubkeys,
+  encryptEnvelope,
+} from "../server/securityShield.mjs";
+import { createBetSlipController } from "../src/workspace/betSlipController.ts";
 import type {
   MatchItem,
   PoolCode,
@@ -1676,6 +1688,713 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
         manualSrc.includes("99") &&
         manualSrc.includes("最高校准单腿返还率"),
       "UserManualModal.tsx must reflect honest taxonomy, 99x slip distinction, and empty-alpha ceiling disclosure"
+    );
+  });
+});
+
+describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, Auto-Balanced 3-Way Synthetic Single & Instant Parlay Restoration", () => {
+  it("Slice 10 (Ticket #4 AC 1): removes mutex lock on open pools, switches same-match pools smoothly (including direct equivalent-arb target clicks) with 1-click undo, preserves dual-single coexistence, and retains server forged-payload defense", async () => {
+    const m0 = FALLBACK_MATCHES[0] as MatchItem; // HAD.single = false
+    const m1 = FALLBACK_MATCHES[1] as MatchItem; // HAD.single = true, HHAD.single = true
+    const m2 = FALLBACK_MATCHES[2] as MatchItem;
+
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
+    );
+
+    // 1. Pick HAD:h + HAD:d on m0 AND HAD:h on m2 (2-match parlay)
+    assert.equal(ctrl.togglePick(m0, "HAD", "h").ok, true);
+    assert.equal(ctrl.togglePick(m0, "HAD", "d").ok, true);
+    assert.equal(ctrl.togglePick(m2, "HAD", "h").ok, true);
+
+    // Zero open pools are mutex-locked across HAD/HHAD/TTG/HAFU/CRS
+    for (const pool of ["HAD", "HHAD", "TTG", "HAFU", "CRS"] as PoolCode[]) {
+      assert.equal(
+        ctrl.isPoolMutexLocked(m0, pool),
+        false,
+        `Pool ${pool} on open match must NOT be mutex-locked`
+      );
+    }
+
+    // 2. Direct 1-tap switch on m0 from HAD (h+d) -> HHAD (ha / equivalent-arb style click) preserves m2 pick!
+    const hhadKey = m0.pools.HHAD.options[2].key;
+    const sw1 = ctrl.togglePick(m0, "HHAD", hhadKey);
+    assert.equal(sw1.ok, true);
+    assert.equal(sw1.action, "switched-pool");
+    assert.equal(sw1.replacedCount, 2);
+    assert.equal(sw1.replacedPoolName, m0.pools.HAD.name);
+    assert.equal(sw1.canUndoPoolSwitch, true);
+    assert.ok(ctrl.getState().lastPoolSwitchUndo !== null);
+    assert.deepEqual(
+      ctrl
+        .getState()
+        .picks.map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`),
+      [`${m2.id}:HAD:h`, `${m0.id}:HHAD:${hhadKey}`]
+    );
+    assert.equal(ctrl.getState().workspace.manualReport.canCheckout, true);
+    assert.equal(ctrl.getState().workspace.manualReport.modeLabel, "2串1");
+
+    // 3. 1-click undo restores exact previous [m0 HAD:h, m0 HAD:d, m2 HAD:h] state and consumes snapshot
+    assert.equal(ctrl.undoLastPoolSwitch(), true);
+    assert.equal(ctrl.getState().lastPoolSwitchUndo, null);
+    assert.deepEqual(
+      ctrl
+        .getState()
+        .picks.map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`),
+      [`${m0.id}:HAD:h`, `${m0.id}:HAD:d`, `${m2.id}:HAD:h`]
+    );
+    assert.equal(ctrl.undoLastPoolSwitch(), false);
+
+    // 4. Direct switch across TTG -> HAFU -> CRS on m0 also works smoothly
+    const swTtg = ctrl.togglePick(m0, "TTG", "s2");
+    assert.equal(swTtg.ok, true);
+    assert.equal(swTtg.action, "switched-pool");
+    assert.equal(swTtg.replacedCount, 2);
+    const swHafu = ctrl.togglePick(m0, "HAFU", "hh");
+    assert.equal(swHafu.ok, true);
+    assert.equal(swHafu.action, "switched-pool");
+    const crsFirstKey = m0.pools.CRS.options[0].key;
+    const swCrs = ctrl.togglePick(m0, "CRS", crsFirstKey);
+    assert.equal(swCrs.ok, true);
+    assert.equal(swCrs.action, "switched-pool");
+    assert.deepEqual(
+      ctrl
+        .getState()
+        .picks.filter((p) => p.matchId === m0.id)
+        .map((p) => `${p.poolCode}:${p.optionKey}`),
+      [`CRS:${crsFirstKey}`]
+    );
+
+    // 5. All-single coexistence on m1 in 'spf' & 'single' modes locks [1] with autoLockedSingleReason = 'dual-single'
+    ctrl.clearPicks();
+    ctrl.setMode("single");
+    assert.equal(ctrl.togglePick(m1, "HAD", "h").ok, true);
+    const dualRes = ctrl.togglePick(m1, "HHAD", m1.pools.HHAD.options[1].key);
+    assert.equal(dualRes.ok, true);
+    assert.equal(dualRes.action, "added");
+    assert.equal(dualRes.autoLockedSingleReason, "dual-single");
+    assert.equal(ctrl.getState().picks.length, 2);
+    assert.equal(ctrl.getState().workspace.manualReport.canCheckout, true);
+    assert.equal(ctrl.getState().workspace.manualReport.modeLabel, "单关");
+
+    // 6. Server statutory defense-in-depth: forged mixed-pool parlay payload is strictly blocked with ¥0
+    const forgedMixed = [
+      {
+        matchId: m0.id,
+        matchNumStr: m0.matchNumStr,
+        home: m0.home,
+        away: m0.away,
+        poolCode: "HAD" as PoolCode,
+        poolName: "胜平负",
+        singleAllowed: false,
+        optionKey: "h",
+        optionLabel: "主胜",
+        odds: m0.pools.HAD.options[0].odds,
+        fairProb: m0.pools.HAD.options[0].fairProb,
+      },
+      {
+        matchId: m0.id,
+        matchNumStr: m0.matchNumStr,
+        home: m0.home,
+        away: m0.away,
+        poolCode: "TTG" as PoolCode,
+        poolName: "总进球",
+        singleAllowed: true,
+        optionKey: "s2",
+        optionLabel: "2球",
+        odds: m0.pools.TTG.options[2].odds,
+        fairProb: m0.pools.TTG.options[2].fairProb,
+      },
+    ];
+    const forgedRep = computeTruthReport(forgedMixed, 5, FALLBACK_MATCHES);
+    assert.equal(forgedRep.canCheckout, false);
+    assert.equal(forgedRep.totalCost, 0);
+    assert.equal(forgedRep.maxPayout, 0);
+  });
+
+  it("Slice 11 (Ticket #4 AC 2): upgrades syntheticRescuePicks to full 3-way equivalence and auto-mounts zero-blind-spot inverse-odds balanced Synthetic Single into effectiveReport, shopkeeper slip & sealed ledger snapshot without mutating picks", async () => {
+    const os = await import("node:os");
+    const m0 = FALLBACK_MATCHES[0] as MatchItem; // HAD.single = false, HAFU.single = true
+    assert.equal(m0.pools.HAD.single, false);
+    assert.equal(m0.pools.HAFU.single, true);
+
+    const makePick = (
+      m: MatchItem,
+      poolCode: PoolCode,
+      optKey: string
+    ): SelectedPick => {
+      const pool = m.pools[poolCode];
+      const opt = pool.options.find((o) => o.key === optKey)!;
+      return {
+        matchId: m.id,
+        matchNumStr: m.matchNumStr,
+        home: m.home,
+        away: m.away,
+        poolCode,
+        poolName: pool.name,
+        singleAllowed: pool.single,
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        odds: opt.odds,
+        fairProb: opt.fairProb,
+      };
+    };
+
+    // 1. computeTruthReport upgrades syntheticRescuePicks to complete 3-way HAFU & multi-pick / HHAD unions
+    const repHome = computeTruthReport([makePick(m0, "HAD", "h")], 5, [m0]);
+    assert.deepEqual(
+      repHome.syntheticRescuePicks?.map((p: SelectedPick) => p.optionKey),
+      ["hh", "dh", "ah"]
+    );
+    const repDraw = computeTruthReport([makePick(m0, "HAD", "d")], 5, [m0]);
+    assert.deepEqual(
+      repDraw.syntheticRescuePicks?.map((p: SelectedPick) => p.optionKey),
+      ["dd", "hd", "ad"]
+    );
+    const repAway = computeTruthReport([makePick(m0, "HAD", "a")], 5, [m0]);
+    assert.deepEqual(
+      repAway.syntheticRescuePicks?.map((p: SelectedPick) => p.optionKey),
+      ["aa", "da", "ha"]
+    );
+    const repHomeDraw = computeTruthReport(
+      [makePick(m0, "HAD", "h"), makePick(m0, "HAD", "d")],
+      5,
+      [m0]
+    );
+    assert.equal(repHomeDraw.syntheticRescuePicks?.length, 6);
+
+    const nonSingleHhadMatch: MatchItem = {
+      ...m0,
+      id: "m0-hhad-nosgl",
+      pools: {
+        ...m0.pools,
+        HAD: { ...m0.pools.HAD, single: false },
+        HHAD: { ...m0.pools.HHAD, goalLine: "-1", single: false },
+      },
+    };
+    const repHhadPlus = computeTruthReport(
+      [makePick(nonSingleHhadMatch, "HHAD", "ha")],
+      5,
+      [nonSingleHhadMatch]
+    );
+    assert.equal(
+      repHhadPlus.syntheticRescuePicks?.length,
+      6,
+      "HHAD(-1) ha (= Draw + Away) must resolve to 6 single-eligible HAFU items when HAD & HHAD are non-single"
+    );
+    const repHhadMinus = computeTruthReport(
+      [makePick(nonSingleHhadMatch, "HHAD", "hh")],
+      5,
+      [nonSingleHhadMatch]
+    );
+    assert.ok(
+      (repHhadMinus.syntheticRescuePicks?.length ?? 0) >= 8 &&
+        repHhadMinus.syntheticRescuePicks?.every(
+          (p: SelectedPick) => p.poolCode === "CRS" && p.singleAllowed === true
+        ),
+      "HHAD(-1) hh (win by >=2) must resolve to single-eligible CRS scorelines"
+    );
+
+    // 2. BetSlipController: selecting 1 non-single HAD:h preserves state.picks=[HAD:h] while auto-mounting balanced 3-way HAFU in effectiveReport
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
+    );
+
+    const vPick = ctrl.togglePick(m0, "HAD", "h");
+    assert.equal(vPick.ok, true);
+    assert.equal(ctrl.getState().syntheticSingleMode, "full-3way");
+    // Intent preserved! Match Radar button stays highlighted on HAD:h!
+    assert.deepEqual(
+      ctrl.getState().picks.map((p) => `${p.poolCode}:${p.optionKey}`),
+      ["HAD:h"]
+    );
+
+    const ws = ctrl.getState().workspace;
+    assert.equal(ws.manualReport.canCheckout, false);
+    assert.equal(ws.effectiveReport.canCheckout, true);
+    assert.equal(ws.effectiveReport.syntheticAutoMounted, true);
+    assert.equal(ws.effectiveReport.syntheticModeUsed, "full-3way");
+    assert.equal(ws.effectiveReport.syntheticBlindSpotProb, 0);
+    assert.equal(ws.effectiveReport.underwaterCount, 0);
+    assert.ok(
+      ws.effectiveReport.totalCost >= 6 &&
+        ws.effectiveReport.totalCost % 2 === 0
+    );
+    assert.ok(ws.effectiveReport.minPayout >= ws.effectiveReport.totalCost);
+    assert.ok((ws.effectiveReport.syntheticEffectiveOdds ?? 0) > 1.0);
+
+    // Exact probability equivalence: 3-way HAFU hit rate === coherent HAD:h fairProb!
+    const hadHProb = m0.pools.HAD.options.find((o) => o.key === "h")!.fairProb;
+    assert.ok(
+      Math.abs(ws.effectiveReport.anyWinProb - hadHProb) < 1e-6,
+      `3-way HAFU anyWinProb (${ws.effectiveReport.anyWinProb}) must equal coherent HAD:h prob (${hadHProb}) with 0% blind spot`
+    );
+    assert.deepEqual(
+      ws.effectiveReport.tickets?.map((t) => t.legs?.[0]?.optionKey).sort(),
+      ["ah", "dh", "hh"]
+    );
+
+    // 3. Shopkeeper WeChat Slip outputs the 3 balanced HAFU single lines summing to effectiveReport.totalCost
+    const slipText = ctrl.formatShopkeeperWeChatSlip();
+    assert.ok(slipText.includes(`合计 ¥${ws.effectiveReport.totalCost}`));
+    assert.ok(
+      slipText.includes("胜胜") &&
+        slipText.includes("平胜") &&
+        slipText.includes("负胜")
+    );
+    assert.equal(slipText.includes("胜平负"), false);
+
+    // 4. Sealed Ledger Snapshot passes authoritative server ledgerManager single-eligibility check AND settles comeback 0:1 -> 2:1 ("ah") as WON!
+    const draft = ctrl.buildSealedLedgerDraft();
+    assert.ok(draft && draft.snapshot);
+    assert.equal(draft.cost, ws.effectiveReport.totalCost);
+    assert.equal(draft.snapshot.lines.length, 3);
+    assert.ok(
+      draft.snapshot.lines.every(
+        (ln) => ln.legs.length === 1 && ln.legs[0].poolCode === "HAFU"
+      )
+    );
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-syn-ledger-"));
+    try {
+      const lm = createLedgerManager({ dataDir: tmpDir });
+      const addRes = lm.mutateUserLedger(
+        "u-syn-1",
+        {
+          action: "add-entry",
+          kind: "live",
+          ...draft,
+        },
+        {
+          authoritativeMatches: FALLBACK_MATCHES,
+          trustedServerSnapshot: true,
+        }
+      );
+      assert.equal(addRes.ok, true);
+      const savedEntry = addRes.ledger.entries[0];
+      assert.equal(savedEntry.snapshot.lines.length, 3);
+
+      // Settle against a halftime-trailing comeback HT 0:1 -> FT 2:1 ("ah" = 负胜)!
+      const comebackResults = parseSportteryResultsJson({
+        errorCode: "0",
+        value: {
+          matchResult: [
+            {
+              matchId: m0.id,
+              matchNumStr: m0.matchNumStr,
+              homeTeam: m0.home,
+              awayTeam: m0.away,
+              matchResultStatus: "2",
+              poolStatus: "Payout",
+              sectionsNo1: "0:1",
+              sectionsNo999: "2:1",
+            },
+          ],
+        },
+      });
+      const settled = settleTicketSnapshotWithOfficialResults(
+        savedEntry.snapshot,
+        comebackResults,
+        { stakeCost: savedEntry.cost }
+      );
+      assert.equal(
+        settled.status,
+        "won",
+        "3-way synthetic single MUST win with net profit > 0 even on HT 0:1 -> FT 2:1 comeback!"
+      );
+      assert.ok(settled.settledReturn >= savedEntry.cost);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Slice 12 (Ticket #4 AC 3, AC 4 & AC 5): supports full-3way / trim-2way (with exact comeback blind-spot disclosure) / off mode switching, blocks synEff <= 1.00 unplayable favorites honestly, restores low-vig 2串1 in 0ms on 2nd match, seals via encrypted runtime, and enforces dual-viewport UI contracts", async () => {
+    const os = await import("node:os");
+    const { EventEmitter } = await import("node:events");
+    const m0 = FALLBACK_MATCHES[0] as MatchItem; // HAD.single = false
+    const m2 = FALLBACK_MATCHES[2] as MatchItem; // HAD.single = false
+
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
+    );
+
+    // 1. Start on 1 non-single match (m0 HAD:h): full-3way default -> switch to trim-2way -> switch to off
+    ctrl.togglePick(m0, "HAD", "h");
+    const repFull = ctrl.getState().workspace.effectiveReport;
+    assert.equal(repFull.syntheticAutoMounted, true);
+    assert.equal(repFull.syntheticModeUsed, "full-3way");
+    assert.equal(repFull.syntheticBlindSpotProb, 0);
+
+    ctrl.setSyntheticSingleMode("trim-2way");
+    const repTrim = ctrl.getState().workspace.effectiveReport;
+    assert.equal(repTrim.canCheckout, true);
+    assert.equal(repTrim.syntheticAutoMounted, true);
+    assert.equal(repTrim.syntheticModeUsed, "trim-2way");
+    assert.equal(repTrim.underwaterCount, 0);
+    assert.deepEqual(
+      repTrim.tickets?.map((t) => t.legs?.[0]?.optionKey).sort(),
+      ["dh", "hh"]
+    );
+    assert.ok(
+      (repTrim.syntheticEffectiveOdds ?? 0) >
+        (repFull.syntheticEffectiveOdds ?? 0),
+      `trim-2way effective odds (${repTrim.syntheticEffectiveOdds}) must exceed full-3way (${repFull.syntheticEffectiveOdds})`
+    );
+    const ahProb = m0.pools.HAFU.options.find((o) => o.key === "ah")!.fairProb;
+    assert.ok(
+      (repTrim.syntheticBlindSpotProb ?? 0) > 0 &&
+        Math.abs((repTrim.syntheticBlindSpotProb ?? 0) - ahProb) < 1e-5,
+      `trim-2way must report exact comeback blind-spot prob ${ahProb}, got ${repTrim.syntheticBlindSpotProb}`
+    );
+    assert.ok(
+      Math.abs(
+        repFull.anyWinProb -
+          repTrim.anyWinProb -
+          (repTrim.syntheticBlindSpotProb ?? 0)
+      ) < 1e-5
+    );
+    assert.ok(repTrim.syntheticBlindSpotLabel?.includes("逆转"));
+    assert.ok(
+      repTrim.warnings.some((w) => w.id === "synthetic-blind-spot"),
+      "trim-2way must emit explicit synthetic-blind-spot warning"
+    );
+
+    // Away direction ("a") in trim-2way drops "ha" (胜负) comeback
+    ctrl.clearPicks();
+    ctrl.togglePick(m0, "HAD", "a");
+    ctrl.setSyntheticSingleMode("trim-2way");
+    const repAwayTrim = ctrl.getState().workspace.effectiveReport;
+    assert.deepEqual(
+      repAwayTrim.tickets?.map((t) => t.legs?.[0]?.optionKey).sort(),
+      ["aa", "da"]
+    );
+    assert.ok((repAwayTrim.syntheticBlindSpotProb ?? 0) > 0);
+    assert.ok(repAwayTrim.syntheticBlindSpotLabel?.includes("胜负"));
+
+    // "off" mode unmounts synthetic single and exposes bridgeCandidates
+    ctrl.setSyntheticSingleMode("off");
+    const wsOff = ctrl.getState().workspace;
+    assert.equal(wsOff.effectiveReport.canCheckout, false);
+    assert.equal(Boolean(wsOff.effectiveReport.syntheticAutoMounted), false);
+    assert.equal(wsOff.effectiveReport.syntheticModeUsed, "off");
+    assert.ok(wsOff.insights.bridgeCandidates.length >= 1);
+
+    // Switch back to full-3way before testing 2nd-match parlay restoration
+    ctrl.clearPicks();
+    ctrl.togglePick(m0, "HAD", "h");
+    assert.equal(
+      ctrl.getState().workspace.effectiveReport.syntheticAutoMounted,
+      true
+    );
+
+    // 2. Instant 0ms Parlay Restoration on adding 2nd match (m2 HAD:h):
+    // Zero HAFU residue, low-vig HAD × HAD 2串1, clean radar anchor!
+    ctrl.togglePick(m2, "HAD", "h");
+    const stParlay = ctrl.getState();
+    assert.deepEqual(
+      stParlay.picks.map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`),
+      [`${m0.id}:HAD:h`, `${m2.id}:HAD:h`]
+    );
+    assert.equal(
+      Boolean(stParlay.workspace.effectiveReport.syntheticAutoMounted),
+      false
+    );
+    assert.equal(stParlay.workspace.manualReport.canCheckout, true);
+    assert.equal(stParlay.workspace.effectiveReport.canCheckout, true);
+    assert.equal(stParlay.workspace.effectiveReport.modeLabel, "2串1");
+    assert.equal(stParlay.workspace.effectiveReport.betCount, 1);
+    assert.equal(stParlay.workspace.effectiveReport.totalCost, 10);
+    assert.ok(
+      stParlay.workspace.effectiveReport.tickets?.every((t) =>
+        t.legs?.every((lg) => lg.poolCode === "HAD")
+      ),
+      "2-match parlay tickets MUST use low-vig HAD legs with zero HAFU residue"
+    );
+    assert.ok(
+      stParlay.workspace.effectiveReport.avgVigLossPer100 < 24,
+      `Expected low-vig HADxHAD parlay (<24%), got ${stParlay.workspace.effectiveReport.avgVigLossPer100}%`
+    );
+    const slot1Parlay = stParlay.workspace.portfolioPlans.find(
+      (p) => p.key === "max-profit-prob"
+    )!;
+    assert.ok(
+      slot1Parlay.lines[0].legs.some(
+        (lg) =>
+          lg.matchId === m0.id && lg.poolCode === "HAD" && lg.optionKey === "h"
+      ),
+      "3+1 Pareto anchor must see clean m0 HAD:h without HAFU pollution"
+    );
+
+    // Removing 2nd match smoothly re-mounts 3-way synthetic single on m0!
+    ctrl.removeMatchFromSlip(m2.id);
+    assert.equal(
+      ctrl.getState().workspace.effectiveReport.syntheticAutoMounted,
+      true
+    );
+    assert.equal(ctrl.getState().workspace.effectiveReport.canCheckout, true);
+
+    // 3. Profitability Hard Gate: ultra-heavy favorite (<= 1.12, synEff <= 1.00) is honestly blocked!
+    const ultraHeavyMatch: MatchItem = {
+      ...m0,
+      id: "m-ultra-heavy-112",
+      matchNumStr: "周六099",
+      pools: {
+        ...m0.pools,
+        HAD: {
+          ...m0.pools.HAD,
+          single: false,
+          options: [
+            { key: "h", label: "主胜", odds: 1.12, trend: -1, fairProb: 0.8 },
+            { key: "d", label: "平", odds: 6.5, trend: 0, fairProb: 0.13 },
+            { key: "a", label: "客胜", odds: 13.0, trend: 1, fairProb: 0.07 },
+          ],
+        },
+        HAFU: {
+          ...m0.pools.HAFU,
+          single: true,
+          options: m0.pools.HAFU.options.map((o) =>
+            o.key === "hh"
+              ? { ...o, odds: 1.42 }
+              : o.key === "dh"
+                ? { ...o, odds: 3.6 }
+                : o.key === "ah"
+                  ? { ...o, odds: 22.0 }
+                  : o
+          ),
+        },
+      },
+    };
+    const wsUnplayable = evaluateQuantWorkspace(
+      {
+        picks: [
+          {
+            matchId: ultraHeavyMatch.id,
+            matchNumStr: ultraHeavyMatch.matchNumStr,
+            home: ultraHeavyMatch.home,
+            away: ultraHeavyMatch.away,
+            poolCode: "HAD",
+            poolName: "胜平负",
+            singleAllowed: false,
+            optionKey: "h",
+            optionLabel: "主胜",
+            odds: 1.12,
+            fairProb: 0.8,
+          },
+        ],
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: [ultraHeavyMatch.id],
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [ultraHeavyMatch, m2]
+    );
+    assert.equal(wsUnplayable.effectiveReport.canCheckout, false);
+    assert.equal(wsUnplayable.effectiveReport.totalCost, 0);
+    assert.equal(
+      Boolean(wsUnplayable.effectiveReport.syntheticAutoMounted),
+      false
+    );
+    assert.ok(
+      (wsUnplayable.effectiveReport.syntheticEffectiveOdds ?? 1) <= 1.0
+    );
+    assert.ok(
+      wsUnplayable.effectiveReport.warnings.some(
+        (w) => w.id === "synthetic-unplayable" && w.detail.includes("过桥")
+      )
+    );
+    assert.ok(wsUnplayable.insights.bridgeCandidates.length >= 1);
+
+    // 4. End-to-end encrypted /api/ledger/mutate seals single-eligible HAFU lines when workspaceParams has planSpec=null & 1 non-single match
+    const tmpRuntimeDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "yj-rt-syn-ledger-")
+    );
+    const runtime = createYouJingRuntime({
+      dataDir: tmpRuntimeDir,
+      getApiKey: () => "test-key",
+      enableXiaoGaoProbe: false,
+      fetchMatches: async () => ({
+        matches: FALLBACK_MATCHES,
+        syncNote: "测试快照",
+      }),
+    });
+    try {
+      const created = runtime.accountManager.createAccount({
+        username: "syn_member",
+        note: "Ticket 4 Ledger Test",
+        durationHours: 24,
+        maxDevices: 2,
+        aiEnabled: false,
+        dailyAiLimit: 0,
+      });
+      const headersBase = {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "sec-fetch-mode": "cors",
+      };
+      const callRoute = async (
+        url: string,
+        headers: Record<string, string>,
+        body: unknown
+      ) => {
+        const req = new EventEmitter() as any;
+        req.method = "POST";
+        req.url = url;
+        req.headers = Object.fromEntries(
+          Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v])
+        );
+        req.socket = { remoteAddress: "198.51.100.88" };
+        req.destroy = () => {};
+        let statusCode = 200;
+        let rawBody = "";
+        const res = {
+          get statusCode() {
+            return statusCode;
+          },
+          set statusCode(v: number) {
+            statusCode = v;
+          },
+          headersSent: false,
+          setHeader() {},
+          end(chunk = "") {
+            res.headersSent = true;
+            rawBody += String(chunk);
+          },
+        };
+        queueMicrotask(() => {
+          req.emit("data", Buffer.from(JSON.stringify(body), "utf8"));
+          req.emit("end");
+        });
+        await runtime.gateway.handleRequest(req, res, url);
+        return { statusCode, body: rawBody };
+      };
+
+      const bootRes = await callRoute("/api/security/bootstrap", headersBase, {
+        v: 1,
+        tz: "Asia/Shanghai",
+        hwFp: "b".repeat(64),
+      });
+      const bootJson = JSON.parse(bootRes.body);
+      const { aesKey, hmacKey } = deriveSessionSubkeys(
+        Buffer.from(bootJson.k, "base64")
+      );
+      const postEnc = async (
+        endpoint: string,
+        payload: unknown,
+        nonce: string
+      ) => {
+        const ts = String(Date.now());
+        const env = encryptEnvelope(aesKey, payload);
+        const sig = computeEnvelopeHmacHex(
+          hmacKey,
+          bootJson.sid,
+          endpoint,
+          ts,
+          nonce,
+          env.iv,
+          env.d
+        );
+        const r = await callRoute(
+          `/api/${endpoint}`,
+          {
+            ...headersBase,
+            "x-yj-sid": bootJson.sid,
+            "x-yj-ts": ts,
+            "x-yj-nonce": nonce,
+            "x-yj-sig": sig,
+          },
+          env
+        );
+        assert.equal(r.statusCode, 200);
+        const parsed = JSON.parse(r.body);
+        return decryptEnvelope(aesKey, parsed.payload.iv, parsed.payload.d);
+      };
+
+      await postEnc(
+        "auth/login",
+        {
+          username: "syn_member",
+          password: created.plainPassword,
+          hwFp: "b".repeat(64),
+          deviceLabel: "Mac",
+        },
+        "a".repeat(32)
+      );
+      const sealedDraft = ctrl.buildSealedLedgerDraft()!;
+      const ledgerRes = await postEnc(
+        "ledger/mutate",
+        {
+          action: "add-entry",
+          kind: "live",
+          ...sealedDraft,
+          workspaceParams: ctrl.buildWorkspaceParams(),
+        },
+        "b".repeat(32)
+      );
+      assert.equal(ledgerRes.ok, true);
+      assert.equal(ledgerRes.ledger.entries.length, 1);
+      assert.equal(ledgerRes.ledger.entries[0].snapshot.lines.length, 3);
+      assert.ok(
+        ledgerRes.ledger.entries[0].snapshot.lines.every(
+          (ln: any) => ln.legs[0].poolCode === "HAFU"
+        )
+      );
+    } finally {
+      runtime.dispose();
+      fs.rmSync(tmpRuntimeDir, { recursive: true, force: true });
+    }
+
+    // 5. Dual-Viewport UI & CSS Source Contracts
+    const appSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "src/mobile/SkinPhoneApp.tsx"),
+      "utf8"
+    );
+    const coreCss = fs.readFileSync(
+      path.join(REPO_ROOT, "public/skins/core.css"),
+      "utf8"
+    );
+    assert.equal(
+      appSrc.includes("mutex-lock") || coreCss.includes("mutex-lock"),
+      false,
+      "SkinPhoneApp.tsx and core.css must completely remove .mutex-lock visual locking"
+    );
+    assert.ok(
+      appSrc.includes("undoLastPoolSwitch") && appSrc.includes("撤销切换"),
+      "SkinPhoneApp.tsx must wire 1-tap 撤销切换 to betCtrl.undoLastPoolSwitch()"
+    );
+    assert.ok(
+      appSrc.includes("setSyntheticSingleMode") &&
+        appSrc.includes("3项全包无死角") &&
+        appSrc.includes("2项省本搏常规"),
+      "SkinPhoneApp.tsx must render 1-tap synthetic-single mode pills (3项全包无死角 / 2项省本搏常规 / 过桥凑2串1)"
     );
   });
 });

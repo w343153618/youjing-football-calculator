@@ -1409,7 +1409,10 @@ export function createSecurityAndQuantGateway(opts = {}) {
             };
             const ws = evaluateQuantWorkspace(cleanWsParams, sessionMatches);
             const effRep = ws.effectiveReport;
-            const appPlan = cleanWsParams.planSpec ? ws.appliedPlan : null;
+            const appPlan =
+              cleanWsParams.planSpec || effRep.syntheticAutoMounted
+                ? ws.appliedPlan
+                : null;
             if (effRep.canCheckout && effRep.totalCost > 0) {
               const bankerSet = new Set(
                 effRep.bankerMatchIds ??
@@ -1459,7 +1462,9 @@ export function createSecurityAndQuantGateway(opts = {}) {
                           modeLabel: passTxt,
                           multiple: Math.max(
                             1,
-                            Math.round(Number(cleanWsParams.multiple) || 1)
+                            Math.round(
+                              Number(tk.multiple ?? cleanWsParams.multiple) || 1
+                            )
                           ),
                           legs: legs.map((lg) => {
                             const m = matchById.get(lg.matchId);
@@ -1691,6 +1696,7 @@ export function createSecurityAndQuantGateway(opts = {}) {
                     picks: Array.isArray(data?.picks) ? data.picks : [],
                     multiple: data?.multiple ?? 5,
                     passSpec: data?.passSpec ?? { mode: "auto" },
+                    syntheticSingleMode: data?.syntheticSingleMode,
                     planSpec: data?.planSpec ?? null,
                     subjectiveDeltaPct: Number(data?.subjectiveDeltaPct) || 0,
                     simVoidFirstMatch: Boolean(data?.simVoidFirstMatch),

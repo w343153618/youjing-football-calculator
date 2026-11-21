@@ -10,6 +10,7 @@ export type LegacyArchetypeKey =
   | "value-assassin";
 export type ArchetypeKey = PortfolioKey | LegacyArchetypeKey;
 export type BonusOptMode = "equal" | "hot-first" | "cold-first";
+export type SyntheticSingleMode = "full-3way" | "trim-2way" | "off";
 
 export const SUBJECTIVE_DELTA_MIN = -15;
 export const SUBJECTIVE_DELTA_MAX = 15;
@@ -201,6 +202,11 @@ export interface TruthReport {
   consolidatedTickets: number;
   syntheticHint: string | null;
   syntheticRescuePicks?: SelectedPick[] | null;
+  syntheticAutoMounted?: boolean;
+  syntheticModeUsed?: SyntheticSingleMode;
+  syntheticEffectiveOdds?: number;
+  syntheticBlindSpotProb?: number;
+  syntheticBlindSpotLabel?: string | null;
   tickets?: ComboRow[];
   combos: ComboRow[];
   warnings: RadarWarning[];
@@ -346,6 +352,7 @@ export interface QuantWorkspaceParams {
   picks: SelectedPick[];
   multiple: number;
   passSpec?: PassSelectionSpec;
+  syntheticSingleMode?: SyntheticSingleMode;
   subjectiveDeltaPct: number;
   simVoidFirstMatch: boolean;
   planSpec: AppliedPlanSpec;

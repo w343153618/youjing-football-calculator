@@ -6976,6 +6976,568 @@ function sanitizeAndDeduplicatePicks(rawPicksInput, maxLen = 512) {
   return out;
 }
 
+const HAFU_KEYS_BY_FT = {
+  h: ["hh", "dh", "ah"],
+  d: ["dd", "hd", "ad"],
+  a: ["aa", "da", "ha"],
+};
+
+function resolveSyntheticSingleBundle(
+  m,
+  matchPicks,
+  mode = "full-3way",
+  atomicOverride = null
+) {
+  if (!m || !m.pools || !Array.isArray(matchPicks) || matchPicks.length === 0) {
+    return null;
+  }
+  const gl = resolveGoalLineNum(m);
+  const atomicProbs =
+    atomicOverride ??
+    getMatchBaseAtomicProbs(m, ["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
+  const targetMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+  let targetHitCount = 0;
+  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+    const tpl = ATOMIC_TEMPLATES[t];
+    const hit = matchPicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        tpl
+      )
+    );
+    if (hit) {
+      targetMask[t] = 1;
+      targetHitCount += 1;
+    }
+  }
+  if (targetHitCount === 0) return null;
+
+  const toPick = (poolCode, opt) => ({
+    matchId: m.id,
+    matchNumStr: m.matchNumStr,
+    home: m.home,
+    away: m.away,
+    poolCode,
+    poolName: m.pools[poolCode]?.name || poolCode,
+    singleAllowed: true,
+    optionKey: opt.key,
+    optionLabel: opt.label,
+    odds: opt.odds,
+    fairProb:
+      sumOptionProbOnAtomic(atomicProbs, poolCode, opt.key, opt.label, gl) ||
+      opt.fairProb,
+  });
+
+  // 1. Check if HAD or HHAD is single-eligible and offers an exact 1-or-2 option equivalence (e.g. HAD h+d <-> HHAD(+1) hh)
+  for (const mainCode of ["HHAD", "HAD"]) {
+    const pool = m.pools[mainCode];
+    if (
+      !pool ||
+      pool.selling === false ||
+      !pool.single ||
+      !Array.isArray(pool.options) ||
+      pool.options.length === 0
+    ) {
+      continue;
+    }
+    const matchingOpts = [];
+    let exactCover = true;
+    const coveredMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+    for (const opt of pool.options) {
+      if (!(Number(opt.odds) > 0)) continue;
+      let anyIn = false;
+      let anyOut = false;
+      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+        if (
+          doesOptionHitAtomicTemplate(
+            mainCode,
+            opt.key,
+            opt.label,
+            gl,
+            ATOMIC_TEMPLATES[t]
+          )
+        ) {
+          if (targetMask[t]) anyIn = true;
+          else anyOut = true;
+        }
+      }
+      if (anyIn && !anyOut) {
+        matchingOpts.push(opt);
+        for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+          if (
+            doesOptionHitAtomicTemplate(
+              mainCode,
+              opt.key,
+              opt.label,
+              gl,
+              ATOMIC_TEMPLATES[t]
+            )
+          ) {
+            coveredMask[t] = 1;
+          }
+        }
+      } else if (anyIn && anyOut) {
+        exactCover = false;
+        break;
+      }
+    }
+    if (exactCover && matchingOpts.length > 0) {
+      let allCovered = true;
+      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+        if (targetMask[t] !== coveredMask[t]) {
+          allCovered = false;
+          break;
+        }
+      }
+      if (allCovered) {
+        const fullPicks = matchingOpts.map((o) => toPick(mainCode, o));
+        const synEff =
+          1 /
+          fullPicks.reduce(
+            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
+            0
+          );
+        return {
+          poolCode: mainCode,
+          fullPicks,
+          activePicks: fullPicks,
+          modeUsed: "full-3way",
+          synEff,
+          blindSpotProb: 0,
+          blindSpotLabel: null,
+        };
+      }
+    }
+  }
+
+  // 2. Check if targetMask is an exact union of full-time HAD outcomes {'h', 'd', 'a'} -> exact 3-way / 6-way HAFU partition!
+  const hafuPool = m.pools.HAFU;
+  if (
+    hafuPool &&
+    hafuPool.selling !== false &&
+    hafuPool.single &&
+    Array.isArray(hafuPool.options) &&
+    hafuPool.options.length > 0
+  ) {
+    const ftIncluded = [];
+    let pureFtPartition = true;
+    for (const ftKey of ["h", "d", "a"]) {
+      let anyIn = false;
+      let anyOut = false;
+      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+        if (ATOMIC_TEMPLATES[t].ft === ftKey) {
+          if (targetMask[t]) anyIn = true;
+          else anyOut = true;
+        }
+      }
+      if (anyIn && anyOut) {
+        pureFtPartition = false;
+        break;
+      }
+      if (anyIn) ftIncluded.push(ftKey);
+    }
+
+    if (pureFtPartition && ftIncluded.length > 0) {
+      const fullKeys = [];
+      for (const ftKey of ftIncluded) {
+        for (const hk of HAFU_KEYS_BY_FT[ftKey]) {
+          if (!fullKeys.includes(hk)) fullKeys.push(hk);
+        }
+      }
+      const fullOpts = fullKeys
+        .map((rk) => hafuPool.options.find((o) => o.key === rk && o.odds > 0))
+        .filter(Boolean);
+      if (fullOpts.length === fullKeys.length) {
+        const fullPicks = fullOpts.map((o) => toPick("HAFU", o));
+        let activePicks = fullPicks;
+        let modeUsed = "full-3way";
+        let blindSpotProb = 0;
+        let blindSpotLabel = null;
+
+        if (mode === "trim-2way" && fullPicks.length >= 3) {
+          const droppedPicks = [];
+          const keptPicks = [];
+          for (const ftKey of ftIncluded) {
+            const grp = fullPicks.filter((p) =>
+              HAFU_KEYS_BY_FT[ftKey].includes(p.optionKey)
+            );
+            if (ftKey === "h") {
+              for (const p of grp) {
+                if (p.optionKey === "ah") droppedPicks.push(p);
+                else keptPicks.push(p);
+              }
+            } else if (ftKey === "a") {
+              for (const p of grp) {
+                if (p.optionKey === "ha") droppedPicks.push(p);
+                else keptPicks.push(p);
+              }
+            } else {
+              // Draw ('d'): drop lower-probability half-lead-lost draw ('hd' vs 'ad')
+              const leadDraws = grp
+                .filter((p) => p.optionKey !== "dd")
+                .sort((a, b) => a.fairProb - b.fairProb);
+              const dropDraw = leadDraws[0];
+              for (const p of grp) {
+                if (dropDraw && p.optionKey === dropDraw.optionKey)
+                  droppedPicks.push(p);
+                else keptPicks.push(p);
+              }
+            }
+          }
+          if (keptPicks.length >= 2 && droppedPicks.length > 0) {
+            activePicks = keptPicks;
+            modeUsed = "trim-2way";
+            blindSpotProb = droppedPicks.reduce((a, p) => a + p.fairProb, 0);
+            const dropDesc = droppedPicks
+              .map((p) =>
+                p.optionKey === "ah"
+                  ? `半场落后逆转（${p.optionLabel}）`
+                  : p.optionKey === "ha"
+                    ? `半场领先被逆转（${p.optionLabel}）`
+                    : `半场分胜负下半场扳平（${p.optionLabel}）`
+              )
+              .join("、");
+            blindSpotLabel = dropDesc;
+          }
+        }
+
+        const synEff =
+          1 /
+          activePicks.reduce(
+            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
+            0
+          );
+        const fullSynEff =
+          1 /
+          fullPicks.reduce(
+            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
+            0
+          );
+        return {
+          poolCode: "HAFU",
+          fullPicks,
+          activePicks,
+          modeUsed,
+          synEff,
+          fullSynEff,
+          blindSpotProb,
+          blindSpotLabel,
+        };
+      }
+    }
+  }
+
+  // 3. Fallback to single-eligible CRS scorelines (e.g. non-single HHAD(-1) hh win by >=2 or hd win by 1)
+  const crsPool = m.pools.CRS;
+  if (
+    crsPool &&
+    crsPool.selling !== false &&
+    crsPool.single &&
+    Array.isArray(crsPool.options) &&
+    crsPool.options.length > 0
+  ) {
+    const crsOpts = [];
+    for (const opt of crsPool.options) {
+      if (!(Number(opt.odds) > 0)) continue;
+      let inMass = 0;
+      let totalMass = 0;
+      let anyIn = false;
+      let anyOut = false;
+      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+        if (
+          doesOptionHitAtomicTemplate(
+            "CRS",
+            opt.key,
+            opt.label,
+            gl,
+            ATOMIC_TEMPLATES[t]
+          )
+        ) {
+          const p = atomicProbs[t] || 1e-6;
+          totalMass += p;
+          if (targetMask[t]) {
+            anyIn = true;
+            inMass += p;
+          } else {
+            anyOut = true;
+          }
+        }
+      }
+      const isCatchAll =
+        opt.label === "胜其它" ||
+        opt.label === "平其它" ||
+        opt.label === "负其它";
+      if (
+        (anyIn && !anyOut) ||
+        (isCatchAll && totalMass > 0 && inMass >= 0.5 * totalMass)
+      ) {
+        crsOpts.push(opt);
+      }
+    }
+    if (crsOpts.length >= 1) {
+      const fullPicks = crsOpts.map((o) => toPick("CRS", o));
+      let activePicks = fullPicks;
+      let modeUsed = "full-3way";
+      let blindSpotProb = 0;
+      let blindSpotLabel = null;
+      if (mode === "trim-2way" && fullPicks.length >= 4) {
+        const sortedByProb = [...fullPicks].sort(
+          (a, b) => b.fairProb - a.fairProb
+        );
+        const keepCount = Math.max(2, Math.ceil(fullPicks.length * 0.65));
+        const keepSet = new Set(
+          sortedByProb.slice(0, keepCount).map((p) => p.optionKey)
+        );
+        const dropped = fullPicks.filter((p) => !keepSet.has(p.optionKey));
+        const kept = fullPicks.filter((p) => keepSet.has(p.optionKey));
+        if (kept.length >= 2 && dropped.length > 0) {
+          activePicks = kept;
+          modeUsed = "trim-2way";
+          blindSpotProb = dropped.reduce((a, p) => a + p.fairProb, 0);
+          blindSpotLabel = `高赔长尾比分（${dropped
+            .slice(0, 3)
+            .map((p) => p.optionLabel)
+            .join("/")}${dropped.length > 3 ? "等" : ""}）`;
+        }
+      }
+      const synEff =
+        1 /
+        activePicks.reduce(
+          (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
+          0
+        );
+      return {
+        poolCode: "CRS",
+        fullPicks,
+        activePicks,
+        modeUsed,
+        synEff,
+        fullSynEff:
+          1 /
+          fullPicks.reduce(
+            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
+            0
+          ),
+        blindSpotProb,
+        blindSpotLabel,
+      };
+    }
+  }
+
+  return null;
+}
+
+function buildAutoSyntheticSinglePlan(m, bundle, rawMultiple, rawPickCount) {
+  if (
+    !bundle ||
+    !Array.isArray(bundle.activePicks) ||
+    bundle.activePicks.length === 0
+  ) {
+    return { playable: false, synEff: bundle?.synEff ?? 0, plan: null };
+  }
+  const activePicks = bundle.activePicks;
+  const K = activePicks.length;
+  const singleCap = statutorySingleBetCap(1);
+  const rawUnits = activePicks.map((p) =>
+    bankerRoundParlayUnitPayout([p.odds])
+  );
+  const cappedUnits = rawUnits.map((u) => Math.min(singleCap, u));
+  const invSum = cappedUnits.reduce((acc, u) => acc + 2 / Math.max(0.5, u), 0);
+  const synEff = invSum > 0 ? 1 / invSum : 0;
+
+  // Profitability hard gate: synEff <= 1.00 guarantees zero net profit or guaranteed loss!
+  if (!(synEff > 1.0 + 1e-9)) {
+    return { playable: false, synEff, plan: null };
+  }
+
+  const mult = Math.max(1, Math.min(999, Math.round(Number(rawMultiple) || 1)));
+  const baseNotes = Math.min(
+    10_000,
+    Math.max(K, mult * Math.max(1, rawPickCount))
+  );
+  const maxTotalNotes = Math.min(10_000, 999 * K);
+
+  const allocateAtNotes = (N) => {
+    const targetStake = 2 * N;
+    const req = new Array(K);
+    let sumReq = 0;
+    for (let i = 0; i < K; i++) {
+      const w = Math.max(1, Math.ceil((targetStake - 1e-9) / cappedUnits[i]));
+      if (w > 999) return null;
+      req[i] = w;
+      sumReq += w;
+    }
+    if (sumReq > N) return null;
+    const mults = [...req];
+    let rem = N - sumReq;
+    while (rem > 0) {
+      // First lift any exact-refund line (m_i * u_i === targetStake) to strict net profit if possible
+      let liftIdx = -1;
+      let liftProb = -1;
+      for (let i = 0; i < K; i++) {
+        if (mults[i] >= 999 || rawUnits[i] > singleCap) continue;
+        const curPay = mults[i] * cappedUnits[i];
+        if (
+          curPay <= targetStake + 1e-6 &&
+          curPay + cappedUnits[i] > targetStake + 1e-6
+        ) {
+          if (activePicks[i].fairProb > liftProb) {
+            liftProb = activePicks[i].fairProb;
+            liftIdx = i;
+          }
+        }
+      }
+      if (liftIdx >= 0) {
+        mults[liftIdx] += 1;
+        rem -= 1;
+        continue;
+      }
+      let bestI = -1;
+      let lowestPay = Infinity;
+      let bestEv = -Infinity;
+      for (let i = 0; i < K; i++) {
+        if (mults[i] >= 999) continue;
+        if (
+          rawUnits[i] > singleCap &&
+          cappedUnits.some((_, j) => rawUnits[j] <= singleCap && mults[j] < 999)
+        ) {
+          continue;
+        }
+        const curPay = mults[i] * cappedUnits[i];
+        const ev = activePicks[i].fairProb * cappedUnits[i];
+        if (
+          curPay < lowestPay - 1e-9 ||
+          (Math.abs(curPay - lowestPay) <= 1e-9 && ev > bestEv)
+        ) {
+          lowestPay = curPay;
+          bestEv = ev;
+          bestI = i;
+        }
+      }
+      if (bestI === -1) break;
+      mults[bestI] += 1;
+      rem -= 1;
+    }
+    const actualNotes = mults.reduce((a, b) => a + b, 0);
+    const actualCost = actualNotes * 2;
+    const maxPay = Math.max(...mults.map((mi, idx) => mi * cappedUnits[idx]));
+    const minPay = Math.min(...mults.map((mi, idx) => mi * cappedUnits[idx]));
+    if (!(maxPay > actualCost + 1e-6) || minPay < actualCost - 1e-6) {
+      return null;
+    }
+    return { mults, actualCost, minPay, maxPay };
+  };
+
+  let bestAlloc = null;
+  let minFeasibleBeforeBase = null;
+  let lastFeasibleBeforeBase = null;
+  for (let N = K; N <= maxTotalNotes; N++) {
+    const cand = allocateAtNotes(N);
+    if (!cand) continue;
+    if (!minFeasibleBeforeBase) minFeasibleBeforeBase = cand;
+    if (N >= baseNotes) {
+      bestAlloc = cand;
+      break;
+    }
+    lastFeasibleBeforeBase = cand;
+  }
+  if (!bestAlloc) {
+    bestAlloc = lastFeasibleBeforeBase ?? minFeasibleBeforeBase;
+  }
+  if (!bestAlloc) {
+    return { playable: false, synEff, plan: null };
+  }
+
+  const { mults, actualCost, minPay, maxPay } = bestAlloc;
+  const lines = activePicks.map((p, idx) => {
+    const lineMult = mults[idx];
+    const unit = cappedUnits[idx];
+    const rawBeforeCap = rawUnits[idx];
+    const cappedClipped = Math.max(
+      0,
+      Number(((rawBeforeCap - unit) * lineMult).toFixed(2))
+    );
+    const returnPayout = Number((unit * lineMult).toFixed(2));
+    return {
+      id: `syn-${bundle.modeUsed}-${p.poolCode}-${p.optionKey}`,
+      roleLabel: `合成配平#${idx + 1}`,
+      legs: [
+        {
+          matchId: m.id,
+          matchNumStr: m.matchNumStr,
+          home: m.home,
+          away: m.away,
+          kickoff: m.kickoff ?? "21:00",
+          poolCode: p.poolCode,
+          poolName: p.poolName,
+          optionKey: p.optionKey,
+          optionLabel: p.optionLabel,
+          odds: p.odds,
+          fairProb: p.fairProb,
+        },
+      ],
+      modeLabel: "单关",
+      multiple: lineMult,
+      cost: lineMult * 2,
+      unitPayout: unit,
+      cappedClipped,
+      returnPayout,
+      netProfit: Number((returnPayout - actualCost).toFixed(2)),
+      prob: p.fairProb,
+    };
+  });
+
+  const isTrim2 = bundle.modeUsed === "trim-2way";
+  const shortTab = isTrim2 ? "合成单关·2项省本" : "合成单关·无死角";
+  const badge = isTrim2
+    ? "⚡ 合成单关（2项省本搏常规）"
+    : "🛡️ 合成单关（全包无死角配平）";
+  const outPlan = {
+    key: "max-profit-prob",
+    available: true,
+    shortTab,
+    badge,
+    title: isTrim2
+      ? "省去半场落后逆转分支 · 抬升常规命中返奖乘数"
+      : "100% 等价覆盖原方向 · 反比例整数配平 0 假中奖",
+    tagline: `总投入 ¥${actualCost} · 等效@${synEff.toFixed(2)} · 保底返 ¥${minPay.toFixed(1)} ~ 最高 ¥${maxPay.toFixed(1)}`,
+    totalCost: actualCost,
+    savedCash: 0,
+    minReturn: minPay,
+    maxReturn: maxPay,
+    winProb: activePicks.reduce((a, p) => a + p.fairProb, 0),
+    profitProb: activePicks.reduce((a, p) => a + p.fairProb, 0),
+    strictNetGainProb: lines
+      .filter((l) => l.returnPayout > actualCost + 1e-6)
+      .reduce((a, l) => a + l.prob, 0),
+    breakEvenProb: lines
+      .filter((l) => Math.abs(l.returnPayout - actualCost) <= 1e-6)
+      .reduce((a, l) => a + l.prob, 0),
+    expectedValueRate:
+      actualCost > 0
+        ? lines.reduce((a, l) => a + l.prob * l.returnPayout, 0) / actualCost -
+          1
+        : 0,
+    underwaterCount: 0,
+    breakevenUpgradeCost: null,
+    consolidateTickets: false,
+    missOneReturn: null,
+    vigPct: 0,
+    reasons: [
+      isTrim2 && bundle.blindSpotLabel
+        ? `省去「${bundle.blindSpotLabel}」（漏网风险 ${(bundle.blindSpotProb * 100).toFixed(1)}%），合成等效水位提升至 @${synEff.toFixed(2)}`
+        : `100% 等价覆盖原选赛果（0% 漏网死角），按水位反比例精密配平整数倍，等效水位 @${synEff.toFixed(2)}`,
+    ],
+    lines,
+  };
+  attachLazyConsolidatedLines(outPlan, lines, false);
+  TRUSTED_SERVER_BONUS_PLANS.add(outPlan);
+  return { playable: true, synEff, plan: outPlan };
+}
+
 /** 计算五维真相看板、体彩法定过关矩阵与 6 大防坑雷达（纯数学黑盒，遵循 ADR-0002 & ADR-0007） */
 export function computeTruthReport(
   rawPicksInput,
@@ -7103,45 +7665,33 @@ export function computeTruthReport(
 
   let syntheticHint = null;
   let syntheticRescuePicks = null;
-  if (matchCount === 1) {
+  let syntheticEffectiveOdds = undefined;
+  if (matchCount === 1 && !hasSameMatchCrossPoolConflict) {
     const m = Array.isArray(matches)
       ? matches.find((x) => x.id === matchGroups[0][0].matchId)
       : null;
-    if (m && (!canSingle || !m.pools.HAD.single) && m.pools.HAFU?.single) {
-      const grpKeys = matchGroups[0].map((g) => g.optionKey);
-      const isOnlyDraw =
-        grpKeys.includes("d") &&
-        !grpKeys.includes("h") &&
-        !grpKeys.includes("a");
-      const isAwayLean =
-        grpKeys.some((k) => k === "a" || k === "ha") && !grpKeys.includes("h");
-      const rescueKeys = isOnlyDraw
-        ? ["dd", "hd", "ad"]
-        : isAwayLean
-          ? ["aa", "da"]
-          : ["hh", "dh"];
-      const rescueOpts = rescueKeys
-        .map((rk) => m.pools.HAFU.options.find((o) => o.key === rk))
-        .filter(Boolean);
-      if (rescueOpts.length >= 2) {
-        const synEff =
-          1 /
-          rescueOpts.reduce((acc, o) => acc + 1 / Math.max(1.01, o.odds), 0);
-        const labelPair = rescueOpts.map((o) => o.label).join("+");
-        syntheticRescuePicks = rescueOpts.map((o) => ({
-          matchId: m.id,
-          matchNumStr: m.matchNumStr,
-          home: m.home,
-          away: m.away,
-          poolCode: "HAFU",
-          poolName: m.pools.HAFU.name,
-          singleAllowed: true,
-          optionKey: o.key,
-          optionLabel: o.label,
-          odds: o.odds,
-          fairProb: o.fairProb,
-        }));
-        syntheticHint = `${m.matchNumStr} 当前所选玩法未开单关；借道半全场单关买「${labelPair}」均衡配注后合成等效水位达 ${synEff.toFixed(2)}，支持一键无损切换单场出票！`;
+    if (m && !canSingle) {
+      const bundle = resolveSyntheticSingleBundle(
+        m,
+        matchGroups[0],
+        "full-3way"
+      );
+      if (bundle && bundle.fullPicks.length >= 1) {
+        const synEff = bundle.fullSynEff ?? bundle.synEff;
+        syntheticEffectiveOdds = Number(synEff.toFixed(4));
+        syntheticRescuePicks = bundle.fullPicks;
+        const labelList =
+          bundle.fullPicks.length <= 4
+            ? bundle.fullPicks.map((p) => p.optionLabel).join("+")
+            : `${bundle.fullPicks
+                .slice(0, 3)
+                .map((p) => p.optionLabel)
+                .join("+")}等${bundle.fullPicks.length}项`;
+        const poolTitle = m.pools[bundle.poolCode]?.name || bundle.poolCode;
+        syntheticHint =
+          synEff > 1.0 + 1e-9
+            ? `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关全包「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（0% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
+            : `${m.matchNumStr} 当前所选玩法未开单关，且借道${poolTitle}全包「${labelList}」合成等效水位仅 ${synEff.toFixed(2)}（≤ 1.00 必亏盘），已拦截单场亏本废票，强烈建议搭 1 场过桥配菜场凑 2串1！`;
       }
     }
   }
@@ -7242,29 +7792,48 @@ export function computeTruthReport(
   }
 
   if (matchCount === 1 && !canSingle) {
-    return buildBlockedTruthReport({
+    const blockedOne = buildBlockedTruthReport({
       matchCount: 1,
       multiple,
       modeLabel: "还差1场凑2串1",
       canSingle: false,
       ruleBlockReason:
-        "该玩法未开放单关，需再选至少 1 场比赛凑 2串1，或改选半全场/比分/总进球单关",
+        syntheticEffectiveOdds !== undefined &&
+        syntheticEffectiveOdds <= 1.0 + 1e-9
+          ? `该方向借道单关池合成等效水位仅 ${syntheticEffectiveOdds.toFixed(2)}（≤ 1.00 必亏盘），已拦截亏本单关，请搭 1 场过桥配菜场凑 2串1`
+          : "该玩法未开放单关，需再选至少 1 场比赛凑 2串1，或改选半全场/比分/总进球单关",
       poolCap,
       availableFreePasses: buildFreePassMetadata(1, poolCap, false, false, []),
       availableComboPasses: [],
       hasSameMatchCrossPoolConflict: false,
       syntheticHint,
       syntheticRescuePicks,
-      warnings: [
-        {
-          id: "no-single",
-          severity: "warn",
-          title: "该玩法未开单关（当前无法单独出票，需再选 1 场）",
-          detail:
-            "体彩本场胜平负/让球未开放单关，需再串 1 场或直接改用「半全场 / 比分 / 总进球」合成单关。",
-        },
-      ],
+      warnings:
+        syntheticEffectiveOdds !== undefined &&
+        syntheticEffectiveOdds <= 1.0 + 1e-9
+          ? [
+              {
+                id: "synthetic-unplayable",
+                severity: "danger",
+                title: `合成等效水位 ${syntheticEffectiveOdds.toFixed(2)} ≤ 1.00（必亏废票已诚实阻断）`,
+                detail:
+                  "本场热门水位极低，叠加半全场/比分单关池抽水后无论踢出哪个分支均倒亏本金；请直接选用下方「🌉 过桥配菜场凑 2串1」！",
+              },
+            ]
+          : [
+              {
+                id: "no-single",
+                severity: "warn",
+                title: "该玩法未开单关（当前无法单独出票，需再选 1 场）",
+                detail:
+                  "体彩本场胜平负/让球未开放单关，需再串 1 场或直接改用「半全场 / 比分 / 总进球」合成单关。",
+              },
+            ],
     });
+    if (syntheticEffectiveOdds !== undefined) {
+      blockedOne.syntheticEffectiveOdds = syntheticEffectiveOdds;
+    }
+    return blockedOne;
   }
 
   const forceSingleOnly = hasSameMatchCrossPoolConflict || matchCount > 8;
@@ -14345,13 +14914,16 @@ export function computeProOrderInsights(
         )
       : Math.round(Number(report?.multiple) || 1)
   );
+  const isAutoSynthetic = Boolean(report?.syntheticAutoMounted);
+  const swapSourcePicks = isAutoSynthetic ? rawPicksList : effectivePicks;
   for (const m of pickedMatches) {
-    const mpicks = effectivePicks.filter((p) => p.matchId === m.id);
+    const mpicks = swapSourcePicks.filter((p) => p.matchId === m.id);
     const arbitrages = computeEquivalentArbitrages(m);
     const matchedArb = arbitrages.find((arb) => {
       if (
         pickedMatches.length === 1 &&
         report?.canCheckout === true &&
+        !isAutoSynthetic &&
         !arb.betterPicks.every(
           (bp) =>
             m.pools?.[bp.poolCode]?.selling !== false &&
@@ -14410,11 +14982,13 @@ export function computeProOrderInsights(
 
   const bridgeCandidates =
     pickedMatches.length === 1 &&
-    report?.canCheckout === false &&
+    (report?.canCheckout === false || isAutoSynthetic) &&
     !report?.hasSameMatchCrossPoolConflict
       ? computeBridgeCandidates(
           pickedMatches[0],
-          effectivePicks.filter((p) => p.matchId === pickedMatches[0].id),
+          (isAutoSynthetic ? rawPicksList : effectivePicks).filter(
+            (p) => p.matchId === pickedMatches[0].id
+          ),
           matches
         )
       : [];
@@ -16225,6 +16799,11 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     Math.min(999, Math.round(Number(params?.multiple) || 5))
   );
   const passSpec = params?.passSpec ?? { mode: "auto" };
+  const syntheticSingleMode =
+    params?.syntheticSingleMode === "trim-2way" ||
+    params?.syntheticSingleMode === "off"
+      ? params.syntheticSingleMode
+      : "full-3way";
   const subjectiveDeltaPct = Math.max(
     -15,
     Math.min(15, Number(params?.subjectiveDeltaPct) || 0)
@@ -16399,9 +16978,146 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     }
   }
 
+  let autoSyntheticMeta = null;
+  if (
+    !planSpec &&
+    !appliedPlan &&
+    syntheticSingleMode !== "off" &&
+    manualReport.matchCount === 1 &&
+    !manualReport.canCheckout &&
+    !manualReport.hasSameMatchCrossPoolConflict
+  ) {
+    const singleMid = picks[0]?.matchId;
+    const singleMatch = singleMid
+      ? matches.find((m) => m.id === singleMid)
+      : null;
+    const matchPicks = singleMatch
+      ? picks.filter((p) => p.matchId === singleMatch.id)
+      : [];
+    if (singleMatch && matchPicks.length > 0) {
+      const objBundle = resolveSyntheticSingleBundle(
+        singleMatch,
+        matchPicks,
+        syntheticSingleMode
+      );
+      if (objBundle) {
+        const builtSyn = buildAutoSyntheticSinglePlan(
+          singleMatch,
+          objBundle,
+          multiple,
+          matchPicks.length
+        );
+        if (builtSyn.playable && builtSyn.plan) {
+          appliedPlan = applySandboxToPlan(
+            builtSyn.plan,
+            matches,
+            picks,
+            simVoidFirstMatch,
+            subjectiveDeltaPct,
+            {
+              isArchetype: false,
+              consolidateTickets: false,
+              stance,
+              manualReport,
+            }
+          );
+          const shiftedBundle = hasSubjectiveShift
+            ? resolveSyntheticSingleBundle(
+                singleMatch,
+                matchPicks,
+                syntheticSingleMode,
+                sandboxBundle.atomicMap?.get(singleMatch.id) ?? null
+              )
+            : objBundle;
+          autoSyntheticMeta = {
+            modeUsed: objBundle.modeUsed,
+            synEff: Number(builtSyn.synEff.toFixed(4)),
+            blindSpotProb: Number(
+              (
+                shiftedBundle?.blindSpotProb ??
+                objBundle.blindSpotProb ??
+                0
+              ).toFixed(6)
+            ),
+            blindSpotLabel: objBundle.blindSpotLabel ?? null,
+            poolName:
+              singleMatch.pools[objBundle.poolCode]?.name || objBundle.poolCode,
+            activeLabels: objBundle.activePicks.map((p) => p.optionLabel),
+            matchNumStr: singleMatch.matchNumStr,
+          };
+        } else {
+          manualReport.syntheticEffectiveOdds = Number(
+            (builtSyn.synEff || objBundle.synEff || 0).toFixed(4)
+          );
+          if (
+            !manualReport.warnings.some((w) => w.id === "synthetic-unplayable")
+          ) {
+            const unplayableEff = manualReport.syntheticEffectiveOdds;
+            manualReport.ruleBlockReason = `该方向借道单关池合成等效水位仅 ${unplayableEff.toFixed(2)}（≤ 1.00 或受整数倍限制无法盈利），已诚实拦截废票，请搭 1 场过桥配菜场凑 2串1`;
+            manualReport.warnings = [
+              {
+                id: "synthetic-unplayable",
+                severity: "danger",
+                title: `合成等效水位 ${unplayableEff.toFixed(2)} 无法盈利（已诚实拦截亏本单关）`,
+                detail:
+                  "本场热门水位极低，借道半全场/比分单关池分倍后无法实现正净利；强烈建议选用下方「🌉 过桥配菜场凑 2串1」！",
+              },
+            ];
+          }
+        }
+      }
+    }
+  }
+
   const effectiveReport = appliedPlan
     ? archetypeToReport(appliedPlan, manualReport, matches)
     : manualReport;
+
+  if (autoSyntheticMeta && effectiveReport !== manualReport) {
+    const labelStr =
+      autoSyntheticMeta.activeLabels.length <= 4
+        ? autoSyntheticMeta.activeLabels.join("+")
+        : `${autoSyntheticMeta.activeLabels.slice(0, 3).join("+")}等${autoSyntheticMeta.activeLabels.length}项`;
+    effectiveReport.modeLabel =
+      autoSyntheticMeta.modeUsed === "trim-2way"
+        ? "合成单关·2项省本"
+        : autoSyntheticMeta.activeLabels.length === 3
+          ? "合成单关·3项无死角"
+          : "合成单关·无死角";
+    effectiveReport.syntheticAutoMounted = true;
+    effectiveReport.syntheticModeUsed = autoSyntheticMeta.modeUsed;
+    effectiveReport.syntheticEffectiveOdds = autoSyntheticMeta.synEff;
+    effectiveReport.syntheticBlindSpotProb = autoSyntheticMeta.blindSpotProb;
+    effectiveReport.syntheticBlindSpotLabel = autoSyntheticMeta.blindSpotLabel;
+    effectiveReport.syntheticRescuePicks = manualReport.syntheticRescuePicks;
+    if (
+      autoSyntheticMeta.modeUsed === "trim-2way" &&
+      autoSyntheticMeta.blindSpotProb > 0 &&
+      autoSyntheticMeta.blindSpotLabel
+    ) {
+      const bsPct = (autoSyntheticMeta.blindSpotProb * 100).toFixed(1);
+      effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 已挂载【2项省本搏常规】${autoSyntheticMeta.poolName}单关「${labelStr}」（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 注意省去了「${autoSyntheticMeta.blindSpotLabel}」（存在 ${bsPct}% 逆转漏网死角）。`;
+      effectiveReport.warnings = [
+        {
+          id: "synthetic-blind-spot",
+          severity: "warn",
+          title: `⚠️ 2项省本模式存在 ${(autoSyntheticMeta.blindSpotProb * 100).toFixed(1)}% 逆转漏网风险`,
+          detail: `当前省去了「${autoSyntheticMeta.blindSpotLabel}」（校准发生率 ${bsPct}%）；若想 100% 锁定原赛果方向无死角，请切回「🛡️ 3项全包无死角」。`,
+        },
+        ...effectiveReport.warnings.filter(
+          (w) => w.id !== "synthetic-blind-spot"
+        ),
+      ];
+    } else {
+      effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 原选玩法未开单关，已自动挂载 100% 等价无死角${autoSyntheticMeta.poolName}单关「${labelStr}」反比例配平（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost} · 0% 漏网死角）！继续选第 2 场将自动恢复低抽水原盘串关。`;
+    }
+  } else if (
+    syntheticSingleMode === "off" &&
+    manualReport.matchCount === 1 &&
+    !manualReport.canCheckout
+  ) {
+    effectiveReport.syntheticModeUsed = "off";
+  }
 
   if (
     alphaSmoothedAfterSync &&

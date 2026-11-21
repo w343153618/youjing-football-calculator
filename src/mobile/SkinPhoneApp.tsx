@@ -19,6 +19,7 @@ import {
   type MatchItem,
   type PoolCode,
   type PortfolioKey,
+  type SyntheticSingleMode,
   type UserStance,
 } from "../prototype/quantTypes";
 import {
@@ -166,6 +167,8 @@ export function SkinPhoneApp({
     label: string;
     seq: number;
   } | null>(null);
+  const [poolSwitchVisible, setPoolSwitchVisible] = useState<boolean>(false);
+  const [poolSwitchSeq, setPoolSwitchSeq] = useState<number>(0);
   const [radarSearchQuery, setRadarSearchQuery] = useState<string>("");
   const [collapsedDayKeys, setCollapsedDayKeys] = useState<
     Record<string, boolean>
@@ -263,6 +266,8 @@ export function SkinPhoneApp({
     multiple,
     passSpec,
     planSpec,
+    syntheticSingleMode,
+    lastPoolSwitchUndo,
     subjectiveDeltaPct,
     simVoidFirstMatch,
     targetIds,
@@ -692,6 +697,14 @@ export function SkinPhoneApp({
     return () => window.clearTimeout(timer);
   }, [undoBanner?.seq]);
 
+  useEffect(() => {
+    if (!poolSwitchVisible || !lastPoolSwitchUndo) return;
+    const timer = window.setTimeout(() => {
+      setPoolSwitchVisible(false);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [poolSwitchVisible, poolSwitchSeq, lastPoolSwitchUndo]);
+
   const cutoffStatus = useMemo(
     () => computeSportteryCutoffStatus(cutoffTickNow, matches),
     [cutoffTickNow, matches]
@@ -725,6 +738,25 @@ export function SkinPhoneApp({
   const isBonusOver512 = manualBonusLineCount > 512;
   const isBonusOptDisabled = !manualReport.canCheckout || isBonusOver512;
   const appliedPlan = planSpec ? workspace.appliedPlan : null;
+  const effectiveAppliedPlan =
+    planSpec || effectiveReport.syntheticAutoMounted
+      ? workspace.appliedPlan
+      : null;
+  const isSingleNonSingleContext =
+    !planSpec &&
+    manualReport.matchCount === 1 &&
+    !manualReport.canCheckout &&
+    !manualReport.hasSameMatchCrossPoolConflict &&
+    Boolean(
+      manualReport.syntheticRescuePicks &&
+      manualReport.syntheticRescuePicks.length > 0
+    );
+  const isSyntheticPlayable =
+    isSingleNonSingleContext &&
+    (manualReport.syntheticEffectiveOdds ?? 1.05) > 1.0;
+  const canTrimSynthetic2Way =
+    isSyntheticPlayable &&
+    (manualReport.syntheticRescuePicks?.length ?? 0) >= 3;
   const insights = workspace.insights;
   const activeBankerSet = useMemo(
     () =>
@@ -822,9 +854,6 @@ export function SkinPhoneApp({
   const isPicked = (matchId: string, poolCode: PoolCode, optKey: string) =>
     betCtrl.isPicked(matchId, poolCode, optKey);
 
-  const isPoolMutexLocked = (m: MatchItem, poolCode: PoolCode) =>
-    betCtrl.isPoolMutexLocked(m, poolCode);
-
   const togglePick = (
     el: HTMLElement | null,
     m: MatchItem,
@@ -840,6 +869,12 @@ export function SkinPhoneApp({
         verdict.blockedReason || "当前选项不可选"
       );
       return;
+    }
+    if (verdict.action === "switched-pool") {
+      setPoolSwitchVisible(true);
+      setPoolSwitchSeq(Date.now());
+    } else {
+      setPoolSwitchVisible(false);
     }
     if (verdict.autoLockedSingleReason === "dual-single") {
       showSpringToast(
@@ -880,6 +915,25 @@ export function SkinPhoneApp({
     playTactileCue("optimize-arpeggio");
     if (triggerEl) burstCelebrationSparks(triggerEl, 16);
     showSpringToast(layerRef.current, `已切换高水同义项 · ${arb.betterChoice}`);
+  };
+
+  const switchSyntheticSingleModeUI = (nextMode: SyntheticSingleMode) => {
+    betCtrl.setSyntheticSingleMode(nextMode);
+    haptic(7);
+    playTactileCue("tap-on");
+    if (nextMode === "full-3way") {
+      showSpringToast(layerRef.current, "🛡️ 已切换：3项全包无死角配平合成单关");
+    } else if (nextMode === "trim-2way") {
+      showSpringToast(
+        layerRef.current,
+        "⚡ 已切换：2项省本搏常规（请注意逆转漏网风险）"
+      );
+    } else {
+      showSpringToast(
+        layerRef.current,
+        "🌉 已展开过桥配菜搭子，点选任一搭子即凑 2串1"
+      );
+    }
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
@@ -1834,9 +1888,7 @@ export function SkinPhoneApp({
                     onClick={(e) =>
                       togglePick(e.currentTarget, m, "TTG", opt.key)
                     }
-                    className={`key cell num ${isPicked(m.id, "TTG", opt.key) ? "on" : ""} ${
-                      isPoolMutexLocked(m, "TTG") ? "mutex-lock" : ""
-                    }`}
+                    className={`key cell num ${isPicked(m.id, "TTG", opt.key) ? "on" : ""}`}
                   >
                     <small>
                       {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
@@ -1888,9 +1940,7 @@ export function SkinPhoneApp({
                     onClick={(e) =>
                       togglePick(e.currentTarget, m, "HAFU", opt.key)
                     }
-                    className={`key cell num ${isPicked(m.id, "HAFU", opt.key) ? "on" : ""} ${
-                      isPoolMutexLocked(m, "HAFU") ? "mutex-lock" : ""
-                    }`}
+                    className={`key cell num ${isPicked(m.id, "HAFU", opt.key) ? "on" : ""}`}
                   >
                     <small>
                       {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -1935,9 +1985,7 @@ export function SkinPhoneApp({
                 type="button"
                 data-spring="0.95"
                 onClick={() => setSheet({ type: "more", matchId: m.id })}
-                className={`key wide num ${crsSelected.length > 0 ? "on" : ""} ${
-                  isPoolMutexLocked(m, "CRS") ? "mutex-lock" : ""
-                }`}
+                className={`key wide num ${crsSelected.length > 0 ? "on" : ""}`}
               >
                 {crsSelected.length > 0
                   ? crsSelected.join(" · ")
@@ -2004,9 +2052,7 @@ export function SkinPhoneApp({
                       onClick={(e) =>
                         togglePick(e.currentTarget, m, "HAD", hadOpt.key)
                       }
-                      className={`key k2 num ${isPicked(m.id, "HAD", hadOpt.key) ? "on" : ""} ${
-                        isPoolMutexLocked(m, "HAD") ? "mutex-lock" : ""
-                      }`}
+                      className={`key k2 num ${isPicked(m.id, "HAD", hadOpt.key) ? "on" : ""}`}
                     >
                       <span className="ko">
                         {hadOpt.odds.toFixed(2)}
@@ -2035,9 +2081,7 @@ export function SkinPhoneApp({
                       onClick={(e) =>
                         togglePick(e.currentTarget, m, "HHAD", hhadOpt.key)
                       }
-                      className={`key k2 num ${isPicked(m.id, "HHAD", hhadOpt.key) ? "on" : ""} ${
-                        isPoolMutexLocked(m, "HHAD") ? "mutex-lock" : ""
-                      }`}
+                      className={`key k2 num ${isPicked(m.id, "HHAD", hhadOpt.key) ? "on" : ""}`}
                     >
                       <span className="ko">
                         {hhadOpt.odds.toFixed(2)}
@@ -2780,7 +2824,7 @@ export function SkinPhoneApp({
     ? effectiveReport.tickets.length
     : effectiveReport.betCount;
   const auditTicketCount =
-    appliedPlan?.lines.length ?? effectiveTicketOrBetCount;
+    effectiveAppliedPlan?.lines.length ?? effectiveTicketOrBetCount;
 
   const isPlanHandoff = Boolean(appliedPlan || (planSpec && handoffBanner));
 
@@ -2836,12 +2880,16 @@ export function SkinPhoneApp({
                         ? `【${appliedPlan.shortTab}】¥${effectiveReport.totalCost} 方案`
                         : `精算配单【${handoffBanner?.title}】`
                     }（共 ${auditTicketCount} 张实票）`
-                  : `📋 当前正在审阅：手动选单 · ${effectiveReport.modeLabel}（共 ${auditTicketCount} 注 · ¥${effectiveReport.totalCost}）`}
+                  : effectiveReport.syntheticAutoMounted && effectiveAppliedPlan
+                    ? `🛡️ 当前正在审阅：【${effectiveAppliedPlan.shortTab}】¥${effectiveReport.totalCost} 方案（共 ${auditTicketCount} 张单关配平票）`
+                    : `📋 当前正在审阅：手动选单 · ${effectiveReport.modeLabel}（共 ${auditTicketCount} 注 · ¥${effectiveReport.totalCost}）`}
               </b>
               <div className="small" style={{ marginTop: 1 }}>
                 {isPlanHandoff
                   ? "已完成不等倍精算拆票 · 可直接核对打票或微调沙盒"
-                  : "等倍手动选单 · 可点下方智能分倍或切往②3+1精算配单"}
+                  : effectiveReport.syntheticAutoMounted
+                    ? `等效水位 @${(effectiveReport.syntheticEffectiveOdds ?? effectiveReport.effectiveOdds).toFixed(2)} · 原方向已保留，再选第 2 场将自动恢复低抽水串关`
+                    : "等倍手动选单 · 可点下方智能分倍或切往②3+1精算配单"}
               </div>
             </div>
             {isPlanHandoff ? (
@@ -3184,38 +3232,49 @@ export function SkinPhoneApp({
                   </div>
                 )}
 
-              {effectiveReport.syntheticHint && (
+              {(Boolean(effectiveReport.syntheticHint) ||
+                isSingleNonSingleContext) && (
                 <div className="note-box">
                   <strong>
-                    {appliedPlan ? "⚖️ 智能分倍摘要：" : "💡 合成单关参谋："}
+                    {appliedPlan
+                      ? "⚖️ 智能分倍摘要："
+                      : effectiveReport.syntheticAutoMounted
+                        ? "🛡️ 自动配平合成单关："
+                        : "💡 合成单关参谋："}
                   </strong>
                   {effectiveReport.syntheticHint}
-                  {effectiveReport.matchCount === 1 &&
-                    !effectiveReport.canCheckout &&
-                    effectiveReport.syntheticRescuePicks &&
-                    effectiveReport.syntheticRescuePicks.length > 0 && (
-                      <div className="note-act">
+                  {isSyntheticPlayable && (
+                    <div className="syn-mode-pills num">
+                      <button
+                        type="button"
+                        data-spring="0.88"
+                        className={`key mini ${syntheticSingleMode === "full-3way" ? "on" : ""}`}
+                        onClick={() => switchSyntheticSingleModeUI("full-3way")}
+                      >
+                        🛡️ 3项全包无死角
+                      </button>
+                      {canTrimSynthetic2Way && (
                         <button
                           type="button"
                           data-spring="0.88"
-                          className="key mini dark"
-                          onClick={() => {
-                            const nextPicks =
-                              effectiveReport.syntheticRescuePicks;
-                            if (nextPicks && nextPicks.length > 0) {
-                              void betCtrl.replacePicks(nextPicks);
-                              playTactileCue("optimize-arpeggio");
-                              showSpringToast(
-                                layerRef.current,
-                                "已一键切换为本场半全场合成单关"
-                              );
-                            }
-                          }}
+                          className={`key mini ${syntheticSingleMode === "trim-2way" ? "on" : ""}`}
+                          onClick={() =>
+                            switchSyntheticSingleModeUI("trim-2way")
+                          }
                         >
-                          ⚡ 一键切换半全场合成单关
+                          ⚡ 2项省本搏常规
                         </button>
-                      </div>
-                    )}
+                      )}
+                      <button
+                        type="button"
+                        data-spring="0.88"
+                        className={`key mini ${syntheticSingleMode === "off" ? "on" : ""}`}
+                        onClick={() => switchSyntheticSingleModeUI("off")}
+                      >
+                        🌉 搭1场过桥凑2串1
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3465,7 +3524,7 @@ export function SkinPhoneApp({
                   {
                     matchCount: effectiveReport.matchCount,
                     defaultMultiple: multiple,
-                    appliedLines: appliedPlan?.lines,
+                    appliedLines: effectiveAppliedPlan?.lines,
                   }
                 );
                 const isExpanded = Boolean(expandedComboIds[c.id]);
@@ -4979,6 +5038,29 @@ export function SkinPhoneApp({
 
   const overlayLayerNode = (
     <div ref={layerRef} className="layer">
+      {poolSwitchVisible && lastPoolSwitchUndo && (
+        <div className="pool-switch-toast enter num" role="status">
+          <span className="pst-txt">
+            已切换至{lastPoolSwitchUndo.nextPoolName}[
+            {lastPoolSwitchUndo.nextOptionLabel}]（替原
+            {lastPoolSwitchUndo.replacedPoolName}）
+          </span>
+          <button
+            type="button"
+            className="pst-undo"
+            onClick={() => {
+              if (betCtrl.undoLastPoolSwitch()) {
+                setPoolSwitchVisible(false);
+                haptic(8);
+                playTactileCue("optimize-arpeggio");
+                showSpringToast(layerRef.current, "已恢复本场原选玩法");
+              }
+            }}
+          >
+            ↩ 撤销切换
+          </button>
+        </div>
+      )}
       {/* Sheet 1: 全玩法 (总进球 / 半全场 / 比分，每个格子均展示去水真实胜率 %！) */}
       <SpringSheet
         open={sheet?.type === "more" && Boolean(sheetMatch)}
@@ -5031,9 +5113,7 @@ export function SkinPhoneApp({
                   onClick={(e) =>
                     togglePick(e.currentTarget, sheetMatch, "TTG", opt.key)
                   }
-                  className={`key cell num ${isPicked(sheetMatch.id, "TTG", opt.key) ? "on" : ""} ${
-                    isPoolMutexLocked(sheetMatch, "TTG") ? "mutex-lock" : ""
-                  }`}
+                  className={`key cell num ${isPicked(sheetMatch.id, "TTG", opt.key) ? "on" : ""}`}
                 >
                   <small>
                     {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
@@ -5073,9 +5153,7 @@ export function SkinPhoneApp({
                   onClick={(e) =>
                     togglePick(e.currentTarget, sheetMatch, "HAFU", opt.key)
                   }
-                  className={`key cell num ${isPicked(sheetMatch.id, "HAFU", opt.key) ? "on" : ""} ${
-                    isPoolMutexLocked(sheetMatch, "HAFU") ? "mutex-lock" : ""
-                  }`}
+                  className={`key cell num ${isPicked(sheetMatch.id, "HAFU", opt.key) ? "on" : ""}`}
                 >
                   <small>
                     {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -5144,9 +5222,7 @@ export function SkinPhoneApp({
                     onClick={(e) =>
                       togglePick(e.currentTarget, sheetMatch, "CRS", opt.key)
                     }
-                    className={`key cell num ${isPicked(sheetMatch.id, "CRS", opt.key) ? "on" : ""} ${
-                      isPoolMutexLocked(sheetMatch, "CRS") ? "mutex-lock" : ""
-                    }`}
+                    className={`key cell num ${isPicked(sheetMatch.id, "CRS", opt.key) ? "on" : ""}`}
                   >
                     <small>
                       {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
@@ -5383,12 +5459,12 @@ export function SkinPhoneApp({
             </div>
           )}
 
-          {(appliedPlan
+          {(effectiveAppliedPlan
             ? (planSpec?.consolidateTickets &&
-              Array.isArray(appliedPlan.consolidatedLines) &&
-              appliedPlan.consolidatedLines.length > 0
-                ? appliedPlan.consolidatedLines
-                : appliedPlan.lines
+              Array.isArray(effectiveAppliedPlan.consolidatedLines) &&
+              effectiveAppliedPlan.consolidatedLines.length > 0
+                ? effectiveAppliedPlan.consolidatedLines
+                : effectiveAppliedPlan.lines
               ).flatMap((l) => {
                 const left = l.legs
                   .map(
@@ -6091,6 +6167,51 @@ export function SkinPhoneApp({
 
   const desktopBetDockNode = (
     <footer ref={slipRef} className="dk-betdock">
+      {isSyntheticPlayable && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+            padding: "6px 14px",
+            borderBottom: "0.5px solid var(--line)",
+          }}
+        >
+          <span className="small num" style={{ margin: 0, fontWeight: 600 }}>
+            🛡️ 单场未开单关 · 自动合成单关模式（选满第 2 场自动恢复原盘串关）：
+          </span>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              data-spring="0.88"
+              className={`key mini ${syntheticSingleMode === "full-3way" ? "on" : ""}`}
+              onClick={() => switchSyntheticSingleModeUI("full-3way")}
+            >
+              🛡️ 3项全包无死角
+            </button>
+            {canTrimSynthetic2Way && (
+              <button
+                type="button"
+                data-spring="0.88"
+                className={`key mini ${syntheticSingleMode === "trim-2way" ? "on" : ""}`}
+                onClick={() => switchSyntheticSingleModeUI("trim-2way")}
+              >
+                ⚡ 2项省本搏常规
+              </button>
+            )}
+            <button
+              type="button"
+              data-spring="0.88"
+              className={`key mini ${syntheticSingleMode === "off" ? "on" : ""}`}
+              onClick={() => switchSyntheticSingleModeUI("off")}
+            >
+              🌉 搭1场过桥凑2串1
+            </button>
+          </div>
+        </div>
+      )}
       {showBridgeFinder && (
         <div
           style={{
@@ -6363,14 +6484,8 @@ export function SkinPhoneApp({
           setBarPopover(null);
           if (effectiveReport.canCheckout) {
             setSheet({ type: "poster" });
-          } else if (
-            effectiveReport.matchCount === 1 &&
-            effectiveReport.syntheticRescuePicks &&
-            effectiveReport.syntheticRescuePicks.length > 0
-          ) {
-            void betCtrl.replacePicks(effectiveReport.syntheticRescuePicks);
-            playTactileCue("optimize-arpeggio");
-            showSpringToast(layerRef.current, "已一键切换为本场半全场合成单关");
+          } else if (isSyntheticPlayable && !showBridgeFinder) {
+            switchSyntheticSingleModeUI("full-3way");
           } else if (showBridgeFinder && bridgeCandidates[0]) {
             applyBridgeCandidateUI(bridgeCandidates[0]);
           } else {
@@ -6380,9 +6495,7 @@ export function SkinPhoneApp({
       >
         {effectiveReport.canCheckout
           ? "打票核对"
-          : effectiveReport.matchCount === 1 &&
-              effectiveReport.syntheticRescuePicks &&
-              effectiveReport.syntheticRescuePicks.length > 0
+          : isSyntheticPlayable && !showBridgeFinder
             ? "一键合成单关"
             : showBridgeFinder
               ? "🌉一键凑2串1"
@@ -6391,6 +6504,33 @@ export function SkinPhoneApp({
     </div>
   ) : (
     <div ref={slipRef} className="m-betbar num">
+      {isSyntheticPlayable && (
+        <div className="m-syn-strip">
+          <button
+            type="button"
+            className={`m-bet-pill ${syntheticSingleMode === "full-3way" ? "hi" : ""}`}
+            onClick={() => switchSyntheticSingleModeUI("full-3way")}
+          >
+            🛡️3项全包无死角
+          </button>
+          {canTrimSynthetic2Way && (
+            <button
+              type="button"
+              className={`m-bet-pill ${syntheticSingleMode === "trim-2way" ? "hi" : ""}`}
+              onClick={() => switchSyntheticSingleModeUI("trim-2way")}
+            >
+              ⚡2项省本搏常规
+            </button>
+          )}
+          <button
+            type="button"
+            className={`m-bet-pill ${syntheticSingleMode === "off" ? "hi" : ""}`}
+            onClick={() => switchSyntheticSingleModeUI("off")}
+          >
+            🌉搭1场过桥凑2串1
+          </button>
+        </div>
+      )}
       {showBridgeFinder && (
         <div
           style={{
