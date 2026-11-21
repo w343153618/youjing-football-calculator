@@ -27,332 +27,16 @@ export type MatchMode = "mix" | "spf" | "bf" | "zjq" | "bqc" | "single";
 export type PresetScenarioKind =
   "underwater" | "synthetic" | "parlay4" | "hedge2";
 
-export type ManualSectionId =
-  | "qa"
-  | "quickstart"
-  | "sandbox"
-  | "optimizer"
-  | "archetypes"
-  | "glossary"
-  | "hedge"
-  | "xiaogao";
-
-export interface ManualTopic {
-  id: ManualSectionId;
-  shortTitle: string;
-  badge: string;
-  title: string;
-  subtitle: string;
-  keywords: string[];
-}
-
-export const MANUAL_TOPICS: ManualTopic[] = [
-  {
-    id: "qa",
-    shortTitle: "💬 智能提问",
-    badge: "00 · 说明书专属问答助手",
-    title: "看不懂某个按钮或名词？直接点选或输入提问",
-    subtitle:
-      "100% 基于本计算器真实功能通俗举例作答（仅限说明书范畴，严禁探底与无关闲聊）",
-    keywords: ["提问", "问答", "不懂", "怎么用", "什么意思", "助手"],
-  },
-  {
-    id: "quickstart",
-    shortTitle: "快速上手&箭头",
-    badge: "01 · 1-2-3三步向导与盘面符号",
-    title: "30 秒看懂「优竞体育内部专用」1-2-3 精算闭环与红绿箭头",
-    subtitle:
-      "从①选球定方向、②精算配单、③审单锁利，看懂红升 ▲ 绿降 ▼ 箭头与去水真率",
-    keywords: [
-      "入门",
-      "流程",
-      "1-2-3",
-      "三步",
-      "向导",
-      "同步",
-      "红绿箭头",
-      "红箭头",
-      "绿箭头",
-      "单关",
-      "混合过关",
-      "卡盘",
-      "设胆",
-      "胆拖",
-      "过桥",
-      "配菜",
-    ],
-  },
-  {
-    id: "sandbox",
-    shortTitle: "滑块沙盒&6仪表",
-    badge: "02 · 每一个滑块与数字逐个拆解",
-    title: "主观胜率滑块往左拉还是往右拉？五维透视舱 6 块仪表怎么读？",
-    subtitle:
-      "手把手拆解客观严格净赚率、刚回本率、个人推演对照、首场腰斩按 1.0 预演与六大核心指标",
-    keywords: [
-      "主观胜率",
-      "信心微调",
-      "沙盒",
-      "往左拉",
-      "往右拉",
-      "EV",
-      "期望",
-      "严格净赚率",
-      "刚回本",
-      "客观真账",
-      "腰斩",
-      "延期",
-      "1.0",
-      "五维",
-      "危险分",
-      "保底奖金",
-      "一球",
-      "小胜",
-    ],
-  },
-  {
-    id: "optimizer",
-    shortTitle: "三种奖金优化",
-    badge: "03 · 核心分倍引擎详解",
-    title: "平均优化 / 博热保本 / 博冷高弹到底怎么分钱？我该选哪个？",
-    subtitle:
-      "严守预算主权不暗涨本金 · 最低保本门槛一键升级 · 智能合票减张防店面拒打滑点",
-    keywords: [
-      "平均优化",
-      "博热保本",
-      "博冷高弹",
-      "奖金优化",
-      "分倍",
-      "等倍",
-      "假中奖",
-      "保本",
-      "最低保本门槛",
-      "合票减张",
-    ],
-  },
-  {
-    id: "archetypes",
-    shortTitle: "3+1精算配单",
-    badge: "04 · 帕累托精算配单矩阵",
-    title: "自由圈定 1～8 场心仪比赛后，3+1 精算配单四档方案分别适合什么战况？",
-    subtitle:
-      "稳健保本 · 期望效用 · 容错缩水（旋转矩阵） · 错价雷达（宁缺毋滥·无洼地空仓）",
-    keywords: [
-      "精算配单",
-      "3+1",
-      "五流派",
-      "8场",
-      "多场",
-      "稳健保本",
-      "期望效用",
-      "容错缩水",
-      "旋转矩阵",
-      "错价雷达",
-      "空仓",
-      "36%",
-      "轻仓",
-      "10元",
-      "预算",
-      "直觉倾向",
-      "偏主队",
-      "防爆冷",
-    ],
-  },
-  {
-    id: "glossary",
-    shortTitle: "精算名词词典",
-    badge: "05 · 专有名词大白话图解",
-    title:
-      "Shin+五池联合校准、返还率、泊松xG、一球卡盘、同义差价、合成单关全解",
-    subtitle: "把跨盘联合校准与体彩精算数学翻译成菜市场算账一样直白的图文案例",
-    keywords: [
-      "Shin",
-      "五池联合校准",
-      "跨盘联合校准",
-      "比赛节奏",
-      "返还率",
-      "抽水",
-      "去水",
-      "真率",
-      "xG",
-      "预期进球",
-      "卡盘",
-      "一球",
-      "一球卡盘",
-      "一球小胜卡盘",
-      "小胜卡盘",
-      "同义",
-      "差价",
-      "合成单关",
-      "四舍六入五成双",
-      "封顶",
-    ],
-  },
-  {
-    id: "hedge",
-    shortTitle: "早晚场锁利",
-    badge: "06 · 实战进阶稳赚武器",
-    title: "早晚场时间差锁利对冲四步法 & 串关“拖油瓶”剔除体检",
-    subtitle:
-      "利用 ≥135 分钟实战安全时间差在末场前补买单关反向盘锁利，一键砍掉高抽水拖累腿场次",
-    keywords: ["对冲", "时间差", "早晚场", "锁利", "补单", "拖油瓶", "砍掉"],
-  },
-  {
-    id: "xiaogao",
-    shortTitle: "小高双模&消化度",
-    badge: "07 · 单场点诊 + 双维协同会诊 + Price-In",
-    title: "扫地僧小高单场点诊 vs 双维协同串关会诊 & 消息入价消化度图解",
-    subtitle:
-      "深度盘面情报流展开 + 精算防线与残余暗雷双维客观会诊，三秒识破“已消化接盘旧闻”",
-    keywords: [
-      "扫地僧小高",
-      "排雷",
-      "联合会诊",
-      "协同会诊",
-      "双维",
-      "多场诊断",
-      "单场",
-      "Price-In",
-      "消化度",
-      "消息入价",
-      "模拟单",
-      "止损",
-    ],
-  },
-];
-
-function extractSearchBigrams(text: string): string[] {
-  const cjk = text.replace(/[^\u4e00-\u9fa5]/g, "");
-  const out = new Set<string>();
-  for (let i = 0; i < cjk.length - 1; i++) {
-    out.add(cjk.slice(i, i + 2));
-  }
-  return Array.from(out);
-}
-
-export function matchManualTopics(
-  rawQuery: string,
-  topics: ManualTopic[] = MANUAL_TOPICS
-): ManualTopic[] {
-  const trimmed = String(rawQuery || "")
-    .trim()
-    .toLowerCase();
-  if (!trimmed) return topics;
-
-  const tokens = trimmed
-    .split(/[\s,，、/·?？!！:：]+/)
-    .filter((tk) => tk.length > 0);
-  const bigrams = extractSearchBigrams(trimmed);
-
-  const scored: Array<{ topic: ManualTopic; score: number }> = [];
-  for (const t of topics) {
-    const titleLo = t.title.toLowerCase();
-    const subLo = t.subtitle.toLowerCase();
-    const shortLo = t.shortTitle.toLowerCase();
-    const haystack = `${shortLo} ${titleLo} ${subLo} ${t.keywords.join(" ").toLowerCase()}`;
-
-    let score = 0;
-    if (titleLo.includes(trimmed) || shortLo.includes(trimmed)) score += 14;
-    if (subLo.includes(trimmed)) score += 9;
-
-    for (const kw of t.keywords) {
-      const kwLo = kw.toLowerCase();
-      if (kwLo === trimmed) score += 16;
-      else if (kwLo.includes(trimmed)) score += 10;
-      else if (kwLo.length >= 2 && trimmed.includes(kwLo)) {
-        score += kwLo.length >= 4 ? 7 : 3;
-      }
-    }
-
-    for (const tk of tokens) {
-      if (tk.length >= 2 && haystack.includes(tk)) {
-        score += 4;
-      }
-    }
-
-    if (bigrams.length >= 2) {
-      let bigramHits = 0;
-      for (const bg of bigrams) {
-        if (haystack.includes(bg)) bigramHits += 1;
-      }
-      if (bigramHits >= 2) {
-        score += bigramHits * 2;
-      }
-    }
-
-    if (score > 0) {
-      scored.push({ topic: t, score });
-    }
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored.map((s) => s.topic);
-}
-
-export interface ManualNavigationState {
-  activeSec: ManualSectionId;
-  query: string;
-  scrollSeq: number;
-  highlightSec: ManualSectionId | null;
-}
-
-export type ManualNavigationAction =
-  | { type: "search"; query: string }
-  | { type: "clear-search" }
-  | { type: "jump"; targetSec: ManualSectionId }
-  | { type: "select-tab"; targetSec: ManualSectionId };
-
-export function resolveManualNavigation(
-  prev: ManualNavigationState,
-  action: ManualNavigationAction,
-  topics: ManualTopic[] = MANUAL_TOPICS
-): ManualNavigationState & {
-  matchedTopics: ManualTopic[];
-  currentTopic: ManualTopic;
-} {
-  let nextActive = prev.activeSec;
-  let nextQuery = prev.query;
-  let nextScrollSeq = prev.scrollSeq;
-  let nextHighlight: ManualSectionId | null = prev.highlightSec;
-
-  if (action.type === "clear-search") {
-    nextQuery = "";
-    nextHighlight = null;
-  } else if (action.type === "search") {
-    nextQuery = action.query;
-    const hits = matchManualTopics(nextQuery, topics);
-    if (nextQuery.trim().length > 0 && hits.length > 0) {
-      if (!hits.some((h) => h.id === prev.activeSec)) {
-        nextActive = hits[0].id;
-        nextScrollSeq += 1;
-      }
-    }
-    nextHighlight = null;
-  } else {
-    nextActive = action.targetSec;
-    const currentHits = matchManualTopics(prev.query, topics);
-    if (
-      prev.query.trim().length > 0 &&
-      !currentHits.some((h) => h.id === nextActive)
-    ) {
-      nextQuery = "";
-    }
-    nextScrollSeq += 1;
-    nextHighlight = action.type === "jump" ? nextActive : null;
-  }
-
-  const matchedTopics = matchManualTopics(nextQuery, topics);
-  const currentTopic = topics.find((t) => t.id === nextActive) ?? topics[0];
-
-  return {
-    activeSec: nextActive,
-    query: nextQuery,
-    scrollSeq: nextScrollSeq,
-    highlightSec: nextHighlight,
-    matchedTopics,
-    currentTopic,
-  };
-}
+export {
+  MANUAL_TOPICS,
+  extractSearchBigrams,
+  matchManualTopics,
+  resolveManualNavigation,
+  type ManualNavigationAction,
+  type ManualNavigationState,
+  type ManualSectionId,
+  type ManualTopic,
+} from "../manual/manualCatalog.ts";
 
 export interface StanceDeltaSummary {
   stance: UserStance;
@@ -363,6 +47,27 @@ export interface StanceDeltaSummary {
   deltaProfitProbPct: number;
   deltaEvPct: number;
   ticketsChanged: boolean;
+}
+
+export interface PlayabilityGates {
+  isSingleNonSingleContext: boolean;
+  isSyntheticPlayable: boolean;
+  hasSyntheticInherentBlindSpot: boolean;
+  canTrimSynthetic2Way: boolean;
+  manualBonusLineCount: number;
+  isBonusOver512: boolean;
+  isBonusOptDisabled: boolean;
+  activeBankerSet: Set<string>;
+  canToggleBanker: boolean;
+  canToggleBankerMatch: (matchId: string) => boolean;
+  breakevenTargetCost: number | null;
+  appliedPlan: ArchetypePlan | null;
+  effectiveAppliedPlan: ArchetypePlan | null;
+  portfolioPlans: ArchetypePlan[];
+  currentArch: ArchetypePlan | null;
+  fallbackValidArch: ArchetypePlan | null;
+  showBridgeFinder: boolean;
+  hasSuboptimalManual: boolean;
 }
 
 export function normalizeBudgetYuan(rawBudget: number): number {
@@ -941,8 +646,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingResolvers: Array<() => void> = [];
   let inFlightPromise: Promise<void> | null = null;
-  let baselineCacheKey = "";
-  let baselineCachePlans: ArchetypePlan[] = [];
 
   let state: BetSlipState = buildInitialState();
 
@@ -950,8 +653,18 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     for (const fn of listeners) fn();
   }
 
-  function makeBaselineKey(p: QuantWorkspaceParams): string {
-    return `${p.targetIds.join(",")}|${p.anchorToRadarPicks ? "1" : "0"}|${p.budget}|${p.unlockFullAgg ? "1" : "0"}|${p.anchorToRadarPicks ? buildRadarSignature(p.picks) : ""}`;
+  function resolveObjectivePortfolioPlans(
+    stance: UserStance,
+    ws: QuantWorkspaceResponse,
+    prevObjective: ArchetypePlan[]
+  ): ArchetypePlan[] {
+    if (stance === "objective") {
+      return ws.portfolioPlans ?? [];
+    }
+    if (Array.isArray(ws.objectivePortfolioPlans)) {
+      return ws.objectivePortfolioPlans;
+    }
+    return prevObjective;
   }
 
   function syncAutoRadarFields(
@@ -1024,49 +737,30 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     const seq = ++computeSeq;
     const paramsSnapshot = buildWorkspaceParams(state);
     const matchesSnapshot = state.matches;
-    const bKey = makeBaselineKey(paramsSnapshot);
-    const needsObjectiveFetch =
-      paramsSnapshot.stance !== "objective" &&
-      (baselineCacheKey !== bKey || baselineCachePlans.length === 0);
 
     try {
       const maybeMain = options.computeWorkspace(
         paramsSnapshot,
         matchesSnapshot
       );
-      const maybeObj = needsObjectiveFetch
-        ? options.computeWorkspace(
-            { ...paramsSnapshot, stance: "objective" },
-            matchesSnapshot
-          )
-        : null;
 
       const isAsync =
-        (maybeMain &&
-          typeof (maybeMain as Promise<QuantWorkspaceResponse>).then ===
-            "function") ||
-        (maybeObj &&
-          typeof (maybeObj as Promise<QuantWorkspaceResponse>).then ===
-            "function");
+        maybeMain &&
+        typeof (maybeMain as Promise<QuantWorkspaceResponse>).then ===
+          "function";
 
       if (isAsync) {
-        const p = Promise.all([
-          Promise.resolve(maybeMain),
-          maybeObj ? Promise.resolve(maybeObj) : Promise.resolve(null),
-        ])
-          .then(([ws, objWs]) => {
+        const p = Promise.resolve(maybeMain)
+          .then((ws) => {
             if (seq === computeSeq) {
-              if (paramsSnapshot.stance === "objective") {
-                baselineCacheKey = bKey;
-                baselineCachePlans = ws.portfolioPlans;
-              } else if (objWs) {
-                baselineCacheKey = bKey;
-                baselineCachePlans = objWs.portfolioPlans;
-              }
               state = {
                 ...state,
                 workspace: ws,
-                objectivePortfolioPlans: baselineCachePlans,
+                objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+                  paramsSnapshot.stance,
+                  ws,
+                  state.objectivePortfolioPlans
+                ),
               };
               options.onComputeSuccess?.();
               emit();
@@ -1086,18 +780,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
       if (seq === computeSeq) {
         const ws = maybeMain as QuantWorkspaceResponse;
-        const objWs = maybeObj as QuantWorkspaceResponse | null;
-        if (paramsSnapshot.stance === "objective") {
-          baselineCacheKey = bKey;
-          baselineCachePlans = ws.portfolioPlans;
-        } else if (objWs) {
-          baselineCacheKey = bKey;
-          baselineCachePlans = objWs.portfolioPlans;
-        }
         state = {
           ...state,
           workspace: ws,
-          objectivePortfolioPlans: baselineCachePlans,
+          objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+            paramsSnapshot.stance,
+            ws,
+            state.objectivePortfolioPlans
+          ),
         };
         options.onComputeSuccess?.();
         emit();
@@ -1149,10 +839,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     );
   }
 
-  function isPoolMutexLocked(_m: MatchItem, _poolCode: PoolCode): boolean {
-    return false;
-  }
-
   function applyAuthenticatedBundle(bundle: {
     matches: MatchItem[];
     initialPicks: SelectedPick[];
@@ -1174,8 +860,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       workspace: bundle.workspace,
       objectivePortfolioPlans: bundle.workspace.portfolioPlans ?? [],
     };
-    baselineCacheKey = makeBaselineKey(buildWorkspaceParams(state));
-    baselineCachePlans = bundle.workspace.portfolioPlans ?? [];
     emit();
   }
 
@@ -1244,9 +928,168 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     };
   }
 
+  function resolveBankerPassWindow(
+    distinctIds: string[]
+  ): { nextPassSizes: number[]; minPass: number; maxBankers: number } | null {
+    const manualRep = state.workspace.manualReport;
+    if (
+      distinctIds.length < 3 ||
+      distinctIds.length > 8 ||
+      manualRep.hasSameMatchCrossPoolConflict
+    ) {
+      return null;
+    }
+    const poolCap = Math.min(8, manualRep.poolCap || 8, distinctIds.length);
+    let nextPassSizes: number[] = [];
+    if (
+      state.passSpec.mode === "free" &&
+      Array.isArray(state.passSpec.passSizes)
+    ) {
+      const multiOnly = state.passSpec.passSizes.filter(
+        (s) => s >= 2 && s <= poolCap
+      );
+      if (
+        multiOnly.length > 0 &&
+        !(multiOnly.length === 1 && multiOnly[0] === distinctIds.length)
+      ) {
+        nextPassSizes = multiOnly;
+      } else if (
+        state.passSpec.passSizes.length > 0 &&
+        state.passSpec.passSizes.every((s) => s === 1)
+      ) {
+        return { nextPassSizes: [], minPass: 1, maxBankers: 0 };
+      }
+    }
+    if (nextPassSizes.length === 0) {
+      const defaultLowPass = Math.max(
+        2,
+        Math.min(poolCap, distinctIds.length - 1)
+      );
+      nextPassSizes = [defaultLowPass];
+    }
+    const minPass = Math.min(...nextPassSizes);
+    const maxBankers =
+      minPass >= 2 ? Math.min(distinctIds.length - 1, minPass - 1) : 0;
+    return { nextPassSizes, minPass, maxBankers };
+  }
+
+  function getPlayabilityGates(
+    archKey: PortfolioKey = "max-ev-utility"
+  ): PlayabilityGates {
+    const manualReport = state.workspace.manualReport;
+    const effectiveReport = state.workspace.effectiveReport;
+    const manualBonusLineCount = Math.max(
+      manualReport.tickets?.length ?? 0,
+      manualReport.betCount
+    );
+    const isBonusOver512 = manualBonusLineCount > 512;
+    const isBonusOptDisabled = !manualReport.canCheckout || isBonusOver512;
+    const appliedPlan = state.planSpec ? state.workspace.appliedPlan : null;
+    const effectiveAppliedPlan =
+      state.planSpec || effectiveReport.syntheticAutoMounted
+        ? state.workspace.appliedPlan
+        : null;
+    const isSingleNonSingleContext =
+      !state.planSpec &&
+      manualReport.matchCount === 1 &&
+      !manualReport.canCheckout &&
+      !manualReport.hasSameMatchCrossPoolConflict &&
+      Boolean(
+        manualReport.syntheticRescuePicks &&
+        manualReport.syntheticRescuePicks.length > 0
+      );
+    const isSyntheticPlayable =
+      isSingleNonSingleContext &&
+      (manualReport.syntheticEffectiveOdds ?? 1.05) > 1.0 &&
+      !manualReport.warnings.some((w) => w.id === "synthetic-unplayable");
+    const hasSyntheticInherentBlindSpot =
+      (manualReport.syntheticBlindSpotProb ?? 0) > 1e-9;
+    const canTrimSynthetic2Way =
+      isSyntheticPlayable &&
+      (manualReport.syntheticRescuePicks?.length ?? 0) >= 3;
+
+    const distinctIds = Array.from(new Set(state.picks.map((p) => p.matchId)));
+    const curBankers = (
+      state.passSpec.bankerMatchIds ??
+      manualReport.bankerMatchIds ??
+      []
+    ).filter((id) => distinctIds.includes(id));
+    const activeBankerSet = new Set(
+      effectiveReport.bankerMatchIds ??
+        manualReport.bankerMatchIds ??
+        state.passSpec.bankerMatchIds ??
+        []
+    );
+    const canToggleBanker =
+      manualReport.matchCount >= 3 &&
+      manualReport.matchCount <= 8 &&
+      !manualReport.hasSameMatchCrossPoolConflict;
+    const bankerWindow = resolveBankerPassWindow(distinctIds);
+
+    const canToggleBankerMatch = (matchId: string): boolean => {
+      if (!distinctIds.includes(matchId) || !bankerWindow) return false;
+      if (curBankers.includes(matchId)) return true;
+      return (
+        bankerWindow.maxBankers > 0 &&
+        curBankers.length < bankerWindow.maxBankers
+      );
+    };
+
+    const breakevenTargetCost =
+      appliedPlan?.breakevenUpgradeCost ??
+      effectiveReport.breakevenUpgradeCost ??
+      manualReport.breakevenUpgradeCost ??
+      null;
+
+    const portfolioPlans = state.workspace.portfolioPlans?.length
+      ? state.workspace.portfolioPlans
+      : state.workspace.fivePlans;
+    const currentArch =
+      portfolioPlans.find((p) => p.key === archKey) ??
+      portfolioPlans[0] ??
+      null;
+    const fallbackValidArch =
+      currentArch && currentArch.available !== false
+        ? currentArch
+        : (portfolioPlans.find((p) => p.available !== false) ??
+          portfolioPlans[0] ??
+          null);
+
+    const showBridgeFinder =
+      effectiveReport.matchCount === 1 &&
+      !effectiveReport.canCheckout &&
+      (state.workspace.insights.bridgeCandidates?.length ?? 0) > 0;
+    const hasSuboptimalManual =
+      !appliedPlan &&
+      manualReport.matchCount > 0 &&
+      (manualReport.underwaterCount > 0 || manualReport.avgVigLossPer100 > 19);
+
+    return {
+      isSingleNonSingleContext,
+      isSyntheticPlayable,
+      hasSyntheticInherentBlindSpot,
+      canTrimSynthetic2Way,
+      manualBonusLineCount,
+      isBonusOver512,
+      isBonusOptDisabled,
+      activeBankerSet,
+      canToggleBanker,
+      canToggleBankerMatch,
+      breakevenTargetCost,
+      appliedPlan,
+      effectiveAppliedPlan,
+      portfolioPlans,
+      currentArch,
+      fallbackValidArch,
+      showBridgeFinder,
+      hasSuboptimalManual,
+    };
+  }
+
   return {
     getState: () => state,
     getStanceDeltaSummary,
+    getPlayabilityGates,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -1267,7 +1110,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
     buildWorkspaceParams: () => buildWorkspaceParams(state),
     isPicked,
-    isPoolMutexLocked,
     getPickedMatchIds(): string[] {
       return Array.from(new Set(state.picks.map((p) => p.matchId)));
     },
@@ -1305,13 +1147,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       bootstrapped = true;
       computeSeq += 1;
 
+      const isLiveXiaoGaoAlert = (a?: MatchItem["aiAlert"]) =>
+        Boolean(a && (a.source === "primary" || a.source === "fallback"));
       const mergedMatches = res.matches.map((nm) => {
-        if (nm.aiAlert) return nm;
+        if (isLiveXiaoGaoAlert(nm.aiAlert)) return nm;
         const prev = state.matches.find(
           (em) =>
             em.id === nm.id ||
             (Boolean(em.matchNumStr) && em.matchNumStr === nm.matchNumStr)
         );
+        if (isLiveXiaoGaoAlert(prev?.aiAlert)) {
+          return { ...nm, aiAlert: prev!.aiAlert };
+        }
+        if (nm.aiAlert) return nm;
         return prev?.aiAlert ? { ...nm, aiAlert: prev.aiAlert } : nm;
       });
 
@@ -1366,6 +1214,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         targetIds: nextTargets,
         picks: syncedPicks,
         workspace: res.workspace,
+        objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+          state.stance,
+          res.workspace,
+          state.objectivePortfolioPlans
+        ),
       };
       emit();
 
@@ -1381,7 +1234,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         matches: state.matches.map((item) =>
-          item.id === matchId ? { ...item, aiAlert: alert } : item
+          item.id === matchId ||
+          (Boolean(item.matchNumStr) && item.matchNumStr === matchId)
+            ? { ...item, aiAlert: alert }
+            : item
         ),
       };
       emit();
@@ -2180,43 +2036,17 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         return { ok: true, isBanker: false };
       }
 
-      const poolCap = Math.min(8, manualRep.poolCap || 8, distinctIds.length);
-      let nextPassSizes: number[] = [];
-      if (
-        state.passSpec.mode === "free" &&
-        Array.isArray(state.passSpec.passSizes)
-      ) {
-        const multiOnly = state.passSpec.passSizes.filter(
-          (s) => s >= 2 && s <= poolCap
-        );
-        if (
-          multiOnly.length > 0 &&
-          !(multiOnly.length === 1 && multiOnly[0] === distinctIds.length)
-        ) {
-          nextPassSizes = multiOnly;
-        }
-      }
-      if (nextPassSizes.length === 0) {
-        const defaultLowPass = Math.max(
-          2,
-          Math.min(poolCap, distinctIds.length - 1)
-        );
-        nextPassSizes = [defaultLowPass];
-      }
-
-      const minPass = Math.min(...nextPassSizes);
-      const maxBankers =
-        minPass >= 2 ? Math.min(distinctIds.length - 1, minPass - 1) : 0;
-      if (maxBankers <= 0) {
+      const bankerWindow = resolveBankerPassWindow(distinctIds);
+      if (!bankerWindow || bankerWindow.maxBankers <= 0) {
         return {
           ok: false,
           reason: "当前最小过关数不支持设胆（2串1最多设1胆，3串1最多设2胆）",
         };
       }
-      if (curBankers.length >= maxBankers) {
+      if (curBankers.length >= bankerWindow.maxBankers) {
         return {
           ok: false,
-          reason: `当前最低 ${minPass}串1 最多可设 ${maxBankers} 场胆码`,
+          reason: `当前最低 ${bankerWindow.minPass}串1 最多可设 ${bankerWindow.maxBankers} 场胆码`,
         };
       }
 
@@ -2226,7 +2056,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         planSpec: null,
         passSpec: {
           mode: "free",
-          passSizes: nextPassSizes,
+          passSizes: bankerWindow.nextPassSizes,
           bankerMatchIds: nextBankers,
         },
       };
@@ -2444,8 +2274,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     buildSealedLedgerDraft(): SealedLedgerDraft | null {
-      const effectiveReport = state.workspace.effectiveReport;
-      const manualReport = state.workspace.manualReport;
+      const { effectiveReport, manualReport } = state.workspace;
       const appliedPlan =
         state.planSpec || effectiveReport.syntheticAutoMounted
           ? state.workspace.appliedPlan
@@ -2465,97 +2294,69 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           []
       );
       const matchById = new Map(state.matches.map((m) => [m.id, m]));
-      const resolveRawPrintOdds = (
-        matchId: string,
-        poolCode: PoolCode,
-        optionKey: string,
-        fallbackOdds: number
-      ): { odds: number; label?: string } => {
-        const m = matchById.get(matchId);
-        const opt = m?.pools?.[poolCode]?.options?.find(
-          (o) => o.key === optionKey
+      const mapLeg = (lg: {
+        matchId: string;
+        matchNumStr?: string;
+        home?: string;
+        away?: string;
+        kickoff?: string;
+        poolCode: PoolCode;
+        optionKey: string;
+        optionLabel?: string;
+        odds: number;
+      }) => {
+        const m = matchById.get(lg.matchId);
+        const opt = m?.pools?.[lg.poolCode]?.options?.find(
+          (o) => o.key === lg.optionKey
         );
-        if (opt && opt.odds > 1) {
-          return { odds: opt.odds, label: opt.label };
-        }
-        return { odds: fallbackOdds };
+        return {
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr || m?.matchNumStr,
+          home: lg.home || m?.home,
+          away: lg.away || m?.away,
+          kickoff: lg.kickoff || m?.kickoff,
+          poolCode: lg.poolCode,
+          optionKey: lg.optionKey,
+          optionLabel:
+            (opt && opt.odds > 1 ? opt.label : undefined) || lg.optionLabel,
+          odds: opt && opt.odds > 1 ? opt.odds : lg.odds,
+          goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+        };
       };
 
-      const canSealSnapshot = effectiveReport.betCount <= 512;
-      const lines: LedgerSnapshotLine[] = !canSealSnapshot
-        ? []
-        : appliedPlan
-          ? appliedPlan.lines.map((ln, idx) => ({
-              id: ln.id || `ap_${idx + 1}`,
-              modeLabel: ln.modeLabel,
-              multiple: Math.max(1, Math.round(ln.multiple || 1)),
-              legs: ln.legs.map((lg) => {
-                const m = matchById.get(lg.matchId);
-                const rawOpt = resolveRawPrintOdds(
-                  lg.matchId,
-                  lg.poolCode,
-                  lg.optionKey,
-                  lg.odds
-                );
+      const rawLines =
+        effectiveReport.betCount > 512
+          ? []
+          : appliedPlan
+            ? appliedPlan.lines.map((ln, idx) => ({
+                id: ln.id || `ap_${idx + 1}`,
+                modeLabel: ln.modeLabel,
+                multiple: Math.max(1, Math.round(ln.multiple || 1)),
+                legs: ln.legs.map(mapLeg),
+              }))
+            : (effectiveReport.tickets ?? []).map((tk, idx) => {
+                const legs = tk.legs ?? [];
+                const passTxt =
+                  legs.length === 1
+                    ? "单关"
+                    : `${legs.length}串1${bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""}`;
                 return {
-                  matchId: lg.matchId,
-                  matchNumStr: lg.matchNumStr || m?.matchNumStr,
-                  home: lg.home || m?.home,
-                  away: lg.away || m?.away,
-                  kickoff: lg.kickoff || m?.kickoff,
-                  poolCode: lg.poolCode,
-                  optionKey: lg.optionKey,
-                  optionLabel: rawOpt.label || lg.optionLabel,
-                  odds: rawOpt.odds,
-                  goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
+                  id: tk.id || `tk_${idx + 1}`,
+                  modeLabel: passTxt,
+                  multiple: Math.max(
+                    1,
+                    Math.round(
+                      (tk as ComboRow & { multiple?: number }).multiple ??
+                        state.multiple ??
+                        1
+                    )
+                  ),
+                  legs: legs.map(mapLeg),
                 };
-              }),
-            }))
-          : (effectiveReport.tickets ?? []).map((tk, idx) => {
-              const legs = tk.legs ?? [];
-              const passTxt =
-                legs.length === 1
-                  ? "单关"
-                  : `${legs.length}串1${
-                      bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
-                    }`;
-              return {
-                id: tk.id || `tk_${idx + 1}`,
-                modeLabel: passTxt,
-                multiple: Math.max(
-                  1,
-                  Math.round(
-                    (tk as ComboRow & { multiple?: number }).multiple ??
-                      state.multiple ??
-                      1
-                  )
-                ),
-                legs: legs.map((lg) => {
-                  const m = matchById.get(lg.matchId);
-                  const rawOpt = resolveRawPrintOdds(
-                    lg.matchId,
-                    lg.poolCode,
-                    lg.optionKey,
-                    lg.odds
-                  );
-                  return {
-                    matchId: lg.matchId,
-                    matchNumStr: lg.matchNumStr || m?.matchNumStr,
-                    home: lg.home || m?.home,
-                    away: lg.away || m?.away,
-                    kickoff: m?.kickoff,
-                    poolCode: lg.poolCode,
-                    optionKey: lg.optionKey,
-                    optionLabel: rawOpt.label || lg.optionLabel,
-                    odds: rawOpt.odds,
-                    goalLine: m?.pools?.HHAD?.goalLine ?? "-1",
-                  };
-                }),
-              };
-            });
+              });
 
       const matchMap = new Map<string, LedgerSnapshotMatch>();
-      for (const ln of lines) {
+      for (const ln of rawLines) {
         for (const lg of ln.legs) {
           const m = matchById.get(lg.matchId);
           let entry = matchMap.get(lg.matchId);
@@ -2601,12 +2402,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         paperRefCost: effectiveReport.totalCost,
         minPayout: effectiveReport.minPayout,
         maxPayout: effectiveReport.maxPayout,
+        workspaceParams: buildWorkspaceParams(state),
         snapshot:
-          lines.length > 0
-            ? {
-                matches: Array.from(matchMap.values()),
-                lines,
-              }
+          rawLines.length > 0
+            ? { matches: Array.from(matchMap.values()), lines: rawLines }
             : undefined,
       };
     },
@@ -2716,6 +2515,7 @@ export interface SealedLedgerDraft {
   paperRefCost: number;
   minPayout: number;
   maxPayout: number;
+  workspaceParams?: QuantWorkspaceParams;
   snapshot?: LedgerTicketSnapshot;
 }
 

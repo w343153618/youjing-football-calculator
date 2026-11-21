@@ -1687,16 +1687,15 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
       `qa-covering-wheel must distinguish 独立分块容错串 and <=10 组逻辑组合 vs 99x physical slips, got: ${resWheel.answer}`
     );
 
-    const manualSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/manual/UserManualModal.tsx"),
-      "utf8"
-    );
+    const { MANUAL_CHAPTER_SPECS } =
+      await import("../src/manual/manualCatalog.ts");
+    const manualSpecText = JSON.stringify(MANUAL_CHAPTER_SPECS);
     assert.ok(
-      manualSrc.includes("独立分块容错串") &&
-        manualSrc.includes("逻辑组合") &&
-        manualSrc.includes("99") &&
-        manualSrc.includes("最高校准单腿返还率"),
-      "UserManualModal.tsx must reflect honest taxonomy, 99x slip distinction, and empty-alpha ceiling disclosure"
+      manualSpecText.includes("独立分块容错串") &&
+        manualSpecText.includes("逻辑组合") &&
+        manualSpecText.includes("99") &&
+        manualSpecText.includes("最高校准单腿返还率"),
+      "Structured manual chapters must reflect honest taxonomy, 99x slip distinction, and empty-alpha ceiling disclosure"
     );
   });
 });
@@ -1723,14 +1722,12 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     assert.equal(ctrl.togglePick(m0, "HAD", "d").ok, true);
     assert.equal(ctrl.togglePick(m2, "HAD", "h").ok, true);
 
-    // Zero open pools are mutex-locked across HAD/HHAD/TTG/HAFU/CRS
-    for (const pool of ["HAD", "HHAD", "TTG", "HAFU", "CRS"] as PoolCode[]) {
-      assert.equal(
-        ctrl.isPoolMutexLocked(m0, pool),
-        false,
-        `Pool ${pool} on open match must NOT be mutex-locked`
-      );
-    }
+    // Zero open pools are mutex-locked (dead isPoolMutexLocked stub removed)
+    assert.equal(
+      "isPoolMutexLocked" in ctrl,
+      false,
+      "Dead isPoolMutexLocked stub must remain removed"
+    );
 
     // 2. Direct 1-tap switch on m0 from HAD (h+d) -> HHAD (ha / equivalent-arb style click) preserves m2 pick!
     const hhadKey = m0.pools.HHAD.options[2].key;
@@ -2831,20 +2828,19 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       "APP_GROUND_TRUTH_MANUAL_SPEC must describe smooth cross-pool switch + undo, 3-way balanced HAFU modes, <=1.00 honest block, and 0ms parlay restoration"
     );
 
-    const manualModalSrc = fs.readFileSync(
-      path.join(REPO_ROOT, "src/manual/UserManualModal.tsx"),
-      "utf8"
-    );
+    const { MANUAL_CHAPTER_SPECS } =
+      await import("../src/manual/manualCatalog.ts");
+    const manualModalSrc = JSON.stringify(MANUAL_CHAPTER_SPECS);
     assert.equal(
       manualModalSrc.includes("勾选默认开单关的半全场 `胜胜 + 平胜`"),
       false,
-      "UserManualModal.tsx must replace legacy manual 2-way `胜胜 + 平胜` instruction"
+      "Structured manual chapters must replace legacy manual 2-way `胜胜 + 平胜` instruction"
     );
     assert.ok(
       manualModalSrc.includes("胜胜 + 平胜 + 负胜") &&
         manualModalSrc.includes("反比例") &&
         manualModalSrc.includes("2项省本搏常规"),
-      "UserManualModal.tsx must document 3-way 胜胜+平胜+负胜 inverse-odds auto-balancing + optional 2-way comeback trade-off"
+      "Structured manual chapters must document 3-way 胜胜+平胜+负胜 inverse-odds auto-balancing + optional 2-way comeback trade-off"
     );
   });
 

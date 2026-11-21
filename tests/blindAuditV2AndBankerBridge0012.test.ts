@@ -1986,10 +1986,13 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       "Compact bottom bar must keep 一键合成单关 ahead of 🌉一键凑2串1 when same-match HAFU rescue exists"
     );
 
-    const manualModalSrc = fs.readFileSync(
-      path.resolve(process.cwd(), "src/manual/UserManualModal.tsx"),
-      "utf8"
-    );
+    const { MANUAL_CHAPTER_SPECS } =
+      await import("../src/manual/manualCatalog.ts");
+    const manualModalSrc =
+      fs.readFileSync(
+        path.resolve(process.cwd(), "src/manual/UserManualModal.tsx"),
+        "utf8"
+      ) + JSON.stringify(MANUAL_CHAPTER_SPECS);
     assert.equal(
       manualModalSrc.includes("全稳赚"),
       false,

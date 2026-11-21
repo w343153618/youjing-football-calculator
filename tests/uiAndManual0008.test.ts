@@ -606,10 +606,13 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       path.join(repoRoot, "src/studio/ComparisonStage.tsx"),
       "utf8"
     );
-    const manualSrc = fs.readFileSync(
-      path.join(repoRoot, "src/manual/UserManualModal.tsx"),
-      "utf8"
-    );
+    const manualSrc = [
+      "src/manual/UserManualModal.tsx",
+      "src/manual/manualCatalog.ts",
+      "src/manual/manualChapters.tsx",
+    ]
+      .map((rel) => fs.readFileSync(path.join(repoRoot, rel), "utf8"))
+      .join("\n");
 
     // 1. Strict client-server math isolation: zero calibration/Poisson/optimization formulas or server/quantEngine imports in src/
     const forbiddenClientMathRe =
@@ -699,17 +702,8 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
       );
     }
 
-    const pillsBlockMatch = manualSrc.match(
-      /const QUICK_QA_PILLS\s*=\s*\[([\s\S]*?)\];/
-    );
-    assert.ok(
-      pillsBlockMatch,
-      "Must locate QUICK_QA_PILLS in UserManualModal.tsx"
-    );
-    const quickPills = Array.from(
-      String(pillsBlockMatch[1]).matchAll(/['"]([^'"]+)['"]/g),
-      (m) => m[1]
-    );
+    const { QUICK_QA_PILLS: quickPills } =
+      await import("../src/manual/manualCatalog.ts");
     assert.ok(quickPills.length >= 10, "Should expose curated quick Q&A pills");
 
     const qa = createManualQaEngine({
