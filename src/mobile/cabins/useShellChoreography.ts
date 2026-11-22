@@ -490,13 +490,15 @@ export function useShellChoreography({
     haptic(7);
     playTactileCue("tap-on");
     notifyToast(
-      nextMode === "full-3way"
-        ? playabilityGates.hasSyntheticInherentBlindSpot
-          ? "🛡️ 已切换：常规比分覆盖配平合成单关"
-          : "🛡️ 已切换：3项全包无死角配平合成单关"
-        : nextMode === "trim-2way"
-          ? "⚡ 已切换：2项省本搏常规（请注意逆转漏网风险）"
-          : "🌉 已展开过桥配菜搭子，点选任一搭子即凑 2串1"
+      nextMode === "partial-cover"
+        ? "⚠️ 已确认授权：部分覆盖/超额配平合成单关"
+        : nextMode === "full-3way"
+          ? playabilityGates.hasSyntheticInherentBlindSpot
+            ? "🛡️ 已切换：常规比分覆盖配平合成单关"
+            : "🛡️ 已切换：3项全包无死角配平合成单关"
+          : nextMode === "trim-2way"
+            ? "⚡ 已切换：2项省本搏常规（请注意逆转漏网风险）"
+            : "🌉 已展开过桥配菜搭子，点选任一搭子即凑 2串1"
     );
   };
 

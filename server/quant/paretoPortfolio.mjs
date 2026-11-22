@@ -8,6 +8,8 @@ import {
   bankerRoundParlayUnitPayout,
   combinationsOfIndices,
   countPhysical99xSlips,
+  isPoolAllUpEligible,
+  isPoolSingleEligible,
   statutorySingleBetCap,
 } from "./statutoryRules.mjs";
 import {
@@ -18,6 +20,7 @@ import {
   getCachedMatchCalibration,
   getMatchBaseAtomicProbs,
   resolveGoalLineNum,
+  resolvePureSingleSubsetPoolCandidates,
   scanMatchAlphaCandidates,
   sumOptionProbOnAtomic,
   tiltAtomicProbsByStance,
@@ -2021,13 +2024,11 @@ function solveFullSlatePartitionDutching(
 
   const mainSinglePoolOf = (m) => {
     const hadOk =
-      m.pools.HAD?.selling !== false &&
-      m.pools.HAD?.single &&
+      isPoolSingleEligible(m.pools.HAD) &&
       Array.isArray(m.pools.HAD?.options) &&
       m.pools.HAD.options.length >= 2;
     const hhadOk =
-      m.pools.HHAD?.selling !== false &&
-      m.pools.HHAD?.single &&
+      isPoolSingleEligible(m.pools.HHAD) &&
       Array.isArray(m.pools.HHAD?.options) &&
       m.pools.HHAD.options.length >= 2;
     if (hadOk && hhadOk) {
@@ -2044,11 +2045,11 @@ function solveFullSlatePartitionDutching(
 
   const bestPoolOf = (m) => {
     const hadOk =
-      m.pools.HAD?.selling !== false &&
+      isPoolAllUpEligible(m.pools.HAD) &&
       Array.isArray(m.pools.HAD?.options) &&
       m.pools.HAD.options.length >= 2;
     const hhadOk =
-      m.pools.HHAD?.selling !== false &&
+      isPoolAllUpEligible(m.pools.HHAD) &&
       Array.isArray(m.pools.HHAD?.options) &&
       m.pools.HHAD.options.length >= 2;
     if (hadOk && hhadOk) {
@@ -2574,8 +2575,12 @@ export function generateParetoPortfolio(
   budgetYuan,
   stance,
   unlockFullAgg,
-  anchorPicks = []
+  anchorPicks = [],
+  portfolioOptions = null
 ) {
+  const acceptPartialSingleCoverage = Boolean(
+    portfolioOptions?.acceptPartialSingleCoverage
+  );
   const rawBudgetVal = Number(budgetYuan);
   const cleanBudget =
     Number.isFinite(rawBudgetVal) && rawBudgetVal > 0
@@ -2596,10 +2601,13 @@ export function generateParetoPortfolio(
     stanceAtomicMap.set(m.id, tiltAtomicProbsByStance(baseA, m, stance));
   }
 
-  const primaryPoolOf = (m) =>
-    m.pools.HAD?.selling !== false && m.pools.HAD?.options?.length >= 2
-      ? "HAD"
-      : "HHAD";
+  const primaryPoolOf = (m) => {
+    const requireAllUp = selected.length >= 2;
+    const hadOpen = requireAllUp
+      ? isPoolAllUpEligible(m.pools.HAD)
+      : m.pools.HAD?.selling !== false;
+    return hadOpen && m.pools.HAD?.options?.length >= 2 ? "HAD" : "HHAD";
+  };
 
   const anchorsByMatch = new Map();
   if (Array.isArray(anchorPicks)) {
@@ -2623,27 +2631,56 @@ export function generateParetoPortfolio(
   const legOf = (m, poolCode, optionKey) =>
     makeLeg(m, poolCode, optionKey, stance, stanceAtomicMap.get(m.id));
 
-  const preferredPrimaryLeg = (m) => {
+  const preferredPrimaryLeg = (m, requireAllUp = selected.length >= 2) => {
     const anc = anchorsByMatch.get(m.id);
     if (anc && anc.length > 0) {
-      const sortedAnc = [...anc].sort((a, b) => b.fairProb - a.fairProb);
-      const chosen = legOf(m, sortedAnc[0].poolCode, sortedAnc[0].optionKey);
-      if (chosen) return chosen;
+      const legalAnc = requireAllUp
+        ? anc.filter((a) => isPoolAllUpEligible(m.pools[a.poolCode]))
+        : anc;
+      const sortedAnc = [...legalAnc].sort((a, b) => b.fairProb - a.fairProb);
+      if (sortedAnc[0]) {
+        const chosen = legOf(
+          m,
+          sortedAnc[0].poolCode,
+          sortedAnc[0].poolCode === "CRS"
+            ? sortedAnc[0].optionLabel || sortedAnc[0].optionKey
+            : sortedAnc[0].optionKey
+        );
+        if (chosen) return chosen;
+      }
     }
-    const pCode = primaryPoolOf(m);
-    const poolOpts = m.pools[pCode]?.options ?? [];
-    const legs = poolOpts.map((o) => legOf(m, pCode, o.key)).filter(Boolean);
-    legs.sort((a, b) => b.fairProb - a.fairProb);
-    return legs[0] ?? legOf(m, "HAFU", "hh");
+    for (const pCode of [
+      primaryPoolOf(m),
+      "HAD",
+      "HHAD",
+      "HAFU",
+      "TTG",
+      "CRS",
+    ]) {
+      const pool = m.pools[pCode];
+      if (!pool) continue;
+      if (requireAllUp && !isPoolAllUpEligible(pool)) continue;
+      if (!requireAllUp && pool.selling === false) continue;
+      const legs = (pool.options ?? [])
+        .map((o) => legOf(m, pCode, pCode === "CRS" ? o.label || o.key : o.key))
+        .filter(Boolean);
+      if (legs.length > 0) {
+        legs.sort((a, b) => b.fairProb - a.fairProb);
+        return legs[0];
+      }
+    }
+    return null;
   };
 
   const preferredHighProbMainLeg = (m) => {
+    const requireAllUp = selected.length >= 2;
     const anc = anchorsByMatch.get(m.id);
-    if (anc && anc.length > 0) return preferredPrimaryLeg(m);
+    if (anc && anc.length > 0) return preferredPrimaryLeg(m, requireAllUp);
     const cands = [];
     for (const code of ["HAD", "HHAD"]) {
       const pool = m.pools[code];
-      if (!pool || pool.selling === false || !Array.isArray(pool.options))
+      if (!pool || !Array.isArray(pool.options)) continue;
+      if (requireAllUp ? !isPoolAllUpEligible(pool) : pool.selling === false)
         continue;
       for (const o of pool.options) {
         if (o.odds >= 1.18) {
@@ -2652,43 +2689,9 @@ export function generateParetoPortfolio(
         }
       }
     }
-    if (cands.length === 0) return preferredPrimaryLeg(m);
+    if (cands.length === 0) return preferredPrimaryLeg(m, requireAllUp);
     cands.sort((a, b) => b.fairProb - a.fairProb);
     return cands[0];
-  };
-
-  const inferMatchDirection = (m) => {
-    const anc = anchorsByMatch.get(m.id);
-    if (anc && anc.length > 0) {
-      const topAnc = [...anc].sort((a, b) => b.fairProb - a.fairProb)[0];
-      const k = topAnc.optionKey;
-      const lbl = topAnc.optionLabel || k;
-      if (topAnc.poolCode === "HAD")
-        return k === "a" ? "away" : k === "d" ? "draw" : "home";
-      if (topAnc.poolCode === "HHAD") {
-        const gl = resolveGoalLineNum(m, topAnc.poolName);
-        if (k === "hh") return "home";
-        if (k === "ha") return "away";
-        return gl < 0 ? "home" : "away";
-      }
-      if (topAnc.poolCode === "HAFU") {
-        return k.endsWith("a") ? "away" : k.endsWith("d") ? "draw" : "home";
-      }
-      if (topAnc.poolCode === "TTG") {
-        if (k === "s0") return "draw";
-      }
-      if (topAnc.poolCode === "CRS") {
-        if (lbl === "负其它" || k === "s1sa") return "away";
-        if (lbl === "平其它" || k === "s1sd") return "draw";
-        if (lbl === "胜其它" || k === "s1sh") return "home";
-        const [hs, as] = lbl.split(":").map(Number);
-        if (Number.isFinite(hs) && Number.isFinite(as)) {
-          return hs < as ? "away" : hs === as ? "draw" : "home";
-        }
-      }
-    }
-    const top = preferredPrimaryLeg(m);
-    return top?.optionKey === "a" || top?.optionKey === "ha" ? "away" : "home";
   };
 
   const secondaryDisjointLegInPool = (m, primaryLeg) => {
@@ -2714,52 +2717,30 @@ export function generateParetoPortfolio(
       .sort((a, b) => b.fairProb - a.fairProb);
 
     if (anc && anc.length === 1) {
-      const dir = inferMatchDirection(m);
-      if (dir === "draw") {
-        if (primaryLeg.poolCode === "HAD" || primaryLeg.poolCode === "HHAD")
-          return null;
-        if (primaryLeg.poolCode === "HAFU") {
-          return (
-            others.find((o) => ["dd", "hd", "ad"].includes(o.optionKey)) ?? null
-          );
-        }
-        if (primaryLeg.poolCode === "CRS") {
-          return (
-            others.find((o) => {
-              const lbl = o.optionLabel || o.optionKey;
-              if (lbl === "平其它" || o.optionKey === "s1sd") return true;
-              const [hs, as] = lbl.split(":").map(Number);
-              return Number.isFinite(hs) && Number.isFinite(as) && hs === as;
-            }) ?? null
-          );
-        }
-        if (primaryLeg.poolCode === "TTG") {
-          return (
-            others.find((o) => o.optionKey === "s0" || o.optionKey === "s2") ??
-            null
-          );
-        }
+      if (primaryLeg.poolCode !== "HAD" && primaryLeg.poolCode !== "HHAD") {
+        return null;
       }
-      if (primaryLeg.poolCode === "HHAD") {
-        const gl = resolveGoalLineNum(m, primaryLeg.poolName);
-        if (primaryLeg.optionKey === "hh") {
-          return gl < 0
-            ? (others.find((o) => o.optionKey === "hd") ?? null)
-            : null;
-        }
-        if (primaryLeg.optionKey === "ha") {
-          return gl > 0
-            ? (others.find((o) => o.optionKey === "hd") ?? null)
-            : null;
-        }
-        if (primaryLeg.optionKey === "hd") {
-          return (
-            others.find(
-              (o) => o.optionKey === (dir === "away" ? "ha" : "hh")
-            ) ?? null
-          );
-        }
+      if (primaryLeg.poolCode === "HAD") {
+        if (primaryLeg.optionKey === "d") return null;
+        return others.find((o) => o.optionKey === "d") ?? null;
       }
+      const gl = resolveGoalLineNum(m, primaryLeg.poolName);
+      if (primaryLeg.optionKey === "hh") {
+        return gl < 0
+          ? (others.find((o) => o.optionKey === "hd") ?? null)
+          : null;
+      }
+      if (primaryLeg.optionKey === "ha") {
+        return gl > 0
+          ? (others.find((o) => o.optionKey === "hd") ?? null)
+          : null;
+      }
+      if (primaryLeg.optionKey === "hd") {
+        return (
+          others.find((o) => o.optionKey === (gl < 0 ? "hh" : "ha")) ?? null
+        );
+      }
+      return null;
     }
 
     return (
@@ -2772,81 +2753,95 @@ export function generateParetoPortfolio(
     );
   };
 
-  const resolveDirectionSingleBundles = (m) => {
-    const dir = inferMatchDirection(m);
-    const hadDrawLeg =
-      dir === "draw" && m.pools.HAD?.selling !== false && m.pools.HAD?.single
-        ? legOf(m, "HAD", "d")
-        : null;
+  const resolveSingleMatchSubsetCandidates = (m, targetPicksInput) => {
+    const cands = resolvePureSingleSubsetPoolCandidates(
+      m,
+      targetPicksInput,
+      baseAtomicMap.get(m.id)
+    );
+    return cands
+      .map((c) => {
+        const legs = c.fullPicks
+          .map((p) =>
+            legOf(
+              m,
+              p.poolCode,
+              p.poolCode === "CRS" ? p.optionLabel || p.optionKey : p.optionKey
+            )
+          )
+          .filter(Boolean);
+        return legs.length === c.fullPicks.length ? { ...c, legs } : null;
+      })
+      .filter(Boolean);
+  };
 
-    let hhadCompatLegs = [];
-    if (
-      dir !== "draw" &&
-      m.pools.HHAD?.selling !== false &&
-      m.pools.HHAD?.single
-    ) {
-      const gl = resolveGoalLineNum(m, m.pools.HHAD?.name);
-      const compatKeys =
-        dir === "home"
-          ? gl < 0
-            ? ["hh", "hd"]
-            : ["hh"]
-          : gl > 0
-            ? ["ha", "hd"]
-            : ["ha"];
-      hhadCompatLegs = compatKeys
-        .map((k) => legOf(m, "HHAD", k))
-        .filter(Boolean);
+  const buildSinglePartialCoveragePreview = (m, cand) => {
+    if (!cand || !Array.isArray(cand.legs) || cand.legs.length === 0) {
+      return null;
     }
-
-    let hafuCompatLegs = [];
-    if (m.pools.HAFU?.selling !== false && m.pools.HAFU?.single) {
-      const keys =
-        dir === "draw"
-          ? ["dd", "hd", "ad"]
-          : dir === "away"
-            ? ["aa", "da"]
-            : ["hh", "dh"];
-      hafuCompatLegs = keys.map((k) => legOf(m, "HAFU", k)).filter(Boolean);
+    const singleCap = statutorySingleBetCap(1);
+    const rawUnits = cand.legs.map((lg) =>
+      bankerRoundParlayUnitPayout([lg.odds])
+    );
+    const cappedUnits = rawUnits.map((u) => Math.min(singleCap, u));
+    const dutchItems = cand.legs.map((lg, idx) => ({
+      unitPayout: cappedUnits[idx],
+      prob: lg.fairProb,
+      isCapClipped: rawUnits[idx] > singleCap,
+    }));
+    const K = cand.legs.length;
+    const maxN = Math.min(10_000, 999 * K);
+    let minAlloc = null;
+    for (let N = K; N <= maxN; N++) {
+      const a = allocateInverseOddsDutching(dutchItems, N, {
+        requireStrictNetGain: true,
+      });
+      if (a) {
+        minAlloc = a;
+        break;
+      }
     }
-
-    let crsCompatLegs = [];
-    if (m.pools.CRS?.selling !== false && m.pools.CRS?.single) {
-      crsCompatLegs = (m.pools.CRS.options ?? [])
-        .filter((o) => {
-          const lbl = o.label || o.key;
-          if (lbl === "胜其它" || o.key === "s1sh") return dir === "home";
-          if (lbl === "平其它" || o.key === "s1sd") return dir === "draw";
-          if (lbl === "负其它" || o.key === "s1sa") return dir === "away";
-          const [hs, as] = lbl.split(":").map(Number);
-          if (!Number.isFinite(hs) || !Number.isFinite(as)) return false;
-          return dir === "draw"
-            ? hs === as
-            : dir === "away"
-              ? hs < as
-              : hs > as;
-        })
-        .map((o) => legOf(m, "CRS", o.label || o.key))
-        .filter(Boolean)
-        .sort((a, b) => b.fairProb - a.fairProb);
-    }
-
-    let ttgDrawLegs = [];
-    if (
-      dir === "draw" &&
-      m.pools.TTG?.selling !== false &&
-      m.pools.TTG?.single
-    ) {
-      ttgDrawLegs = ["s0", "s2"].map((k) => legOf(m, "TTG", k)).filter(Boolean);
-    }
-
+    if (!minAlloc) return null;
+    const previewLines = cand.legs.map((lg, idx) => {
+      const mult = minAlloc.mults[idx];
+      const unit = cappedUnits[idx];
+      const ret = Number((unit * mult).toFixed(2));
+      return {
+        id: `preview-${lg.poolCode}-${lg.optionKey}`,
+        roleLabel: `部分覆盖单关#${idx + 1}`,
+        legs: [lg],
+        modeLabel: "单关",
+        multiple: mult,
+        cost: mult * 2,
+        unitPayout: unit,
+        returnPayout: ret,
+        netProfit: Number((ret - minAlloc.totalCost).toFixed(2)),
+        prob: lg.fairProb,
+      };
+    });
     return {
-      dir,
-      hadDrawLeg,
-      hhadCompatLegs,
-      hafuCompatLegs,
-      crsCompatLegs,
-      ttgDrawLegs,
+      poolCode: cand.poolCode,
+      poolName: m.pools[cand.poolCode]?.name || cand.poolCode,
+      isExactEquivalent: cand.isExactEquivalent,
+      requiresExplicitConfirm:
+        !cand.isExactEquivalent || minAlloc.totalCost > cleanBudget,
+      confirmReason: !cand.isExactEquivalent
+        ? "partial-coverage"
+        : "over-budget-cap",
+      authorizedMaxCost: cleanBudget,
+      previewCost: minAlloc.totalCost,
+      effectiveOdds: Number(cand.synEff.toFixed(4)),
+      targetProb: Number(cand.targetProb.toFixed(8)),
+      coveredProb: Number(cand.coveredInTargetProb.toFixed(8)),
+      retainedDirectionRatio: Number(cand.retainedDirectionRatio.toFixed(8)),
+      blindSpotProb: Number(cand.blindSpotProb.toFixed(8)),
+      withinDirectionMissRatio: Number(
+        cand.withinDirectionMissRatio.toFixed(8)
+      ),
+      overCoverProb: Number(cand.overCoverProb.toFixed(8)),
+      blindSpotLabel: cand.blindSpotLabel ?? null,
+      missedScores: cand.missedScores ?? [],
+      previewLines,
     };
   };
 
@@ -2875,12 +2870,31 @@ export function generateParetoPortfolio(
     reasons = [],
     prependWarningReason = null,
   }) => {
-    if (!available || !Array.isArray(lines) || lines.length === 0) {
+    const matchById = new Map(selected.map((m) => [m.id, m]));
+    const legalLines = Array.isArray(lines)
+      ? lines.filter((l) => {
+          if (!Array.isArray(l?.legs) || l.legs.length === 0) return false;
+          if (l.legs.length === 1) {
+            const lg = l.legs[0];
+            const fm = matchById.get(lg.matchId);
+            return fm ? isPoolSingleEligible(fm.pools?.[lg.poolCode]) : true;
+          }
+          return l.legs.every((lg) => {
+            const fm = matchById.get(lg.matchId);
+            return fm ? isPoolAllUpEligible(fm.pools?.[lg.poolCode]) : true;
+          });
+        })
+      : [];
+    if (!available || legalLines.length === 0) {
       return {
         key,
         available: false,
         alphaKind: alphaKind ?? "none",
-        emptyReason,
+        emptyReason:
+          emptyReason ??
+          (available && Array.isArray(lines) && lines.length > 0
+            ? "所选玩法受体彩单关/过关销售资格限制，当前结构无法出票"
+            : null),
         shortTab,
         badge,
         title,
@@ -2910,6 +2924,8 @@ export function generateParetoPortfolio(
         lines: [],
       };
     }
+
+    lines = legalLines;
 
     const totalCost = lines.reduce((a, l) => a + l.cost, 0);
     const effectiveSavedCash = Math.max(0, cleanBudget - totalCost);
@@ -3189,13 +3205,7 @@ export function generateParetoPortfolio(
 
   const buildSinglePoolSpecs = (m, code, prefix) => {
     const pool = m.pools[code];
-    if (
-      !pool ||
-      pool.selling === false ||
-      !pool.single ||
-      !Array.isArray(pool.options)
-    )
-      return null;
+    if (!isPoolSingleEligible(pool)) return null;
     const legs = pool.options
       .map((o) => legOf(m, code, code === "CRS" ? o.label || o.key : o.key))
       .filter(Boolean);
@@ -3215,20 +3225,7 @@ export function generateParetoPortfolio(
   const buildPairCartesianSpecs = (mA, codeA, mB, codeB, prefix) => {
     const pA = mA.pools[codeA];
     const pB = mB.pools[codeB];
-    if (
-      !pA ||
-      pA.selling === false ||
-      !Array.isArray(pA.options) ||
-      pA.options.length === 0
-    )
-      return null;
-    if (
-      !pB ||
-      pB.selling === false ||
-      !Array.isArray(pB.options) ||
-      pB.options.length === 0
-    )
-      return null;
+    if (!isPoolAllUpEligible(pA) || !isPoolAllUpEligible(pB)) return null;
     const legsA = pA.options
       .map((o) => legOf(mA, codeA, o.key))
       .filter(Boolean);
@@ -3250,6 +3247,39 @@ export function generateParetoPortfolio(
     return out;
   };
 
+  let slot1SinglePartialPreview = null;
+  let slot1BlockedPartialReason = null;
+
+  const solveFullSetZeroUnderwaterLines = (specs, budgetLimit) => {
+    if (!Array.isArray(specs) || specs.length === 0) return [];
+    const maxNotes = Math.floor(budgetLimit / 2);
+    if (maxNotes < specs.length) return [];
+    const kpLines = solveExactKnapsackDutching(specs, budgetLimit, 64);
+    if (kpLines.length === specs.length) return kpLines;
+
+    const singleCap = statutorySingleBetCap(1);
+    const rawUnits = specs.map((s) =>
+      bankerRoundParlayUnitPayout(s.legs.map((g) => g.odds))
+    );
+    const cappedUnits = rawUnits.map((u) => Math.min(singleCap, u));
+    const dutchItems = specs.map((s, idx) => ({
+      unitPayout: cappedUnits[idx],
+      prob: s.legs.reduce((a, g) => a * g.fairProb, 1),
+      isCapClipped: rawUnits[idx] > singleCap,
+    }));
+    for (const strict of [true, false]) {
+      for (let N = maxNotes; N >= specs.length; N--) {
+        const cand = allocateInverseOddsDutching(dutchItems, N, {
+          requireStrictNetGain: strict,
+        });
+        if (cand) {
+          return materializePlanLines(specs, cand.mults);
+        }
+      }
+    }
+    return [];
+  };
+
   if (selected.length === 1) {
     const m1 = selected[0];
     const anc = anchorsByMatch.get(m1.id) ?? [];
@@ -3257,8 +3287,7 @@ export function generateParetoPortfolio(
       anc.length > 0 &&
       anc.every(
         (a) =>
-          m1.pools[a.poolCode]?.selling !== false &&
-          m1.pools[a.poolCode]?.single &&
+          isPoolSingleEligible(m1.pools[a.poolCode]) &&
           a.poolCode === anc[0].poolCode
       )
         ? anc[0].poolCode
@@ -3291,92 +3320,108 @@ export function generateParetoPortfolio(
           ]);
         }
       }
+      const pinSingleFirst = anc.length === 1;
+      const slot1Cands = [];
+      for (const cs of candidateSets) {
+        const lines = solveExactKnapsackDutching(
+          cs,
+          cleanBudget,
+          64,
+          pinSingleFirst && cs[0] ? { pinnedFirstId: cs[0].id } : {}
+        );
+        if (lines.length === 0) continue;
+        const obj = evalLines4DObj(lines, true);
+        if (obj.coveredFloorRatio < -1e-9) continue;
+        slot1Cands.push({ lines, obj });
+      }
+      slot1Cands.sort(
+        (a, b) =>
+          b.obj.strictNetGainProb - a.obj.strictNetGainProb ||
+          b.obj.profitProb - a.obj.profitProb ||
+          b.obj.coveredFloorRatio - a.obj.coveredFloorRatio ||
+          b.obj.evRate - a.obj.evRate
+      );
+      if (slot1Cands[0]) slot1Lines = slot1Cands[0].lines;
     } else if (anc.length > 0) {
-      const {
-        dir,
-        hadDrawLeg,
-        hhadCompatLegs,
-        hafuCompatLegs,
-        crsCompatLegs,
-        ttgDrawLegs,
-      } = resolveDirectionSingleBundles(m1);
-      if (hadDrawLeg) {
-        candidateSets.push([
-          { id: "mp-had-d", roleLabel: "雷达锚定平局主干", legs: [hadDrawLeg] },
-        ]);
+      const subsetCands = resolveSingleMatchSubsetCandidates(m1, anc);
+      const exactCands = subsetCands.filter((c) => c.isExactEquivalent);
+      const slot1Cands = [];
+      for (const ec of exactCands) {
+        const specs = ec.legs.map((lg, idx) => ({
+          id: `mp-eq-${ec.poolCode}-${idx + 1}`,
+          roleLabel: idx === 0 ? "等价单关·主干" : `等价单关·配平盾#${idx}`,
+          legs: [lg],
+        }));
+        const lines = solveFullSetZeroUnderwaterLines(specs, cleanBudget);
+        if (lines.length !== specs.length) continue;
+        const obj = evalLines4DObj(lines, true);
+        if (obj.coveredFloorRatio < -1e-9) continue;
+        slot1Cands.push({ lines, obj });
       }
-      if (hhadCompatLegs.length >= 1) {
-        candidateSets.push(
-          hhadCompatLegs.map((lg, idx) => ({
-            id: `mp-hhad-${idx + 1}`,
-            roleLabel: idx === 0 ? "顺向让球主干" : "一球卡盘保本盾",
-            legs: [lg],
-          }))
+      if (slot1Cands.length > 0) {
+        slot1Cands.sort((a, b) => {
+          if (
+            Math.abs(b.obj.strictNetGainProb - a.obj.strictNetGainProb) > 1e-9
+          ) {
+            return b.obj.strictNetGainProb - a.obj.strictNetGainProb;
+          }
+          if (Math.abs(b.obj.profitProb - a.obj.profitProb) > 1e-9) {
+            return b.obj.profitProb - a.obj.profitProb;
+          }
+          if (
+            Math.abs(b.obj.coveredFloorRatio - a.obj.coveredFloorRatio) > 1e-6
+          ) {
+            return b.obj.coveredFloorRatio - a.obj.coveredFloorRatio;
+          }
+          return b.obj.evRate - a.obj.evRate;
+        });
+        slot1Lines = slot1Cands[0].lines;
+      } else if (subsetCands[0]) {
+        slot1SinglePartialPreview = buildSinglePartialCoveragePreview(
+          m1,
+          subsetCands[0]
         );
-      }
-      if (hafuCompatLegs.length >= 2) {
-        const ddLeg = legOf(m1, "HAFU", "dd");
-        const fullHafu =
-          dir !== "draw" &&
-          ddLeg &&
-          !hafuCompatLegs.some((g) => g.optionKey === "dd")
-            ? [...hafuCompatLegs, ddLeg]
-            : hafuCompatLegs;
-        candidateSets.push(
-          fullHafu.map((lg, idx) => ({
-            id: `mp-hafu-${idx + 1}`,
-            roleLabel: idx === 0 ? "合成单关·主干" : `合成单关·护盾#${idx}`,
+        if (acceptPartialSingleCoverage) {
+          const pSpecs = subsetCands[0].legs.map((lg, idx) => ({
+            id: `mp-part-${idx + 1}`,
+            roleLabel: `部分覆盖单关#${idx + 1}`,
             legs: [lg],
-          }))
-        );
-      }
-      if (crsCompatLegs.length >= 2) {
-        candidateSets.push(
-          crsCompatLegs.map((lg, idx) => ({
-            id: `mp-crs-${idx + 1}`,
-            roleLabel: `合成单关·比分#${idx + 1}`,
-            legs: [lg],
-          }))
-        );
-      }
-      if (ttgDrawLegs.length >= 2) {
-        candidateSets.push(
-          ttgDrawLegs.map((lg, idx) => ({
-            id: `mp-ttgd-${idx + 1}`,
-            roleLabel: `合成单关·平局进球#${idx + 1}`,
-            legs: [lg],
-          }))
-        );
+          }));
+          const lines = solveExactKnapsackDutching(pSpecs, cleanBudget, 64);
+          if (lines.length > 0) slot1Lines = lines;
+        } else {
+          const prev = slot1SinglePartialPreview;
+          slot1BlockedPartialReason = prev
+            ? prev.isExactEquivalent
+              ? `所锁非单关方向虽有等价单关集合，但零倒贴整数配平最少需 ¥${prev.previewCost}（超出当前预算 ¥${cleanBudget}），已拒绝静默缩水丢项`
+              : `所锁方向无 100% 双向等价单关（最优纯子集为${prev.poolName}，保住原方向 ${(prev.retainedDirectionRatio * 100).toFixed(1)}%、漏保 ${(prev.blindSpotProb * 100).toFixed(2)}%，完整配平需 ¥${prev.previewCost}），未经确认绝不静默篡改方向`
+            : `所锁非单关方向在当前预算 ¥${cleanBudget} 下不存在等价可单关替代`;
+        }
+      } else {
+        slot1BlockedPartialReason = `所锁非单关方向不存在任何合法可单关纯子集`;
       }
     } else {
       for (const code of ["HAD", "HHAD", "HAFU", "TTG", "CRS"]) {
         const sp = buildSinglePoolSpecs(m1, code, `mp-${code}`);
         if (sp) candidateSets.push(sp);
       }
-    }
-
-    const pinSingleFirst = anc.length === 1;
-    const slot1Cands = [];
-    for (const cs of candidateSets) {
-      const lines = solveExactKnapsackDutching(
-        cs,
-        cleanBudget,
-        64,
-        pinSingleFirst && cs[0] ? { pinnedFirstId: cs[0].id } : {}
+      const slot1Cands = [];
+      for (const cs of candidateSets) {
+        const lines = solveExactKnapsackDutching(cs, cleanBudget, 64);
+        if (lines.length === 0) continue;
+        const obj = evalLines4DObj(lines, true);
+        if (obj.coveredFloorRatio < -1e-9) continue;
+        slot1Cands.push({ lines, obj });
+      }
+      slot1Cands.sort(
+        (a, b) =>
+          b.obj.strictNetGainProb - a.obj.strictNetGainProb ||
+          b.obj.profitProb - a.obj.profitProb ||
+          b.obj.coveredFloorRatio - a.obj.coveredFloorRatio ||
+          b.obj.evRate - a.obj.evRate
       );
-      if (lines.length === 0) continue;
-      const obj = evalLines4DObj(lines, true);
-      if (obj.coveredFloorRatio < -1e-9) continue;
-      slot1Cands.push({ lines, obj });
+      if (slot1Cands[0]) slot1Lines = slot1Cands[0].lines;
     }
-    slot1Cands.sort(
-      (a, b) =>
-        b.obj.strictNetGainProb - a.obj.strictNetGainProb ||
-        b.obj.profitProb - a.obj.profitProb ||
-        b.obj.coveredFloorRatio - a.obj.coveredFloorRatio ||
-        b.obj.evRate - a.obj.evRate
-    );
-    if (slot1Cands[0]) slot1Lines = slot1Cands[0].lines;
   } else if (!hasUserAnchors) {
     // Full-slate fair comparison (Spec 0012 / ADR-0013): retain ALL M user-selected matches (up to statutory passCap);
     // never silently drop M-1 matches to bet 1 single! Surface core 1~2-match benchmark only as a bottom note in reasons.
@@ -3662,7 +3707,7 @@ export function generateParetoPortfolio(
       if (anc.length > 0) {
         const byPool = new Map();
         for (const a of anc) {
-          if (m.pools[a.poolCode]?.selling === false) continue;
+          if (!isPoolAllUpEligible(m.pools[a.poolCode])) continue;
           const list = byPool.get(a.poolCode) ?? [];
           list.push(a);
           byPool.set(a.poolCode, list);
@@ -3844,20 +3889,32 @@ export function generateParetoPortfolio(
     available: slot1Valid,
     emptyReason: slot1Valid
       ? null
-      : `当前预算 ¥${cleanBudget} 下无法构造满足零倒贴与体彩单注法定封顶约束的有效注单（已全额保留 ¥${cleanBudget}）`,
+      : (slot1BlockedPartialReason ??
+        `当前预算 ¥${cleanBudget} 下无法构造满足零倒贴与体彩单注法定封顶约束的有效注单（已全额保留 ¥${cleanBudget}）`),
     shortTab: "🛡️ 稳健保本",
     badge: "🛡️ 稳健保本极值",
     title: slot1Valid
       ? "覆盖态零假中奖 · 真赚钱率最大化"
-      : "当前预算或限赔约束下无合法零倒贴注单",
+      : slot1BlockedPartialReason
+        ? "所锁方向无完全等价单关 · 待确认部分覆盖或加场"
+        : "当前预算或限赔约束下无合法零倒贴注单",
     tagline: !slot1Valid
-      ? `已替你拦截超额或封顶废票 · 全额保留 ¥${cleanBudget}`
+      ? slot1BlockedPartialReason
+        ? `严守方向不越界 · 全额保留 ¥${cleanBudget}`
+        : `已替你拦截超额或封顶废票 · 全额保留 ¥${cleanBudget}`
       : slot1BreakEvenCount > 0
         ? "覆盖范围内 100% 保本不亏（含刚退本金保护支）· 彻底杜绝中奖倒贴"
         : "覆盖范围内命中任一组合 100% 净赚 · 彻底杜绝中奖倒贴",
     lines: slot1Valid ? slot1Lines : [],
-    reasons: slot1Reasons,
+    reasons: slot1Valid
+      ? slot1Reasons
+      : slot1BlockedPartialReason
+        ? [slot1BlockedPartialReason]
+        : slot1Reasons,
   });
+  if (slot1SinglePartialPreview) {
+    slot1Plan.partialCoveragePreview = slot1SinglePartialPreview;
+  }
   if (slot1Plan.available && slot1BreakEvenCount > 0) {
     slot1Plan.reasons[1] = `施加覆盖态零假中奖约束（含 ${slot1BreakEvenCount} 张刚好退回本金净赚 ¥0.00 的保本回笼支，严格净赚率 ${((slot1Plan.strictNetGainProb ?? 0) * 100).toFixed(1)}%）`;
   }
@@ -3871,8 +3928,7 @@ export function generateParetoPortfolio(
 
   const canSingleMainPool = (m) =>
     Boolean(
-      (m.pools.HAD?.selling !== false && m.pools.HAD?.single) ||
-      (m.pools.HHAD?.selling !== false && m.pools.HHAD?.single)
+      isPoolSingleEligible(m.pools.HAD) || isPoolSingleEligible(m.pools.HHAD)
     );
 
   const matchBestMainEfficiency = (m) => {
@@ -4020,20 +4076,87 @@ export function generateParetoPortfolio(
 
   let slot2Lines = [];
   let slot2SplitCapNote = null;
+  let slot2SinglePartialPreview = null;
+  let slot2BlockedPartialReason = null;
+
+  const solveExactSetUtilityLines = (rawLegs, budgetLimit) => {
+    if (!Array.isArray(rawLegs) || rawLegs.length === 0) return [];
+    const sortedLegs = [...rawLegs].sort(
+      (a, b) =>
+        b.odds * b.fairProb - a.odds * a.fairProb || b.fairProb - a.fairProb
+    );
+    const fullFallbackSpecs = sortedLegs.map((lg, idx) => ({
+      id: `ev-eq-${idx + 1}`,
+      roleLabel: idx === 0 ? "主攻等价高性价比箭" : `等价保本护盾#${idx}`,
+      legs: [lg],
+    }));
+    if (sortedLegs.length === 1) {
+      return allocateSpearAndExactShield(
+        [{ id: "ev-sp1", roleLabel: "主攻等价独赢箭", legs: [sortedLegs[0]] }],
+        null,
+        budgetLimit,
+        { lockPrimarySpear: true }
+      );
+    }
+    if (sortedLegs.length === 2) {
+      const l2 = allocateSpearAndExactShield(
+        [
+          {
+            id: "ev-sp1",
+            roleLabel: "主攻等价高性价比箭",
+            legs: [sortedLegs[0]],
+          },
+        ],
+        {
+          id: "ev-sh",
+          roleLabel: "最小整数倍等价保本盾",
+          legs: [sortedLegs[1]],
+        },
+        budgetLimit,
+        { optimizeShieldUtility: true }
+      );
+      if (l2.length === 2) return l2;
+      return solveFullSetZeroUnderwaterLines(fullFallbackSpecs, budgetLimit);
+    }
+    if (sortedLegs.length === 3) {
+      const l3 = allocateSpearAndExactShield(
+        [
+          {
+            id: "ev-sp1",
+            roleLabel: "主攻等价高性价比箭",
+            legs: [sortedLegs[0]],
+          },
+          { id: "ev-sp2", roleLabel: "顺向等价辅助箭", legs: [sortedLegs[1]] },
+        ],
+        {
+          id: "ev-sh",
+          roleLabel: "最小整数倍等价保本盾",
+          legs: [sortedLegs[2]],
+        },
+        budgetLimit,
+        { optimizeShieldUtility: true }
+      );
+      if (l3.length === 3) return l3;
+      return solveFullSetZeroUnderwaterLines(fullFallbackSpecs, budgetLimit);
+    }
+    return solveFullSetZeroUnderwaterLines(fullFallbackSpecs, budgetLimit);
+  };
 
   if (evActiveMatches.length === 1) {
     const em = evActiveMatches[0];
     const anc = anchorsByMatch.get(em.id) ?? [];
     if (
       anc.length > 0 &&
-      anc.every(
-        (a) =>
-          em.pools[a.poolCode]?.selling !== false &&
-          em.pools[a.poolCode]?.single
-      )
+      anc.every((a) => isPoolSingleEligible(em.pools[a.poolCode]))
     ) {
       const ancLegs = anc
-        .map((a) => legOf(em, a.poolCode, a.optionKey))
+        .map((a) =>
+          legOf(
+            em,
+            a.poolCode,
+            a.poolCode === "CRS" ? a.optionLabel || a.optionKey : a.optionKey
+          )
+        )
         .filter(Boolean)
         .sort((a, b) => b.odds * b.fairProb - a.odds * a.fairProb);
       const secCov =
@@ -4051,175 +4174,61 @@ export function generateParetoPortfolio(
         { lockPrimarySpear: true, optimizeShieldUtility: true }
       );
     } else if (anc.length > 0) {
-      const {
-        dir,
-        hadDrawLeg,
-        hhadCompatLegs,
-        hafuCompatLegs,
-        crsCompatLegs,
-        ttgDrawLegs,
-      } = resolveDirectionSingleBundles(em);
+      const subsetCands = resolveSingleMatchSubsetCandidates(em, anc);
+      const exactCands = subsetCands.filter((c) => c.isExactEquivalent);
       const s2Cands = [];
-      const pushS2 = (lines) => {
-        if (Array.isArray(lines) && lines.length > 0) {
+      for (const ec of exactCands) {
+        const lines = solveExactSetUtilityLines(ec.legs, cleanBudget);
+        if (lines.length === ec.legs.length) {
           s2Cands.push({
             lines,
-            hasShield: lines.some((l) => String(l.roleLabel).includes("盾")),
             obj: evalLines4DObj(lines, true),
+            logUtil: evalLogWealthUtility(lines, true),
           });
         }
-      };
-      if (hadDrawLeg) {
-        pushS2(
-          allocateSpearAndExactShield(
-            [{ id: "ev-sp1", roleLabel: "主攻平局独赢箭", legs: [hadDrawLeg] }],
-            null,
-            cleanBudget,
-            { lockPrimarySpear: true }
-          )
-        );
       }
-      if (hhadCompatLegs.length >= 2) {
-        pushS2(
-          allocateSpearAndExactShield(
-            [
-              {
-                id: "ev-sp1",
-                roleLabel: "主攻顺向让球箭",
-                legs: [hhadCompatLegs[0]],
-              },
-            ],
-            {
-              id: "ev-sh",
-              roleLabel: "最小整数倍卡盘盾",
-              legs: [hhadCompatLegs[1]],
-            },
-            cleanBudget,
-            { optimizeShieldUtility: true }
-          )
+      if (s2Cands.length > 0) {
+        s2Cands.sort(
+          (a, b) =>
+            b.logUtil - a.logUtil ||
+            b.obj.evRate - a.obj.evRate ||
+            b.obj.profitProb - a.obj.profitProb
         );
-      } else if (hhadCompatLegs.length === 1) {
-        pushS2(
-          allocateSpearAndExactShield(
-            [
-              {
-                id: "ev-sp1",
-                roleLabel: "主攻顺向让球箭",
-                legs: [hhadCompatLegs[0]],
-              },
-            ],
-            null,
-            cleanBudget,
-            { lockPrimarySpear: true }
-          )
+        slot2Lines = s2Cands[0].lines;
+      } else if (subsetCands[0]) {
+        slot2SinglePartialPreview = buildSinglePartialCoveragePreview(
+          em,
+          subsetCands[0]
         );
-      }
-      if (hafuCompatLegs.length >= 2) {
-        if (dir === "draw") {
-          const dd =
-            hafuCompatLegs.find((g) => g.optionKey === "dd") ??
-            hafuCompatLegs[0];
-          const nonDd = hafuCompatLegs.filter(
-            (g) => g.optionKey !== dd.optionKey
+        if (acceptPartialSingleCoverage) {
+          const topLegs = [...subsetCands[0].legs].sort(
+            (a, b) => b.odds * b.fairProb - a.odds * a.fairProb
           );
-          pushS2(
-            allocateSpearAndExactShield(
-              nonDd.length > 0
-                ? nonDd.map((g, i) => ({
-                    id: `ev-sp${i + 1}`,
-                    roleLabel: i === 0 ? "主攻半分全平箭" : "次路全平辅助箭",
-                    legs: [g],
-                  }))
-                : [{ id: "ev-sp1", roleLabel: "主攻闷平箭", legs: [dd] }],
-              nonDd.length > 0
-                ? { id: "ev-sh", roleLabel: "最小整数倍闷平盾", legs: [dd] }
-                : null,
-              cleanBudget,
-              { optimizeShieldUtility: true }
-            )
-          );
-        } else {
-          const spA = legOf(em, "HAFU", dir === "away" ? "da" : "dh");
-          const spB = legOf(em, "HAFU", dir === "away" ? "aa" : "hh");
-          const sh = legOf(em, "HAFU", "dd");
-          pushS2(
-            allocateSpearAndExactShield(
-              [
-                { id: "ev-sp1", roleLabel: "主攻半平绝杀箭", legs: [spA] },
-                { id: "ev-sp2", roleLabel: "顺向连赢辅助箭", legs: [spB] },
-              ],
-              sh
-                ? { id: "ev-sh", roleLabel: "最小整数倍闷平盾", legs: [sh] }
-                : null,
-              cleanBudget,
-              { optimizeShieldUtility: true }
-            )
-          );
-        }
-      }
-      if (crsCompatLegs.length >= 2) {
-        pushS2(
-          allocateSpearAndExactShield(
-            [
-              {
-                id: "ev-sp1",
-                roleLabel: "主攻比分箭#1",
-                legs: [crsCompatLegs[0]],
-              },
-              {
-                id: "ev-sp2",
-                roleLabel: "顺向比分箭#2",
-                legs: [crsCompatLegs[1]],
-              },
-            ],
-            crsCompatLegs[2]
-              ? {
-                  id: "ev-sh",
-                  roleLabel: "最小整数倍比分盾",
-                  legs: [crsCompatLegs[2]],
-                }
+          slot2Lines = allocateSpearAndExactShield(
+            topLegs.slice(0, 2).map((lg, idx) => ({
+              id: `ev-sp${idx + 1}`,
+              roleLabel: idx === 0 ? "部分覆盖主攻箭" : "部分覆盖副攻箭",
+              legs: [lg],
+            })),
+            topLegs[2]
+              ? { id: "ev-sh", roleLabel: "部分覆盖保本盾", legs: [topLegs[2]] }
               : null,
             cleanBudget,
             { optimizeShieldUtility: true }
-          )
-        );
+          );
+        } else {
+          const prev = slot2SinglePartialPreview;
+          slot2BlockedPartialReason = prev
+            ? prev.isExactEquivalent
+              ? `所锁方向等价单关最少需 ¥${prev.previewCost}（超出当前预算 ¥${cleanBudget}），拒绝静默缩减漏保`
+              : `所锁方向不存在零死角等价单关（最优纯子集${prev.poolName}保住原方向 ${(prev.retainedDirectionRatio * 100).toFixed(1)}%、漏保 ${(prev.blindSpotProb * 100).toFixed(2)}%），未获确认不自动篡改`
+            : `所锁非单关方向在当前预算 ¥${cleanBudget} 下无等价单关方案`;
+        }
+      } else {
+        slot2BlockedPartialReason = `所锁非单关方向不存在任何合法可单关纯子集`;
       }
-      if (ttgDrawLegs.length >= 2) {
-        const sortedTtgD = [...ttgDrawLegs].sort(
-          (a, b) => b.odds * b.fairProb - a.odds * a.fairProb
-        );
-        pushS2(
-          allocateSpearAndExactShield(
-            [
-              {
-                id: "ev-sp1",
-                roleLabel: "主攻平局进球箭",
-                legs: [sortedTtgD[0]],
-              },
-            ],
-            {
-              id: "ev-sh",
-              roleLabel: "最小整数倍闷平进球盾",
-              legs: [sortedTtgD[1]],
-            },
-            cleanBudget,
-            { optimizeShieldUtility: true }
-          )
-        );
-      }
-      for (const c of s2Cands) c.logUtil = evalLogWealthUtility(c.lines, true);
-      s2Cands.sort(
-        (a, b) =>
-          b.logUtil - a.logUtil ||
-          b.obj.evRate - a.obj.evRate ||
-          b.obj.profitProb - a.obj.profitProb
-      );
-      slot2Lines = s2Cands[0]?.lines ?? [];
     } else if (canSingleMainPool(em)) {
-      const mainCode =
-        em.pools.HAD?.selling !== false && em.pools.HAD?.single
-          ? "HAD"
-          : "HHAD";
+      const mainCode = isPoolSingleEligible(em.pools.HAD) ? "HAD" : "HHAD";
       const prim =
         evPrimaryLegOf(em) ??
         legOf(em, mainCode, em.pools[mainCode].options[0].key);
@@ -4249,51 +4258,21 @@ export function generateParetoPortfolio(
           ? exactLogSplitLines
           : minShieldLines;
     } else {
-      const { dir, hafuCompatLegs, crsCompatLegs } =
-        resolveDirectionSingleBundles(em);
-      if (hafuCompatLegs.length >= 2) {
-        const spA = legOf(
-          em,
-          "HAFU",
-          dir === "away" ? "da" : dir === "draw" ? "hd" : "dh"
+      const freePrim = preferredPrimaryLeg(em, false);
+      const freeSubsets = freePrim
+        ? resolveSingleMatchSubsetCandidates(em, [freePrim])
+        : [];
+      if (freeSubsets[0] && freeSubsets[0].legs.length >= 2) {
+        const fLegs = [...freeSubsets[0].legs].sort(
+          (a, b) => b.odds * b.fairProb - a.odds * a.fairProb
         );
-        const spB = legOf(
-          em,
-          "HAFU",
-          dir === "away" ? "aa" : dir === "draw" ? "ad" : "hh"
-        );
-        const sh = legOf(em, "HAFU", "dd");
         slot2Lines = allocateSpearAndExactShield(
           [
-            { id: "ev-sp1", roleLabel: "主攻半平绝杀箭", legs: [spA] },
-            { id: "ev-sp2", roleLabel: "顺向连赢辅助箭", legs: [spB] },
+            { id: "ev-sp1", roleLabel: "主攻高性价比箭", legs: [fLegs[0]] },
+            { id: "ev-sp2", roleLabel: "顺向协同辅助箭", legs: [fLegs[1]] },
           ],
-          sh
-            ? { id: "ev-sh", roleLabel: "最小整数倍闷平盾", legs: [sh] }
-            : null,
-          cleanBudget,
-          { optimizeShieldUtility: true }
-        );
-      } else if (crsCompatLegs.length >= 2) {
-        slot2Lines = allocateSpearAndExactShield(
-          [
-            {
-              id: "ev-sp1",
-              roleLabel: "主攻比分箭#1",
-              legs: [crsCompatLegs[0]],
-            },
-            {
-              id: "ev-sp2",
-              roleLabel: "顺向比分箭#2",
-              legs: [crsCompatLegs[1]],
-            },
-          ],
-          crsCompatLegs[2]
-            ? {
-                id: "ev-sh",
-                roleLabel: "最小整数倍比分盾",
-                legs: [crsCompatLegs[2]],
-              }
+          fLegs[2]
+            ? { id: "ev-sh", roleLabel: "最小整数倍保本盾", legs: [fLegs[2]] }
             : null,
           cleanBudget,
           { optimizeShieldUtility: true }
@@ -4555,15 +4534,34 @@ export function generateParetoPortfolio(
 
   const slot2Plan = packSlot({
     key: "max-ev-utility",
+    available: slot2Lines.length > 0,
+    emptyReason:
+      slot2Lines.length > 0
+        ? null
+        : (slot2BlockedPartialReason ??
+          `当前预算 ¥${cleanBudget} 下无法构造满足对数效用约束的实票`),
     shortTab: "⚖️ 期望效用",
     badge: "⚖️ 期望效用极值",
-    title: "对数财富效用 · 主攻护盾整数寻优",
+    title:
+      slot2Lines.length > 0
+        ? "对数财富效用 · 主攻护盾整数寻优"
+        : "所锁方向无完全等价单关 · 待确认部分覆盖或加场",
     tagline:
-      "按期望对数财富效用寻优零倒贴主攻与护盾整数配比 · 火力集中高效率组合",
+      slot2Lines.length > 0
+        ? "按期望对数财富效用寻优零倒贴主攻与护盾整数配比 · 火力集中高效率组合"
+        : `严守已锁方向不越界 · 全额保留 ¥${cleanBudget}`,
     lines: slot2Lines,
-    reasons: slot2Reasons,
+    reasons:
+      slot2Lines.length > 0
+        ? slot2Reasons
+        : slot2BlockedPartialReason
+          ? [slot2BlockedPartialReason]
+          : slot2Reasons,
     prependWarningReason: anchoredDragWarning,
   });
+  if (slot2SinglePartialPreview) {
+    slot2Plan.partialCoveragePreview = slot2SinglePartialPreview;
+  }
 
   // =========================================================================
   // Slot ③: max-cvar-wheel (🧩 容错缩水 · 旋转矩阵 C(v,k,t) 组合覆盖 <=10 张实票)
@@ -4576,37 +4574,32 @@ export function generateParetoPortfolio(
   const singleCushionLegOf = (m) => {
     const anc = anchorsByMatch.get(m.id) ?? [];
     const singleAnc = anc
-      .filter(
-        (a) =>
-          m.pools[a.poolCode]?.selling !== false && m.pools[a.poolCode]?.single
-      )
+      .filter((a) => isPoolSingleEligible(m.pools[a.poolCode]))
       .sort((a, b) => b.fairProb - a.fairProb)[0];
-    if (singleAnc) return legOf(m, singleAnc.poolCode, singleAnc.optionKey);
+    if (singleAnc)
+      return legOf(
+        m,
+        singleAnc.poolCode,
+        singleAnc.poolCode === "CRS"
+          ? singleAnc.optionLabel || singleAnc.optionKey
+          : singleAnc.optionKey
+      );
 
     if (anc.length > 0) {
-      const {
-        hadDrawLeg,
-        hhadCompatLegs,
-        hafuCompatLegs,
-        crsCompatLegs,
-        ttgDrawLegs,
-      } = resolveDirectionSingleBundles(m);
-      if (hadDrawLeg) return hadDrawLeg;
-      if (hhadCompatLegs[0]) return hhadCompatLegs[0];
-      if (hafuCompatLegs[0]) return hafuCompatLegs[0];
-      if (crsCompatLegs[0]) return crsCompatLegs[0];
-      if (ttgDrawLegs[0]) return ttgDrawLegs[0];
+      const subsetCands = resolveSingleMatchSubsetCandidates(m, anc);
+      if (subsetCands[0] && subsetCands[0].legs.length > 0) {
+        return [...subsetCands[0].legs].sort(
+          (a, b) => b.fairProb - a.fairProb
+        )[0];
+      }
+      return null;
     }
 
     const mIdx = selected.findIndex((sm) => sm.id === m.id);
     const mainSingleCands = [];
     for (const mainCode of ["HAD", "HHAD"]) {
       const pool = m.pools[mainCode];
-      if (
-        pool?.selling !== false &&
-        pool?.single &&
-        pool?.options?.length > 0
-      ) {
+      if (isPoolSingleEligible(pool)) {
         for (const o of pool.options) {
           const lg = legOf(m, mainCode, o.key);
           if (lg) mainSingleCands.push(lg);
@@ -4627,13 +4620,13 @@ export function generateParetoPortfolio(
     }
 
     const subCands = [];
-    if (m.pools.HAFU?.selling !== false && m.pools.HAFU?.single) {
+    if (isPoolSingleEligible(m.pools.HAFU)) {
       for (const o of m.pools.HAFU.options ?? []) {
         const lg = legOf(m, "HAFU", o.key);
         if (lg) subCands.push(lg);
       }
     }
-    if (m.pools.TTG?.selling !== false && m.pools.TTG?.single) {
+    if (isPoolSingleEligible(m.pools.TTG)) {
       for (const o of m.pools.TTG.options ?? []) {
         const lg = legOf(m, "TTG", o.key);
         if (lg) subCands.push(lg);
@@ -4652,7 +4645,7 @@ export function generateParetoPortfolio(
       }
       return subCands[0];
     }
-    return preferredPrimaryLeg(m);
+    return preferredPrimaryLeg(m, false);
   };
 
   let slot3HasPartialCushionBlindSpot = false;
@@ -4674,8 +4667,7 @@ export function generateParetoPortfolio(
       anc.length > 0 &&
       anc.every(
         (a) =>
-          m1.pools[a.poolCode]?.selling !== false &&
-          m1.pools[a.poolCode]?.single &&
+          isPoolSingleEligible(m1.pools[a.poolCode]) &&
           a.poolCode === anc[0].poolCode
       )
         ? anc[0].poolCode
@@ -4684,7 +4676,13 @@ export function generateParetoPortfolio(
 
     if (ancSinglePool) {
       const ancLegs = anc
-        .map((a) => legOf(m1, a.poolCode, a.optionKey))
+        .map((a) =>
+          legOf(
+            m1,
+            a.poolCode,
+            a.poolCode === "CRS" ? a.optionLabel || a.optionKey : a.optionKey
+          )
+        )
         .filter(Boolean);
       const cov =
         ancLegs.length === 1
@@ -4699,40 +4697,22 @@ export function generateParetoPortfolio(
         })
       );
     } else if (anc.length > 0) {
-      const {
-        dir,
-        hadDrawLeg,
-        hhadCompatLegs,
-        hafuCompatLegs,
-        crsCompatLegs,
-        ttgDrawLegs,
-      } = resolveDirectionSingleBundles(m1);
-      let chosenLegs = [];
-      if (hadDrawLeg) {
-        chosenLegs = [hadDrawLeg];
-      } else if (hhadCompatLegs.length > 0) {
-        chosenLegs = hhadCompatLegs;
-      } else if (hafuCompatLegs.length > 0) {
-        const ddLeg = legOf(m1, "HAFU", "dd");
-        chosenLegs =
-          dir !== "draw" &&
-          ddLeg &&
-          !hafuCompatLegs.some((g) => g.optionKey === "dd")
-            ? [...hafuCompatLegs, ddLeg]
-            : hafuCompatLegs;
-      } else if (crsCompatLegs.length > 0) {
-        chosenLegs = crsCompatLegs.slice(0, 3);
-      } else if (ttgDrawLegs.length > 0) {
-        chosenLegs = ttgDrawLegs;
+      const subsetCands = resolveSingleMatchSubsetCandidates(m1, anc);
+      if (subsetCands[0] && subsetCands[0].legs.length > 0) {
+        const chosenLegs = subsetCands[0].isExactEquivalent
+          ? subsetCands[0].legs
+          : [...subsetCands[0].legs]
+              .sort((a, b) => b.fairProb - a.fairProb)
+              .slice(0, 3);
+        chosenLegs.forEach((lg, idx) =>
+          cushionSpecs.push({
+            id: `cw-1-${idx + 1}`,
+            roleLabel: idx === 0 ? "顺向单关主垫" : `顺向缓冲垫#${idx}`,
+            legs: [lg],
+          })
+        );
       }
-      chosenLegs.forEach((lg, idx) =>
-        cushionSpecs.push({
-          id: `cw-1-${idx + 1}`,
-          roleLabel: idx === 0 ? "顺向单关主垫" : `顺向缓冲垫#${idx}`,
-          legs: [lg],
-        })
-      );
-    } else if (m1.pools.HAD?.selling !== false && m1.pools.HAD?.single) {
+    } else if (isPoolSingleEligible(m1.pools.HAD)) {
       const top2 = m1.pools.HAD.options
         .map((o) => legOf(m1, "HAD", o.key))
         .filter(Boolean)
@@ -4745,7 +4725,7 @@ export function generateParetoPortfolio(
           legs: [lg],
         })
       );
-    } else if (m1.pools.HHAD?.selling !== false && m1.pools.HHAD?.single) {
+    } else if (isPoolSingleEligible(m1.pools.HHAD)) {
       const top2 = m1.pools.HHAD.options
         .map((o) => legOf(m1, "HHAD", o.key))
         .filter(Boolean)
@@ -4759,36 +4739,42 @@ export function generateParetoPortfolio(
         })
       );
     } else {
-      const { dir, hafuCompatLegs, crsCompatLegs } =
-        resolveDirectionSingleBundles(m1);
-      if (hafuCompatLegs.length > 0) {
-        const ddLeg = legOf(m1, "HAFU", "dd");
-        const legsToUse =
-          dir !== "draw" &&
-          ddLeg &&
-          !hafuCompatLegs.some((g) => g.optionKey === "dd")
-            ? [...hafuCompatLegs, ddLeg]
-            : hafuCompatLegs;
-        legsToUse.forEach((lg, idx) => {
-          cushionSpecs.push({
-            id: `cw-1-${idx + 1}`,
-            roleLabel:
-              idx === 0
-                ? "上半领先赢"
-                : idx === 1
-                  ? "半平绝杀垫"
-                  : "全场闷平兜底",
-            legs: [lg],
+      const freePrim = preferredPrimaryLeg(m1, false);
+      if (isPoolSingleEligible(m1.pools.HAFU) && freePrim?.poolCode === "HAD") {
+        const cushionKeys =
+          freePrim.optionKey === "a"
+            ? ["aa", "da", "dd"]
+            : freePrim.optionKey === "d"
+              ? ["dd", "hd", "ad"]
+              : ["hh", "dh", "dd"];
+        cushionKeys
+          .map((k) => legOf(m1, "HAFU", k))
+          .filter(Boolean)
+          .forEach((lg, idx) => {
+            cushionSpecs.push({
+              id: `cw-1-${idx + 1}`,
+              roleLabel:
+                idx === 0
+                  ? "上半领先赢"
+                  : idx === 1
+                    ? "半平绝杀垫"
+                    : "全场闷平兜底",
+              legs: [lg],
+            });
           });
-        });
-      } else if (crsCompatLegs.length > 0) {
-        crsCompatLegs.slice(0, 3).forEach((lg, idx) => {
-          cushionSpecs.push({
-            id: `cw-1-${idx + 1}`,
-            roleLabel: `比分缓冲垫#${idx + 1}`,
-            legs: [lg],
+      } else {
+        const freeSubsets = freePrim
+          ? resolveSingleMatchSubsetCandidates(m1, [freePrim])
+          : [];
+        if (freeSubsets[0] && freeSubsets[0].legs.length > 0) {
+          freeSubsets[0].legs.slice(0, 3).forEach((lg, idx) => {
+            cushionSpecs.push({
+              id: `cw-1-${idx + 1}`,
+              roleLabel: `单关缓冲垫#${idx + 1}`,
+              legs: [lg],
+            });
           });
-        });
+        }
       }
     }
     slot3Lines = solveZeroUnderwaterDutching(cushionSpecs, cleanBudget).filter(
@@ -5476,13 +5462,16 @@ export function generateParetoPortfolio(
     }
 
     // 2. Only when NO single-capable +EV ticket exists (non-single +EV leg requires 1 partner to place a legal 2串1)
-    if (alphaSpecs.length === 0 && bestAlphaByMatch.length >= 1) {
-      const alphaC = bestAlphaByMatch[0];
+    const allUpAlphaByMatch = bestAlphaByMatch.filter(
+      (c) => c.allUpAllowed !== false
+    );
+    if (alphaSpecs.length === 0 && allUpAlphaByMatch.length >= 1) {
+      const alphaC = allUpAlphaByMatch[0];
       const alphaLeg = legOf(alphaC.match, alphaC.poolCode, alphaC.optionKey);
       let partnerLeg = null;
       let partnerCand = null;
-      if (bestAlphaByMatch.length >= 2) {
-        partnerCand = bestAlphaByMatch[1];
+      if (allUpAlphaByMatch.length >= 2) {
+        partnerCand = allUpAlphaByMatch[1];
         partnerLeg = legOf(
           partnerCand.match,
           partnerCand.poolCode,
@@ -5492,7 +5481,9 @@ export function generateParetoPortfolio(
         const partnerMatches = selected
           .filter((m) => m.id !== alphaC.matchId)
           .map((m) => ({ m, leg: evPrimaryLegOf(m) }))
-          .filter((x) => x.leg)
+          .filter(
+            (x) => x.leg && isPoolAllUpEligible(x.m.pools?.[x.leg.poolCode])
+          )
           .sort(
             (a, b) => b.leg.odds * b.leg.fairProb - a.leg.odds * a.leg.fairProb
           );

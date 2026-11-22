@@ -5,7 +5,11 @@ import {
   type ArchetypePlan,
   type BridgeMatchCandidate,
   type LedgerSettlementDetail,
+  type MatchItem,
   type MatchMicroQuant,
+  type MatchPool,
+  type PartialCoveragePreview,
+  type PoolCode,
   type PortfolioKey,
   type ProOrderInsights,
   type SelectedPick,
@@ -448,6 +452,88 @@ export function formatHedgeDrawerCopy(
   };
 }
 
+export interface MatchRadarSingleBadgeSpec {
+  isMainSingle: boolean;
+  text: string;
+  title: string;
+  singlePoolCodes: PoolCode[];
+}
+
+function isViewModelPoolSingleOpen(pool?: MatchPool): boolean {
+  if (
+    !pool ||
+    pool.selling === false ||
+    !Array.isArray(pool.options) ||
+    pool.options.length === 0
+  ) {
+    return false;
+  }
+  const baseSym = Symbol.for("yj.basePoolSingle");
+  const baseS = (pool as unknown as Record<symbol, unknown>)[baseSym];
+  if (typeof baseS === "boolean") {
+    if (typeof pool.canSingle === "boolean" && pool.canSingle !== baseS) {
+      return pool.canSingle;
+    }
+    if (typeof pool.single === "boolean" && pool.single !== baseS) {
+      return pool.single;
+    }
+    return baseS;
+  }
+  if (typeof pool.canSingle === "boolean" && typeof pool.single === "boolean") {
+    return pool.canSingle && pool.single;
+  }
+  if (typeof pool.canSingle === "boolean") return pool.canSingle;
+  return Boolean(pool.single);
+}
+
+const POOL_SHORT_SINGLE_NAMES: Record<PoolCode, string> = {
+  HAD: "胜平负",
+  HHAD: "让球",
+  TTG: "总进球",
+  HAFU: "半全场",
+  CRS: "比分",
+};
+
+export function buildMatchRadarSingleBadge(
+  match: Pick<MatchItem, "pools">
+): MatchRadarSingleBadgeSpec {
+  const ordered: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  const singlePoolCodes = ordered.filter((code) =>
+    isViewModelPoolSingleOpen(match.pools?.[code])
+  );
+  const names = singlePoolCodes.map((c) => POOL_SHORT_SINGLE_NAMES[c]);
+  if (singlePoolCodes.includes("HAD")) {
+    return {
+      isMainSingle: true,
+      text: "单",
+      title: `胜平负已开单关（可单关：${names.join("/")}）`,
+      singlePoolCodes,
+    };
+  }
+  if (singlePoolCodes.includes("HHAD")) {
+    return {
+      isMainSingle: true,
+      text: "让单",
+      title: `让球已开单关（可单关：${names.join("/")}）`,
+      singlePoolCodes,
+    };
+  }
+  if (singlePoolCodes.length > 0) {
+    return {
+      isMainSingle: false,
+      text: `仅${names.join("/")}单关`,
+      title: `可单关玩法：${names.join("/")}`,
+      singlePoolCodes,
+    };
+  }
+  return {
+    isMainSingle: false,
+    text: "仅限串关",
+    title: "本场全部玩法均未开放单关",
+    singlePoolCodes,
+  };
+}
+
 export interface SyntheticModePillSpec {
   mode: SyntheticSingleMode;
   label: string;
@@ -456,9 +542,35 @@ export interface SyntheticModePillSpec {
 export function buildSyntheticModePillSpecs(
   canTrim2Way: boolean,
   hasInherentBlindSpot = false,
-  compactMobile = false
+  compactMobile = false,
+  partialPreview?: PartialCoveragePreview | null
 ): SyntheticModePillSpec[] {
   const sp = compactMobile ? "" : " ";
+  if (partialPreview?.requiresExplicitConfirm) {
+    const retPct = (partialPreview.retainedDirectionRatio * 100).toFixed(1);
+    const missPct =
+      partialPreview.blindSpotProb >= 0.01
+        ? (partialPreview.blindSpotProb * 100).toFixed(2)
+        : (partialPreview.blindSpotProb * 100).toFixed(3);
+    const confirmLabel = partialPreview.isExactEquivalent
+      ? compactMobile
+        ? `⚠️确认超额等价单关(¥${partialPreview.previewCost})`
+        : `⚠️ 确认超额等价单关（¥${partialPreview.previewCost} · 0%死角）`
+      : compactMobile
+        ? `⚠️确认部分覆盖(${retPct}%·¥${partialPreview.previewCost})`
+        : `⚠️ 确认部分覆盖单关（保${retPct}%·漏${missPct}%·¥${partialPreview.previewCost}）`;
+    const list: SyntheticModePillSpec[] = [
+      {
+        mode: "partial-cover",
+        label: confirmLabel,
+      },
+    ];
+    if (canTrim2Way) {
+      list.push({ mode: "trim-2way", label: `⚡${sp}2项省本搏常规` });
+    }
+    list.push({ mode: "off", label: `🌉${sp}搭1场过桥凑2串1` });
+    return list;
+  }
   const list: SyntheticModePillSpec[] = [
     {
       mode: "full-3way",

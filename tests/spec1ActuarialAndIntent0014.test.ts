@@ -2474,8 +2474,28 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       `Expected non-zero 4:3/5:4 mass inside 胜其它, got ${expectedHdBlindSpot}`
     );
 
-    const wsHd = evaluateQuantWorkspace(
+    // ADR-0017: Default "full-3way" stays pending on non-equivalent CRS and exposes partialCoveragePreview;
+    // explicit "partial-cover" mounts pure-subset CRS ["1:0","2:1","3:2"] with exact blindSpotProb & warning!
+    const wsHdPending = evaluateQuantWorkspace(
       { picks: [hdPick], multiple: 5, syntheticSingleMode: "full-3way" },
+      [nonSingleMinus1]
+    );
+    assert.equal(wsHdPending.effectiveReport.canCheckout, false);
+    assert.equal(
+      Boolean(wsHdPending.effectiveReport.syntheticAutoMounted),
+      false
+    );
+    assert.equal(
+      wsHdPending.effectiveReport.partialCoveragePreview?.isExactEquivalent,
+      false
+    );
+    assert.equal(
+      wsHdPending.effectiveReport.partialCoveragePreview?.overCoverProb,
+      0
+    );
+
+    const wsHd = evaluateQuantWorkspace(
+      { picks: [hdPick], multiple: 5, syntheticSingleMode: "partial-cover" },
       [nonSingleMinus1]
     );
     assert.equal(wsHd.effectiveReport.canCheckout, true);
@@ -2520,7 +2540,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       `Must NEVER claim 100% 等价 / 无死角 / 0% 漏网死角 when blindSpotProb > 1e-9: ${allDisplayedCopy}`
     );
 
-    // Case 2: Real OOS match 2041506 where HHAD(-1) 让胜 (hh) ALSO omits straddling 胜其它 (mounts 9 explicit >=2-margin CRS options)
+    // Case 2: Real OOS match 2041506 where BOTH HHAD(-1) 让胜 (hh) AND 让平 (hd) strictly omit straddling 胜其它 under ADR-0017 pure-subset rule!
     const raw2041506 = JSON.parse(
       JSON.stringify(
         rawFixture.matches.find((m: any) => m.matchId === "2041506")
@@ -2556,7 +2576,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
           },
         ],
         multiple: 5,
-        syntheticSingleMode: "full-3way",
+        syntheticSingleMode: "partial-cover",
       },
       [oos2041506]
     );
@@ -2578,7 +2598,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
           },
         ],
         multiple: 5,
-        syntheticSingleMode: "full-3way",
+        syntheticSingleMode: "partial-cover",
       },
       [oos2041506]
     );
@@ -2588,6 +2608,11 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       wsHh2041.effectiveReport.tickets?.map((t) => t.legs?.[0]?.optionLabel) ??
       [];
     assert.equal(mountedHhLabels.includes("胜其它"), false);
+    const mountedHd2041Labels =
+      wsHd2041.effectiveReport.tickets?.map((t) => t.legs?.[0]?.optionLabel) ??
+      [];
+    assert.deepEqual(mountedHd2041Labels, ["1:0", "2:1", "3:2"]);
+    assert.equal(mountedHd2041Labels.includes("胜其它"), false);
     const coveredHhProb = mountedHhLabels.reduce(
       (sum, lbl) =>
         sum +
@@ -2604,7 +2629,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       ) < 1e-6,
       `Expected 让胜 omitting 胜其它 blindSpotProb=${expectedHhBlindSpot}, got ${wsHh2041.effectiveReport.syntheticBlindSpotProb}`
     );
-    // Axiomatic partition law: mass(goalDiff=1 inside 胜其它) + blindSpot(让胜 omitting 胜其它) === P(CRS 胜其它)!
+    // Axiomatic partition law: blindSpot(让平 omitting 胜其它) + blindSpot(让胜 omitting 胜其它) === P(CRS 胜其它)!
     const explicit1Goal2041 = ["1:0", "2:1", "3:2"].reduce(
       (sum, lbl) =>
         sum +
@@ -2615,14 +2640,18 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
     const hdMassInWinOther2041 = hd2041.fairProb - explicit1Goal2041;
     assert.ok(
       Math.abs(
-        hdMassInWinOther2041 +
+        (wsHd2041.effectiveReport.syntheticBlindSpotProb ?? 0) -
+          hdMassInWinOther2041
+      ) < 1e-6
+    );
+    assert.ok(
+      Math.abs(
+        (wsHd2041.effectiveReport.syntheticBlindSpotProb ?? 0) +
           (wsHh2041.effectiveReport.syntheticBlindSpotProb ?? 0) -
           pWinOther2041
       ) < 1e-6,
-      "1-goal mass in 胜其它 + 让胜 blind spot in 胜其它 must sum to exact P(胜其它)"
+      "1-goal blind spot in 胜其它 + >=2-goal blind spot in 胜其它 must sum to exact P(胜其它)"
     );
-    // And because hdMassInWinOther2041 > 50% of P(胜其它), wsHd2041 includes 胜其它 with 0% blind spot
-    assert.equal(wsHd2041.effectiveReport.syntheticBlindSpotProb, 0);
     assert.ok(
       wsHh2041.effectiveReport.syntheticBlindSpotLabel?.includes("胜其它")
     );

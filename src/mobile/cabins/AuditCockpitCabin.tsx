@@ -565,6 +565,7 @@ export function AuditCockpitCabin({
                   mode={syntheticSingleMode}
                   canTrim2Way={canTrimSynthetic2Way}
                   hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+                  partialPreview={playabilityGates.partialCoveragePreview}
                   containerClassName="syn-mode-pills num"
                   onSelect={onSwitchSyntheticMode}
                 />

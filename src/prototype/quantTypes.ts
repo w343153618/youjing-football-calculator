@@ -10,7 +10,8 @@ export type LegacyArchetypeKey =
   | "value-assassin";
 export type ArchetypeKey = PortfolioKey | LegacyArchetypeKey;
 export type BonusOptMode = "equal" | "hot-first" | "cold-first";
-export type SyntheticSingleMode = "full-3way" | "trim-2way" | "off";
+export type SyntheticSingleMode =
+  "full-3way" | "partial-cover" | "trim-2way" | "off";
 
 export const SUBJECTIVE_DELTA_MIN = -15;
 export const SUBJECTIVE_DELTA_MAX = 15;
@@ -28,6 +29,8 @@ export interface MatchPool {
   code: PoolCode;
   name: string;
   single: boolean;
+  canSingle?: boolean;
+  canAllUp?: boolean;
   selling?: boolean;
   goalLine?: string;
   payoutRatio: number;
@@ -110,6 +113,8 @@ export interface SelectedPick {
   poolCode: PoolCode;
   poolName: string;
   singleAllowed: boolean;
+  canSingle?: boolean;
+  canAllUp?: boolean;
   optionKey: string;
   optionLabel: string;
   odds: number;
@@ -207,6 +212,10 @@ export interface TruthReport {
   syntheticEffectiveOdds?: number;
   syntheticBlindSpotProb?: number;
   syntheticBlindSpotLabel?: string | null;
+  isExactSyntheticEquivalent?: boolean;
+  syntheticOverCoverProb?: number;
+  syntheticRetainedDirectionRatio?: number;
+  partialCoveragePreview?: PartialCoveragePreview | null;
   tickets?: ComboRow[];
   combos: ComboRow[];
   warnings: RadarWarning[];
@@ -239,11 +248,33 @@ export interface PlanTicketLine {
   prob: number;
 }
 
+export interface PartialCoveragePreview {
+  poolCode: PoolCode;
+  poolName: string;
+  isExactEquivalent: boolean;
+  requiresExplicitConfirm: boolean;
+  confirmReason?: "partial-subset" | "over-budget-cap" | "partial-and-over-cap";
+  authorizedCostCap?: number;
+  retainedDirectionRatio: number;
+  withinDirectionMissRatio: number;
+  blindSpotProb: number;
+  overCoverProb: number;
+  blindSpotLabel: string | null;
+  syntheticEffectiveOdds?: number;
+  previewCost: number;
+  previewBetCount: number;
+  previewTicketCount: number;
+  previewMinPayout: number;
+  previewMaxPayout: number;
+  previewLines: PlanTicketLine[];
+}
+
 export interface ArchetypePlan {
   key: ArchetypeKey;
   available: boolean;
   alphaKind?: "positive-ev" | "none";
   emptyReason?: string | null;
+  partialCoveragePreview?: PartialCoveragePreview | null;
   shortTab: string;
   badge: string;
   title: string;

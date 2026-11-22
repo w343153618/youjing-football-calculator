@@ -36,22 +36,44 @@ export function parseSportteryRawJson(json) {
   const parsed = [];
   for (const g of groups) {
     for (const m of g.subMatchList ?? []) {
-      const poolFlags = {};
+      const poolCanSingle = {};
+      const poolCanAllUp = {};
       const poolSelling = {};
       const hasPoolList = Array.isArray(m.poolList) && m.poolList.length > 0;
       for (const p of m.poolList ?? []) {
-        poolFlags[p.poolCode] =
-          Number(p.bettingSingle) === 1 || Number(p.single) === 1;
         const statusOk =
           String(p.poolStatus ?? "Selling").toLowerCase() === "selling";
-        const bettingOk =
-          p.bettingAllup !== undefined || p.bettingSingle !== undefined
-            ? Number(p.bettingAllup) === 1 || Number(p.bettingSingle) === 1
-            : Number(p.cbtValue ?? 1) !== 2;
-        poolSelling[p.poolCode] = statusOk && bettingOk;
+        const rawAllUp = p.bettingAllup ?? p.bettingAllUp;
+        const hasExplicitFlags =
+          rawAllUp !== undefined || p.bettingSingle !== undefined;
+        let canSingle = false;
+        let canAllUp = false;
+        if (statusOk) {
+          if (hasExplicitFlags) {
+            canSingle =
+              p.bettingSingle !== undefined
+                ? Number(p.bettingSingle) === 1
+                : Number(p.single) === 1;
+            canAllUp =
+              rawAllUp !== undefined
+                ? Number(rawAllUp) === 1
+                : Number(p.cbtValue ?? 1) !== 2;
+          } else {
+            const cbtOpen = Number(p.cbtValue ?? 1) !== 2;
+            canSingle = cbtOpen && Number(p.single) === 1;
+            canAllUp = cbtOpen;
+          }
+        }
+        poolCanSingle[p.poolCode] = canSingle;
+        poolCanAllUp[p.poolCode] = canAllUp;
+        poolSelling[p.poolCode] = canSingle || canAllUp;
       }
       const isSelling = (code) =>
         hasPoolList ? Boolean(poolSelling[code]) : true;
+      const isCanSingle = (code, defaultWhenNoList) =>
+        hasPoolList ? Boolean(poolCanSingle[code]) : defaultWhenNoList;
+      const isCanAllUp = (code) =>
+        hasPoolList ? Boolean(poolCanAllUp[code]) : true;
       const hadRaw = m.had ?? {};
       const hhadRaw = m.hhad ?? {};
       const hafuRaw = m.hafu ?? {};
@@ -75,7 +97,7 @@ export function parseSportteryRawJson(json) {
           HAD: buildPool(
             "HAD",
             "胜平负",
-            Boolean(poolFlags.HAD),
+            isCanSingle("HAD", false),
             [
               {
                 key: "h",
@@ -99,12 +121,13 @@ export function parseSportteryRawJson(json) {
             hadRaw.updateTime || "实时",
             undefined,
             isSelling("HAD"),
-            hadRaw.updateDate || undefined
+            hadRaw.updateDate || undefined,
+            isCanAllUp("HAD")
           ),
           HHAD: buildPool(
             "HHAD",
             `让球(${hhadRaw.goalLine || "-1"})`,
-            Boolean(poolFlags.HHAD),
+            isCanSingle("HHAD", false),
             [
               {
                 key: "hh",
@@ -128,12 +151,13 @@ export function parseSportteryRawJson(json) {
             hhadRaw.updateTime || "实时",
             hhadRaw.goalLine || "-1",
             isSelling("HHAD"),
-            hhadRaw.updateDate || undefined
+            hhadRaw.updateDate || undefined,
+            isCanAllUp("HHAD")
           ),
           HAFU: buildPool(
             "HAFU",
             "半全场",
-            poolFlags.HAFU ?? true,
+            isCanSingle("HAFU", true),
             [
               ["hh", "胜胜"],
               ["hd", "胜平"],
@@ -153,12 +177,13 @@ export function parseSportteryRawJson(json) {
             hafuRaw.updateTime || "实时",
             undefined,
             isSelling("HAFU"),
-            hafuRaw.updateDate || undefined
+            hafuRaw.updateDate || undefined,
+            isCanAllUp("HAFU")
           ),
           TTG: buildPool(
             "TTG",
             "总进球",
-            poolFlags.TTG ?? true,
+            isCanSingle("TTG", true),
             ["0", "1", "2", "3", "4", "5", "6", "7"].map((n) => ({
               key: `s${n}`,
               label: n === "7" ? "7+球" : `${n}球`,
@@ -168,12 +193,13 @@ export function parseSportteryRawJson(json) {
             ttgRaw.updateTime || "实时",
             undefined,
             isSelling("TTG"),
-            ttgRaw.updateDate || undefined
+            ttgRaw.updateDate || undefined,
+            isCanAllUp("TTG")
           ),
           CRS: buildPool(
             "CRS",
             "比分",
-            poolFlags.CRS ?? true,
+            isCanSingle("CRS", true),
             OFFICIAL_CRS_PAIRS.map(([k, lbl]) => ({
               key: lbl,
               label: lbl,
@@ -183,7 +209,8 @@ export function parseSportteryRawJson(json) {
             crsRaw.updateTime || "实时",
             undefined,
             isSelling("CRS"),
-            crsRaw.updateDate || undefined
+            crsRaw.updateDate || undefined,
+            isCanAllUp("CRS")
           ),
         },
       });

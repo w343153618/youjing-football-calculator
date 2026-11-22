@@ -10,6 +10,7 @@ import {
   type EquivalentArbItem,
   type LedgerTicketSnapshot,
   type MatchItem,
+  type PartialCoveragePreview,
   type PassSelectionSpec,
   type PlanTicketLine,
   type PoolCode,
@@ -52,6 +53,7 @@ export interface PlayabilityGates {
   isSyntheticPlayable: boolean;
   hasSyntheticInherentBlindSpot: boolean;
   canTrimSynthetic2Way: boolean;
+  partialCoveragePreview: PartialCoveragePreview | null;
   manualBonusLineCount: number;
   isBonusOver512: boolean;
   isBonusOptDisabled: boolean;
@@ -816,12 +818,63 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     });
   }
 
+  function resolvePoolCanSingle(pool?: MatchItem["pools"][PoolCode]): boolean {
+    if (
+      !pool ||
+      pool.selling === false ||
+      !Array.isArray(pool.options) ||
+      pool.options.length === 0
+    ) {
+      return false;
+    }
+    const baseSym = Symbol.for("yj.basePoolSingle");
+    const baseS = (pool as unknown as Record<symbol, unknown>)[baseSym];
+    if (typeof baseS === "boolean") {
+      if (typeof pool.canSingle === "boolean" && pool.canSingle !== baseS) {
+        return pool.canSingle;
+      }
+      if (typeof pool.single === "boolean" && pool.single !== baseS) {
+        return pool.single;
+      }
+      return baseS;
+    }
+    if (
+      typeof pool.canSingle === "boolean" &&
+      typeof pool.single === "boolean"
+    ) {
+      return pool.canSingle && pool.single;
+    }
+    if (typeof pool.canSingle === "boolean") return pool.canSingle;
+    return Boolean(pool.single);
+  }
+
+  function resolvePoolCanAllUp(pool?: MatchItem["pools"][PoolCode]): boolean {
+    if (
+      !pool ||
+      pool.selling === false ||
+      !Array.isArray(pool.options) ||
+      pool.options.length === 0
+    ) {
+      return false;
+    }
+    const baseSym = Symbol.for("yj.basePoolAllUp");
+    const baseA = (pool as unknown as Record<symbol, unknown>)[baseSym];
+    if (typeof baseA === "boolean") {
+      if (typeof pool.canAllUp === "boolean" && pool.canAllUp !== baseA) {
+        return pool.canAllUp;
+      }
+      return baseA;
+    }
+    if (typeof pool.canAllUp === "boolean") return pool.canAllUp;
+    return true;
+  }
+
   function isAuthoritativePickSingle(pk: SelectedPick): boolean {
     const fm = state.matches.find((x) => x.id === pk.matchId);
     const pool = fm?.pools[pk.poolCode];
     return pool
-      ? Boolean(pk.singleAllowed) && Boolean(pool.single)
-      : Boolean(pk.singleAllowed);
+      ? resolvePoolCanSingle(pool)
+      : Boolean(pk.canSingle ?? pk.singleAllowed);
   }
 
   function isPicked(
@@ -1005,6 +1058,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     const canTrimSynthetic2Way =
       isSyntheticPlayable &&
       (manualReport.syntheticRescuePicks?.length ?? 0) >= 3;
+    const partialCoveragePreview =
+      effectiveReport.partialCoveragePreview ??
+      manualReport.partialCoveragePreview ??
+      null;
 
     const distinctIds = Array.from(new Set(state.picks.map((p) => p.matchId)));
     const curBankers = (
@@ -1067,6 +1124,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       isSyntheticPlayable,
       hasSyntheticInherentBlindSpot,
       canTrimSynthetic2Way,
+      partialCoveragePreview,
       manualBonusLineCount,
       isBonusOver512,
       isBonusOptDisabled,
@@ -1312,6 +1370,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         state = {
           ...state,
           planSpec: null,
+          syntheticSingleMode:
+            state.syntheticSingleMode === "partial-cover"
+              ? "full-3way"
+              : state.syntheticSingleMode,
           lastPoolSwitchUndo: null,
           passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
           picks: nextPicks,
@@ -1329,9 +1391,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
       const pool = m.pools[poolCode];
       const opt = pool?.options.find((o) => o.key === optKey);
+      const poolSingleOk = resolvePoolCanSingle(pool);
+      const poolAllUpOk = resolvePoolCanAllUp(pool);
       if (
         !pool ||
         pool.selling === false ||
+        (!poolSingleOk && !poolAllUpOk) ||
         pool.options.length === 0 ||
         !opt ||
         opt.odds <= 0
@@ -1360,13 +1425,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       const existingDistinctCount = byMatchPools.size;
       const otherDistinctCount = otherByMatchPools.size;
       const allSingleWithCand =
-        state.picks.every(isAuthoritativePickSingle) && Boolean(pool.single);
+        state.picks.every(isAuthoritativePickSingle) && poolSingleOk;
 
       const sameMatchOther = state.picks.filter(
         (p) => p.matchId === m.id && p.poolCode !== poolCode
       );
       if (sameMatchOther.length > 0) {
-        if ((otherHasCrossPool || otherDistinctCount + 1 > 8) && !pool.single) {
+        if (
+          (otherHasCrossPool || otherDistinctCount + 1 > 8) &&
+          !poolSingleOk
+        ) {
           return {
             ok: false,
             blockedReason:
@@ -1409,7 +1477,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             away: m.away,
             poolCode,
             poolName: pool.name,
-            singleAllowed: pool.single,
+            singleAllowed: poolSingleOk,
+            canSingle: poolSingleOk,
+            canAllUp: poolAllUpOk,
             optionKey: opt.key,
             optionLabel: opt.label,
             odds: opt.odds,
@@ -1435,6 +1505,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           state = {
             ...state,
             planSpec: null,
+            syntheticSingleMode:
+              state.syntheticSingleMode === "partial-cover"
+                ? "full-3way"
+                : state.syntheticSingleMode,
             lastPoolSwitchUndo: undoSnapshot,
             passSpec: sanitizePassSpecForPicks(switchedPassSpec, nextPicks),
             picks: nextPicks,
@@ -1466,7 +1540,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             away: m.away,
             poolCode,
             poolName: pool.name,
-            singleAllowed: pool.single,
+            singleAllowed: poolSingleOk,
+            canSingle: poolSingleOk,
+            canAllUp: poolAllUpOk,
             optionKey: opt.key,
             optionLabel: opt.label,
             odds: opt.odds,
@@ -1476,6 +1552,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         state = {
           ...state,
           planSpec: null,
+          syntheticSingleMode:
+            state.syntheticSingleMode === "partial-cover"
+              ? "full-3way"
+              : state.syntheticSingleMode,
           lastPoolSwitchUndo: null,
           passSpec: sanitizePassSpecForPicks(nextPassSpec, nextPicks),
           picks: nextPicks,
@@ -1492,7 +1572,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         };
       }
 
-      if ((existingHasCrossPool || existingDistinctCount > 8) && !pool.single) {
+      if (
+        (existingHasCrossPool || existingDistinctCount > 8) &&
+        !poolSingleOk
+      ) {
         return {
           ok: false,
           blockedReason: "当前选单已锁定【单关】模式，无法混入未开单关的选项！",
@@ -1524,7 +1607,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           away: m.away,
           poolCode,
           poolName: pool.name,
-          singleAllowed: pool.single,
+          singleAllowed: poolSingleOk,
+          canSingle: poolSingleOk,
+          canAllUp: poolAllUpOk,
           optionKey: opt.key,
           optionLabel: opt.label,
           odds: opt.odds,
@@ -1534,6 +1619,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
+        syntheticSingleMode:
+          state.syntheticSingleMode === "partial-cover"
+            ? "full-3way"
+            : state.syntheticSingleMode,
         lastPoolSwitchUndo: null,
         passSpec: sanitizePassSpecForPicks(nextPassSpec, nextPicks),
         picks: nextPicks,
@@ -1616,7 +1705,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
     setSyntheticSingleMode(nextMode: SyntheticSingleMode) {
       const normalized: SyntheticSingleMode =
-        nextMode === "trim-2way" || nextMode === "off" ? nextMode : "full-3way";
+        nextMode === "partial-cover" ||
+        nextMode === "trim-2way" ||
+        nextMode === "off"
+          ? nextMode
+          : "full-3way";
       if (state.syntheticSingleMode === normalized) return;
       state = {
         ...state,
@@ -1631,6 +1724,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
+        syntheticSingleMode:
+          state.syntheticSingleMode === "partial-cover"
+            ? "full-3way"
+            : state.syntheticSingleMode,
         lastPoolSwitchUndo: null,
         passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
         picks: nextPicks,
@@ -1644,6 +1741,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = {
         ...state,
         planSpec: null,
+        syntheticSingleMode: "full-3way",
         lastPoolSwitchUndo: null,
         passSpec: { mode: "auto" },
         picks: nextPicks,
@@ -2080,7 +2178,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           odds: cand.odds,
         };
       }
-      if (state.syntheticSingleMode === "off") {
+      if (
+        state.syntheticSingleMode === "off" ||
+        state.syntheticSingleMode === "partial-cover"
+      ) {
         state = { ...state, syntheticSingleMode: "full-3way" };
       }
       return this.togglePick(m, cand.poolCode, cand.optionKey);

@@ -14,6 +14,7 @@ import type {
 } from "../../workspace/betSlipController.ts";
 import {
   RADAR_QUICK_FILTERS,
+  buildMatchRadarSingleBadge,
   type QuickFilter,
   type SheetState,
 } from "./cabinViewModels.ts";
@@ -218,6 +219,7 @@ export function MatchRadarCabin({
     const hP = (m.pools.HAD.options[0]?.fairProb ?? 0.45) * 100;
     const dP = (m.pools.HAD.options[1]?.fairProb ?? 0.27) * 100;
     const aP = (m.pools.HAD.options[2]?.fairProb ?? 0.28) * 100;
+    const singleBadge = buildMatchRadarSingleBadge(m);
 
     return (
       <div key={m.id} className="card enter">
@@ -225,12 +227,23 @@ export function MatchRadarCabin({
           <div className="meta-l">
             <span className="num no">{m.matchNumStr}</span>
             <span>{m.league}</span>
-            {m.pools.HAD.single ? (
-              <span className="tag" title="胜平负已开单关">
-                单
+            {singleBadge.isMainSingle ? (
+              <span className="tag" title={singleBadge.title}>
+                {singleBadge.text}
               </span>
             ) : (
-              <span style={{ fontSize: 9.5, opacity: 0.72 }}>仅半/比单关</span>
+              <span
+                title={singleBadge.title}
+                style={{
+                  fontSize: 9.5,
+                  opacity: 0.72,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {singleBadge.text}
+              </span>
             )}
           </div>
           <button

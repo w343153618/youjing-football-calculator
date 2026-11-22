@@ -14,6 +14,8 @@ import {
   consolidateCloseMultiples,
   countPhysical99xSlips,
   effectiveNonVoidLegCount,
+  isPoolAllUpEligible,
+  isPoolSingleEligible,
   shallowClonePlanWithoutConsolidated,
   statutorySingleBetCap,
   waterFillInverseOddsNotes,
@@ -25,9 +27,11 @@ import {
   computeCapitalWeightedVig,
   computeEquivalentArbitrages,
   doesOptionHitAtomicTemplate,
+  evaluatePickSetEquivalence,
   getMatchBaseAtomicProbs,
   resolveGoalLineNum,
   resolveMatchAtomicContexts,
+  resolvePureSingleSubsetPoolCandidates,
   sumOptionProbOnAtomic,
 } from "./coherentCalibration.mjs";
 import {
@@ -41,7 +45,8 @@ function buildFreePassMetadata(
   poolCap,
   isAllSingle,
   forceSingleOnly,
-  activePassSizes
+  activePassSizes,
+  hasSingleOnlyPick = false
 ) {
   return [1, 2, 3, 4, 5, 6, 7, 8].map((size) => {
     const label = size === 1 ? "单关" : `${size}关`;
@@ -54,6 +59,8 @@ function buildFreePassMetadata(
       if (!enabled) disabledReason = "所选含未开单关玩法";
     } else if (forceSingleOnly) {
       disabledReason = "当前选单仅限单关";
+    } else if (hasSingleOnlyPick) {
+      disabledReason = "含仅单关玩法禁串";
     } else if (size > matchCount) {
       disabledReason = `需选满${size}场`;
     } else if (size > poolCap) {
@@ -76,11 +83,15 @@ function buildComboPassMetadata(
   poolCap,
   forceSingleOnly,
   activeComboCode,
-  mTupleCount = 1
+  mTupleCount = 1,
+  hasSingleOnlyPick = false
 ) {
   const presets = OFFICIAL_COMBO_PASS_TABLE[matchCount] ?? [];
   return presets.map((pr) => {
-    const enabled = !forceSingleOnly && pr.sizes.every((s) => s <= poolCap);
+    const enabled =
+      !forceSingleOnly &&
+      !hasSingleOnlyPick &&
+      pr.sizes.every((s) => s <= poolCap);
     return {
       code: pr.code,
       label: pr.label,
@@ -92,11 +103,13 @@ function buildComboPassMetadata(
       active: activeComboCode === pr.code,
       disabledReason: forceSingleOnly
         ? "当前选单仅限单关"
-        : !enabled
-          ? poolCap <= 4
-            ? "含比分/半全场限4关"
-            : "含总进球限6关"
-          : null,
+        : hasSingleOnlyPick
+          ? "含仅单关玩法禁串"
+          : !enabled
+            ? poolCap <= 4
+              ? "含比分/半全场限4关"
+              : "含总进球限6关"
+            : null,
     };
   });
 }
@@ -262,393 +275,142 @@ export function resolveSyntheticSingleBundle(
   if (!m || !m.pools || !Array.isArray(matchPicks) || matchPicks.length === 0) {
     return null;
   }
-  const gl = resolveGoalLineNum(m);
-  const atomicProbs =
-    atomicOverride ??
-    getMatchBaseAtomicProbs(m, ["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
-  const targetMask = new Uint8Array(ATOMIC_TEMPLATES.length);
-  let targetHitCount = 0;
-  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-    const tpl = ATOMIC_TEMPLATES[t];
-    const hit = matchPicks.some((p) =>
-      doesOptionHitAtomicTemplate(
-        p.poolCode,
-        p.optionKey,
-        p.optionLabel,
-        gl,
-        tpl
-      )
-    );
-    if (hit) {
-      targetMask[t] = 1;
-      targetHitCount += 1;
-    }
-  }
-  if (targetHitCount === 0) return null;
+  const candidates = resolvePureSingleSubsetPoolCandidates(
+    m,
+    matchPicks,
+    atomicOverride
+  );
+  if (candidates.length === 0) return null;
 
-  const toPick = (poolCode, opt) => ({
-    matchId: m.id,
-    matchNumStr: m.matchNumStr,
-    home: m.home,
-    away: m.away,
-    poolCode,
-    poolName: m.pools[poolCode]?.name || poolCode,
-    singleAllowed: true,
-    optionKey: opt.key,
-    optionLabel: opt.label,
-    odds: opt.odds,
-    fairProb:
-      sumOptionProbOnAtomic(atomicProbs, poolCode, opt.key, opt.label, gl) ||
-      opt.fairProb,
-  });
+  const best = candidates[0];
+  const fullPicks = best.fullPicks;
+  let activePicks = fullPicks;
+  let modeUsed = mode === "partial-cover" ? "partial-cover" : "full-3way";
+  let activeEq = best;
+  let customBlindSpotLabel = null;
 
-  // 1. Check if HAD or HHAD is single-eligible and offers an exact 1-or-2 option equivalence (e.g. HAD h+d <-> HHAD(+1) hh)
-  for (const mainCode of ["HHAD", "HAD"]) {
-    const pool = m.pools[mainCode];
-    if (
-      !pool ||
-      pool.selling === false ||
-      !pool.single ||
-      !Array.isArray(pool.options) ||
-      pool.options.length === 0
-    ) {
-      continue;
-    }
-    const matchingOpts = [];
-    let exactCover = true;
-    const coveredMask = new Uint8Array(ATOMIC_TEMPLATES.length);
-    for (const opt of pool.options) {
-      if (!(Number(opt.odds) > 0)) continue;
-      let anyIn = false;
-      let anyOut = false;
-      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-        if (
-          doesOptionHitAtomicTemplate(
-            mainCode,
-            opt.key,
-            opt.label,
-            gl,
-            ATOMIC_TEMPLATES[t]
-          )
-        ) {
-          if (targetMask[t]) anyIn = true;
-          else anyOut = true;
-        }
-      }
-      if (anyIn && !anyOut) {
-        matchingOpts.push(opt);
-        for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-          if (
-            doesOptionHitAtomicTemplate(
-              mainCode,
-              opt.key,
-              opt.label,
-              gl,
-              ATOMIC_TEMPLATES[t]
-            )
-          ) {
-            coveredMask[t] = 1;
-          }
-        }
-      } else if (anyIn && anyOut) {
-        exactCover = false;
-        break;
-      }
-    }
-    if (exactCover && matchingOpts.length > 0) {
-      let allCovered = true;
-      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-        if (targetMask[t] !== coveredMask[t]) {
-          allCovered = false;
-          break;
-        }
-      }
-      if (allCovered) {
-        const fullPicks = matchingOpts.map((o) => toPick(mainCode, o));
-        const synEff =
-          1 /
-          fullPicks.reduce(
-            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
-            0
-          );
-        return {
-          poolCode: mainCode,
-          fullPicks,
-          activePicks: fullPicks,
-          modeUsed: "full-3way",
-          synEff,
-          blindSpotProb: computeSyntheticUncoveredStats(
-            targetMask,
-            atomicProbs,
-            fullPicks,
-            gl
-          ).uncoveredProb,
-          blindSpotLabel: null,
-          targetMask,
-          atomicProbs,
-          gl,
-        };
-      }
-    }
-  }
-
-  // 2. Check if targetMask is an exact union of full-time HAD outcomes {'h', 'd', 'a'} -> exact 3-way / 6-way HAFU partition!
-  const hafuPool = m.pools.HAFU;
-  if (
-    hafuPool &&
-    hafuPool.selling !== false &&
-    hafuPool.single &&
-    Array.isArray(hafuPool.options) &&
-    hafuPool.options.length > 0
-  ) {
-    const ftIncluded = [];
-    let pureFtPartition = true;
-    for (const ftKey of ["h", "d", "a"]) {
-      let anyIn = false;
-      let anyOut = false;
-      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-        if (ATOMIC_TEMPLATES[t].ft === ftKey) {
-          if (targetMask[t]) anyIn = true;
-          else anyOut = true;
-        }
-      }
-      if (anyIn && anyOut) {
-        pureFtPartition = false;
-        break;
-      }
-      if (anyIn) ftIncluded.push(ftKey);
-    }
-
-    if (pureFtPartition && ftIncluded.length > 0) {
-      const fullKeys = [];
+  if (mode === "trim-2way") {
+    if (best.poolCode === "HAFU" && fullPicks.length >= 3) {
+      const ftIncluded = ["h", "d", "a"].filter((ftKey) =>
+        fullPicks.some((p) => HAFU_KEYS_BY_FT[ftKey].includes(p.optionKey))
+      );
+      const droppedPicks = [];
+      const keptPicks = [];
       for (const ftKey of ftIncluded) {
-        for (const hk of HAFU_KEYS_BY_FT[ftKey]) {
-          if (!fullKeys.includes(hk)) fullKeys.push(hk);
-        }
-      }
-      const fullOpts = fullKeys
-        .map((rk) => hafuPool.options.find((o) => o.key === rk && o.odds > 0))
-        .filter(Boolean);
-      if (fullOpts.length === fullKeys.length) {
-        const fullPicks = fullOpts.map((o) => toPick("HAFU", o));
-        let activePicks = fullPicks;
-        let modeUsed = "full-3way";
-        let blindSpotProb = 0;
-        let blindSpotLabel = null;
-
-        if (mode === "trim-2way" && fullPicks.length >= 3) {
-          const droppedPicks = [];
-          const keptPicks = [];
-          for (const ftKey of ftIncluded) {
-            const grp = fullPicks.filter((p) =>
-              HAFU_KEYS_BY_FT[ftKey].includes(p.optionKey)
-            );
-            if (ftKey === "h") {
-              for (const p of grp) {
-                if (p.optionKey === "ah") droppedPicks.push(p);
-                else keptPicks.push(p);
-              }
-            } else if (ftKey === "a") {
-              for (const p of grp) {
-                if (p.optionKey === "ha") droppedPicks.push(p);
-                else keptPicks.push(p);
-              }
+        const grp = fullPicks.filter((p) =>
+          HAFU_KEYS_BY_FT[ftKey].includes(p.optionKey)
+        );
+        if (ftKey === "h") {
+          for (const p of grp) {
+            if (p.optionKey === "ah") droppedPicks.push(p);
+            else keptPicks.push(p);
+          }
+        } else if (ftKey === "a") {
+          for (const p of grp) {
+            if (p.optionKey === "ha") droppedPicks.push(p);
+            else keptPicks.push(p);
+          }
+        } else {
+          const leadDraws = grp
+            .filter((p) => p.optionKey !== "dd")
+            .sort((a, b) => a.fairProb - b.fairProb);
+          const dropDraw = leadDraws[0];
+          for (const p of grp) {
+            if (dropDraw && p.optionKey === dropDraw.optionKey) {
+              droppedPicks.push(p);
             } else {
-              // Draw ('d'): drop lower-probability half-lead-lost draw ('hd' vs 'ad')
-              const leadDraws = grp
-                .filter((p) => p.optionKey !== "dd")
-                .sort((a, b) => a.fairProb - b.fairProb);
-              const dropDraw = leadDraws[0];
-              for (const p of grp) {
-                if (dropDraw && p.optionKey === dropDraw.optionKey)
-                  droppedPicks.push(p);
-                else keptPicks.push(p);
-              }
+              keptPicks.push(p);
             }
           }
-          if (keptPicks.length >= 2 && droppedPicks.length > 0) {
-            activePicks = keptPicks;
-            modeUsed = "trim-2way";
-            blindSpotProb = droppedPicks.reduce((a, p) => a + p.fairProb, 0);
-            const dropDesc = droppedPicks
-              .map((p) =>
-                p.optionKey === "ah"
-                  ? `半场落后逆转（${p.optionLabel}）`
-                  : p.optionKey === "ha"
-                    ? `半场领先被逆转（${p.optionLabel}）`
-                    : `半场分胜负下半场扳平（${p.optionLabel}）`
-              )
-              .join("、");
-            blindSpotLabel = dropDesc;
-          }
         }
-
-        const synEff =
-          1 /
-          activePicks.reduce(
-            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
-            0
-          );
-        const fullSynEff =
-          1 /
-          fullPicks.reduce(
-            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
-            0
-          );
-        const activeHafuUncov = computeSyntheticUncoveredStats(
-          targetMask,
-          atomicProbs,
-          activePicks,
-          gl
-        );
-        blindSpotProb = activeHafuUncov.uncoveredProb;
-        return {
-          poolCode: "HAFU",
-          fullPicks,
-          activePicks,
-          modeUsed,
-          synEff,
-          fullSynEff,
-          blindSpotProb,
-          blindSpotLabel,
-          targetMask,
-          atomicProbs,
-          gl,
-        };
       }
-    }
-  }
-
-  // 3. Fallback to single-eligible CRS scorelines (e.g. non-single HHAD(-1) hh win by >=2 or hd win by 1)
-  const crsPool = m.pools.CRS;
-  if (
-    crsPool &&
-    crsPool.selling !== false &&
-    crsPool.single &&
-    Array.isArray(crsPool.options) &&
-    crsPool.options.length > 0
-  ) {
-    const crsOpts = [];
-    for (const opt of crsPool.options) {
-      if (!(Number(opt.odds) > 0)) continue;
-      let inMass = 0;
-      let totalMass = 0;
-      let anyIn = false;
-      let anyOut = false;
-      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
-        if (
-          doesOptionHitAtomicTemplate(
-            "CRS",
-            opt.key,
-            opt.label,
-            gl,
-            ATOMIC_TEMPLATES[t]
+      if (keptPicks.length >= 2 && droppedPicks.length > 0) {
+        activePicks = keptPicks;
+        modeUsed = "trim-2way";
+        activeEq = evaluatePickSetEquivalence(
+          m,
+          matchPicks,
+          activePicks,
+          best.atomicProbs
+        );
+        customBlindSpotLabel = droppedPicks
+          .map((p) =>
+            p.optionKey === "ah"
+              ? `半场落后逆转（${p.optionLabel}）`
+              : p.optionKey === "ha"
+                ? `半场领先被逆转（${p.optionLabel}）`
+                : `半场分胜负下半场扳平（${p.optionLabel}）`
           )
-        ) {
-          const p = atomicProbs[t] || 1e-6;
-          totalMass += p;
-          if (targetMask[t]) {
-            anyIn = true;
-            inMass += p;
-          } else {
-            anyOut = true;
-          }
-        }
+          .join("、");
       }
-      const isCatchAll =
-        opt.label === "胜其它" ||
-        opt.label === "平其它" ||
-        opt.label === "负其它";
-      if (
-        (anyIn && !anyOut) ||
-        (isCatchAll && totalMass > 0 && inMass >= 0.5 * totalMass)
-      ) {
-        crsOpts.push(opt);
-      }
-    }
-    if (crsOpts.length >= 1) {
-      const fullPicks = crsOpts.map((o) => toPick("CRS", o));
-      let activePicks = fullPicks;
-      let modeUsed = "full-3way";
-      if (mode === "trim-2way" && fullPicks.length >= 4) {
-        const sortedByProb = [...fullPicks].sort(
-          (a, b) => b.fairProb - a.fairProb
-        );
-        const keepCount = Math.max(2, Math.ceil(fullPicks.length * 0.65));
-        const keepSet = new Set(
-          sortedByProb.slice(0, keepCount).map((p) => p.optionKey)
-        );
-        const dropped = fullPicks.filter((p) => !keepSet.has(p.optionKey));
-        const kept = fullPicks.filter((p) => keepSet.has(p.optionKey));
-        if (kept.length >= 2 && dropped.length > 0) {
-          activePicks = kept;
-          modeUsed = "trim-2way";
-        }
-      }
-      const activeCrsUncov = computeSyntheticUncoveredStats(
-        targetMask,
-        atomicProbs,
-        activePicks,
-        gl
+    } else if (fullPicks.length >= 3) {
+      const sortedByProb = [...fullPicks].sort(
+        (a, b) => b.fairProb - a.fairProb
       );
-      const blindSpotProb = activeCrsUncov.uncoveredProb;
-      let blindSpotLabel = null;
-      if (blindSpotProb > 1e-9) {
-        const catchAllNames = activeCrsUncov.missedCrsLabels.filter(
-          (lbl) => lbl === "胜其它" || lbl === "平其它" || lbl === "负其它"
+      const keepCount = Math.min(
+        fullPicks.length - 1,
+        Math.max(2, Math.ceil(fullPicks.length * 0.65))
+      );
+      const keepSet = new Set(
+        sortedByProb.slice(0, keepCount).map((p) => p.optionKey)
+      );
+      const dropped = fullPicks.filter((p) => !keepSet.has(p.optionKey));
+      const kept = fullPicks.filter((p) => keepSet.has(p.optionKey));
+      if (kept.length >= 2 && dropped.length > 0) {
+        activePicks = kept;
+        modeUsed = "trim-2way";
+        activeEq = evaluatePickSetEquivalence(
+          m,
+          matchPicks,
+          activePicks,
+          best.atomicProbs
         );
-        const explicitNames = activeCrsUncov.missedCrsLabels.filter(
-          (lbl) => lbl !== "胜其它" && lbl !== "平其它" && lbl !== "负其它"
-        );
-        const catchExamples = activeCrsUncov.missedCatchAllScores.slice(0, 2);
-        const catchDesc =
-          catchAllNames.length > 0
-            ? `跨界大比分「${catchAllNames.join("/")}」${catchExamples.length > 0 ? `（含 ${catchExamples.join("/")} 等）` : ""}`
-            : "";
-        const expDesc =
-          explicitNames.length > 0
-            ? `高赔长尾比分（${explicitNames.slice(0, 3).join("/")}${explicitNames.length > 3 ? "等" : ""}）`
-            : "";
-        blindSpotLabel =
-          expDesc && catchDesc
-            ? `${expDesc}及${catchDesc}`
-            : catchDesc || expDesc || "未覆盖长尾比分";
       }
-      const synEff =
-        1 /
-        activePicks.reduce(
-          (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
-          0
-        );
-      return {
-        poolCode: "CRS",
-        fullPicks,
-        activePicks,
-        modeUsed,
-        synEff,
-        fullSynEff:
-          1 /
-          fullPicks.reduce(
-            (acc, p) => acc + 2 / bankerRoundParlayUnitPayout([p.odds]),
-            0
-          ),
-        blindSpotProb,
-        blindSpotLabel,
-        targetMask,
-        atomicProbs,
-        gl,
-      };
     }
   }
 
-  return null;
+  const invActive = activePicks.reduce(
+    (acc, p) => acc + 2 / Math.max(0.5, bankerRoundParlayUnitPayout([p.odds])),
+    0
+  );
+  const synEff = invActive > 0 ? 1 / invActive : 0;
+
+  return {
+    poolCode: best.poolCode,
+    fullPicks,
+    activePicks,
+    modeUsed,
+    synEff,
+    fullSynEff: best.synEff,
+    isExactEquivalent: activeEq.isExactEquivalent,
+    fullIsExactEquivalent: best.isExactEquivalent,
+    isPureSubset: activeEq.isPureSubset,
+    blindSpotProb: activeEq.blindSpotProb,
+    fullBlindSpotProb: best.blindSpotProb,
+    overCoverProb: activeEq.overCoverProb,
+    fullOverCoverProb: best.overCoverProb,
+    retainedDirectionRatio: activeEq.retainedDirectionRatio,
+    fullRetainedDirectionRatio: best.retainedDirectionRatio,
+    withinDirectionMissRatio: activeEq.withinDirectionMissRatio,
+    fullWithinDirectionMissRatio: best.withinDirectionMissRatio,
+    targetProb: activeEq.targetProb,
+    coveredInTargetProb: activeEq.coveredInTargetProb,
+    blindSpotLabel: customBlindSpotLabel ?? activeEq.blindSpotLabel,
+    fullBlindSpotLabel: best.blindSpotLabel,
+    missedScores: activeEq.missedScores,
+    fullMissedScores: best.missedScores,
+    targetMask: best.targetMask,
+    atomicProbs: best.atomicProbs,
+    gl: best.gl,
+  };
 }
 
 export function buildAutoSyntheticSinglePlan(
   m,
   bundle,
   rawMultiple,
-  rawPickCount
+  rawPickCount,
+  options = null
 ) {
   if (
     !bundle ||
@@ -678,6 +440,8 @@ export function buildAutoSyntheticSinglePlan(
     Math.max(K, mult * Math.max(1, rawPickCount))
   );
   const maxTotalNotes = Math.min(10_000, 999 * K);
+  const maxAutoCost = Number(options?.maxAutoCost) || 0;
+  const maxAutoNotes = maxAutoCost > 0 ? Math.floor(maxAutoCost / 2) : 0;
 
   const dutchItems = activePicks.map((p, idx) => ({
     unitPayout: cappedUnits[idx],
@@ -686,14 +450,18 @@ export function buildAutoSyntheticSinglePlan(
   }));
 
   let bestAlloc = null;
-  let minFeasibleBeforeBase = null;
+  let minFeasibleAlloc = null;
   let lastFeasibleBeforeBase = null;
+  let lastFeasibleWithinAutoCap = null;
   for (let N = K; N <= maxTotalNotes; N++) {
     const cand = allocateInverseOddsDutching(dutchItems, N, {
       requireStrictNetGain: true,
     });
     if (!cand) continue;
-    if (!minFeasibleBeforeBase) minFeasibleBeforeBase = cand;
+    if (!minFeasibleAlloc) minFeasibleAlloc = cand;
+    if (maxAutoNotes > 0 && N <= maxAutoNotes) {
+      lastFeasibleWithinAutoCap = cand;
+    }
     if (N >= baseNotes) {
       bestAlloc = cand;
       break;
@@ -701,9 +469,17 @@ export function buildAutoSyntheticSinglePlan(
     lastFeasibleBeforeBase = cand;
   }
   if (!bestAlloc) {
-    bestAlloc = lastFeasibleBeforeBase ?? minFeasibleBeforeBase;
+    bestAlloc = lastFeasibleBeforeBase ?? minFeasibleAlloc;
   }
-  if (!bestAlloc) {
+  if (
+    maxAutoCost > 0 &&
+    bestAlloc &&
+    bestAlloc.totalCost > maxAutoCost &&
+    lastFeasibleWithinAutoCap
+  ) {
+    bestAlloc = lastFeasibleWithinAutoCap;
+  }
+  if (!bestAlloc || !minFeasibleAlloc) {
     return { playable: false, synEff, plan: null };
   }
 
@@ -751,16 +527,9 @@ export function buildAutoSyntheticSinglePlan(
     };
   });
 
-  const exactBlindSpotProb =
-    bundle.targetMask && bundle.atomicProbs
-      ? computeSyntheticUncoveredStats(
-          bundle.targetMask,
-          bundle.atomicProbs,
-          activePicks,
-          bundle.gl ?? resolveGoalLineNum(m)
-        ).uncoveredProb
-      : Number(bundle.blindSpotProb ?? 0);
-  const hasBlindSpot = exactBlindSpotProb > 1e-9;
+  const exactBlindSpotProb = Number(bundle.blindSpotProb ?? 0);
+  const hasBlindSpot =
+    bundle.isExactEquivalent === false || exactBlindSpotProb > 1e-9;
   const bsPctStr = formatSyntheticBlindSpotPct(exactBlindSpotProb);
   const isTrim2 = bundle.modeUsed === "trim-2way";
   const shortTab = isTrim2
@@ -781,7 +550,7 @@ export function buildAutoSyntheticSinglePlan(
     title: isTrim2
       ? "省去半场落后逆转分支 · 抬升常规命中返奖乘数"
       : hasBlindSpot
-        ? "覆盖目标方向常规比分 · 反比例整数配平 0 假中奖"
+        ? "覆盖目标方向纯子集比分 · 反比例整数配平 0 假中奖"
         : "100% 等价覆盖原方向 · 反比例整数配平 0 假中奖",
     tagline: `总投入 ¥${actualCost} · 等效@${synEff.toFixed(2)} · 保底返 ¥${minPay.toFixed(1)} ~ 最高 ¥${maxPay.toFixed(1)}`,
     totalCost: actualCost,
@@ -810,14 +579,311 @@ export function buildAutoSyntheticSinglePlan(
       isTrim2 && bundle.blindSpotLabel
         ? `省去「${bundle.blindSpotLabel}」（漏网风险 ${bsPctStr}%），合成等效水位提升至 @${synEff.toFixed(2)}`
         : hasBlindSpot
-          ? `覆盖目标常规比分并按水位反比例精密配平（等效水位 @${synEff.toFixed(2)}）；诚实披露：未含${bundle.blindSpotLabel || "跨界其它比分"}（存在 ${bsPctStr}% 漏网死角）`
+          ? `覆盖目标纯子集比分并按水位反比例精密配平（等效水位 @${synEff.toFixed(2)}）；诚实披露：未含${bundle.blindSpotLabel || "跨界其它比分"}（存在 ${bsPctStr}% 漏网死角）`
           : `100% 等价覆盖原选赛果（0% 漏网死角），按水位反比例精密配平整数倍，等效水位 @${synEff.toFixed(2)}`,
     ],
     lines,
   };
   attachLazyConsolidatedLines(outPlan, lines, false);
   TRUSTED_SERVER_BONUS_PLANS.add(outPlan);
-  return { playable: true, synEff, plan: outPlan };
+  return {
+    playable: true,
+    synEff,
+    minBalancedCost: minFeasibleAlloc.totalCost,
+    plan: outPlan,
+  };
+}
+
+function attachSyntheticUnplayableWarning(manualReport, unplayableEffRaw) {
+  const unplayableEff = Number((unplayableEffRaw || 0).toFixed(4));
+  manualReport.syntheticEffectiveOdds = unplayableEff;
+  if (!manualReport.warnings.some((w) => w.id === "synthetic-unplayable")) {
+    manualReport.ruleBlockReason = `该方向借道单关池合成等效水位仅 ${unplayableEff.toFixed(2)}（≤ 1.00 或受整数倍限制无法盈利），已诚实拦截废票，请搭 1 场过桥配菜场凑 2串1`;
+    manualReport.warnings = [
+      {
+        id: "synthetic-unplayable",
+        severity: "danger",
+        title: `合成等效水位 ${unplayableEff.toFixed(2)} 无法盈利（已诚实拦截亏本单关）`,
+        detail:
+          "本场热门水位极低，借道半全场/比分单关池分倍后无法实现正净利；强烈建议选用下方「🌉 过桥配菜场凑 2串1」！",
+      },
+    ];
+  }
+}
+
+export function orchestrateSingleMatchSynthetic({
+  singleMatch,
+  matchPicks,
+  matches,
+  picks,
+  multiple,
+  syntheticSingleMode,
+  simVoidFirstMatch,
+  subjectiveDeltaPct,
+  hasSubjectiveShift,
+  sandboxAtomicMap,
+  stance,
+  manualReport,
+}) {
+  if (!singleMatch || !Array.isArray(matchPicks) || matchPicks.length === 0) {
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+  const fullBundle = resolveSyntheticSingleBundle(
+    singleMatch,
+    matchPicks,
+    "partial-cover"
+  );
+  if (!fullBundle) {
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+  const fullBuilt = buildAutoSyntheticSinglePlan(
+    singleMatch,
+    fullBundle,
+    multiple,
+    matchPicks.length
+  );
+  if (!fullBuilt.playable || !fullBuilt.plan) {
+    attachSyntheticUnplayableWarning(
+      manualReport,
+      fullBuilt.synEff || fullBundle.synEff || 0
+    );
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+
+  const authCap = Math.max(12, matchPicks.length * 2 * multiple);
+  const minBalancedCost = Number(
+    fullBuilt.minBalancedCost ?? fullBuilt.plan.totalCost
+  );
+  const requiresConfirm =
+    !fullBundle.fullIsExactEquivalent || minBalancedCost > authCap;
+  const poolName =
+    singleMatch.pools[fullBundle.poolCode]?.name || fullBundle.poolCode;
+
+  let partialCoveragePreview = null;
+  if (requiresConfirm) {
+    const previewPlan = fullBuilt.plan;
+    const confirmReason =
+      !fullBundle.fullIsExactEquivalent && previewPlan.totalCost > authCap
+        ? "partial-and-over-cap"
+        : !fullBundle.fullIsExactEquivalent
+          ? "partial-subset"
+          : "over-budget-cap";
+    partialCoveragePreview = {
+      poolCode: fullBundle.poolCode,
+      poolName,
+      isExactEquivalent: Boolean(fullBundle.fullIsExactEquivalent),
+      requiresExplicitConfirm: true,
+      confirmReason,
+      authorizedCostCap: authCap,
+      retainedDirectionRatio: Number(
+        (fullBundle.fullRetainedDirectionRatio ?? 0).toFixed(8)
+      ),
+      withinDirectionMissRatio: Number(
+        (fullBundle.fullWithinDirectionMissRatio ?? 0).toFixed(8)
+      ),
+      blindSpotProb: fullBundle.fullIsExactEquivalent
+        ? 0
+        : Number((fullBundle.fullBlindSpotProb ?? 0).toFixed(8)),
+      overCoverProb: Number((fullBundle.fullOverCoverProb ?? 0).toFixed(8)),
+      blindSpotLabel: fullBundle.fullBlindSpotLabel ?? null,
+      syntheticEffectiveOdds: Number(fullBuilt.synEff.toFixed(4)),
+      previewCost: previewPlan.totalCost,
+      previewBetCount: previewPlan.lines.reduce((s, l) => s + l.multiple, 0),
+      previewTicketCount: previewPlan.lines.length,
+      previewMinPayout: previewPlan.minReturn,
+      previewMaxPayout: previewPlan.maxReturn,
+      previewLines: previewPlan.lines,
+    };
+    manualReport.partialCoveragePreview = partialCoveragePreview;
+  }
+
+  if (syntheticSingleMode === "off") {
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+
+  if (syntheticSingleMode === "full-3way" && requiresConfirm) {
+    manualReport.syntheticAutoMounted = false;
+    manualReport.syntheticModeUsed = "full-3way";
+    manualReport.modeLabel = "未开单关·待配";
+    if (!fullBundle.fullIsExactEquivalent) {
+      const retPct = (
+        partialCoveragePreview.retainedDirectionRatio * 100
+      ).toFixed(1);
+      const bsPct = formatSyntheticBlindSpotPct(
+        partialCoveragePreview.blindSpotProb
+      );
+      manualReport.ruleBlockReason = `该方向无 100% 等价单关（纯子集${poolName}保 ${retPct}%·漏 ${bsPct}%·配平 ¥${partialCoveragePreview.previewCost}），请确认部分覆盖或搭 1 场凑 2串1`;
+    } else {
+      manualReport.ruleBlockReason = `该方向等价${poolName}单关最少需 ¥${partialCoveragePreview.previewCost}（超出默认单场授权上限 ¥${authCap}），请确认超额配平或搭 1 场凑 2串1`;
+    }
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+
+  const objBundle =
+    syntheticSingleMode === "partial-cover"
+      ? fullBundle
+      : resolveSyntheticSingleBundle(
+          singleMatch,
+          matchPicks,
+          syntheticSingleMode
+        );
+  if (!objBundle) {
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+  const builtSyn =
+    syntheticSingleMode === "partial-cover"
+      ? fullBuilt
+      : buildAutoSyntheticSinglePlan(
+          singleMatch,
+          objBundle,
+          multiple,
+          matchPicks.length,
+          syntheticSingleMode === "full-3way" ? { maxAutoCost: authCap } : null
+        );
+  if (!builtSyn.playable || !builtSyn.plan) {
+    attachSyntheticUnplayableWarning(
+      manualReport,
+      builtSyn.synEff || objBundle.synEff || 0
+    );
+    return { appliedPlan: null, autoSyntheticMeta: null };
+  }
+
+  const appliedPlan = applySandboxToPlan(
+    builtSyn.plan,
+    matches,
+    picks,
+    simVoidFirstMatch,
+    subjectiveDeltaPct,
+    {
+      isArchetype: false,
+      consolidateTickets: false,
+      stance,
+      manualReport,
+    }
+  );
+  const shiftedBundle = hasSubjectiveShift
+    ? resolveSyntheticSingleBundle(
+        singleMatch,
+        matchPicks,
+        syntheticSingleMode,
+        sandboxAtomicMap ?? null
+      )
+    : objBundle;
+  const rawSynBlindSpotProb =
+    shiftedBundle?.blindSpotProb ?? objBundle.blindSpotProb ?? 0;
+  const activeIsExact = Boolean(
+    shiftedBundle?.isExactEquivalent ?? objBundle.isExactEquivalent
+  );
+  const autoSyntheticMeta = {
+    modeUsed: objBundle.modeUsed,
+    synEff: Number(builtSyn.synEff.toFixed(4)),
+    isExactEquivalent: activeIsExact,
+    overCoverProb: Number(
+      (shiftedBundle?.overCoverProb ?? objBundle.overCoverProb ?? 0).toFixed(8)
+    ),
+    retainedDirectionRatio: Number(
+      (
+        shiftedBundle?.retainedDirectionRatio ??
+        objBundle.retainedDirectionRatio ??
+        (activeIsExact ? 1 : 0)
+      ).toFixed(8)
+    ),
+    blindSpotProb:
+      activeIsExact && rawSynBlindSpotProb <= 1e-9
+        ? 0
+        : Number(rawSynBlindSpotProb.toFixed(8)),
+    blindSpotLabel:
+      shiftedBundle?.blindSpotLabel ?? objBundle.blindSpotLabel ?? null,
+    poolName: singleMatch.pools[objBundle.poolCode]?.name || objBundle.poolCode,
+    activeLabels: objBundle.activePicks.map((p) => p.optionLabel),
+    matchNumStr: singleMatch.matchNumStr,
+    partialCoveragePreview,
+  };
+  return { appliedPlan, autoSyntheticMeta };
+}
+
+export function applyAutoSyntheticReportMeta(
+  effectiveReport,
+  manualReport,
+  autoSyntheticMeta,
+  syntheticSingleMode
+) {
+  if (autoSyntheticMeta && effectiveReport !== manualReport) {
+    const labelStr =
+      autoSyntheticMeta.activeLabels.length <= 4
+        ? autoSyntheticMeta.activeLabels.join("+")
+        : `${autoSyntheticMeta.activeLabels.slice(0, 3).join("+")}等${autoSyntheticMeta.activeLabels.length}项`;
+    const hasSynBlindSpot =
+      !autoSyntheticMeta.isExactEquivalent ||
+      autoSyntheticMeta.blindSpotProb > 1e-9;
+    effectiveReport.modeLabel =
+      autoSyntheticMeta.modeUsed === "trim-2way"
+        ? "合成单关·2项省本"
+        : hasSynBlindSpot
+          ? "合成单关·部分覆盖"
+          : autoSyntheticMeta.activeLabels.length === 3
+            ? "合成单关·3项无死角"
+            : "合成单关·无死角";
+    effectiveReport.syntheticAutoMounted = true;
+    effectiveReport.syntheticModeUsed = autoSyntheticMeta.modeUsed;
+    effectiveReport.syntheticEffectiveOdds = autoSyntheticMeta.synEff;
+    effectiveReport.syntheticBlindSpotProb = autoSyntheticMeta.blindSpotProb;
+    effectiveReport.syntheticBlindSpotLabel = autoSyntheticMeta.blindSpotLabel;
+    effectiveReport.isExactSyntheticEquivalent =
+      autoSyntheticMeta.isExactEquivalent;
+    effectiveReport.syntheticOverCoverProb = autoSyntheticMeta.overCoverProb;
+    effectiveReport.syntheticRetainedDirectionRatio =
+      autoSyntheticMeta.retainedDirectionRatio;
+    effectiveReport.syntheticRescuePicks = manualReport.syntheticRescuePicks;
+    if (autoSyntheticMeta.partialCoveragePreview) {
+      effectiveReport.partialCoveragePreview =
+        autoSyntheticMeta.partialCoveragePreview;
+    }
+    if (hasSynBlindSpot) {
+      const bsPct = formatSyntheticBlindSpotPct(
+        autoSyntheticMeta.blindSpotProb
+      );
+      const retPct = (
+        (autoSyntheticMeta.retainedDirectionRatio ?? 0) * 100
+      ).toFixed(1);
+      const bsDesc = autoSyntheticMeta.blindSpotLabel || "极端长尾比分";
+      if (autoSyntheticMeta.modeUsed === "trim-2way") {
+        effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 已挂载【2项省本搏常规】${autoSyntheticMeta.poolName}单关「${labelStr}」（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 注意省去了「${bsDesc}」（存在 ${bsPct}% 逆转漏网死角）。`;
+        effectiveReport.warnings = [
+          {
+            id: "synthetic-blind-spot",
+            severity: "warn",
+            title: `⚠️ 2项省本模式存在 ${bsPct}% 逆转漏网风险`,
+            detail: `当前省去了「${bsDesc}」（校准发生率 ${bsPct}%）；若想完整覆盖常规分支，请切回全包档或搭 1 场凑 2串1。`,
+          },
+          ...effectiveReport.warnings.filter(
+            (w) => w.id !== "synthetic-blind-spot"
+          ),
+        ];
+      } else {
+        effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 已按确认挂载${autoSyntheticMeta.poolName}纯子集单关「${labelStr}」反比例配平（保住原方向 ${retPct}% · 等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost}）；⚠️ 因体彩「其它」项跨界混含非目标分差已严格剔除，存在 ${bsPct}% 漏网死角（${bsDesc}）！选满第 2 场将自动恢复原盘串关。`;
+        effectiveReport.warnings = [
+          {
+            id: "synthetic-blind-spot",
+            severity: "warn",
+            title: `⚠️ 部分覆盖合成单关存在 ${bsPct}% 漏网死角`,
+            detail: `体彩比分池「胜其它/平其它/负其它」同时混杂其他分差，当前纯子集「${labelStr}」未含${bsDesc}（校准发生率 ${bsPct}%）；若需锁定原盘方向零漏网，可搭 1 场过桥配菜凑 2串1。`,
+          },
+          ...effectiveReport.warnings.filter(
+            (w) => w.id !== "synthetic-blind-spot"
+          ),
+        ];
+      }
+    } else {
+      effectiveReport.syntheticHint = `${autoSyntheticMeta.matchNumStr} 原选玩法未开单关，已挂载 100% 等价无死角${autoSyntheticMeta.poolName}单关「${labelStr}」反比例配平（等效水位 @${autoSyntheticMeta.synEff.toFixed(2)} · 实投 ¥${effectiveReport.totalCost} · 0% 漏网死角）！继续选第 2 场将自动恢复低抽水原盘串关。`;
+    }
+  } else if (
+    syntheticSingleMode === "off" &&
+    manualReport.matchCount === 1 &&
+    !manualReport.canCheckout
+  ) {
+    effectiveReport.syntheticModeUsed = "off";
+  }
 }
 
 /** 计算五维真相看板、体彩法定过关矩阵与 6 大防坑雷达（纯数学黑盒，遵循 ADR-0002 & ADR-0007） */
@@ -936,12 +1002,26 @@ export function computeTruthReport(
       ? matches.find((x) => x.id === pk.matchId)
       : null;
     const pool = fm?.pools?.[pk.poolCode];
-    if (pool && typeof pool.single === "boolean") {
-      return Boolean(pk.singleAllowed) && pool.single;
+    if (pool) {
+      if (!isPoolSingleEligible(pool)) return false;
+      if (pk.singleAllowed === false && pk.canSingle === undefined)
+        return false;
+      return true;
     }
-    return Boolean(pk.singleAllowed);
+    return Boolean(pk.canSingle ?? pk.singleAllowed);
+  };
+  const isPickAllUpAllowed = (pk) => {
+    const fm = Array.isArray(matches)
+      ? matches.find((x) => x.id === pk.matchId)
+      : null;
+    const pool = fm?.pools?.[pk.poolCode];
+    if (pool) {
+      return isPoolAllUpEligible(pool) && pk.canAllUp !== false;
+    }
+    return pk.canAllUp !== false;
   };
   const isAllSingle = picks.length > 0 && picks.every(isPickSingleAllowed);
+  const hasSingleOnlyPick = picks.some((pk) => !isPickAllUpAllowed(pk));
   const canSingle = matchCount === 1 && isAllSingle && !hasIllegalCrossPoolPair;
   const poolCap = Math.min(...picks.map((p) => POOL_MAX_PASS[p.poolCode] ?? 8));
 
@@ -950,6 +1030,9 @@ export function computeTruthReport(
   let syntheticEffectiveOdds = undefined;
   let syntheticBlindSpotProb = undefined;
   let syntheticBlindSpotLabel = undefined;
+  let isExactSyntheticEquivalent = undefined;
+  let syntheticOverCoverProb = undefined;
+  let syntheticRetainedDirectionRatio = undefined;
   if (matchCount === 1 && !hasSameMatchCrossPoolConflict) {
     const m = Array.isArray(matches)
       ? matches.find((x) => x.id === matchGroups[0][0].matchId)
@@ -965,10 +1048,28 @@ export function computeTruthReport(
         const synEff = bundle.fullSynEff ?? bundle.synEff;
         syntheticEffectiveOdds = Number(synEff.toFixed(4));
         syntheticRescuePicks = bundle.fullPicks;
-        const fullBsProb = Number(bundle.blindSpotProb ?? 0);
+        const fullBsProb = Number(
+          bundle.fullBlindSpotProb ?? bundle.blindSpotProb ?? 0
+        );
+        const fullOverProb = Number(
+          bundle.fullOverCoverProb ?? bundle.overCoverProb ?? 0
+        );
+        const fullIsExact = Boolean(
+          bundle.fullIsExactEquivalent ?? bundle.isExactEquivalent
+        );
+        const fullRetained = Number(
+          bundle.fullRetainedDirectionRatio ??
+            bundle.retainedDirectionRatio ??
+            (fullIsExact ? 1 : 0)
+        );
+        isExactSyntheticEquivalent = fullIsExact;
         syntheticBlindSpotProb =
-          fullBsProb <= 1e-9 ? 0 : Number(fullBsProb.toFixed(8));
-        syntheticBlindSpotLabel = bundle.blindSpotLabel ?? null;
+          fullIsExact && fullBsProb <= 1e-9 ? 0 : Number(fullBsProb.toFixed(8));
+        syntheticOverCoverProb =
+          fullOverProb <= 1e-12 ? 0 : Number(fullOverProb.toFixed(8));
+        syntheticRetainedDirectionRatio = Number(fullRetained.toFixed(8));
+        syntheticBlindSpotLabel =
+          bundle.fullBlindSpotLabel ?? bundle.blindSpotLabel ?? null;
         const labelList =
           bundle.fullPicks.length <= 4
             ? bundle.fullPicks.map((p) => p.optionLabel).join("+")
@@ -979,8 +1080,8 @@ export function computeTruthReport(
         const poolTitle = m.pools[bundle.poolCode]?.name || bundle.poolCode;
         syntheticHint =
           synEff > 1.0 + 1e-9
-            ? fullBsProb > 1e-9
-              ? `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关覆盖「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（⚠️ 未含${bundle.blindSpotLabel || "跨界其它比分"}，存在 ${formatSyntheticBlindSpotPct(fullBsProb)}% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
+            ? !fullIsExact || fullBsProb > 1e-9
+              ? `${m.matchNumStr} 当前所选玩法未开单关；可借道${poolTitle}单关纯子集「${labelList}」反比例配平（保住原方向 ${(fullRetained * 100).toFixed(1)}% · 等效水位 @${synEff.toFixed(2)}；⚠️ 未含${syntheticBlindSpotLabel || "跨界其它比分"}，存在 ${formatSyntheticBlindSpotPct(fullBsProb)}% 漏网死角），确认后可单场出票或加选第 2 场凑串！`
               : `${m.matchNumStr} 当前所选玩法未开单关；借道${poolTitle}单关全包「${labelList}」反比例配平后合成等效水位达 ${synEff.toFixed(2)}（0% 漏网死角），支持直接单场出票或加选第 2 场凑串！`
             : `${m.matchNumStr} 当前所选玩法未开单关，且借道${poolTitle}覆盖「${labelList}」合成等效水位仅 ${synEff.toFixed(2)}（≤ 1.00 必亏盘），已拦截单场亏本废票，强烈建议搭 1 场过桥配菜场凑 2串1！`;
       }
@@ -1130,6 +1231,16 @@ export function computeTruthReport(
     if (syntheticBlindSpotLabel !== undefined) {
       blockedOne.syntheticBlindSpotLabel = syntheticBlindSpotLabel;
     }
+    if (isExactSyntheticEquivalent !== undefined) {
+      blockedOne.isExactSyntheticEquivalent = isExactSyntheticEquivalent;
+    }
+    if (syntheticOverCoverProb !== undefined) {
+      blockedOne.syntheticOverCoverProb = syntheticOverCoverProb;
+    }
+    if (syntheticRetainedDirectionRatio !== undefined) {
+      blockedOne.syntheticRetainedDirectionRatio =
+        syntheticRetainedDirectionRatio;
+    }
     return blockedOne;
   }
 
@@ -1140,6 +1251,56 @@ export function computeTruthReport(
     1
   );
 
+  if (matchCount >= 2 && hasSingleOnlyPick && !forceSingleOnly) {
+    const explicitSingleOnlyReq =
+      isAllSingle &&
+      passSpec?.mode === "free" &&
+      Array.isArray(passSpec.passSizes) &&
+      passSpec.passSizes.length > 0 &&
+      passSpec.passSizes.every((x) => Number(x) === 1);
+    if (!explicitSingleOnlyReq) {
+      return buildBlockedTruthReport({
+        matchCount,
+        multiple,
+        modeLabel: "含仅单关禁串玩法",
+        canSingle: false,
+        ruleBlockReason: isAllSingle
+          ? "所选含仅单关专售玩法（禁止参与2关及以上串关），请切为【单关】或改选可过关玩法"
+          : "所选同时包含仅单关专售玩法与未开单关玩法，既无法串关也无法全单关出票",
+        poolCap,
+        availableFreePasses: buildFreePassMetadata(
+          matchCount,
+          poolCap,
+          isAllSingle,
+          false,
+          [],
+          true
+        ),
+        availableComboPasses: buildComboPassMetadata(
+          matchCount,
+          poolCap,
+          false,
+          null,
+          exactMTupleCount,
+          true
+        ),
+        hasSameMatchCrossPoolConflict,
+        syntheticHint,
+        syntheticRescuePicks,
+        warnings: [
+          {
+            id: "single-only-no-parlay",
+            severity: "danger",
+            title: "所选包含仅单关专售玩法（禁止参与2关及以上过关）",
+            detail: isAllSingle
+              ? "体彩该玩法当前仅开放单关销售、未开放串关过关；请在过关选择中切为【单关】独立出票，或改选支持过关的玩法。"
+              : "同一选单内混有仅单关专售玩法与仅串关玩法，无法生成合法实票；请移除冲突项。",
+          },
+        ],
+      });
+    }
+  }
+
   let activePassSizes = [];
   let activeComboCode = null;
   let modeLabel = "";
@@ -1147,7 +1308,11 @@ export function computeTruthReport(
   if (forceSingleOnly || matchCount === 1) {
     activePassSizes = [1];
     modeLabel = "单关";
-  } else if (passSpec?.mode === "combo" && passSpec.comboCode) {
+  } else if (
+    !hasSingleOnlyPick &&
+    passSpec?.mode === "combo" &&
+    passSpec.comboCode
+  ) {
     const presets = OFFICIAL_COMBO_PASS_TABLE[matchCount] ?? [];
     const matched = presets.find(
       (pr) =>
@@ -1161,7 +1326,11 @@ export function computeTruthReport(
     }
   } else if (passSpec?.mode === "free" && Array.isArray(passSpec.passSizes)) {
     const valid = Array.from(new Set(passSpec.passSizes.map((x) => Number(x))))
-      .filter((k) => (k === 1 ? isAllSingle : k >= 2 && k <= effectiveMaxPass))
+      .filter((k) =>
+        k === 1
+          ? isAllSingle
+          : !hasSingleOnlyPick && k >= 2 && k <= effectiveMaxPass
+      )
       .sort((a, b) => a - b);
     if (valid.length > 0) {
       activePassSizes = valid;
@@ -1206,14 +1375,16 @@ export function computeTruthReport(
     poolCap,
     isAllSingle,
     forceSingleOnly,
-    activeComboCode ? [] : activePassSizes
+    activeComboCode ? [] : activePassSizes,
+    hasSingleOnlyPick
   );
   const availableComboPasses = buildComboPassMetadata(
     matchCount,
     poolCap,
     forceSingleOnly,
     activeComboCode,
-    exactMTupleCount
+    exactMTupleCount,
+    hasSingleOnlyPick
   );
 
   // Exact O(M^2) combinatorial pre-count before ticket expansion: zero silent truncation
@@ -1633,7 +1804,7 @@ function parseMatchDatePrefixMinutes(matchId) {
 function getSellingPoolOption(pool, key, requireSingle = false) {
   if (!pool || pool.selling === false || !Array.isArray(pool.options))
     return null;
-  if (requireSingle && pool.single !== true) return null;
+  if (requireSingle && !isPoolSingleEligible(pool)) return null;
   const found = pool.options.find((o) => o.key === key && Number(o.odds) > 0);
   return found ?? null;
 }
@@ -1950,6 +2121,14 @@ function computeBridgeCandidates(anchorMatch, anchorPicks, matches) {
   if (!anchorMatch || !Array.isArray(matches) || matches.length < 2) {
     return [];
   }
+  if (
+    Array.isArray(anchorPicks) &&
+    anchorPicks.some(
+      (ap) => !isPoolAllUpEligible(anchorMatch.pools?.[ap.poolCode])
+    )
+  ) {
+    return [];
+  }
   const others = matches.filter((m) => m && m.id !== anchorMatch.id);
   if (others.length === 0) return [];
 
@@ -1972,12 +2151,7 @@ function computeBridgeCandidates(anchorMatch, anchorPicks, matches) {
     const absGap = Math.abs(diff);
     for (const poolCode of ["HAD", "HHAD"]) {
       const pool = m.pools?.[poolCode];
-      if (
-        !pool ||
-        pool.selling === false ||
-        !Array.isArray(pool.options) ||
-        pool.options.length === 0
-      ) {
+      if (!isPoolAllUpEligible(pool)) {
         continue;
       }
       for (const opt of pool.options) {
@@ -2372,10 +2546,8 @@ export function computeProOrderInsights(
         pickedMatches.length === 1 || Number(report?.matchCount) === 1;
       if (
         isSingleMatchSlip &&
-        !arb.betterPicks.every(
-          (bp) =>
-            m.pools?.[bp.poolCode]?.selling !== false &&
-            m.pools?.[bp.poolCode]?.single === true
+        !arb.betterPicks.every((bp) =>
+          isPoolSingleEligible(m.pools?.[bp.poolCode])
         )
       ) {
         return false;
@@ -3460,7 +3632,13 @@ export function buildSandboxAdjustedBundle(
       : Number(pk.fairProb) || 0.25;
     return {
       ...pk,
-      singleAllowed: pool ? Boolean(pool.single) : Boolean(pk.singleAllowed),
+      singleAllowed: pool
+        ? isPoolSingleEligible(pool)
+        : Boolean(pk.canSingle ?? pk.singleAllowed),
+      canSingle: pool
+        ? isPoolSingleEligible(pool)
+        : Boolean(pk.canSingle ?? pk.singleAllowed),
+      canAllUp: pool ? isPoolAllUpEligible(pool) : pk.canAllUp !== false,
       odds,
       fairProb: prob > 0 ? prob : Number(pk.fairProb) || 0.02,
     };

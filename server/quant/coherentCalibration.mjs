@@ -3,6 +3,8 @@
 import {
   OFFICIAL_CRS_PAIRS,
   bankerRoundParlayUnitPayout,
+  isPoolAllUpEligible,
+  isPoolSingleEligible,
 } from "./statutoryRules.mjs";
 
 /**
@@ -1667,7 +1669,10 @@ export function computeMatchPoolsFingerprint(match) {
     const opts = p.options;
     const glNum = Number(p.goalLine);
     mix(
-      (0x200 + c) | ((p.single ? 1 : 0) << 12) | ((opts.length & 0xff) << 16)
+      (0x200 + c) |
+        ((isPoolSingleEligible(p) ? 1 : 0) << 12) |
+        ((isPoolAllUpEligible(p) ? 1 : 0) << 13) |
+        ((opts.length & 0xff) << 16)
     );
     mixFloat(Number.isFinite(glNum) ? glNum : 0);
     mixStr(String(p.updateDate ?? ""));
@@ -2714,7 +2719,8 @@ export function scanMatchAlphaCandidates(
           match,
           poolCode,
           poolName: pool.name || poolCode,
-          singleAllowed: Boolean(pool.single),
+          singleAllowed: isPoolSingleEligible(pool),
+          allUpAllowed: isPoolAllUpEligible(pool),
           optionKey: opt.key,
           optionLabel: opt.label || opt.key,
           odds: opt.odds,
@@ -3000,6 +3006,440 @@ export function resolveMatchAtomicContexts(
   }
 
   return { contexts, atomicMap, objectiveAtomicMap };
+}
+
+export function buildTailVerificationTemplates(goalLineNum) {
+  const g = Math.max(1, Math.abs(Math.trunc(Number(goalLineNum) || -1)));
+  const rawPairs = [
+    [15, 14],
+    [15, 13],
+    [15, 12],
+    [15, 0],
+    [16 + g, 16],
+    [17 + g, 16],
+    [15, 15],
+    [14, 15],
+    [13, 15],
+    [12, 15],
+    [0, 15],
+    [16, 16 + g],
+    [16, 17 + g],
+  ];
+  if (g >= 2) {
+    rawPairs.push([15 + g, 16], [16, 15 + g]);
+  }
+  const htChars = ["h", "d", "a"];
+  const out = [];
+  for (let i = 0; i < rawPairs.length; i++) {
+    const [x, y] = rawPairs[i];
+    const diff = x - y;
+    const ftCode = diff > 0 ? 0 : diff === 0 ? 1 : 2;
+    const ftChar = htChars[ftCode];
+    const crsIdx = diff > 0 ? 12 : diff === 0 ? 17 : 30;
+    const crsKey = CRS_LABEL_ORDER[crsIdx];
+    for (let htCode = 0; htCode < 3; htCode++) {
+      if (htCode === 0 && x === 0) continue;
+      if (htCode === 2 && y === 0) continue;
+      const htChar = htChars[htCode];
+      out.push({
+        ht: htChar,
+        ft: ftChar,
+        ftCode,
+        homeGoals: x,
+        awayGoals: y,
+        goalDiff: diff,
+        totalGoals: x + y,
+        ttgIdx: 7,
+        ttgKey: "s7",
+        hafuIdx: htCode * 3 + ftCode,
+        hafuKey: `${htChar}${ftChar}`,
+        crsIdx,
+        crsKey,
+      });
+    }
+  }
+  return out;
+}
+
+export function formatBlindSpotSummaryFromMasks(
+  missedCrsLabels,
+  missedCatchAllScores,
+  missedHafuLabels = []
+) {
+  if (
+    missedHafuLabels.length > 0 &&
+    missedCrsLabels.length === 0 &&
+    missedCatchAllScores.length === 0
+  ) {
+    return missedHafuLabels.join("、");
+  }
+  const catchAllNames = missedCrsLabels.filter(
+    (lbl) => lbl === "胜其它" || lbl === "平其它" || lbl === "负其它"
+  );
+  const explicitNames = missedCrsLabels.filter(
+    (lbl) => lbl !== "胜其它" && lbl !== "平其它" && lbl !== "负其它"
+  );
+  const catchExamples = missedCatchAllScores.slice(0, 2);
+  const catchDesc =
+    catchAllNames.length > 0
+      ? `跨界大比分「${catchAllNames.join("/")}」${
+          catchExamples.length > 0 ? `（含 ${catchExamples.join("/")} 等）` : ""
+        }`
+      : "";
+  const expDesc =
+    explicitNames.length > 0
+      ? `高赔长尾比分（${explicitNames.slice(0, 3).join("/")}${
+          explicitNames.length > 3 ? "等" : ""
+        }）`
+      : "";
+  return expDesc && catchDesc
+    ? `${expDesc}及${catchDesc}`
+    : catchDesc || expDesc || "未覆盖长尾比分";
+}
+
+export function evaluatePickSetEquivalence(
+  match,
+  targetPicks,
+  candidatePicks,
+  atomicOverride = null
+) {
+  const gl = resolveGoalLineNum(match);
+  const atomicProbs =
+    atomicOverride ??
+    getMatchBaseAtomicProbs(match, ["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
+  const targetMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+  const coveredMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+
+  let targetProb = 0;
+  let coveredInTargetProb = 0;
+  let blindSpotProb = 0;
+  let overCoverProb = 0;
+  let hasGridMiss = false;
+  let hasGridExtra = false;
+  const missedCrsLabels = new Set();
+  const missedCatchAllScores = [];
+
+  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+    const tpl = ATOMIC_TEMPLATES[t];
+    const inT = targetPicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        tpl
+      )
+    );
+    const inS = candidatePicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        tpl
+      )
+    );
+    if (inT) targetMask[t] = 1;
+    if (inS) coveredMask[t] = 1;
+    const p = atomicProbs[t] || 0;
+    if (inT) targetProb += p;
+    if (inT && inS) coveredInTargetProb += p;
+    if (inT && !inS) {
+      hasGridMiss = true;
+      blindSpotProb += p;
+      if (tpl.crsKey) missedCrsLabels.add(tpl.crsKey);
+      const exactLbl = `${tpl.homeGoals}:${tpl.awayGoals}`;
+      if (
+        !CRS_INDEX_BY_KEY.has(exactLbl) &&
+        !missedCatchAllScores.includes(exactLbl)
+      ) {
+        missedCatchAllScores.push(exactLbl);
+      }
+    }
+    if (!inT && inS) {
+      hasGridExtra = true;
+      overCoverProb += p;
+    }
+  }
+
+  let hasTailMiss = false;
+  let hasTailExtra = false;
+  const tailTemplates = buildTailVerificationTemplates(gl);
+  for (let i = 0; i < tailTemplates.length; i++) {
+    const tpl = tailTemplates[i];
+    const inT = targetPicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        tpl
+      )
+    );
+    const inS = candidatePicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        tpl
+      )
+    );
+    if (inT && !inS) {
+      hasTailMiss = true;
+      if (tpl.crsKey) missedCrsLabels.add(tpl.crsKey);
+      const exactLbl = `${tpl.homeGoals}:${tpl.awayGoals}`;
+      if (!missedCatchAllScores.includes(exactLbl)) {
+        missedCatchAllScores.push(exactLbl);
+      }
+    }
+    if (!inT && inS) {
+      hasTailExtra = true;
+    }
+  }
+
+  const cleanBlindSpotProb =
+    !hasGridMiss && !hasTailMiss && blindSpotProb <= 1e-12 ? 0 : blindSpotProb;
+  const cleanOverCoverProb =
+    !hasGridExtra && !hasTailExtra && overCoverProb <= 1e-12
+      ? 0
+      : overCoverProb;
+  const isPureSubset =
+    !hasGridExtra && !hasTailExtra && cleanOverCoverProb <= 1e-9;
+  const isExactEquivalent =
+    isPureSubset && !hasGridMiss && !hasTailMiss && cleanBlindSpotProb <= 1e-9;
+  const retainedDirectionRatio = isExactEquivalent
+    ? 1
+    : targetProb > 0
+      ? Math.min(1, Math.max(0, coveredInTargetProb / targetProb))
+      : 0;
+  const withinDirectionMissRatio = isExactEquivalent
+    ? 0
+    : Math.max(0, 1 - retainedDirectionRatio);
+
+  const missedCrsArr = Array.from(missedCrsLabels);
+  const missedScores =
+    missedCatchAllScores.length > 0
+      ? missedCatchAllScores.slice(0, 4)
+      : missedCrsArr
+          .filter(
+            (lbl) => lbl !== "胜其它" && lbl !== "平其它" && lbl !== "负其它"
+          )
+          .slice(0, 4);
+
+  const blindSpotLabel = isExactEquivalent
+    ? null
+    : formatBlindSpotSummaryFromMasks(missedCrsArr, missedCatchAllScores);
+
+  return {
+    gl,
+    atomicProbs,
+    targetMask,
+    coveredMask,
+    targetProb,
+    coveredInTargetProb,
+    blindSpotProb: cleanBlindSpotProb,
+    overCoverProb: cleanOverCoverProb,
+    retainedDirectionRatio,
+    withinDirectionMissRatio,
+    isPureSubset,
+    isExactEquivalent,
+    missedCrsLabels: missedCrsArr,
+    missedCatchAllScores,
+    missedScores,
+    blindSpotLabel,
+  };
+}
+
+export function resolvePureSingleSubsetPoolCandidates(
+  match,
+  targetPicks,
+  atomicOverride = null
+) {
+  if (
+    !match ||
+    !match.pools ||
+    !Array.isArray(targetPicks) ||
+    targetPicks.length === 0
+  ) {
+    return [];
+  }
+  const gl = resolveGoalLineNum(match);
+  const atomicProbs =
+    atomicOverride ??
+    getMatchBaseAtomicProbs(match, ["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
+  const targetMask = new Uint8Array(ATOMIC_TEMPLATES.length);
+  let anyTargetHit = false;
+  for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+    const hit = targetPicks.some((p) =>
+      doesOptionHitAtomicTemplate(
+        p.poolCode,
+        p.optionKey,
+        p.optionLabel,
+        gl,
+        ATOMIC_TEMPLATES[t]
+      )
+    );
+    if (hit) {
+      targetMask[t] = 1;
+      anyTargetHit = true;
+    }
+  }
+  if (!anyTargetHit) return [];
+
+  const tailTemplates = buildTailVerificationTemplates(gl);
+  const tailTargetMask = new Uint8Array(tailTemplates.length);
+  for (let i = 0; i < tailTemplates.length; i++) {
+    if (
+      targetPicks.some((p) =>
+        doesOptionHitAtomicTemplate(
+          p.poolCode,
+          p.optionKey,
+          p.optionLabel,
+          gl,
+          tailTemplates[i]
+        )
+      )
+    ) {
+      tailTargetMask[i] = 1;
+    }
+  }
+
+  const toPick = (poolCode, opt) => {
+    const pool = match.pools[poolCode];
+    const singleOk = isPoolSingleEligible(pool);
+    const allUpOk = isPoolAllUpEligible(pool);
+    return {
+      matchId: match.id,
+      matchNumStr: match.matchNumStr,
+      home: match.home,
+      away: match.away,
+      poolCode,
+      poolName: pool?.name || poolCode,
+      singleAllowed: singleOk,
+      canSingle: singleOk,
+      canAllUp: allUpOk,
+      optionKey: opt.key,
+      optionLabel: opt.label,
+      odds: opt.odds,
+      fairProb:
+        sumOptionProbOnAtomic(atomicProbs, poolCode, opt.key, opt.label, gl) ||
+        opt.fairProb,
+    };
+  };
+
+  const HAFU_ORDER_BY_FT = {
+    h: ["hh", "dh", "ah"],
+    d: ["dd", "hd", "ad"],
+    a: ["aa", "da", "ha"],
+  };
+
+  const poolPriority = ["HHAD", "HAD", "HAFU", "TTG", "CRS"];
+  const candidates = [];
+
+  for (let pOrd = 0; pOrd < poolPriority.length; pOrd++) {
+    const poolCode = poolPriority[pOrd];
+    const pool = match.pools[poolCode];
+    if (!isPoolSingleEligible(pool)) continue;
+
+    const pureOpts = [];
+    for (const opt of pool.options) {
+      if (!(Number(opt.odds) > 0)) continue;
+      let anyIn = false;
+      let anyOut = false;
+      for (let t = 0; t < ATOMIC_TEMPLATES.length; t++) {
+        if (
+          doesOptionHitAtomicTemplate(
+            poolCode,
+            opt.key,
+            opt.label,
+            gl,
+            ATOMIC_TEMPLATES[t]
+          )
+        ) {
+          if (targetMask[t]) anyIn = true;
+          else {
+            anyOut = true;
+            break;
+          }
+        }
+      }
+      if (anyOut) continue;
+      for (let i = 0; i < tailTemplates.length; i++) {
+        if (
+          doesOptionHitAtomicTemplate(
+            poolCode,
+            opt.key,
+            opt.label,
+            gl,
+            tailTemplates[i]
+          )
+        ) {
+          if (tailTargetMask[i]) anyIn = true;
+          else {
+            anyOut = true;
+            break;
+          }
+        }
+      }
+      if (anyIn && !anyOut) {
+        pureOpts.push(opt);
+      }
+    }
+
+    if (pureOpts.length === 0) continue;
+
+    let orderedOpts = pureOpts;
+    if (poolCode === "HAFU") {
+      const canonicalOrder = [
+        ...HAFU_ORDER_BY_FT.h,
+        ...HAFU_ORDER_BY_FT.d,
+        ...HAFU_ORDER_BY_FT.a,
+      ];
+      orderedOpts = [...pureOpts].sort(
+        (a, b) => canonicalOrder.indexOf(a.key) - canonicalOrder.indexOf(b.key)
+      );
+    }
+
+    const fullPicks = orderedOpts.map((o) => toPick(poolCode, o));
+    const eq = evaluatePickSetEquivalence(
+      match,
+      targetPicks,
+      fullPicks,
+      atomicProbs
+    );
+    if (!eq.isPureSubset) continue;
+
+    const invSum = fullPicks.reduce(
+      (acc, p) =>
+        acc + 2 / Math.max(0.5, bankerRoundParlayUnitPayout([p.odds])),
+      0
+    );
+    const synEff = invSum > 0 ? 1 / invSum : 0;
+
+    candidates.push({
+      poolCode,
+      priority: pOrd,
+      fullPicks,
+      synEff,
+      ...eq,
+    });
+  }
+
+  candidates.sort((a, b) => {
+    if (a.isExactEquivalent !== b.isExactEquivalent) {
+      return a.isExactEquivalent ? -1 : 1;
+    }
+    if (a.isExactEquivalent) {
+      return a.priority - b.priority || b.synEff - a.synEff;
+    }
+    if (Math.abs(b.retainedDirectionRatio - a.retainedDirectionRatio) > 1e-6) {
+      return b.retainedDirectionRatio - a.retainedDirectionRatio;
+    }
+    return b.synEff - a.synEff || a.priority - b.priority;
+  });
+
+  return candidates;
 }
 
 export { ATOMIC_TEMPLATES };

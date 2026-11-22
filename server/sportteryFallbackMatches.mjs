@@ -1,5 +1,9 @@
 // Static 8-match Sporttery fallback fixture (pure data, zero network/disk I/O).
-import { OFFICIAL_CRS_PAIRS } from "./quant/statutoryRules.mjs";
+import {
+  BASE_POOL_ALLUP_SYM,
+  BASE_POOL_SINGLE_SYM,
+  OFFICIAL_CRS_PAIRS,
+} from "./quant/statutoryRules.mjs";
 
 export function buildPool(
   code,
@@ -9,24 +13,35 @@ export function buildPool(
   updateTime = "17:45:21",
   goalLine,
   selling = true,
-  updateDate = undefined
+  updateDate = undefined,
+  allUp = undefined
 ) {
   const valid = selling ? rawOptions.filter((o) => o.odds > 0) : [];
-  const isSelling = Boolean(selling && valid.length > 0);
-  const invSum = valid.reduce((acc, o) => acc + 1 / o.odds, 0);
+  const hasValidOpts = Boolean(selling && valid.length > 0);
+  const canSingle = Boolean(hasValidOpts && single);
+  const canAllUp = Boolean(
+    hasValidOpts && (allUp !== undefined ? allUp : selling !== false)
+  );
+  const isSelling = canSingle || canAllUp;
+  const effectiveOpts = isSelling ? valid : [];
+  const invSum = effectiveOpts.reduce((acc, o) => acc + 1 / o.odds, 0);
   const payoutRatio = invSum > 0 ? 1 / invSum : 0.88;
   const vig = Math.max(0, 1 - payoutRatio);
   return {
     code,
     name,
-    single,
+    single: canSingle,
+    canSingle,
+    canAllUp,
     selling: isSelling,
+    [BASE_POOL_SINGLE_SYM]: canSingle,
+    [BASE_POOL_ALLUP_SYM]: canAllUp,
     goalLine,
     payoutRatio,
     vig,
     updateTime,
     ...(updateDate ? { updateDate } : {}),
-    options: valid.map((o) => ({
+    options: effectiveOpts.map((o) => ({
       key: o.key,
       label: o.label,
       odds: o.odds,

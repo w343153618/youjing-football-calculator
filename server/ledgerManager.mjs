@@ -6,6 +6,10 @@ import {
   evaluateQuantWorkspace,
   settleTicketSnapshotWithOfficialResults,
 } from "./quantEngine.mjs";
+import {
+  isPoolAllUpEligible,
+  isPoolSingleEligible,
+} from "./quant/statutoryRules.mjs";
 
 const DEFAULT_DAILY_LIMIT = 300;
 const MIN_DAILY_LIMIT = 20;
@@ -82,11 +86,16 @@ function resolveAuthoritativePick(authMap, matchId, poolCode, optionKey) {
   }
   const opt = pool.options.find((o) => String(o.key) === optionKey);
   if (!opt || !(Number(opt.odds) > 1)) return null;
+  const canSingle = isPoolSingleEligible(pool);
+  const canAllUp = isPoolAllUpEligible(pool);
+  if (!canSingle && !canAllUp) return null;
   return {
     odds: Number(opt.odds),
     optionLabel: opt.label || optionKey,
     goalLine: m.pools.HHAD?.goalLine ?? "-1",
-    single: Boolean(pool.single),
+    single: canSingle,
+    canSingle,
+    canAllUp,
     matchNumStr: m.matchNumStr,
     home: m.home,
     away: m.away,
@@ -133,6 +142,7 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
     let minPoolCap = 8;
     let lineInvalid = false;
     let firstLegAuthSingle = true;
+    let anyLegNotAllUp = false;
 
     for (const lg of ln.legs) {
       if (!lg || typeof lg !== "object") {
@@ -178,6 +188,9 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
       if (legs.length === 0 && isKnownAuthMatch) {
         firstLegAuthSingle = Boolean(authPick?.single);
       }
+      if (isKnownAuthMatch && authPick?.canAllUp === false) {
+        anyLegNotAllUp = true;
+      }
 
       const resolvedOdds = authPick ? authPick.odds : clampCustomOdds(lg.odds);
       const resolvedGoalLine = authPick
@@ -214,6 +227,14 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
     if (legs.length === 1 && !firstLegAuthSingle) {
       if (strict) {
         throw new Error("该场次对应玩法未开单关，禁止伪造单关实票快照");
+      }
+      return undefined;
+    }
+    if (legs.length >= 2 && anyLegNotAllUp) {
+      if (strict) {
+        throw new Error(
+          "该场次对应玩法仅限单关（未开放过关），禁止伪造串关实票快照"
+        );
       }
       return undefined;
     }

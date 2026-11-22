@@ -891,3 +891,52 @@ export function shallowClonePlanWithoutConsolidated(plan) {
   }
   return out;
 }
+
+export const BASE_POOL_SINGLE_SYM = Symbol.for("yj.basePoolSingle");
+export const BASE_POOL_ALLUP_SYM = Symbol.for("yj.basePoolAllUp");
+
+export function isPoolSingleEligible(pool) {
+  if (
+    !pool ||
+    pool.selling === false ||
+    !Array.isArray(pool.options) ||
+    pool.options.length === 0
+  ) {
+    return false;
+  }
+  const baseS = pool[BASE_POOL_SINGLE_SYM];
+  if (typeof baseS === "boolean") {
+    if (typeof pool.canSingle === "boolean" && pool.canSingle !== baseS) {
+      return pool.canSingle;
+    }
+    if (typeof pool.single === "boolean" && pool.single !== baseS) {
+      return pool.single;
+    }
+    return baseS;
+  }
+  if (typeof pool.canSingle === "boolean" && typeof pool.single === "boolean") {
+    return pool.canSingle && pool.single;
+  }
+  if (typeof pool.canSingle === "boolean") return pool.canSingle;
+  return Boolean(pool.single);
+}
+
+export function isPoolAllUpEligible(pool) {
+  if (
+    !pool ||
+    pool.selling === false ||
+    !Array.isArray(pool.options) ||
+    pool.options.length === 0
+  ) {
+    return false;
+  }
+  const baseA = pool[BASE_POOL_ALLUP_SYM];
+  if (typeof baseA === "boolean") {
+    if (typeof pool.canAllUp === "boolean" && pool.canAllUp !== baseA) {
+      return pool.canAllUp;
+    }
+    return baseA;
+  }
+  if (typeof pool.canAllUp === "boolean") return pool.canAllUp;
+  return true;
+}

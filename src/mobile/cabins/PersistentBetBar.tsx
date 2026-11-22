@@ -8,6 +8,7 @@ import {
 import type { ManualSectionId } from "../../manual/UserManualModal.tsx";
 import type {
   BridgeMatchCandidate,
+  PartialCoveragePreview,
   SyntheticSingleMode,
 } from "../../prototype/quantTypes.ts";
 import { fxOf, haptic } from "../../spring/engine.ts";
@@ -407,6 +408,7 @@ export function SyntheticModePills({
   mode,
   canTrim2Way,
   hasInherentBlindSpot = false,
+  partialPreview = null,
   compactMobile = false,
   containerClassName,
   containerStyle,
@@ -415,6 +417,7 @@ export function SyntheticModePills({
   mode: SyntheticSingleMode;
   canTrim2Way: boolean;
   hasInherentBlindSpot?: boolean;
+  partialPreview?: PartialCoveragePreview | null;
   compactMobile?: boolean;
   containerClassName?: string;
   containerStyle?: CSSProperties;
@@ -423,12 +426,17 @@ export function SyntheticModePills({
   const pillSpecs = buildSyntheticModePillSpecs(
     canTrim2Way,
     hasInherentBlindSpot,
-    compactMobile
+    compactMobile,
+    partialPreview
   );
+  const effectiveActiveMode: SyntheticSingleMode =
+    partialPreview?.requiresExplicitConfirm && mode === "full-3way"
+      ? "off"
+      : mode;
   const pillClass = (target: SyntheticSingleMode) =>
     compactMobile
-      ? `m-bet-pill ${mode === target ? "hi" : ""}`
-      : `key mini ${mode === target ? "on" : ""}`;
+      ? `m-bet-pill ${effectiveActiveMode === target ? "hi" : ""}`
+      : `key mini ${effectiveActiveMode === target ? "on" : ""}`;
   const springAttr = compactMobile ? undefined : "0.88";
 
   return (
@@ -539,6 +547,7 @@ export function PersistentBetBar({
     isSyntheticPlayable,
     canTrimSynthetic2Way,
     hasSyntheticInherentBlindSpot,
+    partialCoveragePreview,
     showBridgeFinder,
     canToggleBanker,
     activeBankerSet,
@@ -917,13 +926,16 @@ export function PersistentBetBar({
                 className="small num"
                 style={{ margin: 0, fontWeight: 600 }}
               >
-                🛡️ 单场未开单关 · 自动合成单关模式（选满第 2
-                场自动恢复原盘串关）：
+                {partialCoveragePreview?.requiresExplicitConfirm &&
+                !effectiveReport.syntheticAutoMounted
+                  ? "⚠️ 单场未开单关 · 待确认部分覆盖/超额配平或搭 1 场凑 2串1："
+                  : "🛡️ 单场未开单关 · 合成单关模式（选满第 2 场自动恢复原盘串关）："}
               </span>
               <SyntheticModePills
                 mode={syntheticSingleMode}
                 canTrim2Way={canTrimSynthetic2Way}
                 hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+                partialPreview={partialCoveragePreview}
                 containerStyle={{ display: "flex", gap: 6, flexWrap: "wrap" }}
                 onSelect={onSwitchSyntheticMode}
               />
@@ -1231,7 +1243,11 @@ export function PersistentBetBar({
               if (compactPrimaryAction.kind === "poster") {
                 onOpenPoster();
               } else if (compactPrimaryAction.kind === "synthetic") {
-                onSwitchSyntheticMode("full-3way");
+                onSwitchSyntheticMode(
+                  partialCoveragePreview?.requiresExplicitConfirm
+                    ? "partial-cover"
+                    : "full-3way"
+                );
               } else if (
                 compactPrimaryAction.kind === "bridge" &&
                 bridgeCandidates[0]
@@ -1255,6 +1271,7 @@ export function PersistentBetBar({
               mode={syntheticSingleMode}
               canTrim2Way={canTrimSynthetic2Way}
               hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
+              partialPreview={partialCoveragePreview}
               compactMobile
               containerClassName="m-syn-strip"
               onSelect={onSwitchSyntheticMode}
