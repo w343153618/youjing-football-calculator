@@ -11,7 +11,7 @@ VERSION="$(node -p "JSON.parse(require('node:fs').readFileSync('package.json','u
 KS_FILE="${YJ_KEYSTORE_FILE:-${ROOT_DIR}/data/android-release.keystore}"
 KS_PASS_FILE="${ROOT_DIR}/data/android-keystore-pass.txt"
 
-if [[ -z "${JAVA_HOME:-}" ]]; then
+if [[ -z "${JAVA_HOME:-}" || ! -x "${JAVA_HOME}/bin/java" ]]; then
   for d in "/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home" \
            "/Applications/Android Studio.app/Contents/jbr/Contents/Home"; do
     if [[ -x "${d}/bin/java" ]]; then
