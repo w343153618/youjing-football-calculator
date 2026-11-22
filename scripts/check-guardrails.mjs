@@ -142,6 +142,21 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
         `[honesty-guardrail] Retired misleading 2-way synthetic claim "一键无损切换单场出票" found in ${rel}`
       );
     }
+    if (src.includes("真实保底奖金")) {
+      errors.push(
+        `[honesty-guardrail] Forbidden conditional-payout mislabel "真实保底奖金" found in ${rel} (use conditional "命中后最低/最高返奖" unless isUnconditionalFloorGuaranteed)`
+      );
+    }
+    if (src.includes("解锁真保本")) {
+      errors.push(
+        `[honesty-guardrail] Forbidden exaggerated remediation copy "解锁真保本" found in ${rel}`
+      );
+    }
+    if (src.includes("命中任一组均盈利")) {
+      errors.push(
+        `[honesty-guardrail] Forbidden break-even-blind claim "命中任一组均盈利" found in ${rel}`
+      );
+    }
     if (rel.startsWith(`src${path.sep}`) && src.includes("单池暗扣")) {
       errors.push(
         `[honesty-guardrail] Deprecated misleading parlay vig label "单池暗扣" found in ${rel}`

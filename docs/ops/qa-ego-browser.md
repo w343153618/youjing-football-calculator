@@ -20,7 +20,8 @@ PORT=18908 DATA_DIR=/tmp/yj-qa node server/index.mjs
 - **API 签名注意（非 Playwright）**：`ego-browser` 无 `page.setViewportSize()`（视口统一走 `Emulation.setDeviceMetricsOverride`）；调用 `page.waitForFunction(fn, arg, { timeout })` 时省略参数须显式传 `undefined` 作为第 2 参数（如 `await page.waitForFunction(() => ..., undefined, { timeout: 10000 })`）。
 - **工作台高频元素无歧义选择器**（适配 `1-2-3` 三步向导，避免同名候选超时重试）：
   - 登录表单：`loc=css:input[placeholder="请输入分配的成员账号"]`、`loc=css:input[placeholder="请输入通行密码"]`、提交按钮 `text=验证身份并进入精算工作台`。
-  - 配单页签：桌面顶栏步骤按钮文案为 `3+1精算配单` / 面板标题 `② 🎯 3+1 精算配单`；移动端底栏四页签为 `text=赛事雷达`、`text=精算配单`、`text=审单锁利`、`text=情报账本`；四档槽位使用子串匹配 `text=稳健保本`、`text=期望效用`、`text=容错缩水`、`text=错价雷达`。
+  - 配单页签：桌面顶栏步骤按钮文案为 `3+1精算配单` / 面板标题 `② 🎯 3+1 精算配单`；移动端底栏四页签为 `text=赛事雷达`、`text=精算配单`、`text=审单锁利`、`text=情报账本`；点击四档槽位按钮时限定 `button` 元素（避免裸 `text=稳健保本` 同时命中诊断卡片与拒单标题报多候选歧义）。
+  - 刚重启服务后的首屏冷启动：执行 `deploy-sg.sh` 重启生产服务后首次加载若处于异步拉取上游盘口窗口，先点一次 `text=同步水位` 或等待顶栏出现 `实盘 \d+ 场`（非 `0 场`）再点选赛事卡片。
   - 说明书与全玩法弹窗收起：点击 `text=说明书` 内的演示按钮加载预设后先点弹窗关闭按钮；打开赛事 `全玩法` 弹窗后须点击精确文本 `text="确定"` 收起（`Escape` 键不会关闭该弹窗）；翻转卡片按钮使用带前缀的无歧义子串（如 `text=翻转看 6 维全表` 或 `text=与依据`），避免裸 `text=翻转看` 命中多处报歧义。
 - **弹簧滚轮稳定等待**：底部金额栏（`slipAmtRef`）带有 240Hz 弹簧滚轮过渡动画，点击「套用方案」或切换预设后等待 `>= 650ms` 再调用 `page.screenshot()`，确保拍到稳定终值。
 
