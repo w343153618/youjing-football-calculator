@@ -106,7 +106,12 @@ export function effectiveNonVoidLegCount(legOdds) {
   if (!Array.isArray(legOdds) || legOdds.length === 0) return 1;
   let valid = 0;
   for (let i = 0; i < legOdds.length; i++) {
-    if (Math.abs(Number(legOdds[i]) - 1.0) > 1e-9) valid += 1;
+    const item = legOdds[i];
+    const oddVal =
+      typeof item === "object" && item !== null
+        ? Number(item.odds)
+        : Number(item);
+    if (Math.abs(oddVal - 1.0) > 1e-9) valid += 1;
   }
   return Math.max(1, valid);
 }

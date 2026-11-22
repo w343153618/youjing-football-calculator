@@ -590,7 +590,10 @@ export function computeClientPortfolioQuoteMeta(
           new Set(
             rawPicks
               .filter((p) => Boolean(p?.matchId && p?.poolCode && p?.optionKey))
-              .map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
+              .map(
+                (p) =>
+                  `${p.matchId}:${String(p.poolCode).toUpperCase()}:${p.optionKey}`
+              )
           )
         )
           .sort()
@@ -1357,6 +1360,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       unlockFullAgg: s.unlockFullAgg,
       allowSaveCash: s.allowSaveCash,
       quoteInputSig: qMeta.inputSig,
+      ...(s.planSpec?.kind === "archetype" &&
+      !s.planSpec.allowBudgetMismatchReadOnly &&
+      s.planSpec.expectedQuoteInputSig
+        ? { expectedQuoteInputSig: s.planSpec.expectedQuoteInputSig }
+        : {}),
       clientAlerts,
     };
   }
@@ -1412,6 +1420,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         appliedBudgetYuan: cleanBudget,
         planBudgetYuan: cleanBudget,
         quoteInputSig: resolvedSig,
+        expectedQuoteInputSig: resolvedSig,
+        appliedSubjectiveDeltaPct:
+          computeClientPortfolioQuoteMeta(state).subjectiveDeltaPct,
+        allowBudgetMismatchReadOnly: false,
         appliedTicketSnapshot: snapshot,
         scaleMultiple: 1,
         consolidateTickets: true,
@@ -2006,6 +2018,24 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         computedInputSig =
           res.workspace.quoteInputSig ||
           computeClientPortfolioQuoteMeta(nextSyncedState).inputSig;
+        if (
+          nextSyncedState.planSpec?.kind === "archetype" &&
+          !nextSyncedState.planSpec.allowBudgetMismatchReadOnly
+        ) {
+          nextSyncedState.planSpec = {
+            ...nextSyncedState.planSpec,
+            quoteInputSig: computedInputSig,
+            expectedQuoteInputSig: computedInputSig,
+            ...(nextSyncedState.planSpec.snapshotPlan
+              ? {
+                  snapshotPlan: {
+                    ...nextSyncedState.planSpec.snapshotPlan,
+                    quoteInputSig: computedInputSig,
+                  },
+                }
+              : {}),
+          };
+        }
       }
       state = nextSyncedState;
       emit();
@@ -2663,6 +2693,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           appliedBudgetYuan: cleanBudget,
           planBudgetYuan: cleanBudget,
           quoteInputSig: activeQuoteSig,
+          expectedQuoteInputSig: activeQuoteSig,
+          appliedSubjectiveDeltaPct: cur.livePortfolioQuote.subjectiveDeltaPct,
+          allowBudgetMismatchReadOnly: false,
           appliedTicketSnapshot: snapshot,
           scaleMultiple: 1,
           consolidateTickets: true,
@@ -3491,7 +3524,20 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
     setBudget(nextBudget: number): number {
       const normalized = normalizeBudgetYuan(nextBudget);
-      state = { ...state, budget: normalized };
+      const nextPlanSpec: AppliedPlanSpec =
+        state.planSpec?.kind === "archetype"
+          ? {
+              ...state.planSpec,
+              allowBudgetMismatchReadOnly:
+                normalized !==
+                normalizeBudgetYuan(
+                  state.planSpec.appliedBudgetYuan ??
+                    state.planSpec.planBudgetYuan ??
+                    normalized
+                ),
+            }
+          : state.planSpec;
+      state = { ...state, budget: normalized, planSpec: nextPlanSpec };
       emit();
       void scheduleRefresh();
       return normalized;
@@ -3539,9 +3585,23 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         action.minFeasibleBudgetYuan > 0
       ) {
         const nextBudget = normalizeBudgetYuan(action.minFeasibleBudgetYuan);
+        const nextPlanSpec: AppliedPlanSpec =
+          state.planSpec?.kind === "archetype"
+            ? {
+                ...state.planSpec,
+                allowBudgetMismatchReadOnly:
+                  nextBudget !==
+                  normalizeBudgetYuan(
+                    state.planSpec.appliedBudgetYuan ??
+                      state.planSpec.planBudgetYuan ??
+                      nextBudget
+                  ),
+              }
+            : state.planSpec;
         state = {
           ...state,
           budget: nextBudget,
+          planSpec: nextPlanSpec,
         };
         emit();
         void scheduleRefresh();

@@ -736,7 +736,10 @@ export function BottomSheetsLayer({
 
           <div className="p-foot">
             <span className="num">
-              保底 ¥{effectiveReport.minPayout.toFixed(2)} · 严格净赚{" "}
+              {effectiveReport.isUnconditionalFloorGuaranteed
+                ? "真实保底"
+                : "命中最低"}{" "}
+              ¥{effectiveReport.minPayout.toFixed(2)} · 严格净赚{" "}
               {(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%
             </span>
             <div className="qr">

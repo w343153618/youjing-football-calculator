@@ -191,12 +191,19 @@ function buildBlockedTruthReport({
   };
 }
 
+const VALID_AUDITED_LEG_SOURCES = new Set([
+  "manual-anchor",
+  "same-match-shield",
+  "cross-pool-substitute",
+  "bridge-mate",
+]);
+
 export function sanitizeAndDeduplicatePicks(rawPicksInput, maxLen = 512) {
   if (!Array.isArray(rawPicksInput) || rawPicksInput.length === 0) return [];
   const out = [];
-  const seen = new Set();
+  const indexBySig = new Map();
   const scanCap = Math.min(rawPicksInput.length, 4096);
-  for (let i = 0; i < scanCap && out.length < maxLen; i++) {
+  for (let i = 0; i < scanCap; i++) {
     const p = rawPicksInput[i];
     if (
       !p ||
@@ -207,10 +214,37 @@ export function sanitizeAndDeduplicatePicks(rawPicksInput, maxLen = 512) {
     ) {
       continue;
     }
-    const sig = `${p.matchId}\0${p.poolCode}\0${p.optionKey}`;
-    if (seen.has(sig)) continue;
-    seen.add(sig);
-    out.push(p);
+    const matchId = p.matchId.trim();
+    const poolCode = p.poolCode.trim().toUpperCase();
+    const optionKey = p.optionKey.trim();
+    if (!matchId || !poolCode || !optionKey) continue;
+    const validLegSource =
+      typeof p.legSource === "string" &&
+      VALID_AUDITED_LEG_SOURCES.has(p.legSource)
+        ? p.legSource
+        : undefined;
+    const sig = `${matchId}\0${poolCode}\0${optionKey}`;
+    const existingIdx = indexBySig.get(sig);
+    if (existingIdx !== undefined) {
+      if (validLegSource && !out[existingIdx].legSource) {
+        out[existingIdx] = { ...out[existingIdx], legSource: validLegSource };
+      }
+      continue;
+    }
+    if (out.length >= maxLen) continue;
+    const cleaned = {
+      ...p,
+      matchId,
+      poolCode,
+      optionKey,
+    };
+    if (validLegSource) {
+      cleaned.legSource = validLegSource;
+    } else if ("legSource" in cleaned) {
+      delete cleaned.legSource;
+    }
+    indexBySig.set(sig, out.length);
+    out.push(cleaned);
   }
   return out;
 }
@@ -553,6 +587,11 @@ export function buildAutoSyntheticSinglePlan(
     : hasBlindSpot
       ? "🛡️ 合成单关（常规比分覆盖配平）"
       : "🛡️ 合成单关（全包无死角配平）";
+  const synWinProb = activePicks.reduce((a, p) => a + p.fairProb, 0);
+  const isUncondSynFloor =
+    actualCost > 0 &&
+    Math.max(0, 1 - synWinProb) <= 1e-12 &&
+    minPay >= actualCost - 1e-6;
   const outPlan = {
     key: "max-profit-prob",
     available: true,
@@ -563,13 +602,15 @@ export function buildAutoSyntheticSinglePlan(
       : hasBlindSpot
         ? "覆盖目标方向纯子集比分 · 反比例整数配平 0 假中奖"
         : "100% 等价覆盖原方向 · 反比例整数配平 0 假中奖",
-    tagline: `总投入 ¥${actualCost} · 等效@${synEff.toFixed(2)} · 保底返 ¥${minPay.toFixed(1)} ~ 最高 ¥${maxPay.toFixed(1)}`,
+    tagline: `总投入 ¥${actualCost} · 等效@${synEff.toFixed(2)} · ${
+      isUncondSynFloor ? "保底返" : "命中返"
+    } ¥${minPay.toFixed(1)} ~ 最高 ¥${maxPay.toFixed(1)}`,
     totalCost: actualCost,
     savedCash: 0,
     minReturn: minPay,
     maxReturn: maxPay,
-    winProb: activePicks.reduce((a, p) => a + p.fairProb, 0),
-    profitProb: activePicks.reduce((a, p) => a + p.fairProb, 0),
+    winProb: synWinProb,
+    profitProb: synWinProb,
     strictNetGainProb: lines
       .filter((l) => l.returnPayout > actualCost + 1e-6)
       .reduce((a, l) => a + l.prob, 0),
@@ -3127,13 +3168,19 @@ export function optimizeBonusPlan(
     );
   }
 
+  const isUncondBonusFloor =
+    actualTotal > 0 &&
+    Math.max(0, 1 - jointEval.anyWinProb) <= 1e-12 &&
+    uwCount === 0;
   const outBonusPlan = {
     key: "max-profit-prob",
     available: true,
     shortTab: metaMap.shortTab,
     badge: metaMap.badge,
     title: metaMap.title,
-    tagline: `总投入 ¥${actualTotal} · 保底返 ¥${jointEval.minPayout.toFixed(1)} ~ 最高 ¥${jointEval.maxPayout.toFixed(1)}`,
+    tagline: `总投入 ¥${actualTotal} · ${
+      isUncondBonusFloor ? "保底返" : "命中返"
+    } ¥${jointEval.minPayout.toFixed(1)} ~ 最高 ¥${jointEval.maxPayout.toFixed(1)}`,
     totalCost: actualTotal,
     savedCash: 0,
     minReturn: jointEval.minPayout,
@@ -3968,8 +4015,14 @@ export function applySandboxToPlan(
   const winProb = jointEval.anyWinProb;
   const profitProb = jointEval.realProfitProb;
 
+  const isUncondSandboxFloor =
+    totalCost > 0 &&
+    Math.max(0, 1 - winProb) <= 1e-12 &&
+    jointEval.underwaterCount === 0;
   const nextTagline = !isArchetype
-    ? `总投入 ¥${totalCost} · 保底返 ¥${minReturn.toFixed(1)} ~ 最高 ¥${maxReturn.toFixed(1)}`
+    ? `总投入 ¥${totalCost} · ${
+        isUncondSandboxFloor ? "保底返" : "命中返"
+      } ¥${minReturn.toFixed(1)} ~ 最高 ¥${maxReturn.toFixed(1)}`
     : basePlan.tagline;
 
   const effectiveConsolidate = Boolean(
@@ -4242,7 +4295,13 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
     effectiveOdds: harmonicEffOdds,
     breakevenUpgradeCost: resolvedBreakevenUpgradeCost,
     consolidatedTickets,
-    syntheticHint: `已启用【${plan.badge}】：${plan.tagline}`,
+    syntheticHint: `已启用【${plan.badge}】：${
+      plan.totalCost > 0 &&
+      Math.max(0, 1 - jointEval.anyWinProb) <= 1e-12 &&
+      jointEval.underwaterCount === 0
+        ? plan.tagline
+        : String(plan.tagline || "").replace(/保底返\s*¥/g, "命中返 ¥")
+    }`,
     syntheticRescuePicks: null,
     tickets: physicalTickets,
     warnings: planWarnings,
@@ -4985,6 +5044,15 @@ export function buildPortfolioQuoteInputSignature({
   };
 }
 
+const VALID_QUOTE_SIG_PREFIX_RE =
+  /^(v1\|b=\d+\|st=[^|]+\|sd=-?\d+\|sc=[01]\|ua=[01]\|ar=[01]\|ps=[^|]*\|t=[^|]*\|pk=[^|]*)\|od=[0-9a-z]+_[0-9a-z]+_\d+$/;
+
+function extractValidQuoteInputPrefix(sig) {
+  if (typeof sig !== "string" || sig.length === 0) return null;
+  const m = VALID_QUOTE_SIG_PREFIX_RE.exec(sig);
+  return m ? m[1] : null;
+}
+
 export function validateAppliedArchetypeQuoteGate({
   params,
   planSpec,
@@ -4994,6 +5062,10 @@ export function validateAppliedArchetypeQuoteGate({
   if (!planSpec || planSpec.kind !== "archetype") {
     return { ok: true };
   }
+  const enforceStrictFullSig = Boolean(params?.enforceFreshQuoteSignature);
+  const allowReadOnlyMismatch =
+    Boolean(planSpec.allowBudgetMismatchReadOnly) && !enforceStrictFullSig;
+
   const expectedSig =
     typeof params?.expectedQuoteInputSig === "string" &&
     params.expectedQuoteInputSig.length > 0
@@ -5002,8 +5074,19 @@ export function validateAppliedArchetypeQuoteGate({
           planSpec.expectedQuoteInputSig.length > 0
         ? planSpec.expectedQuoteInputSig
         : "";
-  if (expectedSig) {
-    if (expectedSig !== currentQuoteInputSig) {
+  const snapSig = String(
+    planSpec.quoteInputSig || validSnap?.quoteInputSig || ""
+  );
+
+  if (!allowReadOnlyMismatch && (expectedSig || snapSig)) {
+    const sigToVerify = expectedSig || snapSig;
+    const verifyPrefix = extractValidQuoteInputPrefix(sigToVerify);
+    const curPrefix = extractValidQuoteInputPrefix(currentQuoteInputSig);
+    const matchesCurrent = enforceStrictFullSig
+      ? sigToVerify === currentQuoteInputSig
+      : sigToVerify === currentQuoteInputSig ||
+        (verifyPrefix !== null && verifyPrefix === curPrefix);
+    if (!matchesCurrent) {
       return {
         ok: false,
         code: "STALE_QUOTE_SIGNATURE",
@@ -5011,10 +5094,7 @@ export function validateAppliedArchetypeQuoteGate({
           "报价版本已过期（预算或选单输入已变更），请等待新报价返回后重新套用",
       };
     }
-    const snapSig = String(
-      planSpec.quoteInputSig || validSnap?.quoteInputSig || ""
-    );
-    if (snapSig && snapSig !== expectedSig) {
+    if (expectedSig && snapSig && snapSig !== expectedSig) {
       return {
         ok: false,
         code: "STALE_QUOTE_SIGNATURE",
@@ -5023,45 +5103,51 @@ export function validateAppliedArchetypeQuoteGate({
     }
   }
 
-  const hasLockedBudget =
-    planSpec.planBudgetYuan !== undefined ||
-    planSpec.appliedBudgetYuan !== undefined;
-  if (hasLockedBudget && validSnap) {
-    const rawLocked = Number(
-      planSpec.planBudgetYuan ?? planSpec.appliedBudgetYuan
-    );
-    if (Number.isFinite(rawLocked) && rawLocked > 0) {
-      const lockedBudget = Math.max(
-        2,
-        Math.min(20_000, Math.floor(rawLocked / 2) * 2)
-      );
-      const sumLineBaseCost = Array.isArray(validSnap.lines)
-        ? validSnap.lines.reduce((sum, ln) => {
-            const mult = Math.max(1, Math.round(Number(ln?.multiple) || 1));
-            const explicitCost = Number(ln?.cost);
-            return (
-              sum +
-              (Number.isFinite(explicitCost) && explicitCost > 0
-                ? explicitCost
-                : mult * 2)
-            );
-          }, 0)
-        : 0;
-      const snapBaseCost = Math.max(
-        Number(validSnap.totalCost) || 0,
-        sumLineBaseCost
-      );
-      if (
-        snapBaseCost > lockedBudget + 1e-6 ||
-        (typeof validSnap.quoteBudgetYuan === "number" &&
-          validSnap.quoteBudgetYuan > lockedBudget)
-      ) {
-        return {
-          ok: false,
-          code: "PLAN_EXCEEDS_LOCKED_BUDGET",
-          reason: `方案实投金额 ¥${snapBaseCost} 超出套用锁定预算 ¥${lockedBudget}，已拦截旧高额报价`,
-        };
-      }
+  if (validSnap) {
+    const rawParamB = Number(params?.budget);
+    const paramsCleanBudget =
+      Number.isFinite(rawParamB) && rawParamB > 0
+        ? Math.max(2, Math.min(20_000, Math.floor(rawParamB / 2) * 2))
+        : 100;
+    const hasExplicitLockedBudget =
+      planSpec.planBudgetYuan !== undefined ||
+      planSpec.appliedBudgetYuan !== undefined;
+    const rawLocked = hasExplicitLockedBudget
+      ? Number(planSpec.planBudgetYuan ?? planSpec.appliedBudgetYuan)
+      : paramsCleanBudget;
+    const explicitBudget =
+      Number.isFinite(rawLocked) && rawLocked > 0
+        ? Math.max(2, Math.min(20_000, Math.floor(rawLocked / 2) * 2))
+        : paramsCleanBudget;
+    const lockedBudget = allowReadOnlyMismatch
+      ? explicitBudget
+      : Math.min(explicitBudget, paramsCleanBudget);
+
+    const hasLines =
+      Array.isArray(validSnap.lines) && validSnap.lines.length > 0;
+    const sumLineBaseCost = hasLines
+      ? validSnap.lines.reduce((sum, ln) => {
+          const mult = Math.max(
+            1,
+            Math.min(999, Math.round(Number(ln?.multiple) || 1))
+          );
+          return sum + mult * 2;
+        }, 0)
+      : 0;
+    const snapBaseCost = hasLines
+      ? sumLineBaseCost
+      : Number(validSnap.totalCost) || 0;
+    if (
+      snapBaseCost > lockedBudget + 1e-6 ||
+      (hasExplicitLockedBudget &&
+        typeof validSnap.quoteBudgetYuan === "number" &&
+        validSnap.quoteBudgetYuan > lockedBudget)
+    ) {
+      return {
+        ok: false,
+        code: "PLAN_EXCEEDS_LOCKED_BUDGET",
+        reason: `方案实投金额 ¥${snapBaseCost} 超出套用锁定预算 ¥${lockedBudget}，已拦截旧高额报价`,
+      };
     }
   }
   return { ok: true };

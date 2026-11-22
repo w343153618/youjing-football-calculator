@@ -19,7 +19,9 @@ import type {
 import { BridgeCandidatesCard } from "./MatchRadarCabin.tsx";
 import {
   KEYPAD_MULTIPLIER_PRESETS,
+  buildDockBridgeStripItemSpec,
   buildSyntheticModePillSpecs,
+  formatBetBarPayoutSummary,
   resolveCompactAuditBarPrimaryAction,
   type AppTab,
   type BarPopoverKind,
@@ -554,6 +556,13 @@ export function PersistentBetBar({
     }
   };
 
+  const [confirmingCompactPartial, setConfirmingCompactPartial] =
+    useState(false);
+  const [confirmingCompactBridge, setConfirmingCompactBridge] = useState(false);
+  const [confirmingDockBridgeKey, setConfirmingDockBridgeKey] = useState<
+    string | null
+  >(null);
+
   useEffect(() => {
     setBarPopover(null);
   }, [tab, variant]);
@@ -568,6 +577,19 @@ export function PersistentBetBar({
     canToggleBanker,
     activeBankerSet,
   } = playabilityGates;
+
+  useEffect(() => {
+    setConfirmingCompactPartial(false);
+    setConfirmingCompactBridge(false);
+    setConfirmingDockBridgeKey(null);
+  }, [
+    picks,
+    multiple,
+    syntheticSingleMode,
+    partialCoveragePreview,
+    tab,
+    variant,
+  ]);
 
   const isDesktop = variant === "desktop";
   const hideMobileBetBar = tab === "archetypes" || tab === "ledger";
@@ -1003,22 +1025,54 @@ export function PersistentBetBar({
                 🌉 过桥配菜搭子精选：
               </span>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {bridgeCandidates.map((cand) => (
-                  <button
-                    key={`dk-br-${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
-                    type="button"
-                    data-spring="0.88"
-                    className="key mini dark num"
-                    onClick={(e) =>
-                      onApplyBridgeCandidate(cand, e.currentTarget)
+                {bridgeCandidates.map((cand) => {
+                  const spec = buildDockBridgeStripItemSpec(
+                    cand,
+                    betCtrl.previewBridgeCandidate(cand),
+                    {
+                      variant: "desktop",
+                      confirmingKey: confirmingDockBridgeKey,
                     }
-                  >
-                    {cand.kind === "lowest-vig" ? "🛡️最低抽水" : "⏰时间差锁利"}{" "}
-                    · {cand.matchNumStr.slice(-3)}
-                    {cand.home}[{cand.optionLabel}@{cand.odds.toFixed(2)}]
-                    一键搭上
-                  </button>
-                ))}
+                  );
+                  return spec.isConfirming ? (
+                    <div
+                      key={`dk-br-${spec.candKey}`}
+                      style={{ display: "inline-flex", gap: 4 }}
+                    >
+                      <button
+                        type="button"
+                        data-spring="0.88"
+                        className="key mini dark num"
+                        onClick={(e) => {
+                          setConfirmingDockBridgeKey(null);
+                          onApplyBridgeCandidate(cand, e.currentTarget);
+                        }}
+                      >
+                        {spec.confirmLabel}
+                      </button>
+                      <button
+                        type="button"
+                        className="key mini"
+                        onClick={() => setConfirmingDockBridgeKey(null)}
+                      >
+                        {spec.cancelLabel}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      key={`dk-br-${spec.candKey}`}
+                      type="button"
+                      data-spring="0.88"
+                      className="key mini dark num"
+                      onClick={() => {
+                        setConfirmingDockBridgeKey(spec.candKey);
+                        haptic(6);
+                      }}
+                    >
+                      {spec.step1Label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1163,14 +1217,7 @@ export function PersistentBetBar({
                           : undefined,
                   }}
                 >
-                  {effectiveReport.matchCount === 0
-                    ? "在左栏【赛事雷达】点选赔率，随时调整过关方式与倍数"
-                    : !effectiveReport.canCheckout
-                      ? effectiveReport.ruleBlockReason ||
-                        "未开单关 · 还差 1 场凑 2串1"
-                      : effectiveReport.underwaterCount > 0
-                        ? `保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · ⚠️ ${effectiveReport.underwaterCount}组局部回血 · 净赚率 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`
-                        : `真实保底 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · 严格净赚 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`}
+                  {formatBetBarPayoutSummary(effectiveReport, "desktop")}
                 </small>
               </div>
             </div>
@@ -1193,10 +1240,18 @@ export function PersistentBetBar({
     );
   }
 
+  const primaryBridgePreview = bridgeCandidates[0]
+    ? betCtrl.previewBridgeCandidate(bridgeCandidates[0])
+    : null;
   const compactPrimaryAction = resolveCompactAuditBarPrimaryAction(
     effectiveReport,
-    { isSyntheticPlayable, showBridgeFinder },
-    bridgeCandidates
+    { isSyntheticPlayable, showBridgeFinder, partialCoveragePreview },
+    bridgeCandidates,
+    {
+      confirmingPartial: confirmingCompactPartial,
+      bridgePreview: primaryBridgePreview,
+      confirmingBridge: confirmingCompactBridge,
+    }
   );
 
   return (
@@ -1279,6 +1334,21 @@ export function PersistentBetBar({
             </b>
           </div>
 
+          {(confirmingCompactPartial || confirmingCompactBridge) &&
+          compactPrimaryAction.disclosureText ? (
+            <button
+              type="button"
+              className="m-bet-pill warn"
+              style={{ flexShrink: 0 }}
+              onClick={() => {
+                setConfirmingCompactPartial(false);
+                setConfirmingCompactBridge(false);
+              }}
+            >
+              {compactPrimaryAction.disclosureText} · 取消
+            </button>
+          ) : null}
+
           <button
             type="button"
             className="m-bet-go"
@@ -1287,17 +1357,35 @@ export function PersistentBetBar({
               setBarPopover(null);
               if (compactPrimaryAction.kind === "poster") {
                 onOpenPoster();
+              } else if (compactPrimaryAction.kind === "partial-preview") {
+                setConfirmingCompactPartial(true);
+                haptic(8);
+                if (compactPrimaryAction.disclosureText) {
+                  notifyToast(
+                    `⚠️ 部分覆盖预览（${compactPrimaryAction.disclosureText}），请核对后再点确认挂载`
+                  );
+                }
+              } else if (compactPrimaryAction.kind === "partial-confirm") {
+                setConfirmingCompactPartial(false);
+                onSwitchSyntheticMode("partial-cover");
               } else if (compactPrimaryAction.kind === "synthetic") {
-                onSwitchSyntheticMode(
-                  partialCoveragePreview?.requiresExplicitConfirm
-                    ? "partial-cover"
-                    : "full-3way"
-                );
+                onSwitchSyntheticMode("full-3way");
+              } else if (compactPrimaryAction.kind === "bridge-preview") {
+                setConfirmingCompactBridge(true);
+                haptic(8);
+                if (compactPrimaryAction.disclosureText) {
+                  notifyToast(
+                    `🌉 过桥2串1预览（${compactPrimaryAction.disclosureText}），请核对后再点确认`
+                  );
+                }
               } else if (
-                compactPrimaryAction.kind === "bridge" &&
+                compactPrimaryAction.kind === "bridge-confirm" &&
                 bridgeCandidates[0]
               ) {
+                setConfirmingCompactBridge(false);
                 onApplyBridgeCandidate(bridgeCandidates[0]);
+              } else if (compactPrimaryAction.kind === "bridge") {
+                setBarPopover("selected");
               } else {
                 onSwitchTab("match");
               }
@@ -1334,20 +1422,55 @@ export function PersistentBetBar({
                 borderBottom: "0.5px solid rgba(255,255,255,0.12)",
               }}
             >
-              {bridgeCandidates.map((cand) => (
-                <button
-                  key={`mb-br-${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
-                  type="button"
-                  className="m-bet-pill hi"
-                  style={{ flexShrink: 0 }}
-                  onClick={(e) => onApplyBridgeCandidate(cand, e.currentTarget)}
-                >
-                  {cand.kind === "lowest-vig" ? "🛡️低抽水" : "⏰时间差"}·
-                  {cand.matchNumStr.slice(-3)}
-                  {cand.home}[{cand.optionLabel}@{cand.odds.toFixed(2)}]
-                  一键搭上
-                </button>
-              ))}
+              {bridgeCandidates.map((cand) => {
+                const spec = buildDockBridgeStripItemSpec(
+                  cand,
+                  betCtrl.previewBridgeCandidate(cand),
+                  {
+                    variant: "mobile",
+                    confirmingKey: confirmingDockBridgeKey,
+                  }
+                );
+                return spec.isConfirming ? (
+                  <div
+                    key={`mb-br-${spec.candKey}`}
+                    style={{ display: "inline-flex", gap: 4, flexShrink: 0 }}
+                  >
+                    <button
+                      type="button"
+                      className="m-bet-pill hi"
+                      style={{ flexShrink: 0 }}
+                      onClick={(e) => {
+                        setConfirmingDockBridgeKey(null);
+                        onApplyBridgeCandidate(cand, e.currentTarget);
+                      }}
+                    >
+                      {spec.confirmLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="m-bet-pill"
+                      style={{ flexShrink: 0 }}
+                      onClick={() => setConfirmingDockBridgeKey(null)}
+                    >
+                      {spec.cancelLabel}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    key={`mb-br-${spec.candKey}`}
+                    type="button"
+                    className="m-bet-pill hi"
+                    style={{ flexShrink: 0 }}
+                    onClick={() => {
+                      setConfirmingDockBridgeKey(spec.candKey);
+                      haptic(6);
+                    }}
+                  >
+                    {spec.step1Label}
+                  </button>
+                );
+              })}
             </div>
           )}
           <div className="m-betbar-r1">
@@ -1491,14 +1614,7 @@ export function PersistentBetBar({
                 ¥{effectiveReport.totalCost}
               </b>
               <small>
-                {effectiveReport.matchCount === 0
-                  ? "第一步：点选心仪球队赔率定方向"
-                  : !effectiveReport.canCheckout
-                    ? effectiveReport.ruleBlockReason ||
-                      "未开单关·还差1场凑2串1"
-                    : effectiveReport.underwaterCount > 0
-                      ? `⚠️${effectiveReport.underwaterCount}注局部回血 · 建议去②配单消坑`
-                      : `保底¥${effectiveReport.minPayout.toFixed(0)}~${effectiveReport.maxPayout.toFixed(0)} · 净赚${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(0)}%`}
+                {formatBetBarPayoutSummary(effectiveReport, "mobile")}
               </small>
             </div>
 

@@ -8,6 +8,7 @@ import {
   bankerRoundParlayUnitPayout,
   combinationsOfIndices,
   countPhysical99xSlips,
+  effectiveNonVoidLegCount,
   isPoolAllUpEligible,
   isPoolSingleEligible,
   statutorySingleBetCap,
@@ -679,7 +680,7 @@ function materializePlanLines(specs, mults) {
   return specs.map((sp, idx) => {
     const mult = clampedMults[idx];
     const rawUnit = bankerRoundParlayUnitPayout(sp.legs.map((g) => g.odds));
-    const cap = statutorySingleBetCap(sp.legs.length);
+    const cap = statutorySingleBetCap(effectiveNonVoidLegCount(sp.legs));
     const unitPayout = Math.min(cap, rawUnit);
     const cappedClipped = Math.max(
       0,
@@ -3064,6 +3065,10 @@ export function generateParetoPortfolio(
     if (slotAnchorReason) mergedReasons.push(slotAnchorReason);
     for (const r of reasons) mergedReasons.push(r);
 
+    const isUncondSlotFloor =
+      totalCost > 0 &&
+      Math.max(0, 1 - jointEval.anyWinProb) <= 1e-12 &&
+      jointEval.underwaterCount === 0;
     const slotOut = {
       key,
       available: true,
@@ -3074,7 +3079,9 @@ export function generateParetoPortfolio(
       title,
       tagline:
         tagline ||
-        `总投入 ¥${totalCost} · 保底返 ¥${jointEval.minPayout.toFixed(1)} ~ 最高 ¥${jointEval.maxPayout.toFixed(1)}`,
+        `总投入 ¥${totalCost} · ${
+          isUncondSlotFloor ? "保底返" : "命中返"
+        } ¥${jointEval.minPayout.toFixed(1)} ~ 最高 ¥${jointEval.maxPayout.toFixed(1)}`,
       totalCost,
       savedCash: effectiveSavedCash,
       minReturn: jointEval.minPayout,
@@ -3955,7 +3962,7 @@ export function generateParetoPortfolio(
 
       const outSpecSets = [];
       for (const topo of rawTopologies) {
-        const isFullSingleBlock =
+        const isSingleMParlayBlock =
           topo.blocks.length === 1 && topo.blocks[0].length === M;
         const blockSpecLists = [];
         let validTopo = true;
@@ -3993,7 +4000,7 @@ export function generateParetoPortfolio(
                 }
               }
               tuples = next;
-              const tupleLimit = isFullSingleBlock ? 8192 : 64;
+              const tupleLimit = isSingleMParlayBlock ? 8192 : 64;
               if (tuples.length > tupleLimit) {
                 tuples = [];
                 break;
@@ -4006,7 +4013,7 @@ export function generateParetoPortfolio(
             for (let t = 0; t < tuples.length; t++) {
               blockSpecLists.push({
                 id: `anc-blk-${topo.sig}-${bIdx + 1}-${t + 1}`,
-                roleLabel: isFullSingleBlock
+                roleLabel: isSingleMParlayBlock
                   ? t === 0
                     ? "雷达主选铁干"
                     : `同向复式支#${t}`
@@ -4020,11 +4027,11 @@ export function generateParetoPortfolio(
           outSpecSets.push({
             specs: blockSpecLists,
             structureBadge: topo.structureBadge,
-            isFullSingleBlock,
+            isSingleMParlayBlock,
             hasSyntheticShield: false,
           });
         }
-        if (isFullSingleBlock && addedMainShield) {
+        if (isSingleMParlayBlock && addedMainShield) {
           let shTuples = [[]];
           for (let i = 0; i < M; i++) {
             const opts = shieldedAllUpOpts[i];
@@ -4055,7 +4062,7 @@ export function generateParetoPortfolio(
                 legs,
               })),
               structureBadge: null,
-              isFullSingleBlock: true,
+              isSingleMParlayBlock: true,
               hasSyntheticShield: true,
             });
           }
@@ -4085,15 +4092,17 @@ export function generateParetoPortfolio(
     const kpLines = solveExactKnapsackDutching(specs, budgetLimit, 64);
     if (kpLines.length === specs.length) return kpLines;
 
-    const singleCap = statutorySingleBetCap(1);
-    const rawUnits = specs.map((s) =>
-      bankerRoundParlayUnitPayout(s.legs.map((g) => g.odds))
+    const specCaps = specs.map((sp) =>
+      statutorySingleBetCap(effectiveNonVoidLegCount(sp.legs))
     );
-    const cappedUnits = rawUnits.map((u) => Math.min(singleCap, u));
-    const dutchItems = specs.map((s, idx) => ({
+    const rawUnits = specs.map((sp) =>
+      bankerRoundParlayUnitPayout(sp.legs.map((g) => g.odds))
+    );
+    const cappedUnits = rawUnits.map((u, idx) => Math.min(specCaps[idx], u));
+    const dutchItems = specs.map((sp, idx) => ({
       unitPayout: cappedUnits[idx],
-      prob: s.legs.reduce((a, g) => a * g.fairProb, 1),
-      isCapClipped: rawUnits[idx] > singleCap,
+      prob: sp.legs.reduce((a, g) => a * g.fairProb, 1),
+      isCapClipped: rawUnits[idx] > specCaps[idx],
     }));
     for (const strict of [true, false]) {
       for (let N = maxNotes; N >= specs.length; N--) {
@@ -4602,7 +4611,7 @@ export function generateParetoPortfolio(
     const slot1Cands = [];
     for (const ss of specSets) {
       let candLinesList = [];
-      if (ss.isFullSingleBlock) {
+      if (ss.isSingleMParlayBlock) {
         const kpLines = solveExactKnapsackDutching(
           ss.specs,
           cleanBudget,
@@ -4640,7 +4649,7 @@ export function generateParetoPortfolio(
       for (const lines of candLinesList) {
         if (!anchoredBlockHelper.coversAllMatchesAndUserOptions(lines))
           continue;
-        const obj = evalLines4DObj(lines, ss.isFullSingleBlock);
+        const obj = evalLines4DObj(lines, ss.isSingleMParlayBlock);
         if (obj.coveredFloorRatio < -1e-9) continue;
         slot1Cands.push({
           lines,
@@ -5282,7 +5291,7 @@ export function generateParetoPortfolio(
     if (anchoredBlockHelper) {
       const specSets = anchoredBlockHelper.buildBlockPartitionSpecSets();
       for (const ss of specSets) {
-        if (ss.isFullSingleBlock) continue;
+        if (ss.isSingleMParlayBlock) continue;
         const blkLines = anchoredBlockHelper.solveZeroUnderwaterBlockSpecs(
           ss.specs,
           cleanBudget,
@@ -5672,14 +5681,31 @@ export function generateParetoPortfolio(
       }
     }
   }
+  const s2ObjEvRate = Number(
+    slot2Plan.objectiveEVRate ?? slot2Plan.expectedValueRate ?? 0
+  );
+  const s2ExpectedNetVsCash = slot2Plan.available
+    ? Number((slot2Plan.totalCost * s2ObjEvRate).toFixed(2))
+    : 0;
+  const s2ExpectedLossVsCash = slot2Plan.available
+    ? Number((slot2Plan.totalCost * Math.max(0, -s2ObjEvRate)).toFixed(2))
+    : 0;
+  slot2Plan.expectedLossVsCashYuan = s2ExpectedLossVsCash;
+  slot2Plan.expectedNetVsCashYuan = s2ExpectedNetVsCash;
+  slot2Plan.allowSaveCashEnabled = Boolean(allowSaveCash);
+
   if (slot2Plan.available) {
     if (slot2StructureBadge) {
       slot2Plan.structureBadge = slot2StructureBadge;
     }
     if (allowSaveCash) {
-      slot2Plan.tagline = `实投 ¥${slot2Plan.totalCost} · 留存 ¥${slot2Plan.savedCash} · ${slot2Plan.tagline}`;
+      const vsCashText =
+        s2ExpectedNetVsCash > 1e-6
+          ? `期望净赚 +¥${s2ExpectedNetVsCash.toFixed(2)}`
+          : `相对留现期望净损 ¥${s2ExpectedLossVsCash.toFixed(2)}`;
+      slot2Plan.tagline = `实投 ¥${slot2Plan.totalCost} · 留存 ¥${slot2Plan.savedCash} · ${vsCashText} · ${slot2Plan.tagline}`;
       slot2Plan.reasons.push(
-        `已开启允许留现省钱：经对数财富效用含留存现金比选，实投 ¥${slot2Plan.totalCost} · 留存 ¥${slot2Plan.savedCash}`
+        `已开启允许留现省钱：经对数财富效用含留存现金比选，实投 ¥${slot2Plan.totalCost} · 留存 ¥${slot2Plan.savedCash} · ${vsCashText}`
       );
     }
   }
@@ -7159,7 +7185,10 @@ export function generateParetoPortfolio(
           label: `空仓护本 · 保留 ¥${cleanBudget}`,
           detail: `严守正期望与轻仓纪律，全额保留 ¥${cleanBudget} 现金储备`,
         });
-        plan.remediationActions = actions;
+        plan.remediationActions = actions.map((act, idx) => ({
+          id: act.id || `${plan.key}-${act.kind}-${idx + 1}`,
+          ...act,
+        }));
         continue;
       }
 
@@ -7266,7 +7295,10 @@ export function generateParetoPortfolio(
             "将高抽水低命中子玩法切回同场胜平负/让球主盘正路，显著降低抽水与整单归零率",
         });
       }
-      plan.remediationActions = actions;
+      plan.remediationActions = actions.map((act, idx) => ({
+        id: act.id || `${plan.key}-${act.kind}-${idx + 1}`,
+        ...act,
+      }));
     }
   }
 

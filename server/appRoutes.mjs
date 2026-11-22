@@ -1,4 +1,7 @@
-import { evaluateQuantWorkspace } from "./quantEngine.mjs";
+import {
+  evaluateQuantWorkspace,
+  sanitizeAndDeduplicatePicks,
+} from "./quantEngine.mjs";
 import {
   FALLBACK_MATCHES,
   fetchOfficialMatchResultsServer,
@@ -715,11 +718,19 @@ export function createAppRoutes(opts = {}) {
 
           const sourceMode =
             data?.sourceMode === "custom" ? "custom" : "picked";
+          const sanitizedManualPicks = sanitizeAndDeduplicatePicks(
+            data?.picks,
+            512
+          );
+          const sanitizedAuditedLegs = sanitizeAndDeduplicatePicks(
+            data?.auditedLegs,
+            512
+          );
           const rawIds =
             Array.isArray(data?.matchIds) && data.matchIds.length > 0
               ? data.matchIds
-              : sourceMode === "picked" && Array.isArray(data?.auditedLegs)
-                ? data.auditedLegs.map((lg) => lg?.matchId).filter(Boolean)
+              : sourceMode === "picked" && sanitizedAuditedLegs.length > 0
+                ? sanitizedAuditedLegs.map((lg) => lg.matchId)
                 : [];
           const idSet = new Set(rawIds.filter(Boolean).map((x) => String(x)));
           const targetMatches = sessionMatches
@@ -732,23 +743,31 @@ export function createAppRoutes(opts = {}) {
             });
             return { __handled: true };
           }
-          const rawManualPicks = Array.isArray(data?.picks) ? data.picks : [];
-          const rawAuditedLegs = Array.isArray(data?.auditedLegs)
-            ? data.auditedLegs
-            : [];
           const resolvedPoolTargetIds =
             Array.isArray(data?.targetIds) && data.targetIds.length > 0
               ? data.targetIds
               : targetMatches.map((m) => m.id);
+          const effectivePicksForDiag =
+            sanitizedAuditedLegs.length > 0
+              ? sanitizedAuditedLegs
+              : sanitizedManualPicks;
           const ws =
             sourceMode === "picked"
               ? evaluateQuantWorkspace(
                   {
-                    picks: rawManualPicks,
+                    picks: data?.planSpec
+                      ? sanitizedManualPicks
+                      : effectivePicksForDiag,
                     multiple: data?.multiple ?? 5,
                     passSpec: data?.passSpec ?? { mode: "auto" },
                     syntheticSingleMode: data?.syntheticSingleMode,
-                    planSpec: data?.planSpec ?? null,
+                    planSpec:
+                      data?.planSpec?.kind === "archetype"
+                        ? {
+                            ...data.planSpec,
+                            allowBudgetMismatchReadOnly: true,
+                          }
+                        : (data?.planSpec ?? null),
                     subjectiveDeltaPct: Number(data?.subjectiveDeltaPct) || 0,
                     simVoidFirstMatch: Boolean(data?.simVoidFirstMatch),
                     targetIds: resolvedPoolTargetIds,
@@ -768,7 +787,7 @@ export function createAppRoutes(opts = {}) {
           const comboCtx = buildComboDiagnosisContext({
             sourceMode,
             targetMatches,
-            picks: rawManualPicks.length > 0 ? rawManualPicks : rawAuditedLegs,
+            picks: effectivePicksForDiag,
             effectiveReport: ws?.effectiveReport ?? null,
             appliedPlan: ws?.appliedPlan ?? null,
             planSpec: data?.planSpec ?? null,

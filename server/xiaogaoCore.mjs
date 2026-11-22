@@ -1,3 +1,5 @@
+import { sanitizeAndDeduplicatePicks } from "./quant/reportAndSettlement.mjs";
+
 const OPENCODE_BASE_URL =
   "https://opencode.ai/inference/go/openai/v1/chat/completions";
 export const PRIMARY_MODEL = "deepseek-v4.1-flash";
@@ -198,7 +200,7 @@ export function buildComboDiagnosisContext({
   insights = null,
   userNote,
 }) {
-  const safePicks = Array.isArray(picks) ? picks : [];
+  const safePicks = sanitizeAndDeduplicatePicks(picks, 512);
   const planLegsByMatch = new Map();
   if (sourceMode === "picked" && Array.isArray(appliedPlan?.lines)) {
     for (const ln of appliedPlan.lines) {
@@ -308,8 +310,11 @@ export function buildComboDiagnosisContext({
     const perMatchSingle = targetMatches.map((m) => {
       const mp = safePicks.filter((p) => p && p.matchId === m.id);
       const anyNonSingle = mp.some(
-        (p) => m.pools?.[p.poolCode]?.single === false
+        (p) =>
+          m.pools?.[p.poolCode]?.single === false ||
+          m.pools?.[p.poolCode]?.canSingle === false
       );
+      const hasBridgeMateSource = mp.some((p) => p.legSource === "bridge-mate");
       const maxProb = mp.reduce(
         (mx, p) =>
           Math.max(
@@ -322,16 +327,24 @@ export function buildComboDiagnosisContext({
           ),
         0
       );
-      return { m, anyNonSingle, maxProb, count: mp.length };
+      return {
+        m,
+        anyNonSingle,
+        hasBridgeMateSource,
+        maxProb,
+        count: mp.length,
+      };
     });
+    const explicitMate = perMatchSingle.find((x) => x.hasBridgeMateSource);
     if (
       perMatchSingle.some((x) => x.anyNonSingle && x.count > 0) &&
-      (perMatchSingle.some((x) => x.maxProb >= 0.48) ||
+      (explicitMate ||
+        perMatchSingle.some((x) => x.maxProb >= 0.48) ||
         Boolean(insights?.hedge?.available))
     ) {
-      const steady = [...perMatchSingle].sort(
-        (a, b) => b.maxProb - a.maxProb
-      )[0];
+      const steady =
+        explicitMate ||
+        [...perMatchSingle].sort((a, b) => b.maxProb - a.maxProb)[0];
       return `已构建过桥配菜搭子 2串1 结构（借低耗稳胆/时间差搭子 ${steady.m.matchNumStr || steady.m.home} 协助非单关主看场合法出票）`;
     }
     return null;
@@ -485,9 +498,9 @@ export function buildComboDiagnosisContext({
       : `自由勾选 ${matchesPayload.length} 场比赛横向联合会诊`;
 
   const orderSummary = hasValidReport
-    ? `${effectiveReport.modeLabel} · 总投入¥${effectiveReport.totalCost} · 保底¥${Number(
-        effectiveReport.minPayout || 0
-      ).toFixed(
+    ? `${effectiveReport.modeLabel} · 总投入¥${effectiveReport.totalCost} · ${
+        effectiveReport.isUnconditionalFloorGuaranteed ? "保底" : "命中最低"
+      }¥${Number(effectiveReport.minPayout || 0).toFixed(
         1
       )}~最高¥${Number(effectiveReport.maxPayout || 0).toFixed(1)} · 综合暗扣抽水${
         effectiveReport.avgVigLossPer100
@@ -504,11 +517,22 @@ export function buildComboDiagnosisContext({
       } · ${zeroUw ? "0 假中奖倒贴" : `${uwCount} 组假中奖倒贴`}`
     : `共勾选 ${matchesPayload.length} 场比赛进行多场联合排雷把脉`;
 
+  const auditedLegSources = safePicks
+    .filter((p) => typeof p.legSource === "string")
+    .map((p) => ({
+      matchId: p.matchId,
+      poolCode: p.poolCode,
+      optionKey: p.optionKey,
+      legSource: p.legSource,
+    }));
+
   return {
     modeDesc,
     orderSummary,
     actuaryContext,
     matches: matchesPayload,
+    sanitizedPickCount: safePicks.length,
+    auditedLegSources,
     userNote,
   };
 }

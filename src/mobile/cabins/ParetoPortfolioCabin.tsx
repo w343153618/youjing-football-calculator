@@ -25,6 +25,7 @@ import type {
 import {
   PORTFOLIO_BUDGET_PRESETS,
   PORTFOLIO_CUSTOM_BUDGET_LIMITS,
+  buildAlphaRadarEmptyStateViewModel,
   buildPortfolioKpiTiles,
   buildPortfolioSlotOptions,
   formatPortfolioProbPct,
@@ -252,7 +253,7 @@ export function ParetoPortfolioCabin({
 
   if (!currentArch) return null;
   const cappedRadarCount = cappedRadarIds.length;
-  const kpi = buildPortfolioKpiTiles(currentArch);
+  const kpi = buildPortfolioKpiTiles(currentArch, { allowSaveCash });
 
   return (
     <>
@@ -490,58 +491,87 @@ export function ParetoPortfolioCabin({
       {currentArch.available === false ? (
         currentArch.key === "alpha-radar" ||
         currentArch.key === "value-assassin" ? (
-          <>
-            <div className="card enter">
-              <div className="co-head">
-                <div>
-                  <div className="h2">
-                    {currentArch.badge} · {currentArch.title}
+          (() => {
+            const alphaEmptyVm = buildAlphaRadarEmptyStateViewModel(
+              currentArch,
+              budget
+            );
+            return (
+              <>
+                <div className="card enter">
+                  <div className="co-head">
+                    <div>
+                      <div className="h2">
+                        {currentArch.badge} · {currentArch.title}
+                      </div>
+                      <div className="small">{alphaEmptyVm.noteLead}</div>
+                    </div>
+                    <span className="chip num" style={{ flexShrink: 0 }}>
+                      ¥0<i>省¥{currentArch.savedCash || budget}</i>
+                    </span>
                   </div>
-                  <div className="small">
-                    {currentArch.emptyReason ||
-                      `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash} 或采用前 3 档主方案`}
+                  <div className="note-box" style={{ marginTop: 8 }}>
+                    <strong>{alphaEmptyVm.noteTitle}</strong>
+                    <div>{alphaEmptyVm.noteLead}</div>
+                    {currentArch.reasons
+                      .filter((r) => r !== currentArch.emptyReason)
+                      .map((r, idx) => (
+                        <div key={idx}>· {r}</div>
+                      ))}
+                    {alphaEmptyVm.remediationActions.map((act) => (
+                      <div key={`${act.id}-detail`} style={{ marginTop: 4 }}>
+                        👉 <strong>{act.label}</strong>：{act.detail}
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <span className="chip num" style={{ flexShrink: 0 }}>
-                  ¥0<i>省¥{currentArch.savedCash}</i>
-                </span>
-              </div>
-              <div className="note-box" style={{ marginTop: 8 }}>
-                <strong>🛡️ 宁缺毋滥 · 诚实空仓省钱纪律：</strong>
-                <div>
-                  {currentArch.emptyReason ||
-                    `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${currentArch.savedCash}，绝不硬凑高抽水废单。`}
-                </div>
-                {currentArch.reasons
-                  .filter((r) => r !== currentArch.emptyReason)
-                  .map((r, idx) => (
-                    <div key={idx}>· {r}</div>
-                  ))}
-              </div>
-            </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <button
-                type="button"
-                disabled
-                className="key full enter"
-                style={{ opacity: 0.55, cursor: "not-allowed" }}
-              >
-                当前无真错价洼地（建议空仓省下 ¥{currentArch.savedCash}）
-              </button>
-              <button
-                type="button"
-                data-spring="0.94"
-                className="key dark full enter"
-                onClick={() => {
-                  haptic(6);
-                  onChangeArchKey("max-profit-prob");
-                }}
-              >
-                👉 切往【① 稳健保本】主方案
-              </button>
-            </div>
-          </>
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 8 }}
+                >
+                  {alphaEmptyVm.hasRemediationActions ? (
+                    alphaEmptyVm.remediationActions.map((act, idx) => (
+                      <button
+                        key={act.id}
+                        type="button"
+                        data-spring="0.92"
+                        className={`key full num enter ${
+                          alphaEmptyVm.isNarrowBudgetAlphaGated && idx === 0
+                            ? "dark"
+                            : ""
+                        }`}
+                        onClick={() => onTriggerRemediationAction(act)}
+                      >
+                        {act.label}
+                      </button>
+                    ))
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      className="key full enter"
+                      style={{ opacity: 0.55, cursor: "not-allowed" }}
+                    >
+                      {alphaEmptyVm.disabledButtonText}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    data-spring="0.94"
+                    className={`key full enter ${
+                      alphaEmptyVm.isNarrowBudgetAlphaGated ? "" : "dark"
+                    }`}
+                    onClick={() => {
+                      haptic(6);
+                      onChangeArchKey("max-profit-prob");
+                    }}
+                  >
+                    👉 切往【① 稳健保本】主方案
+                  </button>
+                </div>
+              </>
+            );
+          })()
         ) : (
           <div className="card enter">
             <div className="co-head">
@@ -663,9 +693,15 @@ export function ParetoPortfolioCabin({
                   }}
                 >
                   <span className="chip num">
-                    实投 ¥{currentArch.totalCost}
-                    {currentArch.savedCash > 0 && (
-                      <i>留存¥{currentArch.savedCash}</i>
+                    {kpi.saveCashSummary ? (
+                      kpi.saveCashSummary
+                    ) : (
+                      <>
+                        实投 ¥{currentArch.totalCost}
+                        {currentArch.savedCash > 0 && (
+                          <i>留存¥{currentArch.savedCash}</i>
+                        )}
+                      </>
                     )}
                   </span>
                   {currentArch.structureBadge && (

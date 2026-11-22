@@ -4,6 +4,7 @@ import {
   type AppliedPlanSpec,
   type ArchetypePlan,
   type BridgeMatchCandidate,
+  type BridgeMatchPreview,
   type ComboRow,
   type LedgerSettlementDetail,
   type MatchItem,
@@ -13,6 +14,7 @@ import {
   type PlanTicketLine,
   type PoolCode,
   type PortfolioKey,
+  type PortfolioRemediationAction,
   type ProOrderInsights,
   type SelectedPick,
   type StaggeredHedgePlan,
@@ -267,8 +269,12 @@ export function formatPortfolioProbPct(prob: number): string {
   return `${pct.toFixed(1)}%`;
 }
 
-export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
+export function buildPortfolioKpiTiles(
+  plan: ArchetypePlan,
+  options?: { allowSaveCash?: boolean }
+): {
   groupTicket: PortfolioGroupTicketMetric;
+  saveCashSummary: string | null;
   tile1: KpiTileModel;
   tile2: KpiTileModel;
   tile3: KpiTileModel;
@@ -314,7 +320,8 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
   const isSingleMatchCushion =
     plan.missOneReturn !== null && distinctMatchCount === 1;
 
-  const archObjEvPct = (plan.objectiveEVRate ?? plan.expectedValueRate) * 100;
+  const archObjEvRate = plan.objectiveEVRate ?? plan.expectedValueRate ?? 0;
+  const archObjEvPct = archObjEvRate * 100;
   const archSubjEvPct =
     plan.subjectiveProjectedEVRate != null
       ? plan.subjectiveProjectedEVRate * 100
@@ -322,8 +329,31 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
   const payoutReturnPct = Math.max(0, 100 - plan.vigPct).toFixed(1);
   const groupTicket = formatPortfolioGroupAndTicketMetric(plan);
 
+  const showSaveCashTriad =
+    Boolean(options?.allowSaveCash || plan.allowSaveCashEnabled) &&
+    (plan.key === "max-ev-utility" || plan.key === "spear-shield");
+  const netVsCash =
+    plan.expectedNetVsCashYuan ??
+    Number((plan.totalCost * archObjEvRate).toFixed(2));
+  const lossVsCash =
+    plan.expectedLossVsCashYuan ??
+    Number((plan.totalCost * Math.max(0, -archObjEvRate)).toFixed(2));
+  const vsCashPhrase =
+    netVsCash > 1e-6
+      ? `期望净赚 +¥${netVsCash.toFixed(2)}`
+      : `相对留现期望净损 ¥${lossVsCash.toFixed(2)}`;
+  const saveCashSummary = showSaveCashTriad
+    ? `实投 ¥${plan.totalCost} · 留存 ¥${plan.savedCash} · ${vsCashPhrase}`
+    : null;
+
+  const baseTile3Subtitle =
+    archSubjEvPct !== null
+      ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
+      : `票面返还 ${payoutReturnPct}%`;
+
   return {
     groupTicket,
+    saveCashSummary,
     tile1: {
       label: "严格净赚率",
       value: formatPortfolioProbPct(objStrictProb),
@@ -346,16 +376,54 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
     tile3: {
       label: "客观数学期望与抽水",
       value: `${archObjEvPct >= 0 ? "+" : ""}${archObjEvPct.toFixed(1)}%`,
-      subtitle:
-        archSubjEvPct !== null
-          ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
-          : `票面返还 ${payoutReturnPct}%`,
+      subtitle: saveCashSummary
+        ? `${saveCashSummary} · ${baseTile3Subtitle}`
+        : baseTile3Subtitle,
     },
     tile4: {
       label: groupTicket.tileLabel,
       value: groupTicket.summary,
       subtitle: groupTicket.subtitle,
     },
+  };
+}
+
+export interface AlphaRadarEmptyStateViewModel {
+  hasRemediationActions: boolean;
+  isNarrowBudgetAlphaGated: boolean;
+  noteTitle: string;
+  noteLead: string;
+  showNoAlphaDisabledButton: boolean;
+  disabledButtonText: string;
+  remediationActions: PortfolioRemediationAction[];
+}
+
+export function buildAlphaRadarEmptyStateViewModel(
+  plan: ArchetypePlan,
+  budget: number
+): AlphaRadarEmptyStateViewModel {
+  const remediationActions = Array.isArray(plan.remediationActions)
+    ? plan.remediationActions
+    : [];
+  const hasRemediationActions = remediationActions.length > 0;
+  const isNarrowBudgetAlphaGated = remediationActions.some(
+    (act) => act.kind === "min-feasible-budget"
+  );
+  const saved = plan.savedCash || budget;
+  return {
+    hasRemediationActions,
+    isNarrowBudgetAlphaGated,
+    noteTitle: isNarrowBudgetAlphaGated
+      ? "⚡ 检出真错价洼地 · 当前窄预算受 36% 轻仓整注护栏保护："
+      : "🛡️ 宁缺毋滥 · 诚实空仓省钱纪律：",
+    noteLead:
+      plan.emptyReason ||
+      (isNarrowBudgetAlphaGated
+        ? `当前预算 ¥${budget} 的 36% 轻仓上限不足 1 注（¥2），可一键切换至最低可行预算或保留本金空仓。`
+        : `当前盘面定价严密，无跨盘错价洼地 · 建议空仓省下 ¥${saved}，绝不硬凑高抽水废单。`),
+    showNoAlphaDisabledButton: !hasRemediationActions,
+    disabledButtonText: `当前无真错价洼地（建议空仓省下 ¥${saved}）`,
+    remediationActions,
   };
 }
 
@@ -1026,21 +1094,176 @@ export function buildSyntheticModePillSpecs(
   return list;
 }
 
+export function formatBetBarPayoutSummary(
+  effectiveReport: Pick<
+    TruthReport,
+    | "matchCount"
+    | "canCheckout"
+    | "ruleBlockReason"
+    | "underwaterCount"
+    | "minPayout"
+    | "maxPayout"
+    | "objectiveStrictNetGainProb"
+    | "isUnconditionalFloorGuaranteed"
+  >,
+  variant: "desktop" | "mobile"
+): string {
+  const isUncond = Boolean(effectiveReport.isUnconditionalFloorGuaranteed);
+  if (variant === "desktop") {
+    if (effectiveReport.matchCount === 0) {
+      return "在左栏【赛事雷达】点选赔率，随时调整过关方式与倍数";
+    }
+    if (!effectiveReport.canCheckout) {
+      return effectiveReport.ruleBlockReason || "未开单关 · 还差 1 场凑 2串1";
+    }
+    if (effectiveReport.underwaterCount > 0) {
+      return `命中最低 ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · ⚠️ ${effectiveReport.underwaterCount}组局部回血 · 净赚率 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`;
+    }
+    const prefix = isUncond ? "真实保底" : "命中最低";
+    return `${prefix} ¥${effectiveReport.minPayout.toFixed(2)} ~ 最高 ¥${effectiveReport.maxPayout.toFixed(2)} · 严格净赚 ${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%`;
+  }
+
+  if (effectiveReport.matchCount === 0) {
+    return "第一步：点选心仪球队赔率定方向";
+  }
+  if (!effectiveReport.canCheckout) {
+    return effectiveReport.ruleBlockReason || "未开单关·还差1场凑2串1";
+  }
+  if (effectiveReport.underwaterCount > 0) {
+    return `⚠️${effectiveReport.underwaterCount}注局部回血 · 建议去②配单消坑`;
+  }
+  const mobilePrefix = isUncond ? "真实保底" : "命中最低";
+  return `${mobilePrefix}¥${effectiveReport.minPayout.toFixed(0)}~${effectiveReport.maxPayout.toFixed(0)} · 净赚${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(0)}%`;
+}
+
+export interface DockBridgeStripItemSpec {
+  candKey: string;
+  isConfirming: boolean;
+  step1Label: string;
+  confirmLabel: string;
+  cancelLabel: string;
+}
+
+export function buildDockBridgeStripItemSpec(
+  cand: BridgeMatchCandidate,
+  preview: BridgeMatchPreview | null,
+  opts: {
+    variant: "desktop" | "mobile";
+    confirmingKey: string | null;
+  }
+): DockBridgeStripItemSpec {
+  const candKey = `${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`;
+  const isConfirming = opts.confirmingKey === candKey;
+  const costSuffix = preview
+    ? opts.variant === "desktop"
+      ? ` · 共${preview.previewBetCount}注 ¥${preview.previewTotalCost}`
+      : `·共${preview.previewBetCount}注 ¥${preview.previewTotalCost}`
+    : opts.variant === "desktop"
+      ? " · 预览凑2串1"
+      : "·预览凑2串1";
+  const step1Label =
+    opts.variant === "desktop"
+      ? `${cand.kind === "lowest-vig" ? "🛡️最低抽水" : "⏰时间差锁利"} · ${cand.matchNumStr.slice(-3)}${cand.home}[${cand.optionLabel}@${cand.odds.toFixed(2)}]${costSuffix}`
+      : `${cand.kind === "lowest-vig" ? "🛡️低抽水" : "⏰时间差"}·${cand.matchNumStr.slice(-3)}${cand.home}[${cand.optionLabel}@${cand.odds.toFixed(2)}]${costSuffix}`;
+  const confirmLabel = preview
+    ? `确认加场 (共${preview.previewBetCount}注·¥${preview.previewTotalCost})`
+    : "确认加场";
+  return {
+    candKey,
+    isConfirming,
+    step1Label,
+    confirmLabel,
+    cancelLabel: "取消",
+  };
+}
+
 export function resolveCompactAuditBarPrimaryAction(
-  effectiveReport: Pick<TruthReport, "canCheckout">,
-  gates: { isSyntheticPlayable: boolean; showBridgeFinder: boolean },
-  bridgeCandidates: BridgeMatchCandidate[]
+  effectiveReport: Pick<TruthReport, "canCheckout"> &
+    Partial<
+      Pick<TruthReport, "partialCoveragePreview" | "isExactSyntheticEquivalent">
+    >,
+  gates: {
+    isSyntheticPlayable: boolean;
+    showBridgeFinder: boolean;
+    partialCoveragePreview?: PartialCoveragePreview | null;
+  },
+  bridgeCandidates: BridgeMatchCandidate[],
+  options?: {
+    confirmingPartial?: boolean;
+    bridgePreview?: BridgeMatchPreview | null;
+    confirmingBridge?: boolean;
+  }
 ): {
-  kind: "poster" | "synthetic" | "bridge" | "go-match";
+  kind:
+    | "poster"
+    | "synthetic"
+    | "partial-preview"
+    | "partial-confirm"
+    | "bridge"
+    | "bridge-preview"
+    | "bridge-confirm"
+    | "go-match";
   label: string;
+  disclosureText?: string;
 } {
   if (effectiveReport.canCheckout) {
     return { kind: "poster", label: "打票核对" };
   }
   if (gates.isSyntheticPlayable && !gates.showBridgeFinder) {
+    const preview =
+      gates.partialCoveragePreview ??
+      effectiveReport.partialCoveragePreview ??
+      null;
+    if (
+      preview &&
+      (preview.requiresExplicitConfirm ||
+        !preview.isExactEquivalent ||
+        effectiveReport.isExactSyntheticEquivalent === false)
+    ) {
+      const retPct = (preview.retainedDirectionRatio * 100).toFixed(1);
+      const missPct =
+        preview.blindSpotProb >= 0.01
+          ? (preview.blindSpotProb * 100).toFixed(1)
+          : (preview.blindSpotProb * 100).toFixed(2);
+      const disclosureText = preview.isExactEquivalent
+        ? `等价0%漏·实投¥${preview.previewCost}`
+        : `保${retPct}%·漏${missPct}%·¥${preview.previewCost}`;
+      if (options?.confirmingPartial) {
+        return {
+          kind: "partial-confirm",
+          label: preview.isExactEquivalent
+            ? `确认超额挂载 ¥${preview.previewCost}`
+            : `确认部分覆盖 ¥${preview.previewCost}`,
+          disclosureText,
+        };
+      }
+      return {
+        kind: "partial-preview",
+        label: preview.isExactEquivalent
+          ? `超额等价预览 ¥${preview.previewCost}`
+          : `部分覆盖预览 ¥${preview.previewCost}·漏${missPct}%`,
+        disclosureText,
+      };
+    }
     return { kind: "synthetic", label: "一键合成单关" };
   }
   if (gates.showBridgeFinder && bridgeCandidates[0]) {
+    const bp = options?.bridgePreview ?? null;
+    if (bp) {
+      const disclosureText = `${bp.matchNumStr.slice(-3)}${bp.optionLabel}@${bp.odds.toFixed(2)} · 共${bp.previewBetCount}注 ¥${bp.previewTotalCost}`;
+      if (options?.confirmingBridge) {
+        return {
+          kind: "bridge-confirm",
+          label: `确认凑2串1 ¥${bp.previewTotalCost}`,
+          disclosureText,
+        };
+      }
+      return {
+        kind: "bridge-preview",
+        label: `🌉凑2串1(${bp.previewBetCount}注·¥${bp.previewTotalCost})`,
+        disclosureText,
+      };
+    }
     return { kind: "bridge", label: "🌉一键凑2串1" };
   }
   return { kind: "go-match", label: "去凑场次" };

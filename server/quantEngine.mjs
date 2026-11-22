@@ -59,6 +59,7 @@ export {
   optimizeBonusPlan,
   parseSportteryRawJson,
   parseSportteryResultsJson,
+  sanitizeAndDeduplicatePicks,
   statutorySingleBetCap,
 };
 
@@ -253,6 +254,23 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     passSpec,
   });
   const currentQuoteInputSig = quoteSigMeta.inputSig;
+  const gateQuoteInputSig =
+    params?.quoteCheckSubjectiveDeltaPct === undefined &&
+    planSpec?.kind === "archetype" &&
+    planSpec.appliedSubjectiveDeltaPct !== undefined &&
+    Number(planSpec.appliedSubjectiveDeltaPct) !== Number(subjectiveDeltaPct)
+      ? buildPortfolioQuoteInputSignature({
+          picks: baselinePicks,
+          budget,
+          resolvedTargets,
+          anchorToRadarPicks,
+          stance,
+          subjectiveDeltaPct: planSpec.appliedSubjectiveDeltaPct,
+          allowSaveCash,
+          unlockFullAgg,
+          passSpec,
+        }).inputSig
+      : currentQuoteInputSig;
 
   const rawFivePlans = getCachedWorkspaceFivePlans(
     resolvedTargets,
@@ -325,7 +343,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       params,
       planSpec,
       validSnap,
-      currentQuoteInputSig,
+      currentQuoteInputSig: gateQuoteInputSig,
     });
     if (!quoteGate.ok) {
       quoteRejectedReason = quoteGate.reason;
@@ -471,9 +489,19 @@ export function evaluateQuantWorkspace(params, matchesInput) {
   const subjectiveEVPct =
     effectiveReport.totalCost > 0 ? effectiveReport.expectedValueRate * 100 : 0;
 
+  const auditedWarningLegs =
+    appliedPlan &&
+    Array.isArray(appliedPlan.lines) &&
+    appliedPlan.lines.length > 0
+      ? appliedPlan.lines.flatMap((ln) => ln?.legs || [])
+      : Array.isArray(effectiveReport?.tickets) &&
+          effectiveReport.tickets.length > 0
+        ? [...effectiveReport.tickets.flatMap((tk) => tk?.legs || []), ...picks]
+        : picks;
+
   const allWarnings = [
     ...effectiveReport.warnings,
-    ...buildXiaoGaoWarnings(picks, matches),
+    ...buildXiaoGaoWarnings(auditedWarningLegs, matches),
   ];
 
   return {

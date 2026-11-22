@@ -434,19 +434,28 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     const cleanWsParams = hasWorkspaceParams
       ? {
           ...workspaceParams,
+          enforceFreshQuoteSignature: true,
           simVoidFirstMatch: false,
           subjectiveDeltaPct: 0,
-          ...(workspaceParams.expectedQuoteInputSig !== undefined
+          ...(workspaceParams.expectedQuoteInputSig !== undefined ||
+          workspaceParams.planSpec?.kind === "archetype"
             ? {
                 quoteCheckSubjectiveDeltaPct:
-                  Number(workspaceParams.subjectiveDeltaPct) || 0,
+                  workspaceParams.planSpec?.kind === "archetype" &&
+                  workspaceParams.planSpec.appliedSubjectiveDeltaPct !==
+                    undefined
+                    ? Number(
+                        workspaceParams.planSpec.appliedSubjectiveDeltaPct
+                      ) || 0
+                    : Number(workspaceParams.subjectiveDeltaPct) || 0,
               }
             : {}),
         }
       : null;
     const hasCallerSandboxShift =
       Boolean(workspaceParams?.simVoidFirstMatch) ||
-      Number(workspaceParams?.subjectiveDeltaPct || 0) !== 0;
+      Number(workspaceParams?.subjectiveDeltaPct || 0) !== 0 ||
+      Boolean(workspaceParams?.planSpec?.allowBudgetMismatchReadOnly);
     const authList = Array.isArray(authoritativeMatches)
       ? authoritativeMatches
       : authoritativeMatches instanceof Map

@@ -1776,7 +1776,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
           consolidateTickets: true,
         },
         targetIds: ["s6-cap-1", "s6-cap-2"],
-        budget: 100,
+        budget: 2500,
         stance: "objective",
         unlockFullAgg: false,
       },

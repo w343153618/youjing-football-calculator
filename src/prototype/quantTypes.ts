@@ -268,6 +268,7 @@ export interface PlanTicketLine {
   multiple: number;
   cost: number;
   unitPayout: number;
+  cappedClipped?: number;
   returnPayout: number;
   netProfit: number;
   prob: number;
@@ -334,6 +335,9 @@ export interface ArchetypePlan {
   tagline: string;
   totalCost: number;
   savedCash: number;
+  expectedLossVsCashYuan?: number;
+  expectedNetVsCashYuan?: number;
+  allowSaveCashEnabled?: boolean;
   minReturn: number;
   maxReturn: number;
   winProb: number;
@@ -547,6 +551,8 @@ export type AppliedPlanSpec =
       planBudgetYuan?: number;
       quoteInputSig?: string;
       expectedQuoteInputSig?: string;
+      appliedSubjectiveDeltaPct?: number;
+      allowBudgetMismatchReadOnly?: boolean;
       appliedTicketSnapshot?: AppliedTicketSnapshot | null;
       scaleMultiple?: number;
       consolidateTickets?: boolean;
@@ -568,6 +574,7 @@ export interface QuantWorkspaceParams {
   allowSaveCash?: boolean;
   quoteInputSig?: string;
   expectedQuoteInputSig?: string;
+  enforceFreshQuoteSignature?: boolean;
   clientAlerts?: Record<string, NonNullable<MatchItem["aiAlert"]>>;
 }
 
