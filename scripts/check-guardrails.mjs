@@ -245,6 +245,56 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
     }
   }
 
+  // 6. Enforce Spec #5 (ADR-0016) slim-shell / thin-facade line-count ceilings
+  const lineCeilings = [
+    ["server/quantEngine.mjs", 600],
+    ["server/securityShield.mjs", 750],
+    ["src/mobile/SkinPhoneApp.tsx", 800],
+    ["src/manual/UserManualModal.tsx", 350],
+  ];
+  for (const [relPath, maxLines] of lineCeilings) {
+    const absPath = path.join(rootDir, relPath);
+    if (!fs.existsSync(absPath)) continue;
+    const lineCount = fs.readFileSync(absPath, "utf8").split("\n").length;
+    if (lineCount > maxLines) {
+      errors.push(
+        `[module-ceiling] ${relPath} grew to ${lineCount} lines (ceiling: ${maxLines} lines per ADR-0016)`
+      );
+    }
+  }
+
+  // 7. Enforce 100% zero transitive I/O (fs / http / fetch) inside server/quantEngine.mjs graph
+  const quantEntry = path.join(rootDir, "server", "quantEngine.mjs");
+  if (fs.existsSync(quantEntry)) {
+    const visited = new Set();
+    const queue = [quantEntry];
+    const relImportRe =
+      /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["'](\.[^"']+)["']|import\(\s*["'](\.[^"']+)["']\s*\)/g;
+    const forbiddenIoRe =
+      /\bnode:(?:fs|http|https|net)\b|\bfrom\s+["'](?:fs|fs\/promises|http|https)["']|\bfetch\s*\(/;
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      if (!cur || visited.has(cur) || !fs.existsSync(cur)) continue;
+      visited.add(cur);
+      const src = fs.readFileSync(cur, "utf8");
+      const relCur = path.relative(rootDir, cur);
+      if (forbiddenIoRe.test(src)) {
+        errors.push(
+          `[pure-quant-io] Forbidden I/O or network dependency inside pure quant graph: ${relCur}`
+        );
+      }
+      let m;
+      while ((m = relImportRe.exec(src)) !== null) {
+        const spec = m[1] || m[2];
+        if (!spec) continue;
+        const resolved = path.resolve(path.dirname(cur), spec);
+        if (fs.existsSync(resolved) && !visited.has(resolved)) {
+          queue.push(resolved);
+        }
+      }
+    }
+  }
+
   return {
     ok: errors.length === 0,
     version: canonicalVersion,
