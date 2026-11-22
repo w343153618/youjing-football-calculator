@@ -1832,9 +1832,18 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     const fallbackValidArch =
       currentArch && currentArch.available !== false
         ? currentArch
-        : (portfolioPlans.find((p) => p.available !== false) ??
-          portfolioPlans[0] ??
-          null);
+        : (portfolioPlans.find((p) => p.available !== false) ?? null);
+    const fallbackStrictGain = fallbackValidArch
+      ? (fallbackValidArch.objectiveStrictNetGainProb ??
+        fallbackValidArch.strictNetGainProb ??
+        fallbackValidArch.profitProb ??
+        0)
+      : 0;
+    const manualStrictGain =
+      manualReport.objectiveStrictNetGainProb ??
+      manualReport.strictNetGainProb ??
+      manualReport.realProfitProb ??
+      0;
 
     const showBridgeFinder =
       effectiveReport.matchCount === 1 &&
@@ -1842,8 +1851,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       (state.workspace.insights.bridgeCandidates?.length ?? 0) > 0;
     const hasSuboptimalManual =
       !appliedPlan &&
+      fallbackValidArch !== null &&
       manualReport.matchCount > 0 &&
-      (manualReport.underwaterCount > 0 || manualReport.avgVigLossPer100 > 19);
+      (manualReport.underwaterCount > 0 ||
+        manualReport.avgVigLossPer100 > 19) &&
+      (fallbackStrictGain > manualStrictGain + 1e-6 ||
+        (manualReport.underwaterCount > 0 &&
+          (fallbackValidArch.underwaterCount ?? 0) === 0 &&
+          fallbackStrictGain >= manualStrictGain - 1e-6));
 
     return {
       isSingleNonSingleContext,

@@ -1349,4 +1349,38 @@ describe("Spec #10 · Two-Axis Code Review Remediation (Standards + Spec)", () =
       `Expected isBridgePair2x1 to recognize bridge-mate legSource, got: ${capturedCtx.actuaryContext.shieldSummary}`
     );
   });
+
+  it("Slice 10 (Live QA Catch): getPlayabilityGates never recommends an unavailable 0.0% slot in fallbackValidArch / hasSuboptimalManual when all 4 slots are rejected", () => {
+    const m0 = FALLBACK_MATCHES[0] as MatchItem;
+    const ctrl = createBetSlipController({
+      debounceMs: 0,
+      autoSyncRadar: true,
+      computeWorkspace: (params, matches) =>
+        evaluateQuantWorkspace(params, matches),
+    });
+    ctrl.initializeMatches(
+      FALLBACK_MATCHES as MatchItem[],
+      [],
+      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
+    );
+    ctrl.setBudget(10);
+    // Pick a single ultra-longshot CRS ("0:4", < 1% prob, > 99% wipeout) where all 4 slots are rejected (available: false)
+    ctrl.togglePick(m0, "CRS", "0:4");
+
+    const gates = ctrl.getPlayabilityGates();
+    assert.ok(
+      gates.portfolioPlans.every((p) => p.available === false),
+      "Expected all 4 slots to be rejected on single ultra-longshot CRS 0:4"
+    );
+    assert.equal(
+      gates.fallbackValidArch,
+      null,
+      "fallbackValidArch must be null when no portfolio slot is available (must NEVER fall back to rejected 0.0% Slot ①)"
+    );
+    assert.equal(
+      gates.hasSuboptimalManual,
+      false,
+      "hasSuboptimalManual must be false when no available superior portfolio slot exists"
+    );
+  });
 });
