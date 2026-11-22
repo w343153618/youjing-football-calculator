@@ -812,6 +812,7 @@ export async function requestXiaoGaoComboDiagnosis(
     sourceMode: "picked" | "custom";
     matchIds: string[];
     picks: SelectedPick[];
+    auditedLegs?: SelectedPick[];
     userNote?: string;
   }
 ): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }> {

@@ -53,7 +53,7 @@ Use `grep` on these stable symbol anchors instead of scanning line offsets acros
 - **`server/quant/paretoPortfolio.mjs`**:
   - `3+1` Pareto solvers (`0-1` knapsack, log-wealth shield, `C(v,k,t)` covering wheel & pure `+EV` alpha): `export function computeSurvivingMissOneFloor`, `function solveExactKnapsackDutching`, `function allocateSpearAndExactShield`, `function isGenuinePairCoveringDesign`, `export function generateParetoPortfolio`
 - **`server/quant/reportAndSettlement.mjs`**:
-  - Truth report, bonus optimization, synthetic single, staggered hedge & snapshot settlement: `export function resolveSyntheticSingleBundle`, `export function computeTruthReport`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `export function applySandboxToPlan`, `export function archetypeToReport`, `export function settleTicketSnapshotOnResultsMap`
+  - Truth report, bonus optimization, synthetic single, staggered hedge, quote-version gate & snapshot settlement: `export function resolveSyntheticSingleBundle`, `export function computeTruthReport`, `export function computeProOrderInsights`, `export function optimizeBonusPlan`, `export function applySandboxToPlan`, `export function archetypeToReport`, `export function validateAppliedArchetypeQuoteGate`, `export function settleTicketSnapshotOnResultsMap`
 - **`server/quant/sportteryParsers.mjs`**:
   - Pure zero-I/O Sporttery JSON parsers & calibrated fallback fixture: `export const FALLBACK_MATCHES`, `export function parseSportteryRawJson`, `export function parseSportteryResultsJson`
 - **`server/sportteryFallbackMatches.mjs`**:
@@ -81,7 +81,7 @@ Use `grep` on these stable symbol anchors instead of scanning line offsets acros
 - **`src/mobile/SkinPhoneApp.tsx`**:
   - Responsive dual-viewport shell (`<= 800L`, desktop `>= 960px` 3-column & mobile `< 960px` 4-tab): `export function SkinPhoneApp`, `createWorkbenchController`
 - **`src/mobile/cabins/cabinViewModels.ts`**:
-  - Shared pure cabin view-models (zero JSX, directly imported by `node --test` & cabins): `export function formatPortfolioGroupAndTicketMetric`, `export function buildPortfolioKpiTiles`, `export function buildAuditCockpitTiles`, `export function formatHedgeDrawerCopy`, `export function buildSyntheticModePillSpecs`, `export function resolveCompactAuditBarPrimaryAction`, `export function buildLedgerEntryPresentation`
+  - Shared pure cabin view-models (zero JSX, directly imported by `node --test` & cabins): `export function formatPortfolioGroupAndTicketMetric`, `export function buildPortfolioKpiTiles`, `export function buildAuditCockpitTiles`, `export function formatHedgeDrawerCopy`, `export function buildMatchRadarSelectedSubPoolPills`, `export function buildSyntheticModePillSpecs`, `export function resolveCompactAuditBarPrimaryAction`, `export function buildLedgerEntryPresentation`
 - **Pure-render cabin views (`src/mobile/cabins/*.tsx`) & shell choreography**:
   - `src/mobile/cabins/MatchRadarCabin.tsx`: `export function MatchRadarCabin`
   - `src/mobile/cabins/ParetoPortfolioCabin.tsx`: `export function ParetoPortfolioCabin`

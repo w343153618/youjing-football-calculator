@@ -546,7 +546,7 @@ export function createSecurityShield(opts = {}) {
     if (pathname === "/api/health" && req.method === "GET") {
       sendJson(res, 200, {
         ok: true,
-        version: "2.7.0",
+        version: "2.7.1",
         uptimeSec: Math.round(process.uptime()),
       });
       return true;

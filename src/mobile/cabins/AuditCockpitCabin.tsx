@@ -90,13 +90,14 @@ export function AuditCockpitCabin({
     Record<string, boolean>
   >({});
   const [simHedgeHit, setSimHedgeHit] = useState(true);
+  const [convertPreviewOpen, setConvertPreviewOpen] = useState(false);
 
   const betCtrl = wbCtrl.betSlip;
   const {
     matches,
-    picks,
     multiple,
     planSpec,
+    activeAuditedSlip,
     syntheticSingleMode,
     subjectiveDeltaPct,
     simVoidFirstMatch,
@@ -110,10 +111,54 @@ export function AuditCockpitCabin({
   const allWarnings = workspace.allWarnings;
   const subjectiveEVPct = workspace.subjectiveEVPct;
   const hasPlanSpec = Boolean(planSpec);
-  const pickedMatchIds = useMemo(
-    () => Array.from(new Set(picks.map((p) => p.matchId))),
-    [picks]
+  const budgetMismatchMeta = activeAuditedSlip.budgetMismatchMeta;
+  const convertManualPreview = useMemo(
+    () =>
+      convertPreviewOpen && activeAuditedSlip.isAppliedPlan
+        ? betCtrl.previewConvertAppliedPlanToManual()
+        : null,
+    [convertPreviewOpen, activeAuditedSlip, betCtrl]
   );
+
+  const onExcludeMatchAndRequote = (mid: string, toastMsg?: string) => {
+    const res = betCtrl.excludeMatchAndRequote(mid);
+    if (!res.ok) {
+      haptic(12);
+      notifyToast(res.reason || "至少保留 1 场候选赛事用于重配");
+      return;
+    }
+    haptic(6);
+    notifyToast(toastMsg || "已排除此场并重新配单（雷达手选草稿未受改动）");
+  };
+
+  const onRequoteAtCurrentBudget = () => {
+    haptic(7);
+    if (betCtrl.requoteAppliedPlanAtCurrentBudget()) {
+      playTactileCue("optimize-arpeggio");
+      notifyToast(
+        `已按当前新预算 ¥${snap.betSlipState.budget} 重新配单并同步审单台`
+      );
+    } else {
+      notifyToast(
+        `当前新预算 ¥${snap.betSlipState.budget} 下原档方案未过准入红线，已退回待选方案态`
+      );
+    }
+  };
+
+  const onConfirmConvertPlanToManual = () => {
+    const res = betCtrl.convertAppliedPlanToManual();
+    setConvertPreviewOpen(false);
+    if (!res.ok) {
+      haptic(12);
+      notifyToast(res.reason || "当前方案暂无法转为手动复式");
+      return;
+    }
+    haptic(8);
+    playTactileCue("optimize-arpeggio");
+    notifyToast(
+      `已显式转为手动复式（${res.preview.previewPassLabel} · 新总额 ¥${res.preview.previewTotalCost}）`
+    );
+  };
 
   const onApplyBonusOptimization = (
     optMode: BonusOptMode,
@@ -291,19 +336,102 @@ export function AuditCockpitCabin({
           </div>
         </div>
         {isPlanHandoff ? (
-          <button
-            type="button"
-            className="key mini"
-            onClick={onRestoreEqualMultiple}
+          <div
+            style={{ display: "flex", gap: 5, flexShrink: 0, flexWrap: "wrap" }}
           >
-            还原等倍
-          </button>
+            <button
+              type="button"
+              className="key mini"
+              onClick={() => {
+                haptic(5);
+                setConvertPreviewOpen((v) => !v);
+              }}
+            >
+              转为手动复式
+            </button>
+            <button
+              type="button"
+              className="key mini"
+              onClick={() => {
+                setConvertPreviewOpen(false);
+                onRestoreEqualMultiple();
+              }}
+            >
+              {activeAuditedSlip.revertActionLabel}
+            </button>
+          </div>
         ) : (
           <button type="button" className="key mini" onClick={onGoToArchetypes}>
             ② 配单
           </button>
         )}
       </div>
+
+      {budgetMismatchMeta && (
+        <div
+          className="card enter num"
+          style={{
+            border: "1px solid var(--warn)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <span className="small" style={{ margin: 0, fontWeight: 600 }}>
+            ⚠️ {budgetMismatchMeta.bannerText}
+          </span>
+          <button
+            type="button"
+            data-spring="0.88"
+            className="key mini dark num"
+            onClick={onRequoteAtCurrentBudget}
+          >
+            点此按 ¥{budgetMismatchMeta.currentBudgetYuan} 重配
+          </button>
+        </div>
+      )}
+
+      {convertPreviewOpen && convertManualPreview && (
+        <div className="card enter num">
+          <div className="note-box">
+            <strong>🔄 将方案转为手动复式预览：</strong>
+            <div style={{ marginTop: 2 }}>
+              {convertManualPreview.summaryText}
+            </div>
+            {convertManualPreview.canConvert ? (
+              <div className="note-act" style={{ display: "flex", gap: 6 }}>
+                <button
+                  type="button"
+                  data-spring="0.88"
+                  className="key mini dark num"
+                  onClick={onConfirmConvertPlanToManual}
+                >
+                  确认转为手动复式 (¥{convertManualPreview.previewTotalCost})
+                </button>
+                <button
+                  type="button"
+                  className="key mini"
+                  onClick={() => setConvertPreviewOpen(false)}
+                >
+                  取消
+                </button>
+              </div>
+            ) : (
+              <div className="note-act">
+                <button
+                  type="button"
+                  className="key mini"
+                  onClick={() => setConvertPreviewOpen(false)}
+                >
+                  知道了
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div ref={auditCockpitRef} className="yj-shimmer-host">
         <TactileFlipCard
@@ -557,6 +685,7 @@ export function AuditCockpitCabin({
             showBridgeFinder={showBridgeFinder}
             bridgeCandidates={bridgeCandidates}
             compact
+            previewBridgeCandidate={(c) => betCtrl.previewBridgeCandidate(c)}
             onApplyBridgeCandidate={onApplyBridgeCandidate}
           />
 
@@ -644,13 +773,20 @@ export function AuditCockpitCabin({
                   data-spring="0.88"
                   className="key mini dark"
                   onClick={() =>
-                    onRemoveMatchFromSlip(
-                      insights.weakestLink!.matchId,
-                      "已砍掉拖后腿场次"
-                    )
+                    activeAuditedSlip.isAppliedPlan
+                      ? onExcludeMatchAndRequote(
+                          insights.weakestLink!.matchId,
+                          "已排除拖后腿场次并重配方案"
+                        )
+                      : onRemoveMatchFromSlip(
+                          insights.weakestLink!.matchId,
+                          "已砍掉拖后腿场次"
+                        )
                   }
                 >
-                  一键砍掉此场
+                  {activeAuditedSlip.isAppliedPlan
+                    ? "排除此场并重配"
+                    : "一键砍掉此场"}
                 </button>
               </div>
             </div>
@@ -665,14 +801,18 @@ export function AuditCockpitCabin({
         </div>
       )}
 
-      {pickedMatchIds.length >= 2 && (
+      {activeAuditedSlip.matchCount >= 2 && (
         <div
           className={`card sonar-card enter ${diagnosingCombo ? "scanning" : ""}`}
           style={{ display: "flex", flexDirection: "column", gap: 6 }}
         >
           <div className="co-head" style={{ marginBottom: 0 }}>
             <span className="sec num" style={{ margin: 0 }}>
-              🧹 精算×情报协同会诊（已选 {pickedMatchIds.length} 场）
+              🧹 精算×情报协同会诊（
+              {activeAuditedSlip.isAppliedPlan
+                ? `方案涉及 ${activeAuditedSlip.matchCount} 场`
+                : `已选 ${activeAuditedSlip.matchCount} 场`}
+              ）
             </span>
             <button
               type="button"
@@ -682,7 +822,7 @@ export function AuditCockpitCabin({
             >
               {diagnosingCombo
                 ? "小高协同把脉中..."
-                : `一键联合会诊这 ${pickedMatchIds.length} 场`}
+                : `一键联合会诊这 ${activeAuditedSlip.matchCount} 场`}
             </button>
           </div>
           {comboReport && (
@@ -714,18 +854,21 @@ export function AuditCockpitCabin({
       )}
 
       <SpringCollapseDrawer
-        defaultOpen={pickedMatchIds.length <= 3}
-        title={`📋 已选对阵与实时水位 (${pickedMatchIds.length} 场)`}
-        summary={picks
+        defaultOpen={activeAuditedSlip.matchCount <= 3}
+        title={activeAuditedSlip.drawerTitle}
+        summary={activeAuditedSlip.legs
           .slice(0, 3)
           .map((p) => `${p.home}[${p.optionLabel}]`)
           .join(" · ")}
-        badge={<span className="qpill num">{picks.length} 项</span>}
+        badge={
+          <span className="qpill num">
+            {activeAuditedSlip.totalLegCount} 项
+          </span>
+        }
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {pickedMatchIds.map((mid) => {
-            const mpicks = picks.filter((p) => p.matchId === mid);
-            const first = mpicks[0];
+          {activeAuditedSlip.matches.map((mEntry) => {
+            const mid = mEntry.matchId;
             const fullMatch = matches.find((x) => x.id === mid);
             return (
               <div
@@ -737,11 +880,11 @@ export function AuditCockpitCabin({
               >
                 <div className="co-head" style={{ marginBottom: 5 }}>
                   <div className="duo">
-                    <TeamCrest name={first.home} size={18} />
-                    <b>{first.home}</b>
+                    <TeamCrest name={mEntry.home} size={18} />
+                    <b>{mEntry.home}</b>
                     <span className="sep">—</span>
-                    <TeamCrest name={first.away} size={18} />
-                    <b>{first.away}</b>
+                    <TeamCrest name={mEntry.away} size={18} />
+                    <b>{mEntry.away}</b>
                   </div>
                   <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
                     {canToggleBanker && (
@@ -750,7 +893,7 @@ export function AuditCockpitCabin({
                         className={`key mini ${activeBankerSet.has(mid) ? "on" : ""}`}
                         data-spring="0.85"
                         onClick={(e) =>
-                          onToggleBankerMatch(mid, first.home, e.currentTarget)
+                          onToggleBankerMatch(mid, mEntry.home, e.currentTarget)
                         }
                       >
                         {activeBankerSet.has(mid) ? "📌胆" : "📌设胆"}
@@ -766,38 +909,61 @@ export function AuditCockpitCabin({
                         {diagnosingMatchId === mid ? "诊盘中" : "单诊"}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="key mini"
-                      data-spring="0.85"
-                      onClick={() => {
-                        onRemoveMatchFromSlip(mid);
-                        haptic(6);
-                      }}
-                    >
-                      移除
-                    </button>
+                    {activeAuditedSlip.isAppliedPlan ? (
+                      <button
+                        type="button"
+                        className="key mini"
+                        data-spring="0.85"
+                        onClick={() => onExcludeMatchAndRequote(mid)}
+                      >
+                        排除此场并重配
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="key mini"
+                        data-spring="0.85"
+                        onClick={() => {
+                          onRemoveMatchFromSlip(mid);
+                          haptic(6);
+                        }}
+                      >
+                        移除
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="chips">
-                  {mpicks.map((v) => {
-                    const liveOpt = fullMatch?.pools[v.poolCode]?.options.find(
-                      (o) => o.key === v.optionKey
-                    );
-                    return (
-                      <span
-                        key={`${v.poolCode}-${v.optionKey}`}
-                        className="chip num"
-                      >
-                        {v.poolName}·{v.optionLabel}
-                        <i>
-                          @{v.odds.toFixed(2)}
-                          {renderTrendArrow(liveOpt?.trend)} (
-                          {(v.fairProb * 100).toFixed(0)}%)
-                        </i>
-                      </span>
-                    );
-                  })}
+                <div
+                  style={{ display: "flex", flexDirection: "column", gap: 4 }}
+                >
+                  {mEntry.pools.map((pg) => (
+                    <div key={`${mid}-pool-${pg.poolCode}`} className="chips">
+                      {pg.legs.map((v) => {
+                        const liveOpt = fullMatch?.pools[
+                          v.poolCode
+                        ]?.options.find((o) => o.key === v.optionKey);
+                        return (
+                          <span
+                            key={`${v.poolCode}-${v.optionKey}`}
+                            className="chip num"
+                          >
+                            {(activeAuditedSlip.isAppliedPlan ||
+                              activeAuditedSlip.isAutoSynthetic) && (
+                              <b style={{ marginRight: 3 }}>
+                                [{v.legSourceLabel}]
+                              </b>
+                            )}
+                            {pg.poolName}·{v.optionLabel}
+                            <i>
+                              @{v.odds.toFixed(2)}
+                              {renderTrendArrow(liveOpt?.trend)} (
+                              {(v.fairProb * 100).toFixed(0)}%)
+                            </i>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ))}
                 </div>
               </div>
             );

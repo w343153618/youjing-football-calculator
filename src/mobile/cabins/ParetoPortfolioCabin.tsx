@@ -214,11 +214,25 @@ export function ParetoPortfolioCabin({
     stance,
     unlockFullAgg,
     allowSaveCash,
+    livePortfolioQuote,
+    activeAuditedSlip,
     workspace,
   } = snap.betSlipState;
   const { currentArch, fallbackValidArch, hasSuboptimalManual } =
     snap.playabilityGates;
   const manualReport = workspace.manualReport;
+  const budgetMismatchMeta = activeAuditedSlip.budgetMismatchMeta;
+  const onRequoteAtCurrentBudget = () => {
+    haptic(7);
+    if (betCtrl.requoteAppliedPlanAtCurrentBudget()) {
+      playTactileCue("optimize-arpeggio");
+      notifyToast(`已按当前新预算 ¥${budget} 重新配单并更新审单台`);
+    } else {
+      notifyToast(
+        `当前新预算 ¥${budget} 下原档方案未过准入红线，已退回待选方案态`
+      );
+    }
+  };
 
   const pickedMatchIds = useMemo(
     () => Array.from(new Set(picks.map((p) => p.matchId))),
@@ -242,6 +256,33 @@ export function ParetoPortfolioCabin({
 
   return (
     <>
+      {budgetMismatchMeta && (
+        <div
+          className="card enter num"
+          style={{
+            marginBottom: 10,
+            border: "1px solid var(--warn)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <span className="small" style={{ margin: 0, fontWeight: 600 }}>
+            ⚠️ {budgetMismatchMeta.bannerText}
+          </span>
+          <button
+            type="button"
+            data-spring="0.88"
+            className="key mini dark num"
+            onClick={onRequoteAtCurrentBudget}
+          >
+            点此按 ¥{budgetMismatchMeta.currentBudgetYuan} 重配
+          </button>
+        </div>
+      )}
+
       {hasSuboptimalManual && fallbackValidArch && (
         <div className="card enter" style={{ marginBottom: 10 }}>
           <div className="note-box alert">
@@ -723,11 +764,18 @@ export function ParetoPortfolioCabin({
           <button
             type="button"
             data-spring="0.94"
+            disabled={!livePortfolioQuote.canApplyLiveQuote}
+            style={
+              !livePortfolioQuote.canApplyLiveQuote
+                ? { opacity: 0.6, cursor: "wait" }
+                : undefined
+            }
             className="key dark full enter num"
             onClick={() => onApplyArchetype(currentArch)}
           >
-            套用【{currentArch.shortTab}】方案并查看审单台 → ③ (¥
-            {currentArch.totalCost})
+            {!livePortfolioQuote.canApplyLiveQuote
+              ? `⏳ 新报价重算中（版本锁保护）...`
+              : `套用【${currentArch.shortTab}】方案并查看审单台 → ③ (¥${currentArch.totalCost})`}
           </button>
         </>
       )}

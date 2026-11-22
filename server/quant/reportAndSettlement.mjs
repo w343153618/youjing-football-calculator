@@ -3763,6 +3763,53 @@ export function applySandboxToPlan(
     subjectiveDeltaPct,
   });
 
+  const manualPicksByMatch = new Map();
+  if (Array.isArray(picks)) {
+    for (const pk of picks) {
+      if (!pk?.matchId) continue;
+      const arr = manualPicksByMatch.get(pk.matchId) || [];
+      arr.push(pk);
+      manualPicksByMatch.set(pk.matchId, arr);
+    }
+  }
+  const hasManualPicks = manualPicksByMatch.size > 0;
+  const freePrimaryLegByMatch = new Map();
+  const resolveAppliedLegSource = (lg) => {
+    if (
+      lg.legSource === "manual-anchor" ||
+      lg.legSource === "same-match-shield" ||
+      lg.legSource === "cross-pool-substitute" ||
+      lg.legSource === "bridge-mate"
+    ) {
+      return lg.legSource;
+    }
+    if (hasManualPicks) {
+      const mPicks = manualPicksByMatch.get(lg.matchId);
+      if (!mPicks || mPicks.length === 0) return "bridge-mate";
+      if (
+        mPicks.some(
+          (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+        )
+      ) {
+        return "manual-anchor";
+      }
+      if (mPicks.some((p) => p.poolCode === lg.poolCode)) {
+        return "same-match-shield";
+      }
+      return "cross-pool-substitute";
+    }
+    const curSig = `${lg.poolCode}:${lg.optionKey}`;
+    const firstSig = freePrimaryLegByMatch.get(lg.matchId);
+    if (!firstSig) {
+      freePrimaryLegByMatch.set(lg.matchId, curSig);
+      return "bridge-mate";
+    }
+    if (firstSig === curSig) return "bridge-mate";
+    return lg.poolCode === firstSig.split(":")[0]
+      ? "same-match-shield"
+      : "cross-pool-substitute";
+  };
+
   const resolvedLegCache = new Map();
   const lines = basePlan.lines.map((l) => {
     const legs = l.legs.map((lg) => {
@@ -3806,6 +3853,7 @@ export function applySandboxToPlan(
         ...lg,
         odds: hit.odds,
         fairProb: hit.fairProb,
+        legSource: resolveAppliedLegSource(lg),
       };
     });
     const prob = legs.reduce((acc, it) => acc * it.fairProb, 1);
@@ -4816,4 +4864,205 @@ export function settleTicketSnapshotOnResultsMap(
     matches: matchOutcomes,
     tickets: ticketOutcomes,
   };
+}
+
+export function buildPortfolioQuoteInputSignature({
+  picks = [],
+  budget = 100,
+  resolvedTargets = [],
+  anchorToRadarPicks = false,
+  stance = "objective",
+  subjectiveDeltaPct = 0,
+  allowSaveCash = false,
+  unlockFullAgg = false,
+  passSpec = null,
+} = {}) {
+  const numB = Number(budget);
+  const cleanBudget =
+    Number.isFinite(numB) && numB > 0
+      ? Math.max(2, Math.min(20_000, Math.floor(numB / 2) * 2))
+      : 100;
+  const cleanStance =
+    stance === "home-lean" || stance === "upset-watch" ? stance : "objective";
+  const cleanSubj = Math.max(
+    -15,
+    Math.min(15, Math.round(Number(subjectiveDeltaPct) || 0))
+  );
+  const passSig = (() => {
+    if (!passSpec || passSpec.mode === "auto") return "auto";
+    if (passSpec.mode === "combo" && passSpec.comboCode) {
+      return `c:${passSpec.comboCode}`;
+    }
+    if (
+      passSpec.mode === "free" &&
+      Array.isArray(passSpec.passSizes) &&
+      passSpec.passSizes.length > 0
+    ) {
+      const sz = [...passSpec.passSizes]
+        .map((x) => Number(x))
+        .sort((a, b) => a - b)
+        .join(",");
+      const bk = Array.isArray(passSpec.bankerMatchIds)
+        ? [...passSpec.bankerMatchIds].map(String).sort().join(",")
+        : "";
+      return `f:${sz}:b=${bk}`;
+    }
+    return "auto";
+  })();
+
+  const targetList = Array.isArray(resolvedTargets) ? resolvedTargets : [];
+  const targetIdsSig = targetList.map((m) => String(m?.id ?? "")).join(",");
+  const picksSig =
+    !Array.isArray(picks) || picks.length === 0
+      ? ""
+      : Array.from(
+          new Set(
+            picks
+              .filter((p) => p && p.matchId && p.poolCode && p.optionKey)
+              .map(
+                (p) =>
+                  `${p.matchId}:${String(p.poolCode).toUpperCase()}:${p.optionKey}`
+              )
+          )
+        )
+          .sort()
+          .join("|");
+
+  const poolOrder = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  let tokCount = 0;
+  const mixInt = (val) => {
+    const v = val | 0;
+    h1 = Math.imul((h1 ^ v) >>> 0, 0x01000193) >>> 0;
+    h2 = Math.imul((h2 ^ (v + (tokCount & 255))) >>> 0, 0x85ebca6b) >>> 0;
+    tokCount += 1;
+  };
+  const mixStr = (str) => {
+    for (let c = 0; c < str.length; c++) {
+      mixInt(str.charCodeAt(c));
+    }
+    mixInt(124);
+  };
+  for (let i = 0; i < targetList.length; i++) {
+    const m = targetList[i];
+    if (!m) continue;
+    mixStr(String(m.id ?? ""));
+    for (let j = 0; j < poolOrder.length; j++) {
+      const pc = poolOrder[j];
+      const pl = m.pools?.[pc];
+      if (
+        !pl ||
+        pl.selling === false ||
+        !Array.isArray(pl.options) ||
+        pl.options.length === 0
+      ) {
+        mixInt(45);
+        continue;
+      }
+      const flags =
+        (pl.single ? 4 : 0) |
+        (pl.canSingle === false ? 0 : 2) |
+        (pl.canAllUp === false ? 0 : 1);
+      mixInt(flags);
+      for (let k = 0; k < pl.options.length; k++) {
+        const o = pl.options[k];
+        mixStr(String(o.key ?? ""));
+        mixInt(Math.round((Number(o.odds) || 0) * 100));
+      }
+      mixInt(59);
+    }
+  }
+  const oddsSnapshotSig = `${h1.toString(36)}_${h2.toString(36)}_${tokCount}`;
+  const inputSig = `v1|b=${cleanBudget}|st=${cleanStance}|sd=${cleanSubj}|sc=${allowSaveCash ? 1 : 0}|ua=${unlockFullAgg ? 1 : 0}|ar=${anchorToRadarPicks ? 1 : 0}|ps=${passSig}|t=${targetIdsSig}|pk=${picksSig}|od=${oddsSnapshotSig}`;
+  return {
+    inputSig,
+    picksSig,
+    budget: cleanBudget,
+    poolMatchIdsSig: targetIdsSig,
+    passSpecSig: passSig,
+    oddsSnapshotSig,
+  };
+}
+
+export function validateAppliedArchetypeQuoteGate({
+  params,
+  planSpec,
+  validSnap,
+  currentQuoteInputSig,
+}) {
+  if (!planSpec || planSpec.kind !== "archetype") {
+    return { ok: true };
+  }
+  const expectedSig =
+    typeof params?.expectedQuoteInputSig === "string" &&
+    params.expectedQuoteInputSig.length > 0
+      ? params.expectedQuoteInputSig
+      : typeof planSpec.expectedQuoteInputSig === "string" &&
+          planSpec.expectedQuoteInputSig.length > 0
+        ? planSpec.expectedQuoteInputSig
+        : "";
+  if (expectedSig) {
+    if (expectedSig !== currentQuoteInputSig) {
+      return {
+        ok: false,
+        code: "STALE_QUOTE_SIGNATURE",
+        reason:
+          "报价版本已过期（预算或选单输入已变更），请等待新报价返回后重新套用",
+      };
+    }
+    const snapSig = String(
+      planSpec.quoteInputSig || validSnap?.quoteInputSig || ""
+    );
+    if (snapSig && snapSig !== expectedSig) {
+      return {
+        ok: false,
+        code: "STALE_QUOTE_SIGNATURE",
+        reason: "所选方案快照属于过期报价版本，已拦截旧高额报价冻结",
+      };
+    }
+  }
+
+  const hasLockedBudget =
+    planSpec.planBudgetYuan !== undefined ||
+    planSpec.appliedBudgetYuan !== undefined;
+  if (hasLockedBudget && validSnap) {
+    const rawLocked = Number(
+      planSpec.planBudgetYuan ?? planSpec.appliedBudgetYuan
+    );
+    if (Number.isFinite(rawLocked) && rawLocked > 0) {
+      const lockedBudget = Math.max(
+        2,
+        Math.min(20_000, Math.floor(rawLocked / 2) * 2)
+      );
+      const sumLineBaseCost = Array.isArray(validSnap.lines)
+        ? validSnap.lines.reduce((sum, ln) => {
+            const mult = Math.max(1, Math.round(Number(ln?.multiple) || 1));
+            const explicitCost = Number(ln?.cost);
+            return (
+              sum +
+              (Number.isFinite(explicitCost) && explicitCost > 0
+                ? explicitCost
+                : mult * 2)
+            );
+          }, 0)
+        : 0;
+      const snapBaseCost = Math.max(
+        Number(validSnap.totalCost) || 0,
+        sumLineBaseCost
+      );
+      if (
+        snapBaseCost > lockedBudget + 1e-6 ||
+        (typeof validSnap.quoteBudgetYuan === "number" &&
+          validSnap.quoteBudgetYuan > lockedBudget)
+      ) {
+        return {
+          ok: false,
+          code: "PLAN_EXCEEDS_LOCKED_BUDGET",
+          reason: `方案实投金额 ¥${snapBaseCost} 超出套用锁定预算 ¥${lockedBudget}，已拦截旧高额报价`,
+        };
+      }
+    }
+  }
+  return { ok: true };
 }

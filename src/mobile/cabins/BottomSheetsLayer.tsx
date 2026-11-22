@@ -219,8 +219,15 @@ export function BottomSheetsLayer({
       useConsolidated: Boolean(snap.betSlipState.planSpec?.consolidateTickets),
     });
 
-  const { matches, picks, multiple, planSpec, lastPoolSwitchUndo, workspace } =
-    snap.betSlipState;
+  const {
+    matches,
+    picks,
+    multiple,
+    planSpec,
+    activeAuditedSlip,
+    lastPoolSwitchUndo,
+    workspace,
+  } = snap.betSlipState;
   const { playabilityGates, diagnosingMatchId, ledgerBusy } = snap;
   const effectiveReport = workspace.effectiveReport;
   const allLeagues = useMemo(
@@ -240,7 +247,7 @@ export function BottomSheetsLayer({
     effectiveReport,
     effectiveAppliedPlan,
     planSpec,
-    picks,
+    activeAuditedSlip.legs.length > 0 ? activeAuditedSlip.legs : picks,
     multiple,
     activeBankerSet
   );

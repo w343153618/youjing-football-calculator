@@ -920,6 +920,60 @@ export function buildMatchRadarSingleBadge(
   };
 }
 
+export interface MatchRadarSubPoolPill {
+  key: string;
+  matchId: string;
+  poolCode: "CRS" | "TTG" | "HAFU";
+  poolShortName: string;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  text: string;
+  clearAriaLabel: string;
+}
+
+export function buildMatchRadarSelectedSubPoolPills(
+  match: Pick<MatchItem, "id" | "pools">,
+  manualDraftPicks: SelectedPick[]
+): MatchRadarSubPoolPill[] {
+  if (
+    !match ||
+    !Array.isArray(manualDraftPicks) ||
+    manualDraftPicks.length === 0
+  ) {
+    return [];
+  }
+  const pills: MatchRadarSubPoolPill[] = [];
+  for (const pk of manualDraftPicks) {
+    if (!pk || pk.matchId !== match.id) continue;
+    if (
+      pk.poolCode !== "CRS" &&
+      pk.poolCode !== "TTG" &&
+      pk.poolCode !== "HAFU"
+    ) {
+      continue;
+    }
+    const liveOpt = match.pools?.[pk.poolCode]?.options?.find(
+      (o) => o.key === pk.optionKey
+    );
+    const odds = Number(liveOpt?.odds ?? pk.odds) || 0;
+    const optionLabel = liveOpt?.label || pk.optionLabel || pk.optionKey;
+    const poolShortName = POOL_SHORT_SINGLE_NAMES[pk.poolCode] || pk.poolName;
+    pills.push({
+      key: `${pk.matchId}:${pk.poolCode}:${pk.optionKey}`,
+      matchId: pk.matchId,
+      poolCode: pk.poolCode,
+      poolShortName,
+      optionKey: pk.optionKey,
+      optionLabel,
+      odds,
+      text: `${poolShortName}·${optionLabel} @${odds.toFixed(2)}`,
+      clearAriaLabel: `清除本场已选${poolShortName} ${optionLabel}`,
+    });
+  }
+  return pills;
+}
+
 export interface SyntheticModePillSpec {
   mode: SyntheticSingleMode;
   label: string;

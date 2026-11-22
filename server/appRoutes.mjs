@@ -713,7 +713,14 @@ export function createAppRoutes(opts = {}) {
           const { matches } = await ensureMatchesLoaded(false);
           const sessionMatches = mergeSessionAlerts(matches, sess);
 
-          const rawIds = Array.isArray(data?.matchIds) ? data.matchIds : [];
+          const sourceMode =
+            data?.sourceMode === "custom" ? "custom" : "picked";
+          const rawIds =
+            Array.isArray(data?.matchIds) && data.matchIds.length > 0
+              ? data.matchIds
+              : sourceMode === "picked" && Array.isArray(data?.auditedLegs)
+                ? data.auditedLegs.map((lg) => lg?.matchId).filter(Boolean)
+                : [];
           const idSet = new Set(rawIds.filter(Boolean).map((x) => String(x)));
           const targetMatches = sessionMatches
             .filter((m) => idSet.has(m.id))
@@ -725,20 +732,26 @@ export function createAppRoutes(opts = {}) {
             });
             return { __handled: true };
           }
-          const sourceMode =
-            data?.sourceMode === "custom" ? "custom" : "picked";
+          const rawManualPicks = Array.isArray(data?.picks) ? data.picks : [];
+          const rawAuditedLegs = Array.isArray(data?.auditedLegs)
+            ? data.auditedLegs
+            : [];
+          const resolvedPoolTargetIds =
+            Array.isArray(data?.targetIds) && data.targetIds.length > 0
+              ? data.targetIds
+              : targetMatches.map((m) => m.id);
           const ws =
             sourceMode === "picked"
               ? evaluateQuantWorkspace(
                   {
-                    picks: Array.isArray(data?.picks) ? data.picks : [],
+                    picks: rawManualPicks,
                     multiple: data?.multiple ?? 5,
                     passSpec: data?.passSpec ?? { mode: "auto" },
                     syntheticSingleMode: data?.syntheticSingleMode,
                     planSpec: data?.planSpec ?? null,
                     subjectiveDeltaPct: Number(data?.subjectiveDeltaPct) || 0,
                     simVoidFirstMatch: Boolean(data?.simVoidFirstMatch),
-                    targetIds: targetMatches.map((m) => m.id),
+                    targetIds: resolvedPoolTargetIds,
                     anchorToRadarPicks: Boolean(data?.anchorToRadarPicks),
                     budget: Number(data?.budget) || 100,
                     stance:
@@ -747,6 +760,7 @@ export function createAppRoutes(opts = {}) {
                         ? data.stance
                         : "objective",
                     unlockFullAgg: Boolean(data?.unlockFullAgg),
+                    allowSaveCash: Boolean(data?.allowSaveCash),
                   },
                   sessionMatches
                 )
@@ -754,7 +768,7 @@ export function createAppRoutes(opts = {}) {
           const comboCtx = buildComboDiagnosisContext({
             sourceMode,
             targetMatches,
-            picks: Array.isArray(data?.picks) ? data.picks : [],
+            picks: rawManualPicks.length > 0 ? rawManualPicks : rawAuditedLegs,
             effectiveReport: ws?.effectiveReport ?? null,
             appliedPlan: ws?.appliedPlan ?? null,
             planSpec: data?.planSpec ?? null,

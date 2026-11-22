@@ -634,7 +634,7 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
       );
       const healthBody = JSON.parse(healthEx.getResult().body);
       assert.equal(healthBody.ok, true);
-      assert.equal(healthBody.version, "2.7.0");
+      assert.equal(healthBody.version, "2.7.1");
 
       const createdMember = runtime.accountManager.createAccount({
         username: "t7_member",

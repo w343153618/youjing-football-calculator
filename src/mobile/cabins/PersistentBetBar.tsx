@@ -528,7 +528,8 @@ export function PersistentBetBar({
   };
   const onRequirePickToast = () => notifyToast("请先在列表点选至少 1 场球队");
 
-  const { picks, multiple, syntheticSingleMode, workspace } = snap.betSlipState;
+  const { picks, multiple, activeAuditedSlip, syntheticSingleMode, workspace } =
+    snap.betSlipState;
   const playabilityGates = snap.playabilityGates;
   const manualReport = workspace.manualReport;
   const effectiveReport = workspace.effectiveReport;
@@ -537,6 +538,21 @@ export function PersistentBetBar({
     () => Array.from(new Set(picks.map((p) => p.matchId))),
     [picks]
   );
+  const canClearOrRevert = picks.length > 0 || activeAuditedSlip.isAppliedPlan;
+  const onClearOrRevert = () => {
+    if (picks.length > 0) onClearPicks();
+    else if (activeAuditedSlip.isAppliedPlan) onRestoreEqualMultiple();
+  };
+  const onExcludeAuditedMatch = (mid: string) => {
+    const res = betCtrl.excludeMatchAndRequote(mid);
+    if (!res.ok) {
+      haptic(12);
+      notifyToast(res.reason || "至少保留 1 场候选赛事用于重配");
+    } else {
+      haptic(6);
+      notifyToast("已排除此场并重新配单");
+    }
+  };
 
   useEffect(() => {
     setBarPopover(null);
@@ -822,18 +838,24 @@ export function PersistentBetBar({
         {barPopover === "selected" && (
           <>
             <div className="bet-pop-head">
-              <b>已选场次速览（{pickedMatchIds.length} 场）</b>
+              <b>
+                {activeAuditedSlip.isAppliedPlan
+                  ? `在审方案速览（${activeAuditedSlip.matchCount} 场 · 雷达亲选 ${activeAuditedSlip.radarPickedMatchCount} 场）`
+                  : `已选场次速览（${activeAuditedSlip.matchCount} 场）`}
+              </b>
               <div style={{ display: "flex", gap: 6 }}>
-                {picks.length > 0 && (
+                {canClearOrRevert && (
                   <button
                     type="button"
                     className="key mini"
                     onClick={() => {
-                      onClearPicks();
+                      onClearOrRevert();
                       setBarPopover(null);
                     }}
                   >
-                    全部清空
+                    {picks.length > 0
+                      ? "全部清空"
+                      : activeAuditedSlip.revertActionLabel}
                   </button>
                 )}
                 <button
@@ -845,26 +867,30 @@ export function PersistentBetBar({
                 </button>
               </div>
             </div>
-            {pickedMatchIds.length === 0 ? (
+            {activeAuditedSlip.matchCount === 0 ? (
               <div className="note-box">
-                暂未选择比赛，请在【赛事雷达】点击赔率按钮选球。
+                暂未选择比赛，请在【赛事雷达】点击赔率按钮选球，或在【精算配单】套用方案。
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {pickedMatchIds.map((mid) => {
-                  const mp = picks.filter((p) => p.matchId === mid);
-                  const f = mp[0];
+                {activeAuditedSlip.matches.map((mEntry) => {
+                  const mid = mEntry.matchId;
                   return (
                     <div key={mid} className="combo-item num">
                       <div className="cdesc">
                         <b>
-                          {f.matchNumStr} {f.home} vs {f.away}
+                          {mEntry.matchNumStr} {mEntry.home} vs {mEntry.away}
                         </b>
                         <small>
-                          {mp
+                          {mEntry.pools
                             .map(
-                              (x) =>
-                                `${x.poolName}[${x.optionLabel}@${x.odds.toFixed(2)}]`
+                              (pg) =>
+                                `${pg.poolName}[${pg.legs
+                                  .map(
+                                    (x) =>
+                                      `${x.optionLabel}@${x.odds.toFixed(2)}`
+                                  )
+                                  .join("+")}]`
                             )
                             .join(" · ")}
                         </small>
@@ -875,19 +901,33 @@ export function PersistentBetBar({
                             type="button"
                             className={`key mini ${activeBankerSet.has(mid) ? "on" : ""}`}
                             onClick={(e) =>
-                              onToggleBankerMatch(mid, f.home, e.currentTarget)
+                              onToggleBankerMatch(
+                                mid,
+                                mEntry.home,
+                                e.currentTarget
+                              )
                             }
                           >
                             {activeBankerSet.has(mid) ? "📌胆" : "📌设胆"}
                           </button>
                         )}
-                        <button
-                          type="button"
-                          className="key mini"
-                          onClick={() => onRemoveMatchFromSlip(mid)}
-                        >
-                          移除
-                        </button>
+                        {activeAuditedSlip.isAppliedPlan ? (
+                          <button
+                            type="button"
+                            className="key mini"
+                            onClick={() => onExcludeAuditedMatch(mid)}
+                          >
+                            排除重配
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="key mini"
+                            onClick={() => onRemoveMatchFromSlip(mid)}
+                          >
+                            移除
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -896,6 +936,9 @@ export function PersistentBetBar({
                   showBridgeFinder={showBridgeFinder}
                   bridgeCandidates={bridgeCandidates}
                   compact
+                  previewBridgeCandidate={(c) =>
+                    betCtrl.previewBridgeCandidate(c)
+                  }
                   onApplyBridgeCandidate={onApplyBridgeCandidate}
                 />
               </div>
@@ -984,14 +1027,16 @@ export function PersistentBetBar({
               <button
                 type="button"
                 className="key sm"
-                disabled={picks.length === 0}
-                style={{ opacity: picks.length === 0 ? 0.45 : 1 }}
+                disabled={!canClearOrRevert}
+                style={{ opacity: !canClearOrRevert ? 0.45 : 1 }}
                 onClick={() => {
-                  onClearPicks();
+                  onClearOrRevert();
                   haptic(12);
                 }}
               >
-                🗑 清空
+                {picks.length === 0 && activeAuditedSlip.isAppliedPlan
+                  ? `↩ ${activeAuditedSlip.revertActionLabel}`
+                  : "🗑 清空"}
               </button>
               <button
                 type="button"
@@ -1046,7 +1091,7 @@ export function PersistentBetBar({
                     className="key mini"
                     onClick={onRestoreEqualMultiple}
                   >
-                    还原等倍
+                    {activeAuditedSlip.revertActionLabel}
                   </button>
                 </div>
               ) : (
@@ -1198,10 +1243,10 @@ export function PersistentBetBar({
               <button
                 type="button"
                 className="m-bet-pill"
-                title="还原等倍"
+                title={activeAuditedSlip.revertActionLabel}
                 onClick={onRestoreEqualMultiple}
               >
-                等倍
+                {picks.length > 0 ? "回手选" : "撤方案"}
               </button>
             </div>
           ) : (
@@ -1317,9 +1362,13 @@ export function PersistentBetBar({
               <button
                 type="button"
                 className="m-bet-trash"
-                title="清空已选"
+                title={
+                  picks.length === 0 && activeAuditedSlip.isAppliedPlan
+                    ? activeAuditedSlip.revertActionLabel
+                    : "清空已选"
+                }
                 onClick={() => {
-                  onClearPicks();
+                  onClearOrRevert();
                   haptic(14);
                 }}
               >
@@ -1364,7 +1413,7 @@ export function PersistentBetBar({
                   : effectiveReport.modeLabel}{" "}
                 ▴
               </button>
-              {picks.length > 0 && (
+              {(picks.length > 0 || activeAuditedSlip.matchCount > 0) && (
                 <button
                   type="button"
                   className="m-bet-pill"
@@ -1405,7 +1454,7 @@ export function PersistentBetBar({
                   className="m-bet-pill"
                   onClick={onRestoreEqualMultiple}
                 >
-                  等倍
+                  {picks.length > 0 ? "回手选" : "撤方案"}
                 </button>
               </div>
             ) : (
@@ -1458,6 +1507,10 @@ export function PersistentBetBar({
               className="m-bet-go"
               onClick={() => {
                 setBarPopover(null);
+                if (picks.length === 0 && activeAuditedSlip.matchCount > 0) {
+                  onSwitchTab("audit");
+                  return;
+                }
                 if (picks.length === 0) {
                   onRequirePickToast();
                   return;
@@ -1465,7 +1518,11 @@ export function PersistentBetBar({
                 onSwitchTab("archetypes");
               }}
             >
-              {picks.length === 0 ? "先选球" : "下一步:②配单 ›"}
+              {picks.length > 0
+                ? "下一步:②配单 ›"
+                : activeAuditedSlip.matchCount > 0
+                  ? "查看③审单 ›"
+                  : "先选球"}
             </button>
           </div>
         </div>

@@ -517,11 +517,14 @@ export function useShellChoreography({
   };
 
   const restoreEqualMultiple = () => {
+    const hadManualPicks = betCtrl.getState().picks.length > 0;
     betCtrl.restoreEqualMultiple();
     setHandoffBanner(null);
     setDkFocusStep(null);
     playTactileCue("tap-off");
-    notifyToast("已恢复默认等倍统配");
+    notifyToast(
+      hadManualPicks ? "已回到我的手选草稿" : "已撤销已套用的智能方案"
+    );
   };
 
   const toggleBankerMatchUI = (

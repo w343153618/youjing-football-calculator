@@ -21,6 +21,7 @@ import {
   applyAutoSyntheticReportMeta,
   applySandboxToPlan,
   archetypeToReport,
+  buildPortfolioQuoteInputSignature,
   buildSandboxAdjustedBundle,
   buildXiaoGaoWarnings,
   computeProOrderInsights,
@@ -32,6 +33,7 @@ import {
   sanitizeAndDeduplicatePicks,
   scaleArchetypePlan,
   settleTicketSnapshotOnResultsMap,
+  validateAppliedArchetypeQuoteGate,
 } from "./quant/reportAndSettlement.mjs";
 import {
   FALLBACK_MATCHES,
@@ -236,7 +238,23 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     allowSaveCash,
     passSpec: anchorToRadarPicks ? passSpec : { mode: "auto" },
   };
-  const fivePlans = getCachedWorkspaceFivePlans(
+  const quoteSigMeta = buildPortfolioQuoteInputSignature({
+    picks: baselinePicks,
+    budget,
+    resolvedTargets,
+    anchorToRadarPicks,
+    stance,
+    subjectiveDeltaPct:
+      params?.quoteCheckSubjectiveDeltaPct !== undefined
+        ? params.quoteCheckSubjectiveDeltaPct
+        : subjectiveDeltaPct,
+    allowSaveCash,
+    unlockFullAgg,
+    passSpec,
+  });
+  const currentQuoteInputSig = quoteSigMeta.inputSig;
+
+  const rawFivePlans = getCachedWorkspaceFivePlans(
     resolvedTargets,
     budget,
     stance,
@@ -244,7 +262,12 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     anchorPicks,
     portfolioOpts
   );
-  const objectivePortfolioPlans =
+  const fivePlans = rawFivePlans.map((p) => ({
+    ...p,
+    quoteInputSig: currentQuoteInputSig,
+    quoteBudgetYuan: budget,
+  }));
+  const rawObjectivePlans =
     stance !== "objective"
       ? getCachedWorkspaceFivePlans(
           resolvedTargets,
@@ -255,9 +278,16 @@ export function evaluateQuantWorkspace(params, matchesInput) {
           portfolioOpts
         )
       : undefined;
+  const objectivePortfolioPlans = rawObjectivePlans
+    ? rawObjectivePlans.map((p) => ({
+        ...p,
+        quoteBudgetYuan: budget,
+      }))
+    : undefined;
 
   let appliedPlan = null;
   let alphaSmoothedAfterSync = false;
+  let quoteRejectedReason = null;
   if (planSpec?.kind === "bonus") {
     const mode =
       planSpec.optMode === "hot-first" || planSpec.optMode === "cold-first"
@@ -291,59 +321,72 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     const validSnap = isValidPlanObject(planSpec.snapshotPlan)
       ? planSpec.snapshotPlan
       : null;
-    const liveCandidate =
-      fivePlans.find((p) => p.key === normalizedKey) ?? null;
-    const usableLive =
-      liveCandidate &&
-      liveCandidate.available !== false &&
-      liveCandidate.lines.length > 0
-        ? liveCandidate
-        : null;
-    const basePlan = validSnap ?? usableLive;
-    const scaledBasePlan = scaleArchetypePlan(basePlan, planSpec.scaleMultiple);
-    appliedPlan = applySandboxToPlan(
-      scaledBasePlan,
-      matches,
-      picks,
-      simVoidFirstMatch,
-      subjectiveDeltaPct,
-      {
-        isArchetype: true,
-        hasFrozenSnapshot: Boolean(validSnap),
-        consolidateTickets: Boolean(planSpec.consolidateTickets),
-        stance,
-        manualReport,
-        targetFirstMid: foundTargets[0]?.id ?? null,
-      }
-    );
-
-    if (normalizedKey === "alpha-radar" && validSnap && appliedPlan) {
-      // Check if live alpha-radar is now empty OR none of validSnap's legs still clear >= +3% alpha on live matches
-      let anySnapLegStillAlpha = false;
-      for (const l of validSnap.lines) {
-        for (const lg of l.legs) {
-          const fm = matches.find((m) => m.id === lg.matchId);
-          if (!fm) continue;
-          const scan = scanMatchAlphaCandidates(fm, null);
-          if (
-            scan.candidates.some((c) =>
-              Array.isArray(c.betterPicks)
-                ? c.betterPicks.some(
-                    (bp) =>
-                      bp.poolCode === lg.poolCode &&
-                      bp.optionKey === lg.optionKey
-                  )
-                : c.poolCode === lg.poolCode && c.optionKey === lg.optionKey
-            )
-          ) {
-            anySnapLegStillAlpha = true;
-            break;
-          }
+    const quoteGate = validateAppliedArchetypeQuoteGate({
+      params,
+      planSpec,
+      validSnap,
+      currentQuoteInputSig,
+    });
+    if (!quoteGate.ok) {
+      quoteRejectedReason = quoteGate.reason;
+    } else {
+      const liveCandidate =
+        fivePlans.find((p) => p.key === normalizedKey) ?? null;
+      const usableLive =
+        liveCandidate &&
+        liveCandidate.available !== false &&
+        liveCandidate.lines.length > 0
+          ? liveCandidate
+          : null;
+      const basePlan = validSnap ?? usableLive;
+      const scaledBasePlan = scaleArchetypePlan(
+        basePlan,
+        planSpec.scaleMultiple
+      );
+      appliedPlan = applySandboxToPlan(
+        scaledBasePlan,
+        matches,
+        picks,
+        simVoidFirstMatch,
+        subjectiveDeltaPct,
+        {
+          isArchetype: true,
+          hasFrozenSnapshot: Boolean(validSnap),
+          consolidateTickets: Boolean(planSpec.consolidateTickets),
+          stance,
+          manualReport,
+          targetFirstMid: foundTargets[0]?.id ?? null,
         }
-        if (anySnapLegStillAlpha) break;
-      }
-      if (!usableLive || !anySnapLegStillAlpha) {
-        alphaSmoothedAfterSync = true;
+      );
+
+      if (normalizedKey === "alpha-radar" && validSnap && appliedPlan) {
+        // Check if live alpha-radar is now empty OR none of validSnap's legs still clear >= +3% alpha on live matches
+        let anySnapLegStillAlpha = false;
+        for (const l of validSnap.lines) {
+          for (const lg of l.legs) {
+            const fm = matches.find((m) => m.id === lg.matchId);
+            if (!fm) continue;
+            const scan = scanMatchAlphaCandidates(fm, null);
+            if (
+              scan.candidates.some((c) =>
+                Array.isArray(c.betterPicks)
+                  ? c.betterPicks.some(
+                      (bp) =>
+                        bp.poolCode === lg.poolCode &&
+                        bp.optionKey === lg.optionKey
+                    )
+                  : c.poolCode === lg.poolCode && c.optionKey === lg.optionKey
+              )
+            ) {
+              anySnapLegStillAlpha = true;
+              break;
+            }
+          }
+          if (anySnapLegStillAlpha) break;
+        }
+        if (!usableLive || !anySnapLegStillAlpha) {
+          alphaSmoothedAfterSync = true;
+        }
       }
     }
   }
@@ -385,7 +428,13 @@ export function evaluateQuantWorkspace(params, matchesInput) {
 
   const effectiveReport = appliedPlan
     ? archetypeToReport(appliedPlan, manualReport, matches)
-    : manualReport;
+    : quoteRejectedReason
+      ? {
+          ...manualReport,
+          canCheckout: false,
+          ruleBlockReason: quoteRejectedReason,
+        }
+      : manualReport;
 
   applyAutoSyntheticReportMeta(
     effectiveReport,
@@ -437,6 +486,8 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     fivePlans,
     subjectiveEVPct,
     allWarnings,
+    quoteInputSig: currentQuoteInputSig,
+    ...(quoteRejectedReason ? { quoteRejectedReason } : {}),
   };
 }
 

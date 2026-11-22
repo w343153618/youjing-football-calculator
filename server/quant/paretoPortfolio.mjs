@@ -2877,14 +2877,74 @@ export function generateParetoPortfolio(
     };
   };
 
-  const anchorBadgeNote = hasUserAnchors
-    ? `🎯 已同步赛事雷达已选方向：${Array.from(anchorsByMatch.entries())
+  const radarPickEntries = hasUserAnchors
+    ? Array.from(anchorsByMatch.entries()).flatMap(([mid, pks]) =>
+        pks.map((pk) => ({ mid, pk }))
+      )
+    : [];
+  const radarPickedSummaryText = hasUserAnchors
+    ? Array.from(anchorsByMatch.entries())
         .map(([mid, pks]) => {
           const fm = selected.find((x) => x.id === mid);
           return `${fm?.matchNumStr ?? ""}${fm?.home ?? ""}[${pks.map((p) => p.optionLabel).join("/")}]`;
         })
-        .join("、")}`
-    : null;
+        .join("、")
+    : "";
+
+  const classifySlotLegSource = (lg, freePrimaryByMatch) => {
+    if (hasUserAnchors) {
+      const ancList = anchorsByMatch.get(lg.matchId);
+      if (!ancList || ancList.length === 0) return "bridge-mate";
+      if (
+        ancList.some(
+          (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+        )
+      ) {
+        return "manual-anchor";
+      }
+      if (ancList.some((p) => p.poolCode === lg.poolCode)) {
+        return "same-match-shield";
+      }
+      return "cross-pool-substitute";
+    }
+    const firstLegSig = freePrimaryByMatch.get(lg.matchId);
+    const curSig = `${lg.poolCode}:${lg.optionKey}`;
+    if (!firstLegSig) {
+      freePrimaryByMatch.set(lg.matchId, curSig);
+      return "bridge-mate";
+    }
+    if (firstLegSig === curSig) return "bridge-mate";
+    const firstPool = firstLegSig.split(":")[0];
+    return lg.poolCode === firstPool
+      ? "same-match-shield"
+      : "cross-pool-substitute";
+  };
+
+  const buildSlotAnchorReason = (taggedLines) => {
+    if (!hasUserAnchors) return null;
+    const seenSys = new Set();
+    const sysItems = [];
+    for (const ln of taggedLines) {
+      for (const lg of ln.legs || []) {
+        if (lg.legSource === "manual-anchor") continue;
+        const sig = `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`;
+        if (seenSys.has(sig)) continue;
+        seenSys.add(sig);
+        sysItems.push(lg);
+      }
+    }
+    if (sysItems.length === 0) {
+      return `🎯 雷达亲选 ${radarPickEntries.length} 项（${radarPickedSummaryText}） · 系统扩选/替代 0 项（原盘直出）`;
+    }
+    const sysPreview = sysItems
+      .slice(0, 4)
+      .map(
+        (lg) => `${lg.matchNumStr || lg.home}${lg.poolName}[${lg.optionLabel}]`
+      )
+      .join("、");
+    const sysSuffix = sysItems.length > 4 ? `等${sysItems.length}项` : "";
+    return `🎯 雷达亲选 ${radarPickEntries.length} 项（${radarPickedSummaryText}） · 系统扩选/替代 ${sysItems.length} 项（${sysPreview}${sysSuffix}）`;
+  };
 
   const packSlot = ({
     key,
@@ -2957,7 +3017,15 @@ export function generateParetoPortfolio(
       };
     }
 
-    lines = legalLines;
+    const freePrimaryByMatch = new Map();
+    lines = legalLines.map((l) => ({
+      ...l,
+      legs: l.legs.map((lg) => ({
+        ...lg,
+        legSource:
+          lg.legSource || classifySlotLegSource(lg, freePrimaryByMatch),
+      })),
+    }));
 
     const totalCost = lines.reduce((a, l) => a + l.cost, 0);
     const effectiveSavedCash = Math.max(0, cleanBudget - totalCost);
@@ -2990,9 +3058,10 @@ export function generateParetoPortfolio(
       : jointEval;
     const { vigPct } = computeCapitalWeightedVig(lines, selected);
 
+    const slotAnchorReason = buildSlotAnchorReason(lines);
     const mergedReasons = [];
     if (prependWarningReason) mergedReasons.push(prependWarningReason);
-    if (anchorBadgeNote) mergedReasons.push(anchorBadgeNote);
+    if (slotAnchorReason) mergedReasons.push(slotAnchorReason);
     for (const r of reasons) mergedReasons.push(r);
 
     const slotOut = {

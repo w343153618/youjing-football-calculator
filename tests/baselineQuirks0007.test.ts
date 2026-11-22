@@ -1955,7 +1955,8 @@ describe("Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       (p: { key: string }) => p.key === "max-ev-utility"
     )!;
     ctrl.applyArchetype(spearPlan);
-    assert.equal(ctrl.getState().picks[0].matchId, m1.id);
+    assert.equal(ctrl.getState().picks.length, 0);
+    assert.equal(ctrl.getState().activeAuditedSlip.matches[0].matchId, m1.id);
 
     // 3. Frozen snapshotPlan preserves leg fairProb even when preview stance changes later
     const wsObjSnap = evaluateQuantWorkspace(

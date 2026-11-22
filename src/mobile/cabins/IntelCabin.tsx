@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { ManualSectionId } from "../../manual/UserManualModal.tsx";
 import type { MatchItem } from "../../prototype/quantTypes.ts";
 import type { PublicAccountUser } from "../../security/secureClient.ts";
@@ -82,7 +82,7 @@ export function IntelCabin({
   >({});
   const [perCardNotes, setPerCardNotes] = useState<Record<string, string>>({});
 
-  const { matches, picks } = snap.betSlipState;
+  const { matches, activeAuditedSlip } = snap.betSlipState;
   const { appliedPlan } = snap.playabilityGates;
   const {
     syncClock,
@@ -94,10 +94,7 @@ export function IntelCabin({
     authUser,
     offlineMode,
   } = snap;
-  const pickedMatchIds = useMemo(
-    () => Array.from(new Set(picks.map((p) => p.matchId))),
-    [picks]
-  );
+  const auditedMatchIds = activeAuditedSlip.matchIds;
   const residualList = normalizeComboResidualRisks(comboReport?.residualRisks);
 
   return (
@@ -142,7 +139,7 @@ export function IntelCabin({
         />
 
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {pickedMatchIds.length >= 2 && (
+          {auditedMatchIds.length >= 2 && (
             <button
               type="button"
               data-spring="0.92"
@@ -155,8 +152,8 @@ export function IntelCabin({
               {diagnosingCombo
                 ? "🧹 小高双维协同把脉中..."
                 : appliedPlan
-                  ? `🧹 协同会诊已套用【${appliedPlan.shortTab}】(${pickedMatchIds.length}场)`
-                  : `🧹 一键联合会诊已选 ${pickedMatchIds.length} 场方案`}
+                  ? `🧹 协同会诊已套用【${appliedPlan.shortTab}】(${auditedMatchIds.length}场)`
+                  : `🧹 一键联合会诊已选 ${auditedMatchIds.length} 场方案`}
             </button>
           )}
           <button

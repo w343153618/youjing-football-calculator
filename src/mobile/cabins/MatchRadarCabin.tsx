@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type {
   BridgeMatchCandidate,
+  BridgeMatchPreview,
   MatchItem,
   PoolCode,
   SelectedPick,
@@ -14,6 +15,7 @@ import type {
 } from "../../workspace/betSlipController.ts";
 import {
   RADAR_QUICK_FILTERS,
+  buildMatchRadarSelectedSubPoolPills,
   buildMatchRadarSingleBadge,
   type QuickFilter,
   type SheetState,
@@ -41,16 +43,21 @@ export function BridgeCandidatesCard({
   showBridgeFinder,
   bridgeCandidates,
   compact = false,
+  previewBridgeCandidate,
   onApplyBridgeCandidate,
 }: {
   showBridgeFinder: boolean;
   bridgeCandidates: BridgeMatchCandidate[];
   compact?: boolean;
+  previewBridgeCandidate?: (
+    cand: BridgeMatchCandidate
+  ) => BridgeMatchPreview | null;
   onApplyBridgeCandidate: (
     cand: BridgeMatchCandidate,
     triggerEl?: HTMLElement | null
   ) => void;
 }) {
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null);
   if (!showBridgeFinder || bridgeCandidates.length === 0) return null;
   return (
     <div
@@ -70,42 +77,92 @@ export function BridgeCandidatesCard({
           全盘精选 Top {bridgeCandidates.length}
         </span>
       </div>
-      {bridgeCandidates.map((cand) => (
-        <div
-          key={`${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`}
-          className="note-box"
-          style={{ margin: 0, padding: "6px 8px" }}
-        >
+      {bridgeCandidates.map((cand) => {
+        const candKey = `${cand.kind}-${cand.matchId}-${cand.poolCode}-${cand.optionKey}`;
+        const preview = previewBridgeCandidate?.(cand) ?? null;
+        const isConfirming = confirmingKey === candKey;
+        return (
           <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 6,
-              flexWrap: "wrap",
-            }}
+            key={candKey}
+            className="note-box"
+            style={{ margin: 0, padding: "6px 8px" }}
           >
-            <div>
-              <strong>
-                {cand.badge} · {cand.matchNumStr} {cand.home}vs{cand.away}
-              </strong>
-              <div className="small" style={{ margin: "2px 0 0" }}>
-                {cand.poolName}[{cand.optionLabel}@{cand.odds.toFixed(2)} · 真率
-                {(cand.fairProb * 100).toFixed(0)}%] — {cand.reason}
-              </div>
-            </div>
-            <button
-              type="button"
-              data-spring="0.88"
-              className="key mini dark"
-              style={{ flexShrink: 0 }}
-              onClick={(e) => onApplyBridgeCandidate(cand, e.currentTarget)}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                flexWrap: "wrap",
+              }}
             >
-              一键搭上
-            </button>
+              <div>
+                <strong>
+                  {cand.badge} · {cand.matchNumStr} {cand.home}vs{cand.away}
+                </strong>
+                <div className="small" style={{ margin: "2px 0 0" }}>
+                  {cand.poolName}[{cand.optionLabel}@{cand.odds.toFixed(2)} ·
+                  真率
+                  {(cand.fairProb * 100).toFixed(0)}%] — {cand.reason}
+                </div>
+                {preview && (
+                  <div
+                    className="small num"
+                    style={{
+                      margin: "2px 0 0",
+                      color: "var(--mark)",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {preview.summaryText}
+                  </div>
+                )}
+              </div>
+              {preview && isConfirming ? (
+                <div style={{ display: "flex", gap: 5, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    data-spring="0.88"
+                    className="key mini dark num"
+                    onClick={(e) => {
+                      setConfirmingKey(null);
+                      onApplyBridgeCandidate(cand, e.currentTarget);
+                    }}
+                  >
+                    确认加场 (¥{preview.previewTotalCost})
+                  </button>
+                  <button
+                    type="button"
+                    className="key mini"
+                    onClick={() => setConfirmingKey(null)}
+                  >
+                    取消
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  data-spring="0.88"
+                  className="key mini dark num"
+                  style={{ flexShrink: 0 }}
+                  onClick={(e) => {
+                    if (preview) {
+                      haptic(5);
+                      setConfirmingKey(candKey);
+                      return;
+                    }
+                    onApplyBridgeCandidate(cand, e.currentTarget);
+                  }}
+                >
+                  {preview
+                    ? `搭上预览 (¥${preview.previewTotalCost})`
+                    : "一键搭上"}
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -220,6 +277,10 @@ export function MatchRadarCabin({
     const dP = (m.pools.HAD.options[1]?.fairProb ?? 0.27) * 100;
     const aP = (m.pools.HAD.options[2]?.fairProb ?? 0.28) * 100;
     const singleBadge = buildMatchRadarSingleBadge(m);
+    const subPoolPills =
+      mode === "mix" || mode === "spf" || mode === "single"
+        ? buildMatchRadarSelectedSubPoolPills(m, picks)
+        : [];
 
     return (
       <div key={m.id} className="card enter">
@@ -563,6 +624,48 @@ export function MatchRadarCabin({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {subPoolPills.length > 0 && (
+          <div
+            className="num"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 5,
+              marginTop: 7,
+              paddingTop: 6,
+              borderTop: "0.5px dashed var(--line)",
+            }}
+          >
+            <span
+              className="small"
+              style={{ margin: 0, fontWeight: 600, color: "var(--mark)" }}
+            >
+              🎯 已选子玩法：
+            </span>
+            {subPoolPills.map((pill) => (
+              <button
+                key={pill.key}
+                type="button"
+                aria-label={pill.clearAriaLabel}
+                data-spring="0.88"
+                className="key mini on num"
+                style={{ padding: "2px 7px", fontSize: 11 }}
+                onClick={(e) =>
+                  onTogglePick(
+                    e.currentTarget,
+                    m,
+                    pill.poolCode,
+                    pill.optionKey
+                  )
+                }
+              >
+                {pill.text} ×
+              </button>
+            ))}
           </div>
         )}
 

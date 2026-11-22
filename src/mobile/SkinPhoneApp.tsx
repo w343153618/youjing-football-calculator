@@ -524,15 +524,23 @@ export function SkinPhoneApp({
                     skinKey={skin}
                   />
                   <div style={{ display: "flex", gap: 5 }}>
-                    {dkRightTab === "audit" && picks.length > 0 && (
-                      <button
-                        type="button"
-                        className="key mini"
-                        onClick={() => betCtrl.clearPicks()}
-                      >
-                        清空
-                      </button>
-                    )}
+                    {dkRightTab === "audit" &&
+                      (picks.length > 0 ||
+                        betSlipState.activeAuditedSlip.isAppliedPlan) && (
+                        <button
+                          type="button"
+                          className="key mini"
+                          onClick={() =>
+                            picks.length > 0
+                              ? betCtrl.clearPicks()
+                              : actions.restoreEqualMultiple()
+                          }
+                        >
+                          {picks.length > 0
+                            ? "清空"
+                            : betSlipState.activeAuditedSlip.revertActionLabel}
+                        </button>
+                      )}
                     <button
                       type="button"
                       className="help-pill"

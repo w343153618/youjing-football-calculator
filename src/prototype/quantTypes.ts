@@ -239,6 +239,12 @@ export interface TruthReport {
   warnings: RadarWarning[];
 }
 
+export type AuditedLegSource =
+  | "manual-anchor"
+  | "same-match-shield"
+  | "cross-pool-substitute"
+  | "bridge-mate";
+
 export interface PlanLeg {
   matchId: string;
   matchNumStr: string;
@@ -251,6 +257,7 @@ export interface PlanLeg {
   optionLabel: string;
   odds: number;
   fairProb: number;
+  legSource?: AuditedLegSource;
 }
 
 export interface PlanTicketLine {
@@ -350,9 +357,124 @@ export interface ArchetypePlan {
   breakevenUpgradeCost?: number | null;
   consolidateTickets?: boolean;
   consolidatedLines?: PlanTicketLine[];
+  quoteInputSig?: string;
+  quoteBudgetYuan?: number;
   vigPct: number;
   reasons: string[];
   lines: PlanTicketLine[];
+}
+
+export interface AuditedSlipLeg extends SelectedPick {
+  legSource: AuditedLegSource;
+  legSourceLabel: string;
+}
+
+export interface AuditedMatchPoolGroup {
+  poolCode: PoolCode;
+  poolName: string;
+  goalLine?: string;
+  legs: AuditedSlipLeg[];
+}
+
+export interface AuditedSlipMatchEntry {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  isManualPickedMatch: boolean;
+  isBanker: boolean;
+  pools: AuditedMatchPoolGroup[];
+  legs: AuditedSlipLeg[];
+}
+
+export interface BudgetMismatchMeta {
+  appliedBudgetYuan: number;
+  currentBudgetYuan: number;
+  bannerText: string;
+}
+
+export interface LivePortfolioQuoteState {
+  quoteVersion: number;
+  inputSig: string;
+  computedInputSig: string;
+  picksSig: string;
+  budget: number;
+  poolMatchIdsSig: string;
+  anchorToRadarPicks: boolean;
+  stance: UserStance;
+  subjectiveDeltaPct: number;
+  allowSaveCash: boolean;
+  unlockFullAgg: boolean;
+  passSpecSig: string;
+  oddsSnapshotSig: string;
+  isStale: boolean;
+  canApplyLiveQuote: boolean;
+}
+
+export interface AppliedTicketSnapshot {
+  key: ArchetypeKey;
+  shortTab: string;
+  appliedBudgetYuan: number;
+  quoteInputSig: string;
+  radarPickedMatchCount: number;
+  radarPickedLegCount: number;
+  manualAnchorLegCount: number;
+  systemExpandedLegCount: number;
+  legs: AuditedSlipLeg[];
+  lines: PlanTicketLine[];
+}
+
+export interface ActiveAuditedSlip {
+  sourceKind: "empty" | "manual" | "auto-synthetic" | "bonus-opt" | "archetype";
+  isAppliedPlan: boolean;
+  isArchetypePlan: boolean;
+  isAutoSynthetic: boolean;
+  matchIds: string[];
+  matchCount: number;
+  radarPickedMatchCount: number;
+  radarPickedLegCount: number;
+  manualAnchorLegCount: number;
+  systemExpandedLegCount: number;
+  totalLegCount: number;
+  drawerTitle: string;
+  revertActionLabel: string;
+  matches: AuditedSlipMatchEntry[];
+  legs: AuditedSlipLeg[];
+  lines: PlanTicketLine[];
+  budgetMismatchMeta: BudgetMismatchMeta | null;
+}
+
+export interface BridgeMatchPreview {
+  matchId: string;
+  matchNumStr: string;
+  matchTitle: string;
+  poolCode: PoolCode;
+  poolName: string;
+  optionKey: string;
+  optionLabel: string;
+  odds: number;
+  addedMatchCount: number;
+  addedLegCount: number;
+  previewMatchCount: number;
+  previewBetCount: number;
+  multiple: number;
+  previewTotalCost: number;
+  summaryText: string;
+}
+
+export interface ConvertPlanToManualPreview {
+  canConvert: boolean;
+  blockedReason?: string;
+  currentAppliedCost: number;
+  previewMultiple: number;
+  previewPassLabel: string;
+  previewBetCount: number;
+  previewTotalCost: number;
+  addedLegs: SelectedPick[];
+  trimmedCrossPoolLegs: SelectedPick[];
+  previewPicks: SelectedPick[];
+  summaryText: string;
 }
 
 export interface StaggeredHedgePlan {
@@ -421,6 +543,11 @@ export type AppliedPlanSpec =
       kind: "archetype";
       key: ArchetypeKey;
       snapshotPlan?: ArchetypePlan;
+      appliedBudgetYuan?: number;
+      planBudgetYuan?: number;
+      quoteInputSig?: string;
+      expectedQuoteInputSig?: string;
+      appliedTicketSnapshot?: AppliedTicketSnapshot | null;
       scaleMultiple?: number;
       consolidateTickets?: boolean;
     };
@@ -439,6 +566,8 @@ export interface QuantWorkspaceParams {
   stance: UserStance;
   unlockFullAgg: boolean;
   allowSaveCash?: boolean;
+  quoteInputSig?: string;
+  expectedQuoteInputSig?: string;
   clientAlerts?: Record<string, NonNullable<MatchItem["aiAlert"]>>;
 }
 
@@ -452,6 +581,8 @@ export interface QuantWorkspaceResponse {
   fivePlans: ArchetypePlan[];
   subjectiveEVPct: number;
   allWarnings: RadarWarning[];
+  quoteInputSig?: string;
+  quoteRejectedReason?: string | null;
 }
 
 export const EMPTY_TRUTH_REPORT: TruthReport = {

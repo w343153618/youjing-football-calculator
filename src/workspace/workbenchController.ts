@@ -96,6 +96,7 @@ export interface WorkbenchXiaogaoPort {
       sourceMode: "picked" | "custom";
       matchIds: string[];
       picks: SelectedPick[];
+      auditedLegs?: SelectedPick[];
       userNote?: string;
     }
   ): Promise<{ comboReport: XiaoGaoComboReport; aiRemaining?: number }>;
@@ -1107,10 +1108,11 @@ export function createWorkbenchController(
         return { ok: false as const, error: "当前已有排雷任务进行中" };
       }
       const sourceMode = opts?.sourceMode ?? "picked";
+      const auditedSlip = betSlip.getActiveAuditedSlip();
       const candidateIds =
         opts?.matchIds ??
         (sourceMode === "picked"
-          ? betSlip.getPickedMatchIds()
+          ? betSlip.getAuditedMatchIds()
           : comboSelectedIds);
       const allMatches = betSlip.getState().matches;
       const targetList = allMatches.filter((m) => candidateIds.includes(m.id));
@@ -1131,6 +1133,7 @@ export function createWorkbenchController(
             sourceMode,
             matchIds: targetList.map((m) => m.id),
             picks: sourceMode === "picked" ? betSlip.getState().picks : [],
+            auditedLegs: sourceMode === "picked" ? auditedSlip.legs : undefined,
             userNote: opts?.userNote || undefined,
           });
         syncRemainingAiQuota(aiRemaining);

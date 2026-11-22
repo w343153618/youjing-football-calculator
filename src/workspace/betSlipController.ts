@@ -2,16 +2,28 @@ import {
   EMPTY_WORKSPACE_RESPONSE,
   SUBJECTIVE_DELTA_MAX,
   SUBJECTIVE_DELTA_MIN,
+  type ActiveAuditedSlip,
   type AppliedPlanSpec,
+  type AppliedTicketSnapshot,
+  type ArchetypeKey,
   type ArchetypePlan,
+  type AuditedLegSource,
+  type AuditedMatchPoolGroup,
+  type AuditedSlipLeg,
+  type AuditedSlipMatchEntry,
   type BonusOptMode,
   type BridgeMatchCandidate,
+  type BridgeMatchPreview,
+  type BudgetMismatchMeta,
   type ComboRow,
+  type ConvertPlanToManualPreview,
   type EquivalentArbItem,
   type LedgerTicketSnapshot,
+  type LivePortfolioQuoteState,
   type MatchItem,
   type PartialCoveragePreview,
   type PassSelectionSpec,
+  type PlanLeg,
   type PlanTicketLine,
   type PoolCode,
   type PortfolioKey,
@@ -62,6 +74,7 @@ export interface PlayabilityGates {
   canToggleBanker: boolean;
   canToggleBankerMatch: (matchId: string) => boolean;
   breakevenTargetCost: number | null;
+  budgetMismatchMeta: BudgetMismatchMeta | null;
   appliedPlan: ArchetypePlan | null;
   effectiveAppliedPlan: ArchetypePlan | null;
   portfolioPlans: ArchetypePlan[];
@@ -69,6 +82,59 @@ export interface PlayabilityGates {
   fallbackValidArch: ArchetypePlan | null;
   showBridgeFinder: boolean;
   hasSuboptimalManual: boolean;
+}
+
+const CLIENT_STATUTORY_POOL_MAX_PASS: Record<PoolCode, number> = {
+  HAD: 8,
+  HHAD: 8,
+  TTG: 6,
+  HAFU: 4,
+  CRS: 4,
+};
+
+function computeElementaryBetCount(
+  perMatchCounts: number[],
+  passSizes: number[],
+  bankerIndices: number[] = []
+): number {
+  const n = perMatchCounts.length;
+  if (n === 0 || passSizes.length === 0) return 0;
+  const maxS = Math.min(n, Math.max(0, ...passSizes));
+  if (maxS <= 0) return 0;
+  if (bankerIndices.length === 0) {
+    const dp = new Float64Array(maxS + 1);
+    dp[0] = 1;
+    for (const c of perMatchCounts) {
+      for (let s = maxS; s >= 1; s--) {
+        dp[s] += dp[s - 1] * c;
+      }
+    }
+    return passSizes.reduce(
+      (sum, s) => sum + (s >= 1 && s <= maxS ? Math.round(dp[s]) : 0),
+      0
+    );
+  }
+  const bankerSet = new Set(bankerIndices);
+  let bankerProd = 1;
+  const nonBankerCounts: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (bankerSet.has(i)) bankerProd *= perMatchCounts[i];
+    else nonBankerCounts.push(perMatchCounts[i]);
+  }
+  const bCount = bankerSet.size;
+  const maxRem = Math.max(0, maxS - bCount);
+  const dp = new Float64Array(maxRem + 1);
+  dp[0] = 1;
+  for (const c of nonBankerCounts) {
+    for (let s = maxRem; s >= 1; s--) {
+      dp[s] += dp[s - 1] * c;
+    }
+  }
+  return passSizes.reduce((sum, s) => {
+    const rem = s - bCount;
+    if (rem < 0 || rem > nonBankerCounts.length) return sum;
+    return sum + Math.round(bankerProd * dp[rem]);
+  }, 0);
 }
 
 export function normalizeBudgetYuan(rawBudget: number): number {
@@ -343,10 +409,14 @@ export interface PoolSwitchUndoSnapshot {
 export interface BetSlipState {
   matches: MatchItem[];
   picks: SelectedPick[];
+  manualDraftPicks: SelectedPick[];
   mode: MatchMode;
   multiple: number;
   passSpec: PassSelectionSpec;
   planSpec: AppliedPlanSpec;
+  appliedTicketSnapshot: AppliedTicketSnapshot | null;
+  livePortfolioQuote: LivePortfolioQuoteState;
+  activeAuditedSlip: ActiveAuditedSlip;
   syntheticSingleMode: SyntheticSingleMode;
   lastPoolSwitchUndo: PoolSwitchUndoSnapshot | null;
   subjectiveDeltaPct: number;
@@ -457,28 +527,538 @@ function sanitizePassSpecForPicks(
     : { mode: "auto" };
 }
 
-function buildInitialState(): BetSlipState {
+export function computeClientPortfolioQuoteMeta(
+  s: Pick<
+    BetSlipState,
+    | "matches"
+    | "picks"
+    | "budget"
+    | "targetIds"
+    | "anchorToRadarPicks"
+    | "stance"
+    | "subjectiveDeltaPct"
+    | "allowSaveCash"
+    | "unlockFullAgg"
+    | "passSpec"
+  >
+): Omit<
+  LivePortfolioQuoteState,
+  "quoteVersion" | "computedInputSig" | "isStale" | "canApplyLiveQuote"
+> {
+  const cleanBudget = normalizeBudgetYuan(s.budget);
+  const cleanStance: UserStance =
+    s.stance === "home-lean" || s.stance === "upset-watch"
+      ? s.stance
+      : "objective";
+  const cleanSubj = Math.max(
+    SUBJECTIVE_DELTA_MIN,
+    Math.min(
+      SUBJECTIVE_DELTA_MAX,
+      Math.round(Number(s.subjectiveDeltaPct) || 0)
+    )
+  );
+  const passSpecSig = (() => {
+    const ps = s.passSpec;
+    if (!ps || ps.mode === "auto") return "auto";
+    if (ps.mode === "combo" && ps.comboCode) return `c:${ps.comboCode}`;
+    if (
+      ps.mode === "free" &&
+      Array.isArray(ps.passSizes) &&
+      ps.passSizes.length > 0
+    ) {
+      const sz = [...ps.passSizes]
+        .map(Number)
+        .sort((a, b) => a - b)
+        .join(",");
+      const bk = Array.isArray(ps.bankerMatchIds)
+        ? [...ps.bankerMatchIds].map(String).sort().join(",")
+        : "";
+      return `f:${sz}:b=${bk}`;
+    }
+    return "auto";
+  })();
+
+  const foundTargets = s.matches.filter((m) => s.targetIds.includes(m.id));
+  const resolvedTargets =
+    foundTargets.length > 0 ? foundTargets : s.matches.slice(0, 2);
+  const poolMatchIdsSig = resolvedTargets.map((m) => m.id).join(",");
+  const rawPicks = s.picks ?? [];
+  const picksSig =
+    rawPicks.length === 0
+      ? ""
+      : Array.from(
+          new Set(
+            rawPicks
+              .filter((p) => Boolean(p?.matchId && p?.poolCode && p?.optionKey))
+              .map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
+          )
+        )
+          .sort()
+          .join("|");
+
+  const poolOrder: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  let tokCount = 0;
+  const mixInt = (val: number) => {
+    const v = val | 0;
+    h1 = Math.imul((h1 ^ v) >>> 0, 0x01000193) >>> 0;
+    h2 = Math.imul((h2 ^ (v + (tokCount & 255))) >>> 0, 0x85ebca6b) >>> 0;
+    tokCount += 1;
+  };
+  const mixStr = (str: string) => {
+    for (let c = 0; c < str.length; c++) {
+      mixInt(str.charCodeAt(c));
+    }
+    mixInt(124);
+  };
+  for (let i = 0; i < resolvedTargets.length; i++) {
+    const m = resolvedTargets[i];
+    if (!m) continue;
+    mixStr(String(m.id ?? ""));
+    for (let j = 0; j < poolOrder.length; j++) {
+      const pc = poolOrder[j];
+      const pl = m.pools?.[pc];
+      if (
+        !pl ||
+        pl.selling === false ||
+        !Array.isArray(pl.options) ||
+        pl.options.length === 0
+      ) {
+        mixInt(45);
+        continue;
+      }
+      const flags =
+        (pl.single ? 4 : 0) |
+        (pl.canSingle === false ? 0 : 2) |
+        (pl.canAllUp === false ? 0 : 1);
+      mixInt(flags);
+      for (let k = 0; k < pl.options.length; k++) {
+        const o = pl.options[k];
+        mixStr(String(o.key ?? ""));
+        mixInt(Math.round((Number(o.odds) || 0) * 100));
+      }
+      mixInt(59);
+    }
+  }
+  const oddsSnapshotSig = `${h1.toString(36)}_${h2.toString(36)}_${tokCount}`;
+  const inputSig = `v1|b=${cleanBudget}|st=${cleanStance}|sd=${cleanSubj}|sc=${s.allowSaveCash ? 1 : 0}|ua=${s.unlockFullAgg ? 1 : 0}|ar=${s.anchorToRadarPicks ? 1 : 0}|ps=${passSpecSig}|t=${poolMatchIdsSig}|pk=${picksSig}|od=${oddsSnapshotSig}`;
   return {
-    matches: [],
-    picks: [],
-    mode: "mix",
+    inputSig,
+    picksSig,
+    budget: cleanBudget,
+    poolMatchIdsSig,
+    anchorToRadarPicks: Boolean(s.anchorToRadarPicks),
+    stance: cleanStance,
+    subjectiveDeltaPct: cleanSubj,
+    allowSaveCash: Boolean(s.allowSaveCash),
+    unlockFullAgg: Boolean(s.unlockFullAgg),
+    passSpecSig,
+    oddsSnapshotSig,
+  };
+}
+
+export function formatAuditedLegSourceLabel(
+  legSource: AuditedLegSource,
+  hasManualAnchors: boolean
+): string {
+  if (legSource === "manual-anchor") return "🎯 用户亲选";
+  if (legSource === "same-match-shield") return "🛡️ 同场护盾扩选";
+  if (legSource === "cross-pool-substitute") return "🔄 跨玩法替代";
+  return hasManualAnchors ? "🌉 过桥配菜场" : "🤖 自由池推荐";
+}
+
+function classifyPlanLegSourceAgainstManual(
+  lg: Pick<PlanLeg, "matchId" | "poolCode" | "optionKey" | "legSource">,
+  manualByMatch: Map<string, SelectedPick[]>,
+  hasManualAnchors: boolean,
+  freePrimaryByMatch: Map<string, string>
+): AuditedLegSource {
+  if (hasManualAnchors) {
+    const mPicks = manualByMatch.get(lg.matchId);
+    if (!mPicks || mPicks.length === 0) return "bridge-mate";
+    if (
+      mPicks.some(
+        (p) => p.poolCode === lg.poolCode && p.optionKey === lg.optionKey
+      )
+    ) {
+      return "manual-anchor";
+    }
+    if (mPicks.some((p) => p.poolCode === lg.poolCode)) {
+      return "same-match-shield";
+    }
+    return "cross-pool-substitute";
+  }
+  if (
+    lg.legSource === "same-match-shield" ||
+    lg.legSource === "cross-pool-substitute" ||
+    lg.legSource === "bridge-mate"
+  ) {
+    return lg.legSource;
+  }
+  const curSig = `${lg.poolCode}:${lg.optionKey}`;
+  const firstSig = freePrimaryByMatch.get(lg.matchId);
+  if (!firstSig) {
+    freePrimaryByMatch.set(lg.matchId, curSig);
+    return "bridge-mate";
+  }
+  if (firstSig === curSig) return "bridge-mate";
+  return lg.poolCode === firstSig.split(":")[0]
+    ? "same-match-shield"
+    : "cross-pool-substitute";
+}
+
+function buildAppliedTicketSnapshotForPlan(
+  plan: ArchetypePlan,
+  manualDraftPicks: SelectedPick[],
+  matches: MatchItem[],
+  appliedBudgetYuan: number,
+  quoteInputSig: string
+): {
+  taggedPlan: ArchetypePlan;
+  snapshot: AppliedTicketSnapshot;
+} {
+  const manualByMatch = new Map<string, SelectedPick[]>();
+  for (const pk of manualDraftPicks) {
+    const arr = manualByMatch.get(pk.matchId) ?? [];
+    arr.push(pk);
+    manualByMatch.set(pk.matchId, arr);
+  }
+  const hasManualAnchors = manualDraftPicks.length > 0;
+  const freePrimaryByMatch = new Map<string, string>();
+  const matchMap = new Map(matches.map((m) => [m.id, m]));
+  const boardIndex = new Map(matches.map((m, idx) => [m.id, idx]));
+
+  const taggedLines: PlanTicketLine[] = plan.lines.map((ln) => ({
+    ...ln,
+    legs: ln.legs.map((lg) => {
+      const legSource = classifyPlanLegSourceAgainstManual(
+        lg,
+        manualByMatch,
+        hasManualAnchors,
+        freePrimaryByMatch
+      );
+      return { ...lg, legSource };
+    }),
+  }));
+
+  const distinctLegsMap = new Map<string, AuditedSlipLeg>();
+  for (const ln of taggedLines) {
+    for (const lg of ln.legs) {
+      const key = `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`;
+      if (distinctLegsMap.has(key)) continue;
+      const fm = matchMap.get(lg.matchId);
+      const pool = fm?.pools?.[lg.poolCode];
+      const legSource = lg.legSource ?? "bridge-mate";
+      distinctLegsMap.set(key, {
+        matchId: lg.matchId,
+        matchNumStr: fm?.matchNumStr || lg.matchNumStr,
+        home: fm?.home || lg.home,
+        away: fm?.away || lg.away,
+        poolCode: lg.poolCode,
+        poolName: pool?.name || lg.poolName,
+        singleAllowed: Boolean(pool?.single),
+        canSingle: pool?.canSingle ?? Boolean(pool?.single),
+        canAllUp: pool?.canAllUp ?? pool?.selling !== false,
+        optionKey: lg.optionKey,
+        optionLabel: lg.optionLabel,
+        odds: lg.odds,
+        fairProb: lg.fairProb,
+        legSource,
+        legSourceLabel: formatAuditedLegSourceLabel(
+          legSource,
+          hasManualAnchors
+        ),
+      });
+    }
+  }
+
+  const orderedLegs = Array.from(distinctLegsMap.values()).sort((a, b) => {
+    const ia = boardIndex.get(a.matchId) ?? Number.MAX_SAFE_INTEGER;
+    const ib = boardIndex.get(b.matchId) ?? Number.MAX_SAFE_INTEGER;
+    return ia - ib;
+  });
+
+  const manualAnchorLegCount = orderedLegs.filter(
+    (l) => l.legSource === "manual-anchor"
+  ).length;
+  const systemExpandedLegCount = orderedLegs.length - manualAnchorLegCount;
+
+  const taggedPlan: ArchetypePlan = {
+    ...plan,
+    quoteInputSig,
+    quoteBudgetYuan: appliedBudgetYuan,
+    lines: taggedLines,
+  };
+
+  return {
+    taggedPlan,
+    snapshot: {
+      key: plan.key,
+      shortTab: plan.shortTab,
+      appliedBudgetYuan,
+      quoteInputSig,
+      radarPickedMatchCount: manualByMatch.size,
+      radarPickedLegCount: manualDraftPicks.length,
+      manualAnchorLegCount,
+      systemExpandedLegCount,
+      legs: orderedLegs,
+      lines: taggedLines,
+    },
+  };
+}
+
+function buildActiveAuditedSlip(
+  s: Omit<BetSlipState, "activeAuditedSlip">
+): ActiveAuditedSlip {
+  const manualDraftPicks = s.picks ?? [];
+  const manualByMatch = new Map<string, SelectedPick[]>();
+  for (const pk of manualDraftPicks) {
+    const arr = manualByMatch.get(pk.matchId) ?? [];
+    arr.push(pk);
+    manualByMatch.set(pk.matchId, arr);
+  }
+  const radarPickedMatchCount = manualByMatch.size;
+  const radarPickedLegCount = manualDraftPicks.length;
+  const hasManualAnchors = radarPickedLegCount > 0;
+  const revertActionLabel = hasManualAnchors ? "回到我的手选" : "撤销方案";
+
+  let budgetMismatchMeta: BudgetMismatchMeta | null = null;
+  if (s.planSpec?.kind === "archetype") {
+    const rawLocked =
+      s.appliedTicketSnapshot?.appliedBudgetYuan ??
+      s.planSpec.appliedBudgetYuan ??
+      s.planSpec.planBudgetYuan;
+    if (typeof rawLocked === "number" && rawLocked > 0) {
+      const appliedBudgetYuan = normalizeBudgetYuan(rawLocked);
+      const currentBudgetYuan = normalizeBudgetYuan(s.budget);
+      if (appliedBudgetYuan !== currentBudgetYuan) {
+        budgetMismatchMeta = {
+          appliedBudgetYuan,
+          currentBudgetYuan,
+          bannerText: `已套 ¥${appliedBudgetYuan} / 当前新预算 ¥${currentBudgetYuan}（点此重配）`,
+        };
+      }
+    }
+  }
+
+  const effectiveReport = s.workspace.effectiveReport;
+  const manualReport = s.workspace.manualReport;
+  const isAutoSynthetic = Boolean(
+    !s.planSpec &&
+    effectiveReport.syntheticAutoMounted &&
+    s.workspace.appliedPlan
+  );
+  const sourceKind: ActiveAuditedSlip["sourceKind"] =
+    s.planSpec?.kind === "archetype"
+      ? "archetype"
+      : s.planSpec?.kind === "bonus"
+        ? "bonus-opt"
+        : isAutoSynthetic
+          ? "auto-synthetic"
+          : manualDraftPicks.length > 0
+            ? "manual"
+            : "empty";
+  const isAppliedPlan =
+    sourceKind === "archetype" || sourceKind === "bonus-opt";
+  const isArchetypePlan = sourceKind === "archetype";
+
+  const matchMap = new Map(s.matches.map((m) => [m.id, m]));
+  const boardIndex = new Map(s.matches.map((m, idx) => [m.id, idx]));
+  const bankerSet = new Set(
+    effectiveReport.bankerMatchIds ??
+      manualReport.bankerMatchIds ??
+      s.passSpec.bankerMatchIds ??
+      []
+  );
+
+  let sourceLines: PlanTicketLine[] = [];
+  const distinctLegsMap = new Map<string, AuditedSlipLeg>();
+  const freePrimaryByMatch = new Map<string, string>();
+
+  if (
+    sourceKind === "archetype" ||
+    sourceKind === "bonus-opt" ||
+    sourceKind === "auto-synthetic"
+  ) {
+    const resolvedPlan =
+      s.workspace.appliedPlan ??
+      (s.planSpec?.kind === "archetype"
+        ? (s.planSpec.snapshotPlan ?? null)
+        : null);
+    sourceLines =
+      resolvedPlan?.lines ??
+      (sourceKind === "archetype"
+        ? (s.appliedTicketSnapshot?.lines ?? [])
+        : []);
+
+    for (const ln of sourceLines) {
+      for (const lg of ln.legs ?? []) {
+        const key = `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`;
+        if (distinctLegsMap.has(key)) continue;
+        const fm = matchMap.get(lg.matchId);
+        const pool = fm?.pools?.[lg.poolCode];
+        const liveOpt = pool?.options?.find((o) => o.key === lg.optionKey);
+        const legSource: AuditedLegSource =
+          sourceKind === "bonus-opt"
+            ? "manual-anchor"
+            : classifyPlanLegSourceAgainstManual(
+                lg,
+                manualByMatch,
+                hasManualAnchors,
+                freePrimaryByMatch
+              );
+        distinctLegsMap.set(key, {
+          matchId: lg.matchId,
+          matchNumStr: fm?.matchNumStr || lg.matchNumStr,
+          home: fm?.home || lg.home,
+          away: fm?.away || lg.away,
+          poolCode: lg.poolCode,
+          poolName: pool?.name || lg.poolName,
+          singleAllowed: Boolean(pool?.single),
+          canSingle: pool?.canSingle ?? Boolean(pool?.single),
+          canAllUp: pool?.canAllUp ?? pool?.selling !== false,
+          optionKey: lg.optionKey,
+          optionLabel: liveOpt?.label || lg.optionLabel,
+          odds: lg.odds,
+          fairProb: lg.fairProb,
+          legSource,
+          legSourceLabel: formatAuditedLegSourceLabel(
+            legSource,
+            hasManualAnchors
+          ),
+        });
+      }
+    }
+  } else if (sourceKind === "manual") {
+    for (const pk of manualDraftPicks) {
+      const key = `${pk.matchId}:${pk.poolCode}:${pk.optionKey}`;
+      if (distinctLegsMap.has(key)) continue;
+      const fm = matchMap.get(pk.matchId);
+      const pool = fm?.pools?.[pk.poolCode];
+      distinctLegsMap.set(key, {
+        ...pk,
+        matchNumStr: fm?.matchNumStr || pk.matchNumStr,
+        home: fm?.home || pk.home,
+        away: fm?.away || pk.away,
+        poolName: pool?.name || pk.poolName,
+        legSource: "manual-anchor",
+        legSourceLabel: formatAuditedLegSourceLabel("manual-anchor", true),
+      });
+    }
+  }
+
+  const orderedLegs = Array.from(distinctLegsMap.values()).sort((a, b) => {
+    const ia = boardIndex.get(a.matchId) ?? Number.MAX_SAFE_INTEGER;
+    const ib = boardIndex.get(b.matchId) ?? Number.MAX_SAFE_INTEGER;
+    return ia - ib;
+  });
+
+  const matchEntriesMap = new Map<string, AuditedSlipMatchEntry>();
+  for (const lg of orderedLegs) {
+    const fm = matchMap.get(lg.matchId);
+    let entry = matchEntriesMap.get(lg.matchId);
+    if (!entry) {
+      entry = {
+        matchId: lg.matchId,
+        matchNumStr: fm?.matchNumStr || lg.matchNumStr,
+        home: fm?.home || lg.home,
+        away: fm?.away || lg.away,
+        kickoff: fm?.kickoff || "",
+        isManualPickedMatch: manualByMatch.has(lg.matchId),
+        isBanker: bankerSet.has(lg.matchId),
+        pools: [],
+        legs: [],
+      };
+      matchEntriesMap.set(lg.matchId, entry);
+    }
+    entry.legs.push(lg);
+    let poolGroup = entry.pools.find((pg) => pg.poolCode === lg.poolCode);
+    if (!poolGroup) {
+      poolGroup = {
+        poolCode: lg.poolCode,
+        poolName: fm?.pools?.[lg.poolCode]?.name || lg.poolName,
+        ...(lg.poolCode === "HHAD" && fm?.pools?.HHAD?.goalLine
+          ? { goalLine: fm.pools.HHAD.goalLine }
+          : {}),
+        legs: [],
+      };
+      entry.pools.push(poolGroup);
+    }
+    poolGroup.legs.push(lg);
+  }
+
+  const matchEntries = Array.from(matchEntriesMap.values());
+  const matchIds = matchEntries.map((m) => m.matchId);
+  const manualAnchorLegCount = orderedLegs.filter(
+    (l) => l.legSource === "manual-anchor"
+  ).length;
+  const systemExpandedLegCount = orderedLegs.length - manualAnchorLegCount;
+  const drawerTitle =
+    isAppliedPlan || isAutoSynthetic
+      ? `📋 方案涉及 ${matchEntries.length} 场 · 雷达亲选 ${radarPickedMatchCount} 场`
+      : `📋 已选对阵与实时水位 (${matchEntries.length} 场)`;
+
+  return {
+    sourceKind,
+    isAppliedPlan,
+    isArchetypePlan,
+    isAutoSynthetic,
+    matchIds,
+    matchCount: matchEntries.length,
+    radarPickedMatchCount,
+    radarPickedLegCount,
+    manualAnchorLegCount,
+    systemExpandedLegCount,
+    totalLegCount: orderedLegs.length,
+    drawerTitle,
+    revertActionLabel,
+    matches: matchEntries,
+    legs: orderedLegs,
+    lines: sourceLines,
+    budgetMismatchMeta,
+  };
+}
+
+function buildInitialState(): BetSlipState {
+  const base = {
+    matches: [] as MatchItem[],
+    picks: [] as SelectedPick[],
+    manualDraftPicks: [] as SelectedPick[],
+    mode: "mix" as MatchMode,
     multiple: 5,
-    passSpec: { mode: "auto" },
-    planSpec: null,
-    syntheticSingleMode: "full-3way",
-    lastPoolSwitchUndo: null,
+    passSpec: { mode: "auto" } as PassSelectionSpec,
+    planSpec: null as AppliedPlanSpec,
+    appliedTicketSnapshot: null as AppliedTicketSnapshot | null,
+    syntheticSingleMode: "full-3way" as SyntheticSingleMode,
+    lastPoolSwitchUndo: null as PoolSwitchUndoSnapshot | null,
     subjectiveDeltaPct: 0,
     simVoidFirstMatch: false,
-    targetIds: [],
+    targetIds: [] as string[],
     anchorToRadarPicks: false,
     manualPoolOverride: false,
     syncedRadarSig: "",
     budget: 100,
-    stance: "objective",
+    stance: "objective" as UserStance,
     unlockFullAgg: false,
     allowSaveCash: false,
     workspace: EMPTY_WORKSPACE_RESPONSE,
-    objectivePortfolioPlans: [],
+    objectivePortfolioPlans: [] as ArchetypePlan[],
+  };
+  const qMeta = computeClientPortfolioQuoteMeta(base);
+  const withQuote = {
+    ...base,
+    livePortfolioQuote: {
+      quoteVersion: 0,
+      ...qMeta,
+      computedInputSig: qMeta.inputSig,
+      isStale: false,
+      canApplyLiveQuote: true,
+    },
+  };
+  return {
+    ...withQuote,
+    activeAuditedSlip: buildActiveAuditedSlip(withQuote),
   };
 }
 
@@ -651,8 +1231,50 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   let inFlightPromise: Promise<void> | null = null;
 
   let state: BetSlipState = buildInitialState();
+  let quoteVersion = 0;
+  let lastKnownInputSig = state.livePortfolioQuote.inputSig;
+  let computedInputSig = state.livePortfolioQuote.inputSig;
+  let lastReconciledRef: BetSlipState | null = state;
+  let pendingRequote: {
+    slotKey: ArchetypeKey;
+    expectedInputSig: string;
+    allowSlotFallback: boolean;
+  } | null = null;
+
+  function reconcileState(): BetSlipState {
+    if (lastReconciledRef === state) return state;
+    const qMeta = computeClientPortfolioQuoteMeta(state);
+    if (qMeta.inputSig !== lastKnownInputSig) {
+      quoteVersion += 1;
+      lastKnownInputSig = qMeta.inputSig;
+    }
+    const isStale = bootstrapped ? qMeta.inputSig !== computedInputSig : false;
+    const appliedTicketSnapshot =
+      state.planSpec?.kind === "archetype"
+        ? (state.planSpec.appliedTicketSnapshot ?? null)
+        : null;
+    const nextCore = {
+      ...state,
+      manualDraftPicks: state.picks,
+      appliedTicketSnapshot,
+      livePortfolioQuote: {
+        quoteVersion,
+        ...qMeta,
+        computedInputSig,
+        isStale,
+        canApplyLiveQuote: !isStale,
+      },
+    };
+    state = {
+      ...nextCore,
+      activeAuditedSlip: buildActiveAuditedSlip(nextCore),
+    };
+    lastReconciledRef = state;
+    return state;
+  }
 
   function emit() {
+    reconcileState();
     for (const fn of listeners) fn();
   }
 
@@ -719,6 +1341,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     for (const m of s.matches) {
       if (m.aiAlert) clientAlerts[m.id] = m.aiAlert;
     }
+    const qMeta = computeClientPortfolioQuoteMeta(s);
     return {
       picks: s.picks,
       multiple: s.multiple,
@@ -733,13 +1356,78 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       stance: s.stance,
       unlockFullAgg: s.unlockFullAgg,
       allowSaveCash: s.allowSaveCash,
+      quoteInputSig: qMeta.inputSig,
       clientAlerts,
     };
+  }
+
+  function maybeConsumePendingRequote(
+    ws: QuantWorkspaceResponse,
+    resolvedSig: string
+  ): boolean {
+    if (!pendingRequote) return false;
+    const curSig = computeClientPortfolioQuoteMeta(state).inputSig;
+    if (
+      pendingRequote.expectedInputSig !== resolvedSig ||
+      curSig !== resolvedSig
+    ) {
+      pendingRequote = null;
+      return false;
+    }
+    const req = pendingRequote;
+    pendingRequote = null;
+    const plans = ws.portfolioPlans ?? [];
+    const cand =
+      plans.find(
+        (p) =>
+          p.key === req.slotKey &&
+          p.available !== false &&
+          Array.isArray(p.lines) &&
+          p.lines.length > 0
+      ) ??
+      (req.allowSlotFallback
+        ? plans.find(
+            (p) =>
+              p.available !== false &&
+              Array.isArray(p.lines) &&
+              p.lines.length > 0
+          )
+        : null);
+    if (!cand) return false;
+    const cleanBudget = normalizeBudgetYuan(state.budget);
+    if (cand.totalCost > cleanBudget + 1e-6) return false;
+    const { taggedPlan, snapshot } = buildAppliedTicketSnapshotForPlan(
+      cand,
+      state.picks,
+      state.matches,
+      cleanBudget,
+      resolvedSig
+    );
+    state = {
+      ...state,
+      planSpec: {
+        kind: "archetype",
+        key: cand.key,
+        snapshotPlan: taggedPlan,
+        appliedBudgetYuan: cleanBudget,
+        planBudgetYuan: cleanBudget,
+        quoteInputSig: resolvedSig,
+        appliedTicketSnapshot: snapshot,
+        scaleMultiple: 1,
+        consolidateTickets: true,
+      },
+      appliedTicketSnapshot: snapshot,
+      simVoidFirstMatch: false,
+    };
+    return true;
   }
 
   function executeComputeNow(): Promise<void> {
     const seq = ++computeSeq;
     const paramsSnapshot = buildWorkspaceParams(state);
+    const requestInputSig =
+      paramsSnapshot.quoteInputSig ??
+      computeClientPortfolioQuoteMeta(state).inputSig;
     const matchesSnapshot = state.matches;
 
     try {
@@ -755,8 +1443,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
       if (isAsync) {
         const p = Promise.resolve(maybeMain)
-          .then((ws) => {
+          .then(async (ws) => {
             if (seq === computeSeq) {
+              const resolvedSig = ws.quoteInputSig || requestInputSig;
+              computedInputSig = resolvedSig;
               state = {
                 ...state,
                 workspace: ws,
@@ -766,8 +1456,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
                   state.objectivePortfolioPlans
                 ),
               };
+              const reapplied = maybeConsumePendingRequote(ws, resolvedSig);
               options.onComputeSuccess?.();
               emit();
+              if (reapplied) {
+                await executeComputeNow();
+              }
             }
           })
           .catch((err) => {
@@ -784,6 +1478,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
 
       if (seq === computeSeq) {
         const ws = maybeMain as QuantWorkspaceResponse;
+        const resolvedSig = ws.quoteInputSig || requestInputSig;
+        computedInputSig = resolvedSig;
         state = {
           ...state,
           workspace: ws,
@@ -793,8 +1489,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             state.objectivePortfolioPlans
           ),
         };
+        const reapplied = maybeConsumePendingRequote(ws, resolvedSig);
         options.onComputeSuccess?.();
         emit();
+        if (reapplied) {
+          return executeComputeNow();
+        }
       }
       return Promise.resolve();
     } catch (err) {
@@ -907,14 +1607,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       ...baseState,
       targetIds: bundle.matches.slice(0, 2).map((m) => m.id),
     });
-    state = {
+    const nextState: BetSlipState = {
       ...baseState,
       matches: bundle.matches,
       picks: bundle.initialPicks,
+      manualDraftPicks: bundle.initialPicks,
       ...radarSync,
       workspace: bundle.workspace,
       objectivePortfolioPlans: bundle.workspace.portfolioPlans ?? [],
     };
+    const initSig = computeClientPortfolioQuoteMeta(nextState).inputSig;
+    lastKnownInputSig = initSig;
+    computedInputSig = initSig;
+    state = nextState;
     emit();
   }
 
@@ -1080,13 +1785,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         []
     );
     const canToggleBanker =
+      !state.planSpec &&
       manualReport.matchCount >= 3 &&
       manualReport.matchCount <= 8 &&
       !manualReport.hasSameMatchCrossPoolConflict;
     const bankerWindow = resolveBankerPassWindow(distinctIds);
 
     const canToggleBankerMatch = (matchId: string): boolean => {
-      if (!distinctIds.includes(matchId) || !bankerWindow) return false;
+      if (state.planSpec || !distinctIds.includes(matchId) || !bankerWindow) {
+        return false;
+      }
       if (curBankers.includes(matchId)) return true;
       return (
         bankerWindow.maxBankers > 0 &&
@@ -1099,6 +1807,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       effectiveReport.breakevenUpgradeCost ??
       manualReport.breakevenUpgradeCost ??
       null;
+    const budgetMismatchMeta =
+      reconcileState().activeAuditedSlip.budgetMismatchMeta;
 
     const portfolioPlans = state.workspace.portfolioPlans?.length
       ? state.workspace.portfolioPlans
@@ -1136,6 +1846,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       canToggleBanker,
       canToggleBankerMatch,
       breakevenTargetCost,
+      budgetMismatchMeta,
       appliedPlan,
       effectiveAppliedPlan,
       portfolioPlans,
@@ -1147,7 +1858,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   }
 
   return {
-    getState: () => state,
+    getState: () => reconcileState(),
+    getActiveAuditedSlip: () => reconcileState().activeAuditedSlip,
+    getAuditedMatchIds: () => reconcileState().activeAuditedSlip.matchIds,
     getStanceDeltaSummary,
     getPlayabilityGates,
     subscribe(listener: () => void) {
@@ -1276,11 +1989,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         nextTargets.length !== state.targetIds.length ||
         nextTargets.some((id, idx) => id !== state.targetIds[idx]);
 
-      state = {
+      const nextSyncedState: BetSlipState = {
         ...state,
         matches: mergedMatches,
         targetIds: nextTargets,
         picks: syncedPicks,
+        manualDraftPicks: syncedPicks,
         workspace: res.workspace,
         objectivePortfolioPlans: resolveObjectivePortfolioPlans(
           state.stance,
@@ -1288,6 +2002,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           state.objectivePortfolioPlans
         ),
       };
+      if (!picksRemapped && !targetsChanged) {
+        computedInputSig =
+          res.workspace.quoteInputSig ||
+          computeClientPortfolioQuoteMeta(nextSyncedState).inputSig;
+      }
+      state = nextSyncedState;
       emit();
 
       if (picksRemapped || targetsChanged) {
@@ -1892,6 +2612,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     applyArchetype(plan: ArchetypePlan): boolean {
+      const cur = reconcileState();
       if (
         !plan ||
         plan.available === false ||
@@ -1900,48 +2621,54 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       ) {
         return false;
       }
-      const primaryPoolByMatch = new Map<string, PoolCode>();
-      const map = new Map<string, SelectedPick>();
-      plan.lines.forEach((l) =>
-        l.legs.forEach((lg) => {
-          const chosenPool = primaryPoolByMatch.get(lg.matchId) ?? lg.poolCode;
-          primaryPoolByMatch.set(lg.matchId, chosenPool);
-          if (lg.poolCode !== chosenPool) return;
-          const fm = state.matches.find((x) => x.id === lg.matchId);
-          map.set(`${lg.matchId}-${lg.poolCode}-${lg.optionKey}`, {
-            matchId: lg.matchId,
-            matchNumStr: lg.matchNumStr,
-            home: lg.home,
-            away: lg.away,
-            poolCode: lg.poolCode,
-            poolName: lg.poolName,
-            singleAllowed: fm?.pools[lg.poolCode]?.single ?? true,
-            optionKey: lg.optionKey,
-            optionLabel: lg.optionLabel,
-            odds: lg.odds,
-            fairProb: lg.fairProb,
-          });
-        })
+      if (
+        cur.livePortfolioQuote.isStale ||
+        !cur.livePortfolioQuote.canApplyLiveQuote
+      ) {
+        return false;
+      }
+      const cleanBudget = normalizeBudgetYuan(cur.budget);
+      if (
+        plan.quoteInputSig &&
+        plan.quoteInputSig !== cur.livePortfolioQuote.inputSig
+      ) {
+        return false;
+      }
+      if (
+        typeof plan.quoteBudgetYuan === "number" &&
+        normalizeBudgetYuan(plan.quoteBudgetYuan) !== cleanBudget
+      ) {
+        return false;
+      }
+      if (plan.totalCost > cleanBudget + 1e-6) {
+        return false;
+      }
+
+      const activeQuoteSig =
+        plan.quoteInputSig || cur.livePortfolioQuote.inputSig;
+      const { taggedPlan, snapshot } = buildAppliedTicketSnapshotForPlan(
+        plan,
+        cur.picks,
+        cur.matches,
+        cleanBudget,
+        activeQuoteSig
       );
-      const boardIndex = new Map<string, number>();
-      state.matches.forEach((m, idx) => boardIndex.set(m.id, idx));
-      const orderedPicks = Array.from(map.values()).sort((a, b) => {
-        const ia = boardIndex.get(a.matchId) ?? Number.MAX_SAFE_INTEGER;
-        const ib = boardIndex.get(b.matchId) ?? Number.MAX_SAFE_INTEGER;
-        return ia - ib;
-      });
+
       state = {
-        ...state,
+        ...cur,
         planSpec: {
           kind: "archetype",
           key: plan.key,
-          snapshotPlan: plan,
+          snapshotPlan: taggedPlan,
+          appliedBudgetYuan: cleanBudget,
+          planBudgetYuan: cleanBudget,
+          quoteInputSig: activeQuoteSig,
+          appliedTicketSnapshot: snapshot,
           scaleMultiple: 1,
           consolidateTickets: true,
         },
+        appliedTicketSnapshot: snapshot,
         simVoidFirstMatch: false,
-        subjectiveDeltaPct: 0,
-        picks: orderedPicks,
       };
       emit();
       void scheduleRefresh();
@@ -1949,10 +2676,130 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     restoreEqualMultiple() {
-      const { cleaned } = trimToSinglePoolPerMatch(state.picks);
-      state = { ...state, planSpec: null, picks: cleaned };
+      this.revertToManualDraft();
+    },
+
+    revertToManualDraft() {
+      pendingRequote = null;
+      const nextPicks =
+        state.mode !== "spf" && state.mode !== "single"
+          ? trimToSinglePoolPerMatch(state.picks).cleaned
+          : state.picks;
+      const safeSynMode: SyntheticSingleMode =
+        state.syntheticSingleMode === "off" ? "off" : "full-3way";
+      state = {
+        ...state,
+        planSpec: null,
+        appliedTicketSnapshot: null,
+        syntheticSingleMode: safeSynMode,
+        passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
+        picks: nextPicks,
+      };
       emit();
       void scheduleRefresh();
+    },
+
+    excludeMatchAndRequote(matchId: string): {
+      ok: boolean;
+      excludedMatchId?: string;
+      nextTargetIds?: string[];
+      reason?: string;
+    } {
+      const cur = reconcileState();
+      const prevSlotKey: ArchetypeKey =
+        cur.planSpec?.kind === "archetype"
+          ? cur.planSpec.key
+          : "max-ev-utility";
+      const curFound = cur.matches
+        .filter((m) => cur.targetIds.includes(m.id))
+        .map((m) => m.id);
+      const basePoolIds =
+        curFound.length > 0
+          ? curFound
+          : cur.matches.slice(0, 2).map((m) => m.id);
+      const unionIds = Array.from(
+        new Set([...basePoolIds, ...cur.activeAuditedSlip.matchIds])
+      );
+      let nextTargets = unionIds.filter((id) => id !== matchId);
+      if (nextTargets.length === 0) {
+        nextTargets = cur.matches
+          .filter((m) => m.id !== matchId)
+          .slice(0, 2)
+          .map((m) => m.id);
+      }
+      if (nextTargets.length === 0) {
+        return { ok: false, reason: "至少保留 1 场候选赛事用于重配" };
+      }
+      const hasRemainingManualAnchor =
+        cur.anchorToRadarPicks &&
+        nextTargets.some((id) => cur.picks.some((p) => p.matchId === id));
+      const nextStateDraft: BetSlipState = {
+        ...cur,
+        planSpec: null,
+        appliedTicketSnapshot: null,
+        targetIds: nextTargets,
+        anchorToRadarPicks: hasRemainingManualAnchor,
+        manualPoolOverride: true,
+        simVoidFirstMatch: false,
+      };
+      if (cur.planSpec?.kind === "archetype") {
+        const nextInputSig =
+          computeClientPortfolioQuoteMeta(nextStateDraft).inputSig;
+        pendingRequote = {
+          slotKey: prevSlotKey,
+          expectedInputSig: nextInputSig,
+          allowSlotFallback: true,
+        };
+      }
+      state = nextStateDraft;
+      emit();
+      void scheduleRefresh();
+      return {
+        ok: true,
+        excludedMatchId: matchId,
+        nextTargetIds: nextTargets,
+      };
+    },
+
+    requoteAppliedPlanAtCurrentBudget(): boolean {
+      const cur = reconcileState();
+      if (cur.planSpec?.kind !== "archetype") return false;
+      const slotKey = cur.planSpec.key;
+      if (!cur.livePortfolioQuote.isStale) {
+        const fresh = cur.workspace.portfolioPlans.find(
+          (p) =>
+            p.key === slotKey &&
+            p.available !== false &&
+            Array.isArray(p.lines) &&
+            p.lines.length > 0
+        );
+        if (fresh && this.applyArchetype(fresh)) {
+          return true;
+        }
+        state = {
+          ...cur,
+          planSpec: null,
+          appliedTicketSnapshot: null,
+        };
+        emit();
+        void scheduleRefresh();
+        return false;
+      }
+      const nextDraft: BetSlipState = {
+        ...cur,
+        planSpec: null,
+        appliedTicketSnapshot: null,
+      };
+      const expectedSig = computeClientPortfolioQuoteMeta(nextDraft).inputSig;
+      pendingRequote = {
+        slotKey,
+        expectedInputSig: expectedSig,
+        allowSlotFallback: false,
+      };
+      state = nextDraft;
+      emit();
+      void scheduleRefresh();
+      return true;
     },
 
     scaleAppliedPlanBy(factor: number) {
@@ -2095,6 +2942,13 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       isBanker?: boolean;
       reason?: string;
     } {
+      if (state.planSpec) {
+        return {
+          ok: false,
+          reason:
+            "已套用智能配单方案中不支持直接改胆，请先回到手选或排除场次重配",
+        };
+      }
       const distinctIds = Array.from(
         new Set(state.picks.map((p) => p.matchId))
       );
@@ -2169,6 +3023,107 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       return { ok: true, isBanker: true };
     },
 
+    previewBridgeCandidate(
+      cand: BridgeMatchCandidate
+    ): BridgeMatchPreview | null {
+      const m = state.matches.find((x) => x.id === cand?.matchId);
+      const pool = m?.pools?.[cand?.poolCode];
+      const opt = pool?.options?.find((o) => o.key === cand?.optionKey);
+      if (!m || !pool || !opt) return null;
+
+      const alreadyPicked = isPicked(
+        cand.matchId,
+        cand.poolCode,
+        cand.optionKey
+      );
+      const baseFiltered = state.picks.filter(
+        (p) => !(p.matchId === m.id && p.poolCode !== cand.poolCode)
+      );
+      const newPick: SelectedPick = {
+        matchId: m.id,
+        matchNumStr: m.matchNumStr,
+        home: m.home,
+        away: m.away,
+        poolCode: cand.poolCode,
+        poolName: pool.name,
+        singleAllowed: resolvePoolCanSingle(pool),
+        canSingle: resolvePoolCanSingle(pool),
+        canAllUp: resolvePoolCanAllUp(pool),
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        odds: opt.odds,
+        fairProb: opt.fairProb,
+      };
+      const nextPicks = alreadyPicked
+        ? state.picks
+        : [...baseFiltered, newPick];
+      const prevMatchSet = new Set(state.picks.map((p) => p.matchId));
+      const matchOrder: string[] = [];
+      const countsByMatch = new Map<string, number>();
+      let minPoolCap = 8;
+      for (const pk of nextPicks) {
+        if (!countsByMatch.has(pk.matchId)) matchOrder.push(pk.matchId);
+        countsByMatch.set(pk.matchId, (countsByMatch.get(pk.matchId) ?? 0) + 1);
+        minPoolCap = Math.min(
+          minPoolCap,
+          CLIENT_STATUTORY_POOL_MAX_PASS[pk.poolCode] ?? 8
+        );
+      }
+      const previewMatchCount = matchOrder.length;
+      const sanitizedPass = sanitizePassSpecForPicks(state.passSpec, nextPicks);
+      const passSizes =
+        sanitizedPass.mode === "free" &&
+        Array.isArray(sanitizedPass.passSizes) &&
+        sanitizedPass.passSizes.length > 0 &&
+        !(
+          sanitizedPass.passSizes.length === 1 &&
+          sanitizedPass.passSizes[0] === 1 &&
+          previewMatchCount >= 2
+        )
+          ? sanitizedPass.passSizes.filter((s) => s <= minPoolCap)
+          : [Math.min(8, minPoolCap, previewMatchCount)];
+      const bankerIndices = (sanitizedPass.bankerMatchIds ?? [])
+        .map((id) => matchOrder.indexOf(id))
+        .filter((idx) => idx >= 0);
+      const previewBetCount = Math.max(
+        1,
+        computeElementaryBetCount(
+          matchOrder.map((id) => countsByMatch.get(id) ?? 1),
+          passSizes,
+          bankerIndices
+        )
+      );
+      const mult = Math.max(1, Math.round(state.multiple) || 1);
+      const previewTotalCost = previewBetCount * mult * 2;
+      const addedMatchCount = prevMatchSet.has(m.id) ? 0 : 1;
+      const addedLegCount = alreadyPicked ? 0 : 1;
+      const passDesc =
+        passSizes.length === 1 && passSizes[0] === 1
+          ? "单关"
+          : passSizes.map((s) => `${s}串1`).join("+");
+      return {
+        matchId: m.id,
+        matchNumStr: m.matchNumStr,
+        matchTitle: `${m.matchNumStr} ${m.home} vs ${m.away}`,
+        poolCode: cand.poolCode,
+        poolName: pool.name,
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        odds: opt.odds,
+        addedMatchCount,
+        addedLegCount,
+        previewMatchCount,
+        previewBetCount,
+        multiple: mult,
+        previewTotalCost,
+        summaryText: `搭上 ${m.matchNumStr} ${m.home}[${opt.label}@${opt.odds.toFixed(2)}] → ${passDesc} · ${previewBetCount}注 × ${mult}倍 = 新总额 ¥${previewTotalCost}`,
+      };
+    },
+
+    acceptBridgeMatch(cand: BridgeMatchCandidate): TogglePickVerdict {
+      return this.applyBridgeCandidate(cand);
+    },
+
     applyBridgeCandidate(cand: BridgeMatchCandidate): TogglePickVerdict {
       const m = state.matches.find((x) => x.id === cand.matchId);
       if (!m) {
@@ -2189,6 +3144,214 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         state = { ...state, syntheticSingleMode: "full-3way" };
       }
       return this.togglePick(m, cand.poolCode, cand.optionKey);
+    },
+
+    previewConvertAppliedPlanToManual(): ConvertPlanToManualPreview {
+      const cur = reconcileState();
+      const audited = cur.activeAuditedSlip;
+      const currentAppliedCost = cur.workspace.effectiveReport.totalCost;
+      const mult = Math.max(1, Math.round(cur.multiple) || 1);
+
+      if (!cur.planSpec || audited.legs.length === 0) {
+        return {
+          canConvert: false,
+          blockedReason: "当前没有可转换的已套用智能方案",
+          currentAppliedCost,
+          previewMultiple: mult,
+          previewPassLabel: "",
+          previewBetCount: 0,
+          previewTotalCost: 0,
+          addedLegs: [],
+          trimmedCrossPoolLegs: [],
+          previewPicks: [],
+          summaryText: "当前没有可转换的已套用智能方案",
+        };
+      }
+
+      // Prefer parlay-line pool per match when a match has multiple pools across lines
+      const parlayPoolByMatch = new Map<string, PoolCode>();
+      for (const ln of audited.lines) {
+        if ((ln.legs?.length ?? 0) >= 2) {
+          for (const lg of ln.legs) {
+            if (!parlayPoolByMatch.has(lg.matchId)) {
+              parlayPoolByMatch.set(lg.matchId, lg.poolCode);
+            }
+          }
+        }
+      }
+
+      const chosenPoolByMatch = new Map<string, PoolCode>();
+      const previewPicks: SelectedPick[] = [];
+      const trimmedCrossPoolLegs: SelectedPick[] = [];
+      for (const lg of audited.legs) {
+        const preferred =
+          parlayPoolByMatch.get(lg.matchId) ??
+          chosenPoolByMatch.get(lg.matchId) ??
+          lg.poolCode;
+        chosenPoolByMatch.set(lg.matchId, preferred);
+        const plainPick: SelectedPick = {
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr,
+          home: lg.home,
+          away: lg.away,
+          poolCode: lg.poolCode,
+          poolName: lg.poolName,
+          singleAllowed: lg.singleAllowed,
+          canSingle: lg.canSingle,
+          canAllUp: lg.canAllUp,
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+          fairProb: lg.fairProb,
+        };
+        if (lg.poolCode === preferred) {
+          previewPicks.push(plainPick);
+        } else {
+          trimmedCrossPoolLegs.push(plainPick);
+        }
+      }
+
+      const matchOrder: string[] = [];
+      const countsByMatch = new Map<string, number>();
+      let minPoolCap = 8;
+      for (const pk of previewPicks) {
+        if (!countsByMatch.has(pk.matchId)) matchOrder.push(pk.matchId);
+        countsByMatch.set(pk.matchId, (countsByMatch.get(pk.matchId) ?? 0) + 1);
+        minPoolCap = Math.min(
+          minPoolCap,
+          CLIENT_STATUTORY_POOL_MAX_PASS[pk.poolCode] ?? 8
+        );
+      }
+      const mCount = matchOrder.length;
+      const allSingleOk =
+        previewPicks.length > 0 &&
+        previewPicks.every(isAuthoritativePickSingle);
+
+      let passSizes: number[];
+      if (mCount === 1) {
+        if (!allSingleOk) {
+          return {
+            canConvert: false,
+            blockedReason:
+              "单场非单关方案无法直接转为等倍手动复式，请搭 1 场凑 2串1",
+            currentAppliedCost,
+            previewMultiple: mult,
+            previewPassLabel: "未开单关",
+            previewBetCount: 0,
+            previewTotalCost: 0,
+            addedLegs: [],
+            trimmedCrossPoolLegs,
+            previewPicks,
+            summaryText: "单场非单关方案无法直接转为等倍手动复式",
+          };
+        }
+        passSizes = [1];
+      } else {
+        const lineSizes = Array.from(
+          new Set(
+            audited.lines
+              .map((ln) => ln.legs?.length ?? 0)
+              .filter((sz) => sz >= 2 && sz <= Math.min(8, minPoolCap, mCount))
+          )
+        ).sort((a, b) => a - b);
+        passSizes =
+          lineSizes.length > 0 ? lineSizes : [Math.min(8, minPoolCap, mCount)];
+      }
+
+      const previewBetCount = Math.max(
+        1,
+        computeElementaryBetCount(
+          matchOrder.map((id) => countsByMatch.get(id) ?? 1),
+          passSizes
+        )
+      );
+      const previewTotalCost = previewBetCount * mult * 2;
+      if (previewTotalCost > 20_000) {
+        return {
+          canConvert: false,
+          blockedReason: `转为手动复式后总额 ¥${previewTotalCost} 超出中国体彩单单 ¥20,000 法定上限`,
+          currentAppliedCost,
+          previewMultiple: mult,
+          previewPassLabel: passSizes
+            .map((s) => (s === 1 ? "单关" : `${s}串1`))
+            .join("+"),
+          previewBetCount,
+          previewTotalCost,
+          addedLegs: [],
+          trimmedCrossPoolLegs,
+          previewPicks,
+          summaryText: `总额 ¥${previewTotalCost} 超出 ¥20,000 法定上限`,
+        };
+      }
+
+      const existingSigSet = new Set(
+        cur.picks.map((p) => `${p.matchId}:${p.poolCode}:${p.optionKey}`)
+      );
+      const addedLegs = previewPicks.filter(
+        (p) => !existingSigSet.has(`${p.matchId}:${p.poolCode}:${p.optionKey}`)
+      );
+      const previewPassLabel = passSizes
+        .map((s) => (s === 1 ? "单关" : `${s}串1`))
+        .join("+");
+      const trimNote =
+        trimmedCrossPoolLegs.length > 0
+          ? `（已按同场单玩法规则剥离 ${trimmedCrossPoolLegs.length} 项跨池单关垫）`
+          : "";
+
+      return {
+        canConvert: true,
+        currentAppliedCost,
+        previewMultiple: mult,
+        previewPassLabel,
+        previewBetCount,
+        previewTotalCost,
+        addedLegs,
+        trimmedCrossPoolLegs,
+        previewPicks,
+        summaryText: `转为手动复式（${previewPassLabel} · ${previewBetCount}注 × ${mult}倍）→ 新总金额 ¥${previewTotalCost}（新增写入手选 ${addedLegs.length} 项）${trimNote}`,
+      };
+    },
+
+    convertAppliedPlanToManual(): {
+      ok: boolean;
+      reason?: string;
+      preview: ConvertPlanToManualPreview;
+    } {
+      const preview = this.previewConvertAppliedPlanToManual();
+      if (!preview.canConvert) {
+        return {
+          ok: false,
+          reason: preview.blockedReason || "当前方案暂无法转为手动复式",
+          preview,
+        };
+      }
+      pendingRequote = null;
+      const matchCount = new Set(preview.previewPicks.map((p) => p.matchId))
+        .size;
+      const passSizes = preview.previewPassLabel
+        .split("+")
+        .map((seg) => (seg === "单关" ? 1 : Number(seg.replace("串1", ""))))
+        .filter((n) => Number.isFinite(n) && n >= 1);
+      const nextPassSpec: PassSelectionSpec =
+        passSizes.length > 0
+          ? { mode: "free", passSizes }
+          : matchCount === 1
+            ? { mode: "free", passSizes: [1] }
+            : { mode: "auto" };
+      state = {
+        ...state,
+        mode: "mix",
+        planSpec: null,
+        appliedTicketSnapshot: null,
+        syntheticSingleMode: "full-3way",
+        lastPoolSwitchUndo: null,
+        passSpec: sanitizePassSpecForPicks(nextPassSpec, preview.previewPicks),
+        picks: preview.previewPicks,
+        ...syncAutoRadarFields(preview.previewPicks, state.matches, state),
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true, preview };
     },
 
     upgradeBonusToBreakeven(): {

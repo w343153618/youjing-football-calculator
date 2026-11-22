@@ -436,6 +436,12 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
           ...workspaceParams,
           simVoidFirstMatch: false,
           subjectiveDeltaPct: 0,
+          ...(workspaceParams.expectedQuoteInputSig !== undefined
+            ? {
+                quoteCheckSubjectiveDeltaPct:
+                  Number(workspaceParams.subjectiveDeltaPct) || 0,
+              }
+            : {}),
         }
       : null;
     const hasCallerSandboxShift =
