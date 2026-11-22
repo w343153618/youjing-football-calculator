@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type {
   ArchetypePlan,
   PortfolioKey,
+  PortfolioRemediationAction,
   UserStance,
 } from "../../prototype/quantTypes.ts";
 import { haptic } from "../../spring/engine.ts";
@@ -26,6 +27,7 @@ import {
   PORTFOLIO_CUSTOM_BUDGET_LIMITS,
   buildPortfolioKpiTiles,
   buildPortfolioSlotOptions,
+  formatPortfolioProbPct,
 } from "./cabinViewModels.ts";
 
 export function PortfolioBudgetHeader({
@@ -181,7 +183,27 @@ export function ParetoPortfolioCabin({
   const onToggleTargetMatch = (id: string) => betCtrl.toggleTargetMatch(id);
   const onChangeStance = (s: UserStance) => betCtrl.setStance(s);
   const onChangeUnlockFullAgg = (v: boolean) => betCtrl.setUnlockFullAgg(v);
+  const onChangeAllowSaveCash = (v: boolean) => betCtrl.setAllowSaveCash(v);
   const onChangeBudget = (b: number) => betCtrl.setBudget(b);
+  const onTriggerRemediationAction = (action: PortfolioRemediationAction) => {
+    haptic(6);
+    const res = betCtrl.applyPortfolioRemediationAction(action);
+    if (!res.ok) return;
+    if (action.kind === "lower-pass-preview") {
+      notifyToast(
+        `已解锁同方向降阶结构（${action.structureLabel || "低阶分块"}）`
+      );
+    } else if (action.kind === "min-feasible-budget" && res.nextBudget) {
+      notifyToast(`已切换至经证明的最低可行预算 ¥${res.nextBudget}`);
+    } else if (action.kind === "keep-cash") {
+      notifyToast(`已保留 ¥${snap.betSlipState.budget} 本金空仓观望`);
+    } else if (action.kind === "go-manual") {
+      notifyToast("已保持原始手选方向，请前往审单手动区核对注倍");
+    } else if (action.kind === "switch-main-pool") {
+      notifyToast("已切回赛事雷达主盘视图，可改选低抽水在售主盘");
+      onFallbackToMatchTab();
+    }
+  };
   const {
     matches,
     picks,
@@ -191,6 +213,7 @@ export function ParetoPortfolioCabin({
     budget,
     stance,
     unlockFullAgg,
+    allowSaveCash,
     workspace,
   } = snap.betSlipState;
   const { currentArch, fallbackValidArch, hasSuboptimalManual } =
@@ -400,6 +423,17 @@ export function ParetoPortfolioCabin({
             </div>
           )}
         </div>
+        {(currentArch.key === "max-ev-utility" ||
+          currentArch.key === "spear-shield" ||
+          currentArch.key === "goal-structure") && (
+          <div className="row">
+            <span className="lbl">允许留现省钱</span>
+            <SpringSwitch
+              checked={Boolean(allowSaveCash)}
+              onChange={(nextVal) => onChangeAllowSaveCash(nextVal)}
+            />
+          </div>
+        )}
         {(currentArch.key === "alpha-radar" ||
           currentArch.key === "value-assassin") && (
           <div className="row">
@@ -472,46 +506,82 @@ export function ParetoPortfolioCabin({
             <div className="co-head">
               <div>
                 <div className="h2">
-                  {currentArch.badge} · 当前 ¥{budget} 预算不足以覆盖保本拆单
+                  {currentArch.badge} · {currentArch.title}
                 </div>
                 <div className="small">
                   {currentArch.emptyReason ||
-                    `当前 ¥${budget}（共 ${Math.floor(budget / 2)} 注）在多场防平/容错约束下数学注数不足，系统拒绝硬凑假保本方案`}
+                    `当前 ¥${budget}（共 ${Math.floor(budget / 2)} 注）未通过该档精算准入红线，系统拒绝硬凑高归零或假保本废单`}
                 </div>
               </div>
-              <span className="chip num">¥{budget}</span>
+              <span className="chip num">
+                ¥0<i>省¥{currentArch.savedCash || budget}</i>
+              </span>
             </div>
             <div className="note-box" style={{ marginTop: 8 }}>
-              <strong>💡 诚实精算边界提示：</strong>
-              <div>
-                每张体彩实票最低
-                ¥2（1注）。当圈定场次较多且要求零假中奖全保本时，¥
-                {budget} 的总注数不足以同时覆盖主攻与防线。你可以：
+              <strong>💡 诚实精算准入与可验证处方：</strong>
+              {currentArch.upperBoundBlocked &&
+                typeof currentArch.theoreticalStrictNetGainCeiling ===
+                  "number" && (
+                  <div>
+                    当前所锁方向在允许结构下的理论净赚率并集上限仅{" "}
+                    <strong>
+                      {formatPortfolioProbPct(
+                        currentArch.theoreticalStrictNetGainCeiling
+                      )}
+                    </strong>
+                    ，盲目追加预算无法突破概率上限。
+                  </div>
+                )}
+              {currentArch.reasons.map((r, idx) => (
+                <div key={idx}>· {r}</div>
+              ))}
+              {Array.isArray(currentArch.remediationActions) &&
+                currentArch.remediationActions.map((act) => (
+                  <div key={`${act.id}-detail`} style={{ marginTop: 4 }}>
+                    👉 <strong>{act.label}</strong>：{act.detail}
+                  </div>
+                ))}
+            </div>
+            {Array.isArray(currentArch.remediationActions) &&
+            currentArch.remediationActions.length > 0 ? (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  marginTop: 10,
+                }}
+              >
+                {currentArch.remediationActions.map((act, idx) => (
+                  <button
+                    key={act.id}
+                    type="button"
+                    data-spring="0.92"
+                    className={`key full num ${idx === 0 ? "dark" : ""}`}
+                    onClick={() => onTriggerRemediationAction(act)}
+                  >
+                    {act.label}
+                  </button>
+                ))}
               </div>
-            </div>
-            <div className="two" style={{ marginTop: 8 }}>
-              <button
-                type="button"
-                className="key dark num"
-                onClick={() => {
-                  const nextB = budget < 20 ? 20 : 50;
-                  onChangeBudget(nextB);
-                  haptic(6);
-                }}
-              >
-                升级预算至 ¥{budget < 20 ? 20 : 50}
-              </button>
-              <button
-                type="button"
-                className="key"
-                onClick={() => {
-                  onChangeArchKey("max-ev-utility");
-                  haptic(6);
-                }}
-              >
-                切往【② 期望效用】
-              </button>
-            </div>
+            ) : (
+              <div className="two" style={{ marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="key"
+                  onClick={() => {
+                    onChangeArchKey(
+                      currentArch.key === "max-profit-prob"
+                        ? "max-ev-utility"
+                        : "max-profit-prob"
+                    );
+                    haptic(6);
+                  }}
+                >
+                  切往其他主方案查看
+                </button>
+              </div>
+            )}
           </div>
         )
       ) : (
@@ -554,8 +624,25 @@ export function ParetoPortfolioCabin({
                   <span className="chip num">
                     实投 ¥{currentArch.totalCost}
                     {currentArch.savedCash > 0 && (
-                      <i>省¥{currentArch.savedCash}</i>
+                      <i>留存¥{currentArch.savedCash}</i>
                     )}
+                  </span>
+                  {currentArch.structureBadge && (
+                    <span className="qpill num">
+                      {currentArch.structureBadge}
+                    </span>
+                  )}
+                  <span
+                    className={`qpill num ${(currentArch.zeroPayoutProb ?? 0) > 0.8 ? "warn" : ""}`}
+                  >
+                    整单归零率{" "}
+                    {formatPortfolioProbPct(
+                      currentArch.zeroPayoutProb ??
+                        Math.max(0, 1 - currentArch.winProb)
+                    )}
+                    {(currentArch.key === "max-profit-prob" ||
+                      currentArch.key === "iron-shield") &&
+                      " · 覆盖范围内不倒贴"}
                   </span>
                   {currentArch.totalCost > budget && (
                     <span className="qpill warn num">
@@ -566,7 +653,7 @@ export function ParetoPortfolioCabin({
                 </div>
 
                 <div className="tiles num">
-                  <div className="tile">
+                  <div className={`tile ${kpi.tile1.isDanger ? "danger" : ""}`}>
                     <span>{kpi.tile1.label}</span>
                     <b>{kpi.tile1.value}</b>
                     <em>{kpi.tile1.subtitle}</em>

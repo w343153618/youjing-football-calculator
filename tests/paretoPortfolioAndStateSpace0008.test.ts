@@ -72,7 +72,7 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
           makePick(FALLBACK_MATCHES[2] as MatchItem, "HAD", "h"),
         ]
       );
-      const p0 = plans[0];
+      const p0 = plans.find((p: any) => p.lines.length > 0)!;
       const leg = p0.lines[0].legs.find(
         (g: { matchId: string }) => g.matchId === m.id
       )!;
@@ -1309,7 +1309,8 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
       }
     }
 
-    // 6-match CRS-anchored wheel respects POOL_MAX_PASS (<= 4 legs) while still covering all 6 matches in <= 10 lines
+    // 6-match 4-pass-capped wheel respects POOL_MAX_PASS (<= 4 legs) while covering all 6 matches in <= 10 lines;
+    // under ADR-0017, 99.3% wipeout single-score 6x CRS wheel is honestly rejected, while <=90% wipeout HAFU (also POOL_MAX_PASS = 4) passes!
     const sixMatches = FALLBACK_MATCHES.slice(0, 6) as MatchItem[];
     const sixCrsAnchors = sixMatches.map((m) => makePick(m, "CRS", "1:0"));
     const crsWheel = generateParetoPortfolio(
@@ -1319,20 +1320,40 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
       false,
       sixCrsAnchors
     )[2] as ArchetypePlan;
-    assert.ok(crsWheel.lines.length <= 10);
-    assert.ok(
-      crsWheel.lines.every((l) => l.legs.length <= 4),
-      "CRS wheel lines must never exceed 4 legs"
+    assert.equal(
+      crsWheel.available,
+      false,
+      "ADR-0017: 99.3% wipeout 6-match single-CRS wheel (>90% red-line) must honestly reject"
     );
-    const crsCovered = new Set(
-      crsWheel.lines.flatMap((l) => l.legs.map((g) => g.matchId))
+
+    const sixHafuAnchors = sixMatches.map((m) => {
+      const topHafu = [...m.pools.HAFU.options].sort(
+        (a, b) => b.fairProb - a.fairProb
+      )[0]!;
+      return makePick(m, "HAFU", topHafu.key);
+    });
+    const hafuWheel = generateParetoPortfolio(
+      sixMatches,
+      100,
+      "objective",
+      false,
+      sixHafuAnchors
+    )[2] as ArchetypePlan;
+    assert.equal(hafuWheel.available, true);
+    assert.ok(hafuWheel.lines.length <= 10);
+    assert.ok(
+      hafuWheel.lines.every((l) => l.legs.length <= 4),
+      "HAFU (POOL_MAX_PASS=4) wheel lines must never exceed 4 legs"
+    );
+    const hafuCovered = new Set(
+      hafuWheel.lines.flatMap((l) => l.legs.map((g) => g.matchId))
     );
     assert.equal(
-      crsCovered.size,
+      hafuCovered.size,
       6,
-      "6-match CRS wheel must cover all 6 matches"
+      "6-match HAFU wheel must cover all 6 matches"
     );
-    assert.ok(crsWheel.missOneReturn! > 0);
+    assert.ok(hafuWheel.missOneReturn! > 0);
 
     // 2. Slot ④ alpha-radar: Honest Empty State on tightly priced slate
     const tightA = buildCoherentMatch("s4-tight-a", "周六101", 1.45, 1.15);

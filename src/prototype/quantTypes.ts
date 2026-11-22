@@ -287,12 +287,40 @@ export interface PartialCoveragePreview {
   previewLines: PlanTicketLine[];
 }
 
+export type PortfolioRemediationActionKind =
+  | "lower-pass-preview"
+  | "min-feasible-budget"
+  | "keep-cash"
+  | "go-manual"
+  | "switch-main-pool";
+
+export interface PortfolioRemediationAction {
+  id?: string;
+  kind: PortfolioRemediationActionKind;
+  label: string;
+  detail: string;
+  structureLabel?: string;
+  targetPassSizes?: number[];
+  minFeasibleBudgetYuan?: number;
+  previewCost?: number;
+  savedCash?: number;
+  strictNetGainProb?: number;
+  zeroPayoutProb?: number;
+  previewEvRate?: number;
+  vigPct?: number;
+  previewLines?: PlanTicketLine[];
+}
+
 export interface ArchetypePlan {
   key: ArchetypeKey;
   available: boolean;
   alphaKind?: "positive-ev" | "none";
   emptyReason?: string | null;
   partialCoveragePreview?: PartialCoveragePreview | null;
+  structureBadge?: string | null;
+  upperBoundBlocked?: boolean;
+  theoreticalStrictNetGainCeiling?: number | null;
+  remediationActions?: PortfolioRemediationAction[];
   shortTab: string;
   badge: string;
   title: string;
@@ -410,6 +438,7 @@ export interface QuantWorkspaceParams {
   budget: number;
   stance: UserStance;
   unlockFullAgg: boolean;
+  allowSaveCash?: boolean;
   clientAlerts?: Record<string, NonNullable<MatchItem["aiAlert"]>>;
 }
 

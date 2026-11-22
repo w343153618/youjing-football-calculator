@@ -119,7 +119,7 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
     assert.equal(kpiTiles.tile1.value, "42.5%");
     assert.equal(
       kpiTiles.tile1.subtitle,
-      "另含 5.0% 刚回本 · 个人推演 49.0% · 命中 62.0%"
+      "整单归零率 38.0% · 另含 5.0% 刚回本 · 个人推演 49.0%"
     );
     assert.equal(kpiTiles.tile2.isDanger, true);
     assert.equal(kpiTiles.tile2.subtitle, "⚠️ 含 2 组局部回血(<本金)");

@@ -15,6 +15,7 @@ import {
   type PlanTicketLine,
   type PoolCode,
   type PortfolioKey,
+  type PortfolioRemediationAction,
   type QuantWorkspaceParams,
   type QuantWorkspaceResponse,
   type SelectedPick,
@@ -357,6 +358,7 @@ export interface BetSlipState {
   budget: number;
   stance: UserStance;
   unlockFullAgg: boolean;
+  allowSaveCash: boolean;
   workspace: QuantWorkspaceResponse;
   objectivePortfolioPlans: ArchetypePlan[];
 }
@@ -474,6 +476,7 @@ function buildInitialState(): BetSlipState {
     budget: 100,
     stance: "objective",
     unlockFullAgg: false,
+    allowSaveCash: false,
     workspace: EMPTY_WORKSPACE_RESPONSE,
     objectivePortfolioPlans: [],
   };
@@ -729,6 +732,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       budget: s.budget,
       stance: s.stance,
       unlockFullAgg: s.unlockFullAgg,
+      allowSaveCash: s.allowSaveCash,
       clientAlerts,
     };
   }
@@ -2340,6 +2344,124 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       state = { ...state, unlockFullAgg: val };
       emit();
       void scheduleRefresh();
+    },
+
+    setAllowSaveCash(val: boolean) {
+      const next = Boolean(val);
+      if (state.allowSaveCash === next) return;
+      state = { ...state, allowSaveCash: next };
+      emit();
+      void scheduleRefresh();
+    },
+
+    applyPortfolioRemediationAction(action: PortfolioRemediationAction): {
+      ok: boolean;
+      kind?: PortfolioRemediationAction["kind"];
+      nextBudget?: number;
+    } {
+      if (!action || !action.kind) return { ok: false };
+      if (action.kind === "lower-pass-preview") {
+        state = {
+          ...state,
+          planSpec: null,
+          passSpec: { mode: "auto" },
+        };
+        emit();
+        void scheduleRefresh();
+        return { ok: true, kind: action.kind };
+      }
+      if (
+        action.kind === "min-feasible-budget" &&
+        typeof action.minFeasibleBudgetYuan === "number" &&
+        action.minFeasibleBudgetYuan > 0
+      ) {
+        const nextBudget = normalizeBudgetYuan(action.minFeasibleBudgetYuan);
+        state = {
+          ...state,
+          budget: nextBudget,
+        };
+        emit();
+        void scheduleRefresh();
+        return { ok: true, kind: action.kind, nextBudget };
+      }
+      if (action.kind === "keep-cash") {
+        if (state.planSpec) {
+          state = { ...state, planSpec: null };
+          emit();
+          void scheduleRefresh();
+        }
+        return { ok: true, kind: action.kind };
+      }
+      if (action.kind === "go-manual") {
+        state = { ...state, planSpec: null };
+        emit();
+        void scheduleRefresh();
+        return { ok: true, kind: action.kind };
+      }
+      if (action.kind === "switch-main-pool") {
+        const matchMap = new Map(state.matches.map((m) => [m.id, m]));
+        const orderedMatchIds: string[] = [];
+        for (const p of state.picks) {
+          if (!orderedMatchIds.includes(p.matchId)) {
+            orderedMatchIds.push(p.matchId);
+          }
+        }
+        const nextPicks: SelectedPick[] = [];
+        for (const mid of orderedMatchIds) {
+          const existingMain = state.picks.filter(
+            (p) =>
+              p.matchId === mid &&
+              (p.poolCode === "HAD" || p.poolCode === "HHAD")
+          );
+          if (existingMain.length > 0) {
+            nextPicks.push(...existingMain);
+            continue;
+          }
+          const fm = matchMap.get(mid);
+          if (!fm) continue;
+          const targetPoolCode: PoolCode | null =
+            fm.pools.HAD?.selling !== false &&
+            (fm.pools.HAD?.options?.length ?? 0) > 0
+              ? "HAD"
+              : fm.pools.HHAD?.selling !== false &&
+                  (fm.pools.HHAD?.options?.length ?? 0) > 0
+                ? "HHAD"
+                : null;
+          if (!targetPoolCode) continue;
+          const pool = fm.pools[targetPoolCode];
+          const topOpt = [...pool.options].sort(
+            (a, b) => b.fairProb - a.fairProb || a.odds - b.odds
+          )[0];
+          if (!topOpt) continue;
+          nextPicks.push({
+            matchId: fm.id,
+            matchNumStr: fm.matchNumStr,
+            home: fm.home,
+            away: fm.away,
+            poolCode: targetPoolCode,
+            poolName: pool.name,
+            singleAllowed: resolvePoolCanSingle(pool),
+            canSingle: resolvePoolCanSingle(pool),
+            canAllUp: resolvePoolCanAllUp(pool),
+            optionKey: topOpt.key,
+            optionLabel: topOpt.label,
+            odds: topOpt.odds,
+            fairProb: topOpt.fairProb,
+          });
+        }
+        state = {
+          ...state,
+          mode: "mix",
+          planSpec: null,
+          passSpec: { mode: "auto" },
+          picks: nextPicks,
+          ...syncAutoRadarFields(nextPicks, state.matches, state),
+        };
+        emit();
+        void scheduleRefresh();
+        return { ok: true, kind: action.kind };
+      }
+      return { ok: false };
     },
 
     setSubjectiveDeltaPct(val: number) {
