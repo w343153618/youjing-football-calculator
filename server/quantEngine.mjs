@@ -62,15 +62,31 @@ export {
 
 const WORKSPACE_PARETO_CACHE = new Map();
 
+function serializePassSpecCacheKey(passSpec) {
+  if (!passSpec || passSpec.mode === "auto") return "auto";
+  if (passSpec.mode === "combo" && passSpec.comboCode) {
+    return `c:${passSpec.comboCode}`;
+  }
+  if (passSpec.mode === "free" && Array.isArray(passSpec.passSizes)) {
+    return `f:${[...passSpec.passSizes].sort((a, b) => a - b).join(",")}`;
+  }
+  return "auto";
+}
+
 function getCachedWorkspaceFivePlans(
   resolvedTargets,
   budget,
   stance,
   unlockFullAgg,
   anchorPicks,
-  acceptPartialSingleCoverage = false
+  portfolioOptions = {}
 ) {
-  let key = `${budget}|${stance}|${unlockFullAgg ? 1 : 0}|p=${acceptPartialSingleCoverage ? 1 : 0}|t=${resolvedTargets.length}`;
+  const acceptPartialSingleCoverage = Boolean(
+    portfolioOptions?.acceptPartialSingleCoverage
+  );
+  const allowSaveCash = Boolean(portfolioOptions?.allowSaveCash);
+  const passKey = serializePassSpecCacheKey(portfolioOptions?.passSpec);
+  let key = `${budget}|${stance}|${unlockFullAgg ? 1 : 0}|p=${acceptPartialSingleCoverage ? 1 : 0}|sc=${allowSaveCash ? 1 : 0}|ps=${passKey}|t=${resolvedTargets.length}`;
   for (let i = 0; i < resolvedTargets.length; i++) {
     const m = resolvedTargets[i];
     const fp = computeMatchPoolsFingerprint(m);
@@ -95,7 +111,11 @@ function getCachedWorkspaceFivePlans(
     stance,
     unlockFullAgg,
     anchorPicks,
-    { acceptPartialSingleCoverage }
+    {
+      acceptPartialSingleCoverage,
+      allowSaveCash,
+      passSpec: portfolioOptions?.passSpec ?? { mode: "auto" },
+    }
   );
   if (WORKSPACE_PARETO_CACHE.size >= 32) {
     const oldestKey = WORKSPACE_PARETO_CACHE.keys().next().value;
@@ -210,13 +230,19 @@ export function evaluateQuantWorkspace(params, matchesInput) {
   const acceptPartialSingleCoverage =
     syntheticSingleMode === "partial-cover" ||
     syntheticSingleMode === "trim-2way";
+  const allowSaveCash = Boolean(params?.allowSaveCash);
+  const portfolioOpts = {
+    acceptPartialSingleCoverage,
+    allowSaveCash,
+    passSpec: anchorToRadarPicks ? passSpec : { mode: "auto" },
+  };
   const fivePlans = getCachedWorkspaceFivePlans(
     resolvedTargets,
     budget,
     stance,
     unlockFullAgg,
     anchorPicks,
-    acceptPartialSingleCoverage
+    portfolioOpts
   );
   const objectivePortfolioPlans =
     stance !== "objective"
@@ -226,7 +252,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
           "objective",
           unlockFullAgg,
           anchorPicks,
-          acceptPartialSingleCoverage
+          portfolioOpts
         )
       : undefined;
 

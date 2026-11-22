@@ -698,7 +698,8 @@ describe("Spec #1 (0014) · Ticket #2: OOS Fixture Remediation, Upstream Calibra
         fairProb: opt.fairProb,
       };
       const plans = generateParetoPortfolio([m], 100, stance, false, [pick]);
-      return plans[0].lines[0].legs[0].fairProb;
+      const activePlan = plans.find((p: any) => p.lines.length > 0)!;
+      return activePlan.lines[0].legs[0].fairProb;
     };
 
     // 1. Home deep favorite (-2): CRS 1:0 & 2:1 (diff=1) protected >= objective, HAD d/a & HHAD ha up, HAD h down, sums = 1

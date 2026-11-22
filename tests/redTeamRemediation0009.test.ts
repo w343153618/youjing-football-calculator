@@ -623,14 +623,24 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
         false,
         anchorAllHad
       );
-      assert.ok(
-        Math.abs(ancPlans[0].profitProb - exactMLegProb) < 1e-9,
-        `Anchored Slot ① (${ancPlans[0].profitProb}) must equal exact 3^${mCount} 0-1 knapsack (${exactMLegProb})`
-      );
-      assert.ok(
-        ancPlans[0].reasons.some((r: string) => r.includes("2 场")),
-        `Anchored Slot ① on M=${mCount} >= 4 must include honest 2-match break-even comparison reason`
-      );
+      if (exactMLegProb >= 0.2) {
+        assert.ok(
+          Math.abs(ancPlans[0].profitProb - exactMLegProb) < 1e-9,
+          `Anchored Slot ① (${ancPlans[0].profitProb}) must equal exact 3^${mCount} 0-1 knapsack (${exactMLegProb})`
+        );
+        assert.ok(
+          ancPlans[0].reasons.some((r: string) => r.includes("2 场")),
+          `Anchored Slot ① on M=${mCount} >= 4 must include honest 2-match break-even comparison reason`
+        );
+      } else {
+        // ADR-0017: <20% strictNetGainProb (84.7% wipeout on 8串1 @ ¥100; <=64-line ceiling 18.0% < 20.0%) must honestly reject with explicit red-line reason
+        assert.equal(ancPlans[0].available, false);
+        assert.ok(
+          ancPlans[0].emptyReason?.includes("20.0%") &&
+            ancPlans[0].emptyReason?.includes("80.0%"),
+          `Expected explicit 20%/80% admission red-line disclosure on M=${mCount}, got: ${ancPlans[0].emptyReason}`
+        );
+      }
     }
 
     // 2. D-07: Slot ② never mislabels low-vig <= 1.45 favorites as drag legs when a higher-vig match exists, and zero 蚊子肉 wording

@@ -255,6 +255,13 @@ export interface KpiTileModel {
   strikeSubtitle?: boolean;
 }
 
+export function formatPortfolioProbPct(prob: number): string {
+  const pct = Math.max(0, Number(prob) || 0) * 100;
+  if (pct <= 1e-9) return "0.0%";
+  if (pct < 0.1) return `${pct.toFixed(2)}%`;
+  return `${pct.toFixed(1)}%`;
+}
+
 export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
   groupTicket: PortfolioGroupTicketMetric;
   tile1: KpiTileModel;
@@ -262,26 +269,46 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
   tile3: KpiTileModel;
   tile4: KpiTileModel;
 } {
-  const objStrictPct =
-    (plan.objectiveStrictNetGainProb ??
-      plan.strictNetGainProb ??
-      plan.profitProb) * 100;
-  const objProfitPct = (plan.objectiveProfitProb ?? plan.profitProb) * 100;
-  const archObjBreakEvenPct = Math.max(0, objProfitPct - objStrictPct);
-  const archSubjProfitPct =
-    plan.subjectiveProjectedProfitProb != null
-      ? plan.subjectiveProjectedProfitProb * 100
-      : null;
-  const subParts: string[] = [];
-  if (archObjBreakEvenPct >= 0.05) {
-    subParts.push(`另含 ${archObjBreakEvenPct.toFixed(1)}% 刚回本`);
+  const objStrictProb =
+    plan.objectiveStrictNetGainProb ??
+    plan.strictNetGainProb ??
+    plan.profitProb;
+  const objProfitProb = plan.objectiveProfitProb ?? plan.profitProb;
+  const archObjBreakEvenProb = Math.max(0, objProfitProb - objStrictProb);
+  const zeroProb =
+    typeof plan.zeroPayoutProb === "number" &&
+    (typeof plan.winProb !== "number" ||
+      Math.abs(plan.zeroPayoutProb - (1 - plan.winProb)) < 1e-4)
+      ? Math.max(0, plan.zeroPayoutProb)
+      : Math.max(0, 1 - (plan.winProb ?? 0));
+
+  const subParts: string[] = [`整单归零率 ${formatPortfolioProbPct(zeroProb)}`];
+  if (
+    (plan.key === "max-profit-prob" || plan.key === "iron-shield") &&
+    (plan.underwaterCount ?? 0) === 0
+  ) {
+    subParts.push("覆盖范围内不倒贴");
   }
-  if (archSubjProfitPct !== null) {
-    subParts.push(`个人推演 ${archSubjProfitPct.toFixed(1)}%`);
+  if (archObjBreakEvenProb * 100 >= 0.05) {
+    subParts.push(
+      `另含 ${formatPortfolioProbPct(archObjBreakEvenProb)} 刚回本`
+    );
   }
-  subParts.push(`命中 ${(plan.winProb * 100).toFixed(1)}%`);
+  if (plan.subjectiveProjectedProfitProb != null) {
+    subParts.push(
+      `个人推演 ${formatPortfolioProbPct(plan.subjectiveProjectedProfitProb)}`
+    );
+  }
 
   const uwCount = plan.underwaterCount ?? 0;
+  const distinctMatchCount = new Set(
+    (plan.lines ?? []).flatMap((l) => (l.legs ?? []).map((g) => g.matchId))
+  ).size;
+  const showCrossMatchMissOne =
+    plan.missOneReturn !== null && distinctMatchCount >= 2;
+  const isSingleMatchCushion =
+    plan.missOneReturn !== null && distinctMatchCount === 1;
+
   const archObjEvPct = (plan.objectiveEVRate ?? plan.expectedValueRate) * 100;
   const archSubjEvPct =
     plan.subjectiveProjectedEVRate != null
@@ -294,15 +321,19 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
     groupTicket,
     tile1: {
       label: "严格净赚率",
-      value: `${objStrictPct.toFixed(1)}%`,
+      value: formatPortfolioProbPct(objStrictProb),
       subtitle: subParts.join(" · "),
+      isDanger: zeroProb > 0.8,
     },
     tile2: {
-      label: plan.missOneReturn !== null ? "错1场保命回血" : "命中返奖区间",
-      value:
-        plan.missOneReturn !== null
-          ? `¥${plan.missOneReturn.toFixed(0)} (全中¥${plan.maxReturn.toFixed(0)})`
-          : `¥${plan.minReturn.toFixed(0)}~${plan.maxReturn.toFixed(0)}`,
+      label: showCrossMatchMissOne
+        ? "错1场保命回血"
+        : isSingleMatchCushion
+          ? "单场缓冲返奖"
+          : "命中返奖区间",
+      value: showCrossMatchMissOne
+        ? `¥${plan.missOneReturn!.toFixed(0)} (全中¥${plan.maxReturn.toFixed(0)})`
+        : `¥${plan.minReturn.toFixed(0)}~${plan.maxReturn.toFixed(0)}`,
       subtitle:
         uwCount > 0 ? `⚠️ 含 ${uwCount} 组局部回血(<本金)` : "0 假中奖倒贴",
       isDanger: uwCount > 0,
