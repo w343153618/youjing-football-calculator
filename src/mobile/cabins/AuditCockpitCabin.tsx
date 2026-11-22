@@ -20,11 +20,7 @@ import {
   TactileFlipCard,
   TeamCrest,
 } from "../../spring/widgets.tsx";
-import {
-  resolveComboTicketBreakdown,
-  sortComboRows,
-  type ComboSortMode,
-} from "../../workspace/betSlipController.ts";
+import { type ComboSortMode } from "../../workspace/betSlipController.ts";
 import type {
   WorkbenchController,
   WorkbenchSnapshot,
@@ -34,6 +30,7 @@ import { SyntheticModePills } from "./PersistentBetBar.tsx";
 import {
   SUBJECTIVE_SLIDER_BOUNDS,
   buildAuditCockpitTiles,
+  buildAuditScenarioRows,
   formatHedgeDrawerCopy,
   type HandoffBannerState,
 } from "./cabinViewModels.ts";
@@ -195,9 +192,29 @@ export function AuditCockpitCabin({
     userComboSort ??
     (effectiveReport.underwaterCount > 0 ? "loss-first" : "prob-first");
 
-  const sortedCombos = useMemo(
-    () => sortComboRows(effectiveReport.combos, comboSortMode),
-    [effectiveReport.combos, comboSortMode]
+  const scenarioRows = useMemo(
+    () =>
+      buildAuditScenarioRows(effectiveReport, comboSortMode, {
+        matchCount: effectiveReport.matchCount,
+        defaultMultiple: multiple,
+        appliedLines: effectiveAppliedPlan?.lines,
+      }),
+    [effectiveReport, comboSortMode, multiple, effectiveAppliedPlan?.lines]
+  );
+
+  const equalizerBars = useMemo(
+    () =>
+      buildAuditScenarioRows(effectiveReport, "prob-first", {
+        matchCount: effectiveReport.matchCount,
+        defaultMultiple: multiple,
+        appliedLines: effectiveAppliedPlan?.lines,
+      }).map((r) => ({
+        id: r.id,
+        label: r.isZeroWipeoutRow ? "全部未中" : r.desc,
+        totalPayout: r.totalPayout,
+        prob: r.prob,
+      })),
+    [effectiveReport, multiple, effectiveAppliedPlan?.lines]
   );
 
   const effectiveTicketOrBetCount = effectiveReport.tickets?.length
@@ -295,9 +312,28 @@ export function AuditCockpitCabin({
           flipToBackLabel="🔄 翻转看 6 维全表与天平图 ›"
           flipToFrontLabel="↩ 返回核心审单面"
           frontHeader={
-            <div className="sec num" style={{ margin: 0 }}>
-              🛡️ 五维真相透视舱 · {effectiveReport.modeLabel} (¥
-              {effectiveReport.totalCost})
+            <div
+              className="sec num"
+              style={{
+                margin: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 6,
+                flexWrap: "wrap",
+              }}
+            >
+              <span>
+                🛡️ 五维真相透视舱 · {effectiveReport.modeLabel} (¥
+                {effectiveReport.totalCost})
+              </span>
+              {effectiveReport.totalCost > 0 && (
+                <span
+                  className={`qpill num ${cockpitTiles.headerBadge.isDanger ? "danger" : cockpitTiles.headerBadge.isWarn ? "warn" : ""}`}
+                >
+                  {cockpitTiles.headerBadge.text}
+                </span>
+              )}
             </div>
           }
           backHeader={
@@ -310,7 +346,7 @@ export function AuditCockpitCabin({
               }}
             >
               <span className="sec num" style={{ margin: 0 }}>
-                📊 完整 6 仪表与奖金天平柱状图
+                📊 无条件分位数与奖金天平柱状图
               </span>
               <button
                 type="button"
@@ -329,9 +365,17 @@ export function AuditCockpitCabin({
                 >
                   <span>{cockpitTiles.tile1.label}</span>
                   <b>{cockpitTiles.tile1.value}</b>
-                  <em className="strike">{cockpitTiles.tile1.subtitle}</em>
+                  <em
+                    className={
+                      cockpitTiles.tile1.strikeSubtitle ? "strike" : undefined
+                    }
+                  >
+                    {cockpitTiles.tile1.subtitle}
+                  </em>
                 </div>
-                <div className="tile">
+                <div
+                  className={`tile ${cockpitTiles.tile2.isDanger ? "danger" : ""}`}
+                >
                   <span>{cockpitTiles.tile2.label}</span>
                   <b>{cockpitTiles.tile2.value}</b>
                   <em>{cockpitTiles.tile2.subtitle}</em>
@@ -344,7 +388,9 @@ export function AuditCockpitCabin({
                   <b>{cockpitTiles.tile3.value}</b>
                   <em>{cockpitTiles.tile3.subtitle}</em>
                 </div>
-                <div className="tile">
+                <div
+                  className={`tile ${cockpitTiles.tile4.isDanger ? "danger" : ""}`}
+                >
                   <span>{cockpitTiles.tile4.label}</span>
                   <b>{cockpitTiles.tile4.value}</b>
                   <em>{cockpitTiles.tile4.subtitle}</em>
@@ -451,21 +497,19 @@ export function AuditCockpitCabin({
           back={
             <>
               <div className="tiles num" style={{ marginBottom: 8 }}>
-                <div className="tile">
-                  <span>大概率到手落点</span>
-                  <b>
-                    ¥{effectiveReport.likelyRange[0].toFixed(0)}~
-                    {effectiveReport.likelyRange[1].toFixed(0)}
-                  </b>
-                  <em>60%高概率命中带</em>
+                <div
+                  className={`tile ${cockpitTiles.flipBack.quantileTile.isDanger ? "danger" : ""}`}
+                >
+                  <span>{cockpitTiles.flipBack.quantileTile.label}</span>
+                  <b>{cockpitTiles.flipBack.quantileTile.value}</b>
+                  <em>{cockpitTiles.flipBack.quantileTile.subtitle}</em>
                 </div>
-                <div className="tile">
-                  <span>暗扣抽水与等效水位</span>
-                  <b>-{effectiveReport.avgVigLossPer100}%</b>
-                  <em>
-                    返{(effectiveReport.avgPayoutRatio * 100).toFixed(1)}% ·
-                    等效@{effectiveReport.effectiveOdds.toFixed(2)}
-                  </em>
+                <div
+                  className={`tile ${cockpitTiles.flipBack.vigTile.isDanger ? "danger" : ""}`}
+                >
+                  <span>{cockpitTiles.flipBack.vigTile.label}</span>
+                  <b>{cockpitTiles.flipBack.vigTile.value}</b>
+                  <em>{cockpitTiles.flipBack.vigTile.subtitle}</em>
                 </div>
               </div>
               <div
@@ -488,14 +532,7 @@ export function AuditCockpitCabin({
                 </button>
               </div>
               <PayoutEqualizerBars
-                combos={[...effectiveReport.combos]
-                  .sort((a, b) => b.prob - a.prob)
-                  .map((c) => ({
-                    id: c.id,
-                    label: c.desc,
-                    totalPayout: c.totalPayout,
-                    prob: c.prob,
-                  }))}
+                combos={equalizerBars}
                 totalCost={effectiveReport.totalCost}
               />
             </>
@@ -773,9 +810,7 @@ export function AuditCockpitCabin({
           className="sec-lbl"
           style={{ margin: "0 0 8px", flexWrap: "wrap", gap: 6 }}
         >
-          <span>
-            全赛果组合盈亏推演明细 · 共 {effectiveReport.combos.length} 组
-          </span>
+          <span>全赛果组合盈亏推演明细 · 共 {scenarioRows.length} 组</span>
           <div style={{ display: "flex", gap: 4 }}>
             {(
               [
@@ -800,24 +835,16 @@ export function AuditCockpitCabin({
         </div>
 
         <div className="combo-list num">
-          {sortedCombos.map((c) => {
-            const bd = resolveComboTicketBreakdown(
-              c,
-              effectiveReport.tickets,
-              effectiveReport.totalCost,
-              {
-                matchCount: effectiveReport.matchCount,
-                defaultMultiple: multiple,
-                appliedLines: effectiveAppliedPlan?.lines,
-              }
-            );
-            const isExpanded = Boolean(expandedComboIds[c.id]);
+          {scenarioRows.map((c) => {
+            const isExpanded = c.expandable && Boolean(expandedComboIds[c.id]);
+            const cardLegs = Array.isArray(c.legs) ? c.legs : [];
             return (
               <div
                 key={c.id}
-                className={`combo-card sdrawer ${isExpanded ? "open" : ""} ${c.isUnderwater ? "uw" : ""}`}
+                className={`combo-card sdrawer ${isExpanded ? "open" : ""} ${c.isUnderwater || c.isZeroWipeoutRow ? "uw" : ""}`}
+                style={!c.expandable ? { cursor: "default" } : undefined}
                 onClick={() => {
-                  if (bd.winningTicketCount > 0) {
+                  if (c.expandable && !c.isZeroWipeoutRow) {
                     haptic(4);
                     setExpandedComboIds((prev) => ({
                       ...prev,
@@ -833,17 +860,21 @@ export function AuditCockpitCabin({
                       style={{
                         margin: "0 0 4px",
                         fontWeight: 600,
-                        color: "var(--text)",
+                        color: c.isZeroWipeoutRow
+                          ? "var(--live)"
+                          : "var(--text)",
                       }}
                     >
-                      {bd.scenarioLabel}
-                      {bd.winningTicketCount > 0
-                        ? ` · 命中 ${bd.winningTicketCount} 张实票`
-                        : ""}
+                      {c.scenarioLabel}
+                      {c.winningTicketCount > 0
+                        ? ` · 命中 ${c.winningTicketCount} 张实票`
+                        : c.isZeroWipeoutRow
+                          ? " · 0 张实票命中"
+                          : ""}
                     </div>
                     <div className="combo-legs">
-                      {bd.legs.length > 0 ? (
-                        bd.legs.map((lg, lIdx) => (
+                      {cardLegs.length > 0 ? (
+                        cardLegs.map((lg, lIdx) => (
                           <span
                             key={`${c.id}-${lg.matchId}-${lg.poolCode}-${lg.optionKey}-${lIdx}`}
                             className="combo-leg-chip"
@@ -866,47 +897,49 @@ export function AuditCockpitCabin({
                     </div>
                   </div>
                   <div
-                    className={`cpnl ${c.isUnderwater || c.netProfit < 0 ? "neg" : "pos"}`}
+                    className={`cpnl ${c.isZeroWipeoutRow || c.isUnderwater || c.netProfit < 0 ? "neg" : "pos"}`}
                     style={{ flexShrink: 0, textAlign: "right" }}
                   >
                     {c.netProfit >= 0
                       ? `+¥${c.netProfit.toFixed(2)}`
                       : `-¥${Math.abs(c.netProfit).toFixed(2)}`}
-                    <small>
-                      {c.isUnderwater
-                        ? "局部回血(<本金)"
-                        : c.netProfit === 0
-                          ? "刚好保本"
-                          : `净赚 (${bd.roiMultiple}x)`}
-                    </small>
+                    <small>{c.statusBadgeText}</small>
                   </div>
                 </div>
 
                 <div className="combo-pnl-bar">
                   <i
-                    className={bd.barTone}
-                    style={{ width: `${bd.barFillPct}%` }}
+                    className={c.barTone}
+                    style={{ width: `${c.barFillPct}%` }}
                   />
                 </div>
 
                 <div className="combo-meta-row">
                   <span>
-                    发生真率 <b>{(c.prob * 100).toFixed(1)}%</b> · 单倍 ¥
-                    {c.unitPayout.toFixed(2)} · 实派{" "}
-                    <b>¥{c.totalPayout.toFixed(2)}</b>
+                    发生真率 <b>{c.probText}</b> ·{" "}
+                    {c.isZeroWipeoutRow ? (
+                      <>
+                        实派 <b>¥0.00</b>
+                      </>
+                    ) : (
+                      <>
+                        单倍 ¥{c.unitPayout.toFixed(2)} · 实派{" "}
+                        <b>¥{c.totalPayout.toFixed(2)}</b>
+                      </>
+                    )}
                   </span>
-                  {bd.winningTicketCount > 0 && (
+                  {c.expandable && (
                     <span style={{ color: "var(--mark)", fontWeight: 600 }}>
                       查看中奖实票明细 {isExpanded ? "▴" : "▾"}
                     </span>
                   )}
                 </div>
 
-                {bd.winningTicketCount > 0 && (
+                {c.expandable && (
                   <div className="sdrawer-body">
                     <div className="sdrawer-inner">
                       <div className="combo-tickets-box">
-                        {bd.winningTickets.map((tk) => (
+                        {c.winningTickets.map((tk) => (
                           <div
                             key={`${c.id}-tk-${tk.id}-${tk.ticketNo}`}
                             style={{

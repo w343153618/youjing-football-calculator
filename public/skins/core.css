@@ -670,6 +670,11 @@ button {
   color: var(--live);
   font-weight: 600;
 }
+.qpill.danger {
+  color: #ffffff;
+  background: var(--live);
+  font-weight: 600;
+}
 
 /* Mini 3px Probability Tug-of-War Bar inside Match Card */
 .mini-prob {

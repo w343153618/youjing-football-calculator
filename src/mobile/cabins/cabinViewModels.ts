@@ -4,11 +4,13 @@ import {
   type AppliedPlanSpec,
   type ArchetypePlan,
   type BridgeMatchCandidate,
+  type ComboRow,
   type LedgerSettlementDetail,
   type MatchItem,
   type MatchMicroQuant,
   type MatchPool,
   type PartialCoveragePreview,
+  type PlanTicketLine,
   type PoolCode,
   type PortfolioKey,
   type ProOrderInsights,
@@ -22,7 +24,10 @@ import type {
   UserLedgerSnapshot,
 } from "../../security/secureClient.ts";
 import {
+  resolveComboTicketBreakdown,
   splitTerminalPosterSlips,
+  type AttributedWinningTicket,
+  type ComboSortMode,
   type MatchMode,
 } from "../../workspace/betSlipController.ts";
 
@@ -323,71 +328,421 @@ export function buildPortfolioKpiTiles(plan: ArchetypePlan): {
   };
 }
 
+export function formatAuditProbabilityPct(prob: number): string {
+  const p = Number(prob) || 0;
+  if (!(p > 1e-12)) return "0.0%";
+  const pct = Math.min(100, p * 100);
+  if (pct < 0.1) {
+    if (pct >= 0.01) return `${pct.toFixed(2)}%`;
+    if (pct >= 0.0001) return `${Number(pct.toPrecision(2))}%`;
+    return "<0.0001%";
+  }
+  if (pct > 99.9 && pct < 100 - 1e-9) {
+    return `${pct.toFixed(2)}%`;
+  }
+  return `${pct.toFixed(1)}%`;
+}
+
+function formatQuantileAmount(val: number): string {
+  const n = Math.max(0, Number(val) || 0);
+  if (n <= 1e-9) return "0";
+  if (n >= 100 || Math.abs(n - Math.round(n)) < 0.005) {
+    return n.toFixed(0);
+  }
+  return n.toFixed(2);
+}
+
+function resolveReportUnconditionalProbs(effectiveReport: TruthReport): {
+  isEmpty: boolean;
+  wipeoutProb: number;
+  partialLossProb: number;
+  breakEvenProb: number;
+  strictGainProb: number;
+  anyWinProb: number;
+} {
+  const totalCost = Number(effectiveReport.totalCost) || 0;
+  if (!(totalCost > 0)) {
+    return {
+      isEmpty: true,
+      wipeoutProb: 0,
+      partialLossProb: 0,
+      breakEvenProb: 0,
+      strictGainProb: 0,
+      anyWinProb: 0,
+    };
+  }
+  const bucketSum =
+    (effectiveReport.zeroPayoutProb ?? 0) +
+    (effectiveReport.partialLossProb ?? 0) +
+    (effectiveReport.breakEvenProb ?? 0) +
+    (effectiveReport.strictNetGainProb ?? 0);
+  const hasExplicitFourBuckets = Math.abs(bucketSum - 1) < 1e-6;
+  const strictGainProb = Math.max(
+    0,
+    effectiveReport.objectiveStrictNetGainProb ??
+      effectiveReport.strictNetGainProb ??
+      0
+  );
+  const objProfitProb = Math.max(
+    strictGainProb,
+    effectiveReport.objectiveProfitProb ?? 0
+  );
+  const breakEvenProb = hasExplicitFourBuckets
+    ? Math.max(
+        0,
+        effectiveReport.objectiveBreakEvenProb ?? objProfitProb - strictGainProb
+      )
+    : Math.max(0, objProfitProb - strictGainProb);
+  const partialLossProb = hasExplicitFourBuckets
+    ? Math.max(
+        0,
+        effectiveReport.objectivePartialLossProb ??
+          effectiveReport.partialLossProb ??
+          0
+      )
+    : Math.max(0, (effectiveReport.anyWinProb ?? 0) - objProfitProb);
+  const wipeoutProb = hasExplicitFourBuckets
+    ? Math.max(
+        0,
+        effectiveReport.objectiveZeroPayoutProb ??
+          effectiveReport.zeroPayoutProb ??
+          0
+      )
+    : Math.max(0, 1 - (effectiveReport.anyWinProb ?? 0));
+  const anyWinProb = Math.min(1, Math.max(0, 1 - wipeoutProb));
+  return {
+    isEmpty: false,
+    wipeoutProb,
+    partialLossProb,
+    breakEvenProb,
+    strictGainProb,
+    anyWinProb,
+  };
+}
+
+export interface AuditCockpitHeaderBadge {
+  text: string;
+  dangerScore: number;
+  levelLabel: "高危" | "中高危" | "中危" | "稳健" | "待选";
+  isDanger: boolean;
+  isWarn: boolean;
+}
+
+export interface AuditCockpitFlipModel {
+  quantileTile: KpiTileModel;
+  vigTile: KpiTileModel;
+}
+
 export function buildAuditCockpitTiles(
   effectiveReport: TruthReport,
   insights: ProOrderInsights
 ): {
+  headerBadge: AuditCockpitHeaderBadge;
+  flipBack: AuditCockpitFlipModel;
   tile1: KpiTileModel;
   tile2: KpiTileModel;
   tile3: KpiTileModel;
   tile4: KpiTileModel;
 } {
-  const objBePct = Math.max(
-    0,
-    (effectiveReport.objectiveProfitProb -
-      effectiveReport.objectiveStrictNetGainProb) *
-      100
-  );
-  const parts: string[] = [];
-  if (objBePct >= 0.05) {
-    parts.push(`另含 ${objBePct.toFixed(1)}% 刚回本`);
+  const totalCost = Number(effectiveReport.totalCost) || 0;
+  const {
+    isEmpty,
+    wipeoutProb,
+    partialLossProb,
+    breakEvenProb,
+    strictGainProb,
+    anyWinProb,
+  } = resolveReportUnconditionalProbs(effectiveReport);
+
+  const dangerScore = isEmpty ? 0 : Number(effectiveReport.dangerScore) || 0;
+  const levelLabel: AuditCockpitHeaderBadge["levelLabel"] = isEmpty
+    ? "待选"
+    : dangerScore >= 70
+      ? "高危"
+      : dangerScore >= 50
+        ? "中高危"
+        : dangerScore >= 35
+          ? "中危"
+          : "稳健";
+  const headerBadge: AuditCockpitHeaderBadge = {
+    text: isEmpty ? "待选号" : `危险分 ${dangerScore} · ${levelLabel}`,
+    dangerScore,
+    levelLabel,
+    isDanger: !isEmpty && dangerScore >= 70,
+    isWarn: !isEmpty && dangerScore >= 50 && dangerScore < 70,
+  };
+
+  const tile1Sub = isEmpty
+    ? "未投入本金 ¥0"
+    : wipeoutProb <= 1e-12
+      ? partialLossProb > 1e-12
+        ? `全包零归零 · ${formatAuditProbabilityPct(partialLossProb)}倒贴`
+        : "全赛果零归零 · 本金无损"
+      : partialLossProb > 1e-6
+        ? `本金损失 ¥${totalCost} · 另${formatAuditProbabilityPct(partialLossProb)}倒贴`
+        : `本金损失 ¥${totalCost}`;
+
+  const tile2Parts: string[] = [];
+  if (breakEvenProb >= 1e-5) {
+    tile2Parts.push(`另含 ${formatAuditProbabilityPct(breakEvenProb)} 刚回本`);
+  } else if (!isEmpty) {
+    tile2Parts.push("平手保本 0.0%");
   }
   if (effectiveReport.subjectiveProjectedProfitProb != null) {
-    parts.push(
-      `个人推演 ${(effectiveReport.subjectiveProjectedProfitProb * 100).toFixed(1)}%`
+    tile2Parts.push(
+      `个人推演 ${formatAuditProbabilityPct(effectiveReport.subjectiveProjectedProfitProb)}`
     );
+  } else if (!isEmpty && breakEvenProb < 1e-5) {
+    tile2Parts.push(`命中 ${formatAuditProbabilityPct(anyWinProb)}`);
   }
 
+  const minHit =
+    effectiveReport.conditionalMinHitPayout ?? effectiveReport.minPayout ?? 0;
+  const maxHit =
+    effectiveReport.conditionalMaxHitPayout ?? effectiveReport.maxPayout ?? 0;
+  const isFloorGuaranteed =
+    !isEmpty &&
+    (effectiveReport.isUnconditionalFloorGuaranteed === true ||
+      (wipeoutProb <= 1e-12 &&
+        partialLossProb <= 1e-12 &&
+        minHit >= totalCost));
+
+  const hitRangeVal = isEmpty
+    ? "¥0.00"
+    : Math.abs(minHit - maxHit) < 0.005
+      ? `¥${minHit.toFixed(2)}`
+      : maxHit >= 1000
+        ? `¥${minHit < 100 ? minHit.toFixed(2) : minHit.toFixed(0)}～¥${maxHit.toFixed(0)}`
+        : `¥${minHit.toFixed(2)}～¥${maxHit.toFixed(2)}`;
+  const tile3Sub = isEmpty
+    ? "待选号评估"
+    : effectiveReport.underwaterCount > 0
+      ? `⚠️ 含 ${effectiveReport.underwaterCount}/${effectiveReport.comboCount} 组倒贴(<¥${totalCost})`
+      : !isFloorGuaranteed && wipeoutProb > 1e-9
+        ? "仅限命中前提 · 未中返 ¥0"
+        : !isFloorGuaranteed
+          ? `最低返奖低于本金 ¥${totalCost}`
+          : breakEvenProb >= 1e-5
+            ? "全赛果≥本金（含平手保本）"
+            : "全赛果无条件保底净赚";
+
+  const objEvRate = Number(effectiveReport.objectiveEVRate) || 0;
+  const expectedReturn = isEmpty ? 0 : Math.max(0, totalCost * (1 + objEvRate));
+  const expectedNet = isEmpty ? 0 : expectedReturn - totalCost;
   const kellyNote =
-    effectiveReport.objectiveEVRate <= 0
+    objEvRate <= 0
       ? `凯利0%·娱乐≤${insights.recommendedBankrollPct}%`
       : `凯利仓≤${insights.recommendedBankrollPct}%`;
+  const streakProb = Number(insights.fiveLossStreakProb) || 0;
+  const streakPctText =
+    streakProb >= 0.95
+      ? `${(streakProb * 100).toFixed(1)}%`
+      : streakProb > 0 && streakProb < 0.01
+        ? formatAuditProbabilityPct(streakProb)
+        : `${Math.round(streakProb * 100)}%`;
   const streakOrSubj =
     effectiveReport.subjectiveProjectedEVRate != null
       ? `个人推演EV ${effectiveReport.subjectiveProjectedEVRate >= 0 ? "+" : ""}${(effectiveReport.subjectiveProjectedEVRate * 100).toFixed(1)}% · `
-      : `连黑5次 ${(insights.fiveLossStreakProb * 100).toFixed(0)}% · `;
+      : `连黑5次 ${streakPctText} · `;
+
+  const q = effectiveReport.objectiveUnconditionalQuantiles ??
+    effectiveReport.unconditionalQuantiles ?? {
+      p20: 0,
+      p50: 0,
+      p80: 0,
+      p99: 0,
+    };
 
   return {
+    headerBadge,
+    flipBack: {
+      quantileTile: {
+        label: "无条件返奖分位数 (P20/P50/P80)",
+        value: `¥${formatQuantileAmount(q.p20)} / ¥${formatQuantileAmount(q.p50)} / ¥${formatQuantileAmount(q.p80)}`,
+        subtitle: !isEmpty
+          ? `含零返奖全概率质量 · 中位数P50=¥${formatQuantileAmount(q.p50)} (P99=¥${formatQuantileAmount(q.p99)})`
+          : "按全体赛果累计概率质量计算",
+        isDanger: !isEmpty && q.p80 <= 0,
+      },
+      vigTile: {
+        label: "暗扣抽水与等效水位",
+        value: `-${effectiveReport.avgVigLossPer100}%`,
+        subtitle: `返${(effectiveReport.avgPayoutRatio * 100).toFixed(1)}% · 等效@${effectiveReport.effectiveOdds.toFixed(2)}`,
+        isDanger: !isEmpty && effectiveReport.avgPayoutRatio < 0.72,
+      },
+    },
     tile1: {
-      label: "真实保底奖金",
-      value: `¥${effectiveReport.minPayout.toFixed(2)}`,
-      subtitle: `官网虚高 ¥${effectiveReport.maxPayout.toFixed(2)}`,
-      isDanger: effectiveReport.minPayout < effectiveReport.totalCost,
-      strikeSubtitle: true,
+      label: "整单归零率",
+      value: isEmpty ? "0.0%" : formatAuditProbabilityPct(wipeoutProb),
+      subtitle: tile1Sub,
+      isDanger: !isEmpty && wipeoutProb > 0.8,
+      strikeSubtitle: false,
     },
     tile2: {
-      label: "严格净赚率 vs 命中率",
-      value: `${(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}% / ${(effectiveReport.anyWinProb * 100).toFixed(1)}%`,
-      subtitle: parts.length > 0 ? parts.join(" · ") : "客观净利>0 才算真赚",
+      label: "严格净赚率",
+      value: formatAuditProbabilityPct(strictGainProb),
+      subtitle:
+        tile2Parts.length > 0 ? tile2Parts.join(" · ") : "客观净利>0 才算真赚",
+      isDanger: !isEmpty && strictGainProb < 0.05,
     },
     tile3: {
-      label: "假中奖倒贴检测",
-      value:
-        effectiveReport.underwaterCount > 0
-          ? `${effectiveReport.underwaterCount}/${effectiveReport.comboCount} 组亏钱`
-          : "0 假中奖",
-      subtitle:
-        effectiveReport.underwaterCount > 0
-          ? `占中奖率 ${(effectiveReport.underwaterShareOfWins * 100).toFixed(0)}%`
-          : "命中任一组均盈利",
-      isDanger: effectiveReport.underwaterCount > 0,
+      label: isFloorGuaranteed ? "无条件保底～最高返奖" : "命中后最低/最高返奖",
+      value: hitRangeVal,
+      subtitle: tile3Sub,
+      isDanger:
+        !isEmpty && (effectiveReport.underwaterCount > 0 || minHit < totalCost),
     },
     tile4: {
-      label: "危险分与客观期望",
-      value: `${effectiveReport.dangerScore}分 · ${effectiveReport.objectiveEVRate >= 0 ? "+" : ""}${(effectiveReport.objectiveEVRate * 100).toFixed(1)}%`,
-      subtitle: `${streakOrSubj}${kellyNote}`,
+      label: isEmpty
+        ? "期望净损益 · 期望返奖"
+        : expectedNet < -0.005
+          ? "期望净亏 · 期望返奖"
+          : expectedNet > 0.005
+            ? "期望净赚 · 期望返奖"
+            : "期望保本 · 期望返奖",
+      value: isEmpty
+        ? "¥0.00 (0.0%)"
+        : `${expectedNet >= 0 ? "+" : "-"}¥${Math.abs(expectedNet).toFixed(2)} (${objEvRate >= 0 ? "+" : ""}${(objEvRate * 100).toFixed(1)}%)`,
+      subtitle: isEmpty
+        ? "待选号评估"
+        : `期返¥${expectedReturn.toFixed(2)} · ${streakOrSubj}${kellyNote}`,
+      isDanger: !isEmpty && (objEvRate <= -0.25 || dangerScore >= 70),
     },
   };
+}
+
+export interface AuditScenarioRow extends ComboRow {
+  isZeroWipeoutRow: boolean;
+  expandable: boolean;
+  probText: string;
+  payout: number;
+  scenarioLabel: string;
+  statusBadgeText: string;
+  winningTicketCount: number;
+  winningTickets: AttributedWinningTicket[];
+  roiMultiple: number;
+  barTone: "loss" | "breakeven" | "gain";
+  barFillPct: number;
+}
+
+export function buildAuditScenarioRows(
+  effectiveReport: Pick<
+    TruthReport,
+    | "totalCost"
+    | "zeroPayoutProb"
+    | "partialLossProb"
+    | "breakEvenProb"
+    | "strictNetGainProb"
+    | "anyWinProb"
+    | "combos"
+    | "tickets"
+    | "matchCount"
+  >,
+  sortMode: ComboSortMode,
+  options?: {
+    matchCount?: number;
+    defaultMultiple?: number;
+    appliedLines?: PlanTicketLine[];
+  }
+): AuditScenarioRow[] {
+  const totalCost = Number(effectiveReport.totalCost) || 0;
+  if (!(totalCost > 0)) return [];
+
+  const rows: AuditScenarioRow[] = [];
+  const bucketSum =
+    (effectiveReport.zeroPayoutProb ?? 0) +
+    (effectiveReport.partialLossProb ?? 0) +
+    (effectiveReport.breakEvenProb ?? 0) +
+    (effectiveReport.strictNetGainProb ?? 0);
+  const zeroProb =
+    Math.abs(bucketSum - 1) < 1e-6
+      ? Math.max(0, Number(effectiveReport.zeroPayoutProb) || 0)
+      : Math.max(0, 1 - (Number(effectiveReport.anyWinProb) || 0));
+
+  if (zeroProb > 1e-9) {
+    const wipeoutNet = -Number(totalCost.toFixed(2));
+    rows.push({
+      id: "__zero_payout_wipeout__",
+      desc: `全部未中（返奖 ¥0.00 · 损失全部本金 ¥${totalCost}）`,
+      legs: [],
+      prob: zeroProb,
+      probText: formatAuditProbabilityPct(zeroProb),
+      unitPayout: 0,
+      totalPayout: 0,
+      payout: 0,
+      cappedClipped: 0,
+      netProfit: wipeoutNet,
+      isUnderwater: false,
+      isZeroWipeoutRow: true,
+      expandable: false,
+      scenarioLabel: "全部未中",
+      statusBadgeText: "整单归零(返奖¥0)",
+      winningTicketCount: 0,
+      winningTickets: [],
+      roiMultiple: 0,
+      barTone: "loss",
+      barFillPct: 100,
+    });
+  }
+
+  const combos = Array.isArray(effectiveReport.combos)
+    ? effectiveReport.combos
+    : [];
+  for (let i = 0; i < combos.length; i++) {
+    const c = combos[i];
+    const bd = resolveComboTicketBreakdown(
+      c,
+      effectiveReport.tickets,
+      totalCost,
+      {
+        matchCount: options?.matchCount ?? effectiveReport.matchCount,
+        defaultMultiple: options?.defaultMultiple,
+        appliedLines: options?.appliedLines,
+      }
+    );
+    const statusBadgeText = c.isUnderwater
+      ? "局部回血(<本金)"
+      : Math.round(c.netProfit * 100) === 0
+        ? "刚好保本"
+        : `净赚 (${bd.roiMultiple}x)`;
+    rows.push({
+      ...c,
+      isZeroWipeoutRow: false,
+      expandable: bd.winningTicketCount > 0,
+      probText: formatAuditProbabilityPct(c.prob),
+      payout: c.totalPayout,
+      scenarioLabel: bd.scenarioLabel,
+      statusBadgeText,
+      winningTicketCount: bd.winningTicketCount,
+      winningTickets: bd.winningTickets,
+      roiMultiple: bd.roiMultiple,
+      barTone: bd.barTone,
+      barFillPct: bd.barFillPct,
+    });
+  }
+
+  if (sortMode === "loss-first") {
+    rows.sort((a, b) => {
+      const aLoss = a.isZeroWipeoutRow || a.isUnderwater || a.netProfit < 0;
+      const bLoss = b.isZeroWipeoutRow || b.isUnderwater || b.netProfit < 0;
+      if (aLoss !== bLoss) return aLoss ? -1 : 1;
+      if (a.netProfit !== b.netProfit) return a.netProfit - b.netProfit;
+      return b.prob - a.prob;
+    });
+    return rows;
+  }
+  if (sortMode === "prob-first") {
+    rows.sort((a, b) => {
+      if (b.prob !== a.prob) return b.prob - a.prob;
+      return b.netProfit - a.netProfit;
+    });
+    return rows;
+  }
+  rows.sort((a, b) => {
+    if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
+    return b.prob - a.prob;
+  });
+  return rows;
 }
 
 export interface HedgeDrawerCopy {

@@ -27,6 +27,121 @@ export function canonicalTicketLegSig(legs) {
     .join("&");
 }
 
+function finalizeUnconditionalOutcomeMetrics({
+  sortedTiers,
+  totalCost,
+  minPayout,
+  maxPayout,
+  rawZeroProb = null,
+  rawPartialProb = 0,
+  rawBreakEvenProb = 0,
+  rawStrictGainProb = 0,
+  zeroStructurallyImpossible = false,
+}) {
+  if (!(totalCost > 0)) {
+    return {
+      isEmptySlip: true,
+      anyWinProb: 0,
+      zeroPayoutProb: 0,
+      partialLossProb: 0,
+      realProfitProb: 0,
+      strictNetGainProb: 0,
+      breakEvenProb: 0,
+      conditionalMinHitPayout: 0,
+      conditionalMaxHitPayout: 0,
+      isUnconditionalFloorGuaranteed: false,
+      unconditionalQuantiles: { p20: 0, p50: 0, p80: 0, p99: 0 },
+    };
+  }
+
+  const pPart = rawPartialProb <= 1e-13 ? 0 : Math.max(0, rawPartialProb);
+  const pBe = rawBreakEvenProb <= 1e-13 ? 0 : Math.max(0, rawBreakEvenProb);
+  const pGain = rawStrictGainProb <= 1e-13 ? 0 : Math.max(0, rawStrictGainProb);
+  const winMass = pPart + pBe + pGain;
+
+  let p0;
+  if (zeroStructurallyImpossible) {
+    p0 = 0;
+  } else if (
+    typeof rawZeroProb === "number" &&
+    Number.isFinite(rawZeroProb) &&
+    Math.abs(rawZeroProb + winMass - 1) < 1e-6
+  ) {
+    p0 = rawZeroProb <= 1e-14 ? 0 : Math.max(0, rawZeroProb);
+  } else {
+    const rem = 1 - winMass;
+    p0 = rem <= 1e-12 ? 0 : Math.max(0, rem);
+  }
+
+  const sum4 = p0 + pPart + pBe + pGain;
+  let zeroPayoutProb = 1;
+  let partialLossProb = 0;
+  let breakEvenProb = 0;
+  let strictNetGainProb = 0;
+  if (sum4 > 0) {
+    zeroPayoutProb = p0 === 0 ? 0 : p0 / sum4;
+    partialLossProb = pPart === 0 ? 0 : pPart / sum4;
+    breakEvenProb = pBe === 0 ? 0 : pBe / sum4;
+    strictNetGainProb = pGain === 0 ? 0 : pGain / sum4;
+  }
+
+  const realProfitProb = Math.min(
+    1,
+    Math.max(0, breakEvenProb + strictNetGainProb)
+  );
+  const anyWinProb = Math.min(1, Math.max(0, partialLossProb + realProfitProb));
+  const conditionalMinHitPayout =
+    sortedTiers.length > 0 ? Number(Math.max(0, minPayout).toFixed(2)) : 0;
+  const conditionalMaxHitPayout =
+    sortedTiers.length > 0 ? Number(Math.max(0, maxPayout).toFixed(2)) : 0;
+  const isUnconditionalFloorGuaranteed =
+    zeroPayoutProb <= 1e-12 && partialLossProb <= 1e-12;
+
+  const tierMassSum = sortedTiers.reduce(
+    (acc, t) => acc + Math.max(0, Number(t.prob) || 0),
+    0
+  );
+  const tierScale =
+    tierMassSum > 0 && anyWinProb > 0 ? anyWinProb / tierMassSum : 1;
+
+  const resolveQuantileAt = (q) => {
+    if (zeroPayoutProb >= q - 1e-12 || sortedTiers.length === 0) return 0;
+    let cum = zeroPayoutProb;
+    for (let i = 0; i < sortedTiers.length; i++) {
+      cum += Math.max(0, Number(sortedTiers[i].prob) || 0) * tierScale;
+      if (cum >= q - 1e-12 || i === sortedTiers.length - 1) {
+        const rawPay = Number(
+          Math.max(0, Number(sortedTiers[i].totalPayout) || 0).toFixed(2)
+        );
+        return Math.min(
+          conditionalMaxHitPayout,
+          Math.max(conditionalMinHitPayout, rawPay)
+        );
+      }
+    }
+    return 0;
+  };
+
+  const p20 = resolveQuantileAt(0.2);
+  const p50 = Math.max(p20, resolveQuantileAt(0.5));
+  const p80 = Math.max(p50, resolveQuantileAt(0.8));
+  const p99 = Math.max(p80, resolveQuantileAt(0.99));
+
+  return {
+    isEmptySlip: false,
+    anyWinProb,
+    zeroPayoutProb,
+    partialLossProb,
+    realProfitProb,
+    strictNetGainProb,
+    breakEvenProb,
+    conditionalMinHitPayout,
+    conditionalMaxHitPayout,
+    isUnconditionalFloorGuaranteed,
+    unconditionalQuantiles: { p20, p50, p80, p99 },
+  };
+}
+
 export function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
   const K = ticketRows.length;
   if (!hitMatrix || hitMatrix.K !== K) return null;
@@ -82,21 +197,35 @@ export function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
       if (c.isBreakEven) breakEvenSum += c.prob;
     }
   }
-  const anyWinProb = Math.min(1, Math.max(0, anyWinSum));
-  const realProfitProb = Math.min(anyWinProb, Math.max(0, profitSum));
+  const rawAnyWinProb = Math.min(1, Math.max(0, anyWinSum));
+  const rawRealProfitProb = Math.min(rawAnyWinProb, Math.max(0, profitSum));
   const allNonUwBreakEven =
     B > 0 && activeTiers.every((c) => c.isUnderwater || c.isBreakEven);
-  const breakEvenProb = allNonUwBreakEven
-    ? realProfitProb
-    : Math.min(realProfitProb, Math.max(0, breakEvenSum));
-  const strictNetGainProb = allNonUwBreakEven
+  const rawBreakEvenProb = allNonUwBreakEven
+    ? rawRealProfitProb
+    : Math.min(rawRealProfitProb, Math.max(0, breakEvenSum));
+  const rawStrictNetGainProb = allNonUwBreakEven
     ? 0
-    : Math.max(0, realProfitProb - breakEvenProb);
+    : Math.max(0, rawRealProfitProb - rawBreakEvenProb);
   const minPayout = activeTiers[0]?.totalPayout ?? 0;
   const maxPayout = activeTiers[B - 1]?.totalPayout ?? 0;
+  const finalized = finalizeUnconditionalOutcomeMetrics({
+    sortedTiers: activeTiers,
+    totalCost,
+    minPayout,
+    maxPayout,
+    rawZeroProb: hitMatrix.zeroPayoutProb ?? null,
+    rawPartialProb: underwaterProbSum,
+    rawBreakEvenProb,
+    rawStrictGainProb: rawStrictNetGainProb,
+    zeroStructurallyImpossible: hitMatrix.zeroPayoutProb === 0,
+  });
   const underwaterShareOfWins =
-    anyWinProb > 0
-      ? Math.min(1, Math.max(0, underwaterProbSum / anyWinProb))
+    finalized.anyWinProb > 0
+      ? Math.min(
+          1,
+          Math.max(0, finalized.partialLossProb / finalized.anyWinProb)
+        )
       : 0;
 
   const byProbDesc = [...activeTiers].sort((a, b) => b.prob - a.prob);
@@ -117,10 +246,7 @@ export function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
   return {
     combos: [],
     tiers: activeTiers,
-    anyWinProb,
-    realProfitProb,
-    strictNetGainProb,
-    breakEvenProb,
+    ...finalized,
     minPayout,
     maxPayout,
     expectedReturn: exactExpectedReturn,
@@ -367,16 +493,20 @@ export function evaluateTicketsOnQuotientSpace(
   options = null
 ) {
   if (!Array.isArray(ticketRows) || ticketRows.length === 0) {
+    const emptyFin = finalizeUnconditionalOutcomeMetrics({
+      sortedTiers: [],
+      totalCost,
+      minPayout: 0,
+      maxPayout: 0,
+      rawZeroProb: totalCost > 0 ? 1 : 0,
+    });
     return {
       combos: [],
-      anyWinProb: 0,
-      realProfitProb: 0,
-      strictNetGainProb: 0,
-      breakEvenProb: 0,
+      ...emptyFin,
       minPayout: 0,
       maxPayout: 0,
       expectedReturn: 0,
-      expectedValueRate: 0,
+      expectedValueRate: totalCost > 0 ? -1 : 0,
       underwaterCount: 0,
       underwaterShareOfWins: 0,
       likelyRange: [0, 0],
@@ -924,15 +1054,15 @@ export function evaluateTicketsOnQuotientSpace(
       };
     });
 
-    const anyWinProb = Math.min(
+    const rawSglAnyWin = Math.min(
       1,
       Math.max(
         0,
         combos.reduce((acc, c) => acc + c.prob, 0)
       )
     );
-    const realProfitProb = Math.min(
-      anyWinProb,
+    const rawSglProfit = Math.min(
+      rawSglAnyWin,
       Math.max(
         0,
         combos
@@ -952,12 +1082,12 @@ export function evaluateTicketsOnQuotientSpace(
         (c) =>
           c.isUnderwater || Math.round((c.totalPayout - totalCost) * 100) === 0
       );
-    const breakEvenProb = allSglBreakEven
-      ? realProfitProb
-      : Math.min(realProfitProb, Math.max(0, rawSglBreakEven));
-    const strictNetGainProb = allSglBreakEven
+    const rawBeProb = allSglBreakEven
+      ? rawSglProfit
+      : Math.min(rawSglProfit, Math.max(0, rawSglBreakEven));
+    const rawStrictGainProb = allSglBreakEven
       ? 0
-      : Math.max(0, realProfitProb - breakEvenProb);
+      : Math.max(0, rawSglProfit - rawBeProb);
     const minPayout =
       combos.length > 0
         ? Math.min(...finalBuckets.map((b) => b.minCents)) / 100
@@ -972,9 +1102,27 @@ export function evaluateTicketsOnQuotientSpace(
     const underwaterProbSum = combos
       .filter((c) => c.isUnderwater)
       .reduce((acc, c) => acc + c.prob, 0);
+    const dpZeroBucket = dp.get(0);
+    const sortedSglTiers = [...combos].sort(
+      (a, b) => a.totalPayout - b.totalPayout
+    );
+    const sglFinalized = finalizeUnconditionalOutcomeMetrics({
+      sortedTiers: sortedSglTiers,
+      totalCost,
+      minPayout,
+      maxPayout,
+      rawZeroProb: dpZeroBucket ? dpZeroBucket.prob : 0,
+      rawPartialProb: underwaterProbSum,
+      rawBreakEvenProb: rawBeProb,
+      rawStrictGainProb,
+      zeroStructurallyImpossible: !dpZeroBucket || !(dpZeroBucket.prob > 0),
+    });
     const underwaterShareOfWins =
-      anyWinProb > 0
-        ? Math.min(1, Math.max(0, underwaterProbSum / anyWinProb))
+      sglFinalized.anyWinProb > 0
+        ? Math.min(
+            1,
+            Math.max(0, sglFinalized.partialLossProb / sglFinalized.anyWinProb)
+          )
         : 0;
 
     const byProbDesc = [...combos].sort((a, b) => b.prob - a.prob);
@@ -996,10 +1144,7 @@ export function evaluateTicketsOnQuotientSpace(
     return {
       combos: metricsOnly ? [] : combos,
       tiers: combos,
-      anyWinProb,
-      realProfitProb,
-      strictNetGainProb,
-      breakEvenProb,
+      ...sglFinalized,
       minPayout,
       maxPayout,
       expectedReturn,
@@ -1345,6 +1490,8 @@ export function evaluateTicketsOnQuotientSpace(
   let globalMinWinCents = Infinity;
   let globalMaxWinCents = 0;
   let exactBreakEvenProb = 0;
+  let exactZeroProb = null;
+  let zeroStructurallyImpossible = false;
   let capturedBucketProbs = null;
   let capturedBucketHits = null;
 
@@ -1533,6 +1680,12 @@ export function evaluateTicketsOnQuotientSpace(
       }
       return arr;
     });
+    const matchesWithMiss = mStates.filter((st) =>
+      st.some((x) => x.jIdx < 0 && x.prob > 0)
+    ).length;
+    if (M >= 2 && M - matchesWithMiss >= 2) {
+      zeroStructurallyImpossible = true;
+    }
 
     const optToStateIdx = mStates.map((st, m) => {
       const map = new Int32Array(
@@ -2255,6 +2408,7 @@ export function evaluateTicketsOnQuotientSpace(
       deltaOut[2] = aClip;
       return deltaOut;
     };
+    let scalarZeroAcc = 0;
     const walkScalar = (m, curProb, accPay, accUnit, accClip) => {
       if (visitedScalarLeaves >= MAX_SCALAR_LEAVES) return;
       const r = distinctOptsByMatch[m].length;
@@ -2306,8 +2460,11 @@ export function evaluateTicketsOnQuotientSpace(
           const addUnit = dVal[1];
           const addClip = dVal[2];
           const totPay = accPay + addPay;
-          if (totPay <= 0) continue;
           const lp = curProb * pArr[s];
+          if (totPay <= 0) {
+            scalarZeroAcc += lp;
+            continue;
+          }
           if (totPay === totalCostCents) exactBreakEvenProb += lp;
           if (totPay < globalMinWinCents) globalMinWinCents = totPay;
           if (totPay > globalMaxWinCents) globalMaxWinCents = totPay;
@@ -2358,6 +2515,10 @@ export function evaluateTicketsOnQuotientSpace(
     };
 
     walkScalar(0, 1, 0, 0, 0);
+    if (visitedScalarLeaves < MAX_SCALAR_LEAVES) {
+      exactZeroProb = scalarZeroAcc;
+      if (scalarZeroAcc === 0) zeroStructurallyImpossible = true;
+    }
 
     let bIdx = 0;
     for (let b = 0; b < BINS; b++) {
@@ -2442,6 +2603,7 @@ export function evaluateTicketsOnQuotientSpace(
 
     let visitedNodes = 0;
     let overflowActive = false;
+    let walk32ZeroAcc = 0;
     const winBuckets = new Map();
     const walk32 = (m, curProb, aliveMask) => {
       if (++visitedNodes > MAX_DFS_NODES) return;
@@ -2449,9 +2611,12 @@ export function evaluateTicketsOnQuotientSpace(
       const cArr = compatMask[m];
       const isLast = m === M - 1;
       for (let s = 0; s < qStates.length; s++) {
-        const nextMask = aliveMask & cArr[s];
-        if (nextMask === 0) continue;
         const nextProb = curProb * qStates[s].prob;
+        const nextMask = aliveMask & cArr[s];
+        if (nextMask === 0) {
+          walk32ZeroAcc += nextProb;
+          continue;
+        }
         if (isLast) {
           const uMask = nextMask >>> 0;
           if (!overflowActive) {
@@ -2469,6 +2634,8 @@ export function evaluateTicketsOnQuotientSpace(
           const [payC, unitC, clipC] = sumMaskCents(uMask);
           if (payC > 0) {
             foldIntoPayoutOverflow(payC, unitC, clipC, nextProb, () => uMask);
+          } else {
+            walk32ZeroAcc += nextProb;
           }
         } else {
           walk32(m + 1, nextProb, nextMask);
@@ -2476,6 +2643,10 @@ export function evaluateTicketsOnQuotientSpace(
       }
     };
     walk32(0, 1, fullMask);
+    if (visitedNodes <= MAX_DFS_NODES) {
+      exactZeroProb = walk32ZeroAcc;
+      if (walk32ZeroAcc === 0) zeroStructurallyImpossible = true;
+    }
 
     if (overflowActive) {
       for (const [uMask, prob] of winBuckets.entries()) {
@@ -2575,6 +2746,7 @@ export function evaluateTicketsOnQuotientSpace(
 
     let visitedNodes = 0;
     let overflowActive = false;
+    let walkWordsZeroAcc = 0;
     const winBuckets = new Map();
     const walkWords = (m, curProb) => {
       if (++visitedNodes > MAX_DFS_NODES) return;
@@ -2584,6 +2756,7 @@ export function evaluateTicketsOnQuotientSpace(
       const cList = compatWords[m];
       const isLast = m === M - 1;
       for (let s = 0; s < qStates.length; s++) {
+        const nextProb = curProb * qStates[s].prob;
         const cw = cList[s];
         let nonZero = 0;
         for (let w = 0; w < wordCount; w++) {
@@ -2591,8 +2764,10 @@ export function evaluateTicketsOnQuotientSpace(
           nextWords[w] = v;
           nonZero |= v;
         }
-        if (nonZero === 0) continue;
-        const nextProb = curProb * qStates[s].prob;
+        if (nonZero === 0) {
+          walkWordsZeroAcc += nextProb;
+          continue;
+        }
         if (isLast) {
           if (!overflowActive) {
             let key = "";
@@ -2625,6 +2800,8 @@ export function evaluateTicketsOnQuotientSpace(
               nextProb,
               () => new Uint32Array(nextWords)
             );
+          } else {
+            walkWordsZeroAcc += nextProb;
           }
         } else {
           walkWords(m + 1, nextProb);
@@ -2632,6 +2809,10 @@ export function evaluateTicketsOnQuotientSpace(
       }
     };
     walkWords(0, 1);
+    if (visitedNodes <= MAX_DFS_NODES) {
+      exactZeroProb = walkWordsZeroAcc;
+      if (walkWordsZeroAcc === 0) zeroStructurallyImpossible = true;
+    }
 
     if (overflowActive) {
       for (const entry of winBuckets.values()) {
@@ -2731,15 +2912,15 @@ export function evaluateTicketsOnQuotientSpace(
 
   const activeTiers = metricsOnly ? metricTiers : combos;
   activeTiers.sort((a, b) => a.totalPayout - b.totalPayout);
-  const anyWinProb = Math.min(
+  const rawJointAnyWin = Math.min(
     1,
     Math.max(
       0,
       activeTiers.reduce((acc, c) => acc + c.prob, 0)
     )
   );
-  const realProfitProb = Math.min(
-    anyWinProb,
+  const rawJointProfit = Math.min(
+    rawJointAnyWin,
     Math.max(
       0,
       activeTiers
@@ -2749,17 +2930,17 @@ export function evaluateTicketsOnQuotientSpace(
   );
   const allJointBreakEven =
     activeTiers.length > 0 &&
-    Math.abs(realProfitProb - exactBreakEvenProb) <= 1e-13 &&
+    Math.abs(rawJointProfit - exactBreakEvenProb) <= 1e-13 &&
     activeTiers.every(
       (c) =>
         c.isUnderwater || Math.round((c.totalPayout - totalCost) * 100) === 0
     );
-  const breakEvenProb = allJointBreakEven
-    ? realProfitProb
-    : Math.min(realProfitProb, Math.max(0, exactBreakEvenProb));
-  const strictNetGainProb = allJointBreakEven
+  const rawJointBe = allJointBreakEven
+    ? rawJointProfit
+    : Math.min(rawJointProfit, Math.max(0, exactBreakEvenProb));
+  const rawJointStrictGain = allJointBreakEven
     ? 0
-    : Math.max(0, realProfitProb - breakEvenProb);
+    : Math.max(0, rawJointProfit - rawJointBe);
   const minPayout =
     activeTiers.length > 0 && Number.isFinite(globalMinWinCents)
       ? globalMinWinCents / 100
@@ -2774,9 +2955,29 @@ export function evaluateTicketsOnQuotientSpace(
   const underwaterProbSum = activeTiers
     .filter((c) => c.isUnderwater)
     .reduce((acc, c) => acc + c.prob, 0);
+  const jointFinalized = finalizeUnconditionalOutcomeMetrics({
+    sortedTiers: activeTiers,
+    totalCost,
+    minPayout,
+    maxPayout,
+    rawZeroProb: exactZeroProb,
+    rawPartialProb: underwaterProbSum,
+    rawBreakEvenProb: rawJointBe,
+    rawStrictGainProb: rawJointStrictGain,
+    zeroStructurallyImpossible,
+  });
+  if (hitMatrix) {
+    hitMatrix.zeroPayoutProb = jointFinalized.zeroPayoutProb;
+  }
   const underwaterShareOfWins =
-    anyWinProb > 0
-      ? Math.min(1, Math.max(0, underwaterProbSum / anyWinProb))
+    jointFinalized.anyWinProb > 0
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            jointFinalized.partialLossProb / jointFinalized.anyWinProb
+          )
+        )
       : 0;
 
   const byProbDesc = [...activeTiers].sort((a, b) => b.prob - a.prob);
@@ -2799,10 +3000,7 @@ export function evaluateTicketsOnQuotientSpace(
     combos,
     tiers: activeTiers,
     hitMatrix,
-    anyWinProb,
-    realProfitProb,
-    strictNetGainProb,
-    breakEvenProb,
+    ...jointFinalized,
     minPayout,
     maxPayout,
     expectedReturn,

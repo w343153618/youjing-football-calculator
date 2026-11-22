@@ -167,6 +167,13 @@ export interface ComboPassOption {
   disabledReason: string | null;
 }
 
+export interface UnconditionalQuantiles {
+  p20: number;
+  p50: number;
+  p80: number;
+  p99: number;
+}
+
 export interface TruthReport {
   matchCount: number;
   betCount: number;
@@ -183,14 +190,25 @@ export interface TruthReport {
   availableFreePasses: FreePassOption[];
   availableComboPasses: ComboPassOption[];
   hasSameMatchCrossPoolConflict: boolean;
+  isEmptySlip: boolean;
   totalCost: number;
   minPayout: number;
   maxPayout: number;
+  conditionalMinHitPayout: number;
+  conditionalMaxHitPayout: number;
+  isUnconditionalFloorGuaranteed: boolean;
+  unconditionalQuantiles: UnconditionalQuantiles;
+  objectiveUnconditionalQuantiles?: UnconditionalQuantiles;
   likelyRange: [number, number];
   anyWinProb: number;
+  zeroPayoutProb: number;
+  partialLossProb: number;
   realProfitProb: number;
   strictNetGainProb: number;
   breakEvenProb: number;
+  objectiveZeroPayoutProb?: number;
+  objectivePartialLossProb?: number;
+  objectiveBreakEvenProb?: number;
   underwaterCount: number;
   underwaterShareOfWins: number;
   avgPayoutRatio: number;
@@ -423,14 +441,25 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   availableFreePasses: [],
   availableComboPasses: [],
   hasSameMatchCrossPoolConflict: false,
+  isEmptySlip: true,
   totalCost: 0,
   minPayout: 0,
   maxPayout: 0,
+  conditionalMinHitPayout: 0,
+  conditionalMaxHitPayout: 0,
+  isUnconditionalFloorGuaranteed: false,
+  unconditionalQuantiles: { p20: 0, p50: 0, p80: 0, p99: 0 },
+  objectiveUnconditionalQuantiles: { p20: 0, p50: 0, p80: 0, p99: 0 },
   likelyRange: [0, 0],
   anyWinProb: 0,
+  zeroPayoutProb: 0,
+  partialLossProb: 0,
   realProfitProb: 0,
   strictNetGainProb: 0,
   breakEvenProb: 0,
+  objectiveZeroPayoutProb: 0,
+  objectivePartialLossProb: 0,
+  objectiveBreakEvenProb: 0,
   underwaterCount: 0,
   underwaterShareOfWins: 0,
   avgPayoutRatio: 0,

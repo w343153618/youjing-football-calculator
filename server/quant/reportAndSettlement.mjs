@@ -150,14 +150,25 @@ function buildBlockedTruthReport({
     availableFreePasses,
     availableComboPasses,
     hasSameMatchCrossPoolConflict,
+    isEmptySlip: true,
     totalCost,
     minPayout: 0,
     maxPayout: 0,
+    conditionalMinHitPayout: 0,
+    conditionalMaxHitPayout: 0,
+    isUnconditionalFloorGuaranteed: false,
+    unconditionalQuantiles: { p20: 0, p50: 0, p80: 0, p99: 0 },
+    objectiveUnconditionalQuantiles: { p20: 0, p50: 0, p80: 0, p99: 0 },
     likelyRange: [0, 0],
     anyWinProb: 0,
+    zeroPayoutProb: 0,
+    partialLossProb: 0,
     realProfitProb: 0,
     strictNetGainProb: 0,
     breakEvenProb: 0,
+    objectiveZeroPayoutProb: 0,
+    objectivePartialLossProb: 0,
+    objectiveBreakEvenProb: 0,
     underwaterCount: 0,
     underwaterShareOfWins: 0,
     avgPayoutRatio: 0,
@@ -1665,9 +1676,6 @@ export function computeTruthReport(
           )
         : jointEval;
 
-  const avgPassLen =
-    activePassSizes.reduce((a, b) => a + b, 0) /
-    Math.max(1, activePassSizes.length);
   const { avgPayoutRatio, vigPct: avgVigLossPer100 } =
     computeCapitalWeightedVig(ticketRows, matches);
 
@@ -1691,18 +1699,12 @@ export function computeTruthReport(
     );
   }
 
-  const rawDanger =
-    (1 - realProfitProb) * 58 +
-    Math.max(0, avgPassLen - 1) * 9 +
-    underwaterShareOfWins * 22;
-  const dangerScore = Math.min(99, Math.max(8, Math.round(rawDanger)));
   const consolidatedTickets = Math.max(
     1,
     Math.min(24, Math.ceil(betCount / 3) * Math.ceil(multiple / 99))
   );
   const overOrder20k = totalCost > 20_000;
-  const warnings = buildStatutorySlipWarnings({
-    isManualSlip: true,
+  const { dangerScore, warnings } = computeUnifiedSlipDangerAndWarnings({
     tickets: ticketRows,
     totalCost,
     minPayout,
@@ -1716,12 +1718,9 @@ export function computeTruthReport(
     forceSingleOnly,
     activePassSizes,
     hasSameMatchCrossPoolConflict,
-    avgPassLen,
     avgPayoutRatio,
     avgVigLossPer100,
-    modeLabel,
-    maxMultiple: multiple,
-    physicalSlipCount: Math.ceil(multiple / 99),
+    objEval: objEvalForManual,
     hasInvalidOdds: false,
   });
 
@@ -1744,19 +1743,7 @@ export function computeTruthReport(
     availableComboPasses,
     hasSameMatchCrossPoolConflict,
     totalCost,
-    jointEval: {
-      minPayout,
-      maxPayout,
-      likelyRange: [likelyMin, likelyMax],
-      anyWinProb,
-      realProfitProb,
-      strictNetGainProb,
-      breakEvenProb,
-      underwaterCount,
-      underwaterShareOfWins,
-      expectedValueRate,
-      combos,
-    },
+    jointEval,
     objEval: objEvalForManual,
     hasSubjectiveShift,
     avgPayoutRatio,
@@ -2613,18 +2600,25 @@ export function computeProOrderInsights(
         )
       : [];
 
-  const p = Math.max(
-    0.03,
-    Number(report.objectiveProfitProb ?? report.realProfitProb) || 0.03
-  );
-  const fiveLossStreakProb = Math.pow(1 - p, 5);
+  const isEmptyReport =
+    Boolean(report?.isEmptySlip) || !(Number(report?.totalCost) > 0);
+  const nonLossProb = isEmptyReport
+    ? 0
+    : Math.min(
+        1,
+        Math.max(
+          0,
+          Number(report.objectiveProfitProb ?? report.realProfitProb ?? 0) || 0
+        )
+      );
+  const fiveLossStreakProb = isEmptyReport ? 0 : Math.pow(1 - nonLossProb, 5);
   const evRate =
     Number(report.objectiveEVRate ?? report.expectedValueRate) || 0;
   // Kelly Criterion discipline (ADR-0010 / Spec 0009): negative-EV bets have optimal Kelly f* = 0%;
   // cap recreational budget exposure strictly at <= 2% so high-hit-rate favorites never induce ruinous 12% stakes.
   const recommendedBankrollPct =
     evRate <= 0
-      ? p >= 0.4
+      ? nonLossProb >= 0.4
         ? 2
         : 1
       : Math.min(
@@ -3323,19 +3317,17 @@ export function scaleArchetypePlan(plan, rawScale) {
   return scaledOut;
 }
 
-function buildInvalidOddsStatutoryWarning(isPlan = false) {
+function buildInvalidOddsStatutoryWarning() {
   return {
     id: "invalid-odds",
     severity: "danger",
     title: "选单包含未开售或无效赔率选项，已拦截出票",
-    detail: isPlan
-      ? "部分实票选项在当前官方盘面未开售或不存在，请还原等倍后重新选号。"
-      : "部分所选选项在当前官方盘面未开售或赔率异常，请重新勾选有效选项。",
+    detail:
+      "部分所选选项在当前官方盘面未开售或赔率异常，请重新核对并勾选有效选项。",
   };
 }
 
-function buildStatutorySlipWarnings({
-  isManualSlip = true,
+export function computeUnifiedSlipDangerAndWarnings({
   tickets = [],
   totalCost = 0,
   minPayout = 0,
@@ -3349,16 +3341,75 @@ function buildStatutorySlipWarnings({
   forceSingleOnly = false,
   activePassSizes = [],
   hasSameMatchCrossPoolConflict = false,
-  avgPassLen = 1,
   avgPayoutRatio = 0.88,
   avgVigLossPer100 = 12,
-  modeLabel = "",
-  maxMultiple = 1,
-  physicalSlipCount = 1,
+  objEval = null,
   hasInvalidOdds = false,
 }) {
+  let weightedLegSum = 0;
+  let totalTicketWeight = 0;
+  let maxMultiple = 1;
+  for (let i = 0; i < tickets.length; i++) {
+    const tk = tickets[i];
+    const mult = Math.max(1, Number(tk.multiple) || 1);
+    if (mult > maxMultiple) maxMultiple = mult;
+    const w = Math.max(0, Number(tk.cost ?? mult * 2));
+    const effLegs =
+      Array.isArray(tk.legs) && tk.legs.length > 0
+        ? Math.max(1, effectiveNonVoidLegCount(tk.legs.map((g) => g.odds)))
+        : 1;
+    weightedLegSum += w * effLegs;
+    totalTicketWeight += w;
+  }
+  const avgPassLen =
+    totalTicketWeight > 0
+      ? weightedLegSum / totalTicketWeight
+      : activePassSizes.length > 0
+        ? activePassSizes.reduce((a, b) => a + b, 0) / activePassSizes.length
+        : 1;
+  const physicalSlipCount =
+    tickets.length > 0 ? countPhysical99xSlips(tickets) : 1;
+
+  const objZeroProb =
+    totalCost > 0
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            Number(
+              objEval?.zeroPayoutProb ??
+                (objEval?.anyWinProb != null ? 1 - objEval.anyWinProb : 0)
+            )
+          )
+        )
+      : 0;
+  const objPartialProb =
+    totalCost > 0
+      ? Math.min(1, Math.max(0, Number(objEval?.partialLossProb ?? 0)))
+      : 0;
+  const objBreakEvenProb =
+    totalCost > 0
+      ? Math.min(1, Math.max(0, Number(objEval?.breakEvenProb ?? 0)))
+      : 0;
+  const isGuaranteedLossSlip =
+    effectiveOdds > 0 &&
+    effectiveOdds <= 1.0 &&
+    activePassSizes.length === 1 &&
+    activePassSizes[0] === matchCount;
+
+  const rawDanger =
+    objZeroProb * 52 +
+    objPartialProb * 32 +
+    objBreakEvenProb * 8 +
+    Math.max(0, Number(avgVigLossPer100 || 0) - 10) * 0.45 +
+    Math.max(0, avgPassLen - 1) * 7 +
+    (isGuaranteedLossSlip ? 25 : 0);
+  const dangerScore = !(totalCost > 0)
+    ? 0
+    : Math.min(99, Math.max(8, Math.round(rawDanger)));
+
   const warnings = [];
-  if (isManualSlip && matchCount > poolCap && !forceSingleOnly) {
+  if (matchCount > poolCap && !forceSingleOnly) {
     warnings.push({
       id: "pool-pass-cap",
       severity: "tip",
@@ -3370,13 +3421,17 @@ function buildStatutorySlipWarnings({
     });
   }
 
-  if (
-    isManualSlip &&
-    effectiveOdds > 0 &&
-    effectiveOdds <= 1.0 &&
-    activePassSizes.length === 1 &&
-    activePassSizes[0] === matchCount
-  ) {
+  if (totalCost > 0 && objZeroProb > 0.8) {
+    const tenCountText = Number((objZeroProb * 10).toFixed(1)).toString();
+    warnings.push({
+      id: "high-wipeout-lottery",
+      severity: "danger",
+      title: `高归零彩票化红牌：整单归零率高达 ${(objZeroProb * 100).toFixed(1)}%`,
+      detail: `按客观去水分布测算，投 10 次约有 ${tenCountText} 次整单归零（派奖 ¥0，损失全部 ¥${totalCost} 本金）；高赔串关极易沦为低命中彩票，请下调过关阶数或严控娱乐轻仓。`,
+    });
+  }
+
+  if (isGuaranteedLossSlip) {
     warnings.push({
       id: "guaranteed-loss",
       severity: "danger",
@@ -3384,12 +3439,12 @@ function buildStatutorySlipWarnings({
       detail:
         "同场包号过多，无论如何分配倍数都注定亏本或大面积倒贴！请至少砍掉 1~2 个高赔低概率鸡肋项。",
     });
-  } else if (isManualSlip && underwaterCount > 0) {
+  } else if (underwaterCount > 0) {
     warnings.push({
       id: "underwater",
       severity: "danger",
       title: `假中奖警报：${underwaterCount}/${comboCount} 种命中场景实际倒贴钱！`,
-      detail: `官网只给你看最高 ${maxPayout.toFixed(2)} 元，但低赔或局部命中时最低仅拿 ${minPayout.toFixed(2)} 元（净亏 ${(totalCost - minPayout).toFixed(2)} 元）。${
+      detail: `最高派奖 ${maxPayout.toFixed(2)} 元，但低赔或局部命中时最低仅返 ${minPayout.toFixed(2)} 元（净亏 ${(totalCost - minPayout).toFixed(2)} 元）。${
         breakevenUpgradeCost
           ? `✨ 开启奖金优化并将总本金调至 ${breakevenUpgradeCost} 元即可实现 100% 组合零亏损保本！`
           : "建议使用「三模奖金优化」重新分配各注倍数。"
@@ -3397,7 +3452,7 @@ function buildStatutorySlipWarnings({
     });
   }
 
-  if (isManualSlip && hasSameMatchCrossPoolConflict) {
+  if (hasSameMatchCrossPoolConflict) {
     warnings.push({
       id: "cross-pool-same-match",
       severity: "warn",
@@ -3407,16 +3462,16 @@ function buildStatutorySlipWarnings({
     });
   }
 
-  if (
-    isManualSlip &&
-    avgPassLen >= 2 &&
-    (avgPassLen >= 4 || avgPayoutRatio < 0.72)
-  ) {
+  if (avgPassLen >= 2 && (avgPassLen >= 4 || avgPayoutRatio < 0.72)) {
+    const passSummaryLabel =
+      activePassSizes.length > 0
+        ? activePassSizes.map((k) => (k === 1 ? "单关" : `${k}串1`)).join("+")
+        : `${Math.round(avgPassLen)}串1`;
     warnings.push({
       id: "parlay-vig",
       severity: "danger",
       title: `串关连乘抽水雪崩：体彩已暗扣 ${avgVigLossPer100}% 数学期望`,
-      detail: `当前 ${modeLabel} 综合返还率跌至 ${(avgPayoutRatio * 100).toFixed(1)}%；建议在底栏「过关选择」改选 2关/3关 或 M串N 容错防黑单场。`,
+      detail: `当前 ${passSummaryLabel} 综合返还率跌至 ${(avgPayoutRatio * 100).toFixed(1)}%；建议下调至 2关/单关 或改选低抽水主盘防黑单场。`,
     });
   }
 
@@ -3441,20 +3496,16 @@ function buildStatutorySlipWarnings({
       title:
         totalClipped > 0
           ? `封顶截断警告：有 ${totalClipped.toFixed(0)} 元超额奖金将被体彩无偿没收！`
-          : isManualSlip
-            ? `超出单张实票 99 倍上限（体彩店需拆成 ${physicalSlipCount} 张实票打印）`
-            : `分倍含超 99 倍单注（体彩店需拆成 ${physicalSlipCount} 张实票打印）`,
+          : `超出单张实票 99 倍上限（体彩店需拆成 ${physicalSlipCount} 张实票打印）`,
       detail:
         totalClipped > 0
           ? `当前触发 ${maxTierCap / 10000} 万元法定单注封顶，多投的倍数属于白送体彩，请立即下调高赔注倍数！`
-          : isManualSlip
-            ? "终端机单张实票最高 99 倍，已自动为你按 99 倍上限核算店面拆票张数。"
-            : "终端机单张实票最高 99 倍，已按 99 倍上限自动核算店面拆票张数。",
+          : "终端机单张实票最高 99 倍，已按 99 倍上限自动核算店面拆票张数。",
     });
   }
 
   if (hasInvalidOdds) {
-    warnings.push(buildInvalidOddsStatutoryWarning(!isManualSlip));
+    warnings.push(buildInvalidOddsStatutoryWarning());
   }
 
   if (totalCost > 20_000) {
@@ -3462,9 +3513,8 @@ function buildStatutorySlipWarnings({
       id: "order-limit-20k",
       severity: "danger",
       title: `🚨 超出体彩单次订单 ¥20,000 硬上限拦截（当前 ¥${totalCost}）`,
-      detail: isManualSlip
-        ? "中国体彩规定单次订单投注金额不得超过 20,000 元，已拦截出票，请下调倍数或分批打票。"
-        : "中国体彩规定单次订单投注金额不得超过 20,000 元，请还原等倍或分批打票。",
+      detail:
+        "中国体彩规定单次订单投注金额不得超过 20,000 元，请调低倍数或分批打票。",
     });
   } else if (totalCost > 6_000) {
     warnings.push({
@@ -3475,20 +3525,7 @@ function buildStatutorySlipWarnings({
     });
   }
 
-  if (!isManualSlip && underwaterCount > 0) {
-    warnings.push({
-      id: "underwater",
-      severity: "warn",
-      title: `存在 ${underwaterCount}/${comboCount} 种局部回血场景低于总本金`,
-      detail: `最低回血 ¥${minPayout.toFixed(2)}（本金 ¥${totalCost}），属容错回血垫或腰斩折算场景。${
-        breakevenUpgradeCost
-          ? `✨ 若需 100% 清零假中奖倒贴，可将总本金调至 ${breakevenUpgradeCost} 元！`
-          : ""
-      }`,
-    });
-  }
-
-  return warnings;
+  return { dangerScore, warnings };
 }
 
 function assembleEvaluatedTruthReport({
@@ -3538,14 +3575,45 @@ function assembleEvaluatedTruthReport({
     availableFreePasses,
     availableComboPasses,
     hasSameMatchCrossPoolConflict,
+    isEmptySlip: Boolean(jointEval.isEmptySlip ?? !(totalCost > 0)),
     totalCost,
     minPayout: jointEval.minPayout,
     maxPayout: jointEval.maxPayout,
+    conditionalMinHitPayout:
+      jointEval.conditionalMinHitPayout ?? jointEval.minPayout,
+    conditionalMaxHitPayout:
+      jointEval.conditionalMaxHitPayout ?? jointEval.maxPayout,
+    isUnconditionalFloorGuaranteed: Boolean(
+      jointEval.isUnconditionalFloorGuaranteed ??
+      (totalCost > 0 &&
+        (jointEval.zeroPayoutProb ?? 1) <= 1e-12 &&
+        (jointEval.partialLossProb ?? 0) <= 1e-12)
+    ),
+    unconditionalQuantiles: jointEval.unconditionalQuantiles ?? {
+      p20: 0,
+      p50: 0,
+      p80: 0,
+      p99: 0,
+    },
+    objectiveUnconditionalQuantiles: objEval.unconditionalQuantiles ??
+      jointEval.unconditionalQuantiles ?? {
+        p20: 0,
+        p50: 0,
+        p80: 0,
+        p99: 0,
+      },
     likelyRange: jointEval.likelyRange,
     anyWinProb: jointEval.anyWinProb,
+    zeroPayoutProb: jointEval.zeroPayoutProb ?? 0,
+    partialLossProb: jointEval.partialLossProb ?? 0,
     realProfitProb: jointEval.realProfitProb,
     strictNetGainProb: jointEval.strictNetGainProb,
     breakEvenProb: jointEval.breakEvenProb,
+    objectiveZeroPayoutProb:
+      objEval.zeroPayoutProb ?? jointEval.zeroPayoutProb ?? 0,
+    objectivePartialLossProb:
+      objEval.partialLossProb ?? jointEval.partialLossProb ?? 0,
+    objectiveBreakEvenProb: objEval.breakEvenProb ?? jointEval.breakEvenProb,
     underwaterCount: jointEval.underwaterCount,
     underwaterShareOfWins: jointEval.underwaterShareOfWins,
     avgPayoutRatio,
@@ -4015,17 +4083,14 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
   }
 
   const invUnitSum = physicalTickets.reduce(
-    (a, c) => a + 2 / Math.max(0.5, c.unitPayout),
+    (a, c) => a + 2 / Math.max(0.01, c.unitPayout),
     0
   );
-  const harmonicEffOdds = invUnitSum > 0 ? 1 / invUnitSum : 1.5;
+  const harmonicEffOdds = invUnitSum > 0 ? 1 / invUnitSum : 0;
   const activeSizes = Array.from(sizeSet)
     .filter((n) => n >= 1)
     .sort((a, b) => a - b);
 
-  const maxLineMult = Math.max(
-    ...plan.lines.map((l) => Number(l.multiple) || 1)
-  );
   const consolidatedTickets = plan.consolidateTickets
     ? (() => {
         const batchCounts = new Map();
@@ -4057,36 +4122,33 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
       : null;
 
   const hasExplicitMatches = Array.isArray(matches) && matches.length > 0;
-  const computedVig = computeCapitalWeightedVig(plan.lines, matches);
-  const effectiveVigPct =
-    hasExplicitMatches || !(Number(plan.vigPct) > 0)
-      ? computedVig.vigPct
-      : Number(plan.vigPct);
-  const avgPayoutRatio = Math.max(
-    0,
-    Math.min(1, (100 - effectiveVigPct) / 100)
-  );
+  const computedVig = computeCapitalWeightedVig(physicalTickets, matches);
+  const useComputedVig = hasExplicitMatches || !(Number(plan.vigPct) > 0);
+  const effectiveVigPct = useComputedVig
+    ? computedVig.vigPct
+    : Number(plan.vigPct);
+  const avgPayoutRatio = useComputedVig
+    ? computedVig.avgPayoutRatio
+    : Math.max(0, Math.min(1, (100 - effectiveVigPct) / 100));
 
-  const planWarnings = buildStatutorySlipWarnings({
-    isManualSlip: false,
-    tickets: physicalTickets,
-    totalCost: plan.totalCost,
-    minPayout: jointEval.minPayout,
-    maxPayout: jointEval.maxPayout,
-    comboCount: jointEval.combos.length,
-    underwaterCount: jointEval.underwaterCount,
-    breakevenUpgradeCost: resolvedBreakevenUpgradeCost,
-    effectiveOdds: harmonicEffOdds,
-    matchCount: matchSet.size,
-    poolCap: fallbackManual?.poolCap ?? 8,
-    activePassSizes: activeSizes,
-    avgPayoutRatio,
-    avgVigLossPer100: effectiveVigPct,
-    modeLabel: `${plan.shortTab}·分倍精算`,
-    maxMultiple: maxLineMult,
-    physicalSlipCount: consolidatedTickets,
-    hasInvalidOdds,
-  });
+  const { dangerScore: planDangerScore, warnings: planWarnings } =
+    computeUnifiedSlipDangerAndWarnings({
+      tickets: physicalTickets,
+      totalCost: plan.totalCost,
+      minPayout: jointEval.minPayout,
+      maxPayout: jointEval.maxPayout,
+      comboCount: jointEval.combos.length,
+      underwaterCount: jointEval.underwaterCount,
+      breakevenUpgradeCost: resolvedBreakevenUpgradeCost,
+      effectiveOdds: harmonicEffOdds,
+      matchCount: matchSet.size,
+      poolCap: fallbackManual?.poolCap ?? 8,
+      activePassSizes: activeSizes,
+      avgPayoutRatio,
+      avgVigLossPer100: effectiveVigPct,
+      objEval,
+      hasInvalidOdds,
+    });
 
   return assembleEvaluatedTruthReport({
     matchCount: matchSet.size,
@@ -4128,12 +4190,7 @@ export function archetypeToReport(plan, fallbackManual, matches = null) {
     hasSubjectiveShift: hasSubjectiveFilter,
     avgPayoutRatio,
     avgVigLossPer100: effectiveVigPct,
-    dangerScore:
-      plan.key === "alpha-radar" || plan.key === "value-assassin"
-        ? 58
-        : jointEval.underwaterCount > 0
-          ? 44
-          : 26,
+    dangerScore: planDangerScore,
     effectiveOdds: harmonicEffOdds,
     breakevenUpgradeCost: resolvedBreakevenUpgradeCost,
     consolidatedTickets,

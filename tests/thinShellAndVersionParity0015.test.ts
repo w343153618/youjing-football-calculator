@@ -159,10 +159,12 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
       },
       { ...EMPTY_INSIGHTS, fiveLossStreakProb: 0.13, recommendedBankrollPct: 2 }
     );
-    assert.equal(negAudit.tile1.isDanger, true);
+    assert.equal(negAudit.tile1.label, "整单归零率");
+    assert.equal(negAudit.tile1.value, "46.0%");
     assert.ok(negAudit.tile2.subtitle.includes("另含 4.0% 刚回本"));
-    assert.equal(negAudit.tile3.value, "1/3 组亏钱");
-    assert.equal(negAudit.tile4.subtitle, "连黑5次 13% · 凯利0%·娱乐≤2%");
+    assert.equal(negAudit.tile3.isDanger, true);
+    assert.ok(negAudit.tile3.subtitle.includes("1/3 组倒贴"));
+    assert.ok(negAudit.tile4.subtitle.includes("连黑5次 13% · 凯利0%·娱乐≤2%"));
 
     const reduceLossHedge = formatHedgeDrawerCopy(
       {
