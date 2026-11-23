@@ -16,6 +16,38 @@ export type SyntheticSingleMode =
 export const SUBJECTIVE_DELTA_MIN = -15;
 export const SUBJECTIVE_DELTA_MAX = 15;
 
+export interface DualAxisOptionMovement {
+  baselineSource: "official-archive-open" | "local-first-seen" | "single-frame";
+  frameCount: number;
+  goalLine: string;
+  cumFairProbDeltaPp: number | null;
+  openOdds?: number | null;
+  openAt?: string | null;
+  prevOdds?: number | null;
+  prevAt?: string | null;
+  currentAt?: string | null;
+  lastHopDirection: -1 | 0 | 1;
+}
+
+export type BoardFreshnessSource =
+  "official-live" | "cached-snapshot" | "fallback";
+
+export type BoardFreshnessState =
+  | "fresh"
+  | "empty-board-fallback"
+  | "timeout-fallback"
+  | "maintenance-fallback"
+  | "builtin-fallback";
+
+export interface BoardFreshnessMeta {
+  source: BoardFreshnessSource;
+  boardState: BoardFreshnessState;
+  lastValidBoardAt: number | null;
+  lastValidBoardClock: string | null;
+  isFallbackReadOnly: boolean;
+  bannerText: string | null;
+}
+
 export interface OddsOption {
   key: string;
   label: string;
@@ -23,6 +55,7 @@ export interface OddsOption {
   trend: -1 | 0 | 1;
   fairProb: number;
   shinProb?: number;
+  movement?: DualAxisOptionMovement;
 }
 
 export interface MatchPool {
@@ -85,11 +118,15 @@ export interface MatchItem {
   id: string;
   matchNumStr: string;
   league: string;
+  leagueId?: string;
   kickoff: string;
+  kickoffDateTime?: string;
   businessDate?: string;
   matchDate?: string;
   home: string;
+  homeTeamId?: string;
   away: string;
+  awayTeamId?: string;
   homeRank?: string;
   awayRank?: string;
   isHot?: boolean;

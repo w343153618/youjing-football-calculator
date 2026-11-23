@@ -1,4 +1,5 @@
 import type {
+  BoardFreshnessMeta,
   LedgerOutcomeStatus,
   LedgerSettlementDetail,
   LedgerTicketSnapshot,
@@ -157,6 +158,7 @@ export interface AuthenticatedWorkspaceBundle {
   authToken: string;
   matches: MatchItem[];
   syncNote: string;
+  boardMeta?: BoardFreshnessMeta;
   initialPicks: SelectedPick[];
   workspace: QuantWorkspaceResponse;
   ledger?: UserLedgerSnapshot;
@@ -748,6 +750,7 @@ export async function requestServerMatchesSync(
 ): Promise<{
   matches: MatchItem[];
   syncNote: string;
+  boardMeta?: BoardFreshnessMeta;
   workspace: QuantWorkspaceResponse;
   ledger?: UserLedgerSnapshot;
   newlySettledCount?: number;
@@ -755,6 +758,7 @@ export async function requestServerMatchesSync(
   return postEncryptedApi<{
     matches: MatchItem[];
     syncNote: string;
+    boardMeta?: BoardFreshnessMeta;
     workspace: QuantWorkspaceResponse;
     ledger?: UserLedgerSnapshot;
     newlySettledCount?: number;

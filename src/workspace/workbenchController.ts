@@ -1,4 +1,5 @@
 import type {
+  BoardFreshnessMeta,
   LedgerOutcomeStatus,
   MatchItem,
   PortfolioKey,
@@ -76,6 +77,7 @@ export interface WorkbenchQuantPort {
   syncMatches?(workspaceParams: QuantWorkspaceParams): Promise<{
     matches: MatchItem[];
     syncNote: string;
+    boardMeta?: BoardFreshnessMeta;
     workspace: QuantWorkspaceResponse;
     ledger?: UserLedgerSnapshot;
     newlySettledCount?: number;
@@ -135,6 +137,7 @@ export interface WorkbenchSnapshot {
   syncing: boolean;
   syncSummary: string;
   syncClock: string;
+  boardMeta: BoardFreshnessMeta | null;
   ledger: UserLedgerSnapshot;
   ledgerBusy: boolean;
   ledgerFilter: LedgerFilterKind;
@@ -325,6 +328,7 @@ export function createWorkbenchController(
   let syncing = false;
   let syncSummary = "正在建立 AES-256-GCM 加密精算会话...";
   let syncClock = formatClockHMS(clockPort.now());
+  let boardMeta: BoardFreshnessMeta | null = null;
 
   let ledger: UserLedgerSnapshot =
     (authUser ? readCachedLedger(authUser.id) : null) ??
@@ -391,6 +395,7 @@ export function createWorkbenchController(
       syncing,
       syncSummary,
       syncClock,
+      boardMeta,
       ledger,
       ledgerBusy,
       ledgerFilter,
@@ -498,6 +503,7 @@ export function createWorkbenchController(
     ledger = buildEmptyLedgerAt(300, clockPort.now());
     stopLossPrompt = null;
     offlineMode = false;
+    boardMeta = null;
     authChecked = true;
     authNotice = reason;
     betSlip.setBootstrapped(false);
@@ -527,6 +533,7 @@ export function createWorkbenchController(
     comboSelectedIds = bundle.matches.slice(0, 3).map((m) => m.id);
     syncSummary = bundle.syncNote;
     syncClock = formatClockHMS(clockPort.now());
+    boardMeta = bundle.boardMeta ?? null;
     rebuildSnapshotAndEmit();
   }
 
@@ -577,6 +584,9 @@ export function createWorkbenchController(
             betSlip.setBootstrapped(true);
             syncSummary = boot.syncNote;
             syncClock = formatClockHMS(clockPort.now());
+            if (boot.boardMeta !== undefined) {
+              boardMeta = boot.boardMeta ?? null;
+            }
             rebuildSnapshotAndEmit();
           } else {
             applyLoginBundle(boot);
@@ -669,6 +679,9 @@ export function createWorkbenchController(
       }
       syncSummary = res.syncNote;
       syncClock = formatClockHMS(clockPort.now());
+      if (res.boardMeta !== undefined) {
+        boardMeta = res.boardMeta ?? null;
+      }
       rebuildSnapshotAndEmit();
       return {
         ok: true,

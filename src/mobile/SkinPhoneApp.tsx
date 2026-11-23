@@ -248,6 +248,7 @@ export function SkinPhoneApp({
       mode={mode}
       qFilter={qFilter}
       radarSearchQuery={radarSearchQuery}
+      boardMeta={wbSnap.boardMeta}
       visibleMatches={visibleMatches}
       groups={radarFiltered.groups}
       picks={picks}

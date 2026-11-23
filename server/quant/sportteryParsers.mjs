@@ -80,15 +80,44 @@ export function parseSportteryRawJson(json) {
       const ttgRaw = m.ttg ?? {};
       const crsRaw = m.crs ?? {};
 
+      const leagueIdStr =
+        m.leagueId !== undefined &&
+        m.leagueId !== null &&
+        String(m.leagueId).trim() !== ""
+          ? String(m.leagueId).trim()
+          : undefined;
+      const homeTeamIdStr =
+        m.homeTeamId !== undefined &&
+        m.homeTeamId !== null &&
+        String(m.homeTeamId).trim() !== ""
+          ? String(m.homeTeamId).trim()
+          : undefined;
+      const awayTeamIdStr =
+        m.awayTeamId !== undefined &&
+        m.awayTeamId !== null &&
+        String(m.awayTeamId).trim() !== ""
+          ? String(m.awayTeamId).trim()
+          : undefined;
+      const kickoffDateTimeStr =
+        m.matchDate && m.matchTime
+          ? `${String(m.matchDate).trim()} ${String(m.matchTime).trim()}`
+          : undefined;
+
       parsed.push({
         id: String(m.matchId),
         matchNumStr: m.matchNumStr,
         league: m.leagueAbbName,
+        ...(leagueIdStr !== undefined ? { leagueId: leagueIdStr } : {}),
         kickoff: (m.matchTime ?? "").slice(0, 5),
+        ...(kickoffDateTimeStr !== undefined
+          ? { kickoffDateTime: kickoffDateTimeStr }
+          : {}),
         businessDate: m.businessDate ? String(m.businessDate) : undefined,
         matchDate: m.matchDate ? String(m.matchDate) : undefined,
         home: m.homeTeamAbbName,
+        ...(homeTeamIdStr !== undefined ? { homeTeamId: homeTeamIdStr } : {}),
         away: m.awayTeamAbbName,
+        ...(awayTeamIdStr !== undefined ? { awayTeamId: awayTeamIdStr } : {}),
         homeRank: String(m.homeRank || "").replace(/\D+/g, "") || undefined,
         awayRank: String(m.awayRank || "").replace(/\D+/g, "") || undefined,
         isHot: Number(m.isHot) === 1,

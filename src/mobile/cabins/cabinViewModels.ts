@@ -3,6 +3,7 @@ import {
   SUBJECTIVE_DELTA_MIN,
   type AppliedPlanSpec,
   type ArchetypePlan,
+  type BoardFreshnessMeta,
   type BridgeMatchCandidate,
   type BridgeMatchPreview,
   type ComboRow,
@@ -159,6 +160,56 @@ export const RADAR_QUICK_FILTERS: Array<[QuickFilter, string]> = [
   ["drop", "🔻急降水"],
   ["arb", "省钱差价"],
 ];
+
+export interface MatchRadarBoardFreshnessBannerViewModel {
+  headline: string;
+  badgeText: string;
+  detailText: string;
+  fullBannerText: string;
+  boardState: BoardFreshnessMeta["boardState"];
+}
+
+function formatBeijingClockFromEpoch(epochMs: number): string {
+  const iso = new Date(epochMs + 8 * 3600_000).toISOString();
+  return `${iso.slice(5, 10)} ${iso.slice(11, 16)}`;
+}
+
+export function buildMatchRadarBoardFreshnessBanner(
+  boardMeta?: BoardFreshnessMeta | null
+): MatchRadarBoardFreshnessBannerViewModel | null {
+  if (
+    !boardMeta ||
+    !boardMeta.isFallbackReadOnly ||
+    boardMeta.boardState === "fresh"
+  ) {
+    return null;
+  }
+  const clockLabel =
+    boardMeta.lastValidBoardClock ||
+    (typeof boardMeta.lastValidBoardAt === "number" &&
+    Number.isFinite(boardMeta.lastValidBoardAt)
+      ? formatBeijingClockFromEpoch(boardMeta.lastValidBoardAt)
+      : "内置基准快照");
+
+  const headline = `上次有效报价（采集于 ${clockLabel}）`;
+  const detailText =
+    boardMeta.boardState === "empty-board-fallback"
+      ? "官方在售盘面当前暂空，以下展示最近一次成功采集快照（只读参考，不计停售异动）"
+      : boardMeta.boardState === "maintenance-fallback"
+        ? "官方接口维护中，以下展示最近一次成功采集快照（只读参考，不计停售异动）"
+        : boardMeta.boardState === "timeout-fallback"
+          ? "官方接口响应超时，已回退最近一次成功采集快照（只读参考，不计停售异动）"
+          : "官方接口暂不可达，当前展示内置基准快照（仅供只读推演参考）";
+
+  return {
+    headline,
+    badgeText: "只读回退",
+    detailText,
+    fullBannerText:
+      boardMeta.bannerText || `${headline} · 官方盘面暂空/回退只读参考`,
+    boardState: boardMeta.boardState,
+  };
+}
 
 export const PORTFOLIO_BUDGET_PRESETS = [10, 20, 50, 100];
 export const PORTFOLIO_CUSTOM_BUDGET_LIMITS = {

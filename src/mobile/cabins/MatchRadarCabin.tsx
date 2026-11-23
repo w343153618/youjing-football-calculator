@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type {
+  BoardFreshnessMeta,
   BridgeMatchCandidate,
   BridgeMatchPreview,
   MatchItem,
@@ -15,6 +16,7 @@ import type {
 } from "../../workspace/betSlipController.ts";
 import {
   RADAR_QUICK_FILTERS,
+  buildMatchRadarBoardFreshnessBanner,
   buildMatchRadarSelectedSubPoolPills,
   buildMatchRadarSingleBadge,
   type QuickFilter,
@@ -229,10 +231,74 @@ export function MatchRadarFilterToolbar({
   );
 }
 
+export function MatchRadarFreshnessBanner({
+  boardMeta,
+}: {
+  boardMeta?: BoardFreshnessMeta | null;
+}) {
+  const vm = buildMatchRadarBoardFreshnessBanner(boardMeta);
+  if (!vm) return null;
+  return (
+    <div
+      role="status"
+      className="card enter num"
+      style={{
+        padding: "7px 10px",
+        marginBottom: 8,
+        borderLeft: "3px solid var(--amber, #d97706)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 3,
+        minWidth: 0,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 6,
+          minWidth: 0,
+        }}
+      >
+        <strong
+          style={{
+            fontSize: 11.5,
+            lineHeight: 1.3,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={vm.fullBannerText}
+        >
+          🕒 {vm.headline}
+        </strong>
+        <span className="qpill warn" style={{ flexShrink: 0, fontSize: 10 }}>
+          {vm.badgeText}
+        </span>
+      </div>
+      <div
+        className="small"
+        style={{
+          margin: 0,
+          fontSize: 10.5,
+          lineHeight: 1.35,
+          opacity: 0.84,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {vm.detailText}
+      </div>
+    </div>
+  );
+}
+
 export function MatchRadarCabin({
   mode,
   qFilter,
   radarSearchQuery,
+  boardMeta,
   visibleMatches,
   groups,
   picks,
@@ -244,6 +310,7 @@ export function MatchRadarCabin({
   mode: MatchMode;
   qFilter: QuickFilter;
   radarSearchQuery: string;
+  boardMeta?: BoardFreshnessMeta | null;
   visibleMatches: MatchItem[];
   groups: RadarMatchDayGroup[];
   picks: SelectedPick[];
@@ -688,6 +755,7 @@ export function MatchRadarCabin({
 
   return (
     <>
+      <MatchRadarFreshnessBanner boardMeta={boardMeta} />
       {["mix", "spf", "single"].includes(mode) && visibleMatches.length > 0 && (
         <div className="mgrid colhead enter">
           <span style={{ textAlign: "left" }}>球队 / 排名</span>

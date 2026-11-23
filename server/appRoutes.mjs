@@ -2,6 +2,7 @@ import {
   evaluateQuantWorkspace,
   sanitizeAndDeduplicatePicks,
 } from "./quantEngine.mjs";
+import { buildBoardFreshnessMeta } from "./history/sportteryHistoryNormalizers.mjs";
 import {
   FALLBACK_MATCHES,
   fetchOfficialMatchResultsServer,
@@ -84,6 +85,7 @@ export function createAppRoutes(opts = {}) {
   const accountManager = opts.accountManager || null;
   const ledgerManager = opts.ledgerManager || null;
   const manualQaEngine = opts.manualQaEngine || null;
+  const historyCoordinator = opts.historyCoordinator || null;
   const xiaogaoService = opts.xiaogaoService;
   const getApiKey = opts.getApiKey || (() => "");
   const nowFn = opts.nowFn || (() => Date.now());
@@ -94,10 +96,18 @@ export function createAppRoutes(opts = {}) {
       fetchOfficialMatchResultsServer({
         nowMs: nowFn(),
         cacheFilePath: resultsCacheFile,
+        historyResultsById: historyCoordinator?.getSnapshot?.()?.resultsById,
         forceRefresh,
       }));
 
   let cachedMatches = FALLBACK_MATCHES;
+  let lastValidLiveMatches = null;
+  let lastValidBoardAt = null;
+  let cachedBoardMeta = buildBoardFreshnessMeta({
+    source: "fallback",
+    boardState: "builtin-fallback",
+    lastValidBoardAt: null,
+  });
   let cachedSyncNote = "已连接体彩实盘快照 · 支持一键刷新官网水位";
   let lastMatchFetchAt = 0;
   let inFlightMatchLoad = null;
@@ -105,17 +115,101 @@ export function createAppRoutes(opts = {}) {
   async function ensureMatchesLoaded(force = false) {
     const now = nowFn();
     if (!force && lastMatchFetchAt > 0 && now - lastMatchFetchAt < 120_000) {
-      return { matches: cachedMatches, syncNote: cachedSyncNote };
+      return {
+        matches: cachedMatches,
+        syncNote: cachedSyncNote,
+        boardMeta: cachedBoardMeta,
+      };
     }
     if (inFlightMatchLoad) return inFlightMatchLoad;
 
     inFlightMatchLoad = (async () => {
       try {
-        const res = await fetchMatchesFn(snapshotFile);
-        cachedMatches = res.matches;
-        cachedSyncNote = res.syncNote;
-        lastMatchFetchAt = nowFn();
-        return { matches: cachedMatches, syncNote: cachedSyncNote };
+        let res = null;
+        let fetchFailed = false;
+        try {
+          res = await fetchMatchesFn(snapshotFile, {
+            nowFn,
+            lastValidBoardAt,
+          });
+        } catch {
+          fetchFailed = true;
+        }
+
+        const nowAfter = nowFn();
+        const incomingMatches = Array.isArray(res?.matches) ? res.matches : [];
+        const explicitMeta = res?.boardMeta || null;
+        const isFreshLive =
+          !fetchFailed &&
+          incomingMatches.length > 0 &&
+          (explicitMeta
+            ? explicitMeta.boardState === "fresh"
+            : res?.source !== "fallback" && res?.source !== "cached-snapshot");
+
+        if (isFreshLive) {
+          lastValidBoardAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
+          lastValidLiveMatches = incomingMatches;
+          cachedMatches = incomingMatches;
+          cachedBoardMeta =
+            explicitMeta ||
+            buildBoardFreshnessMeta({
+              source: "official-live",
+              boardState: "fresh",
+              lastValidBoardAt,
+            });
+          cachedSyncNote = res?.syncNote || cachedSyncNote;
+          historyCoordinator?.notifyLiveBoardNonBlocking?.({
+            matches: cachedMatches,
+            boardMeta: cachedBoardMeta,
+          });
+          void historyCoordinator
+            ?.drainPendingOpenQuotes?.({ maxItems: 6 })
+            ?.catch?.(() => {});
+        } else {
+          const resolvedLastValidAt =
+            explicitMeta?.lastValidBoardAt ?? lastValidBoardAt ?? null;
+          const resolvedMatches =
+            incomingMatches.length > 0 && res?.source !== "fallback"
+              ? incomingMatches
+              : lastValidLiveMatches && lastValidLiveMatches.length > 0
+                ? lastValidLiveMatches
+                : incomingMatches.length > 0
+                  ? incomingMatches
+                  : FALLBACK_MATCHES;
+          const resolvedState =
+            explicitMeta?.boardState && explicitMeta.boardState !== "fresh"
+              ? explicitMeta.boardState
+              : !fetchFailed && incomingMatches.length === 0
+                ? "empty-board-fallback"
+                : resolvedLastValidAt !== null
+                  ? "timeout-fallback"
+                  : "builtin-fallback";
+          const resolvedSource =
+            explicitMeta?.source ||
+            (lastValidLiveMatches
+              ? "cached-snapshot"
+              : res?.source || "fallback");
+
+          cachedMatches = resolvedMatches;
+          cachedBoardMeta = buildBoardFreshnessMeta({
+            source: resolvedSource,
+            boardState: resolvedState,
+            lastValidBoardAt: resolvedLastValidAt,
+          });
+          cachedSyncNote =
+            res?.syncNote || cachedBoardMeta.bannerText || cachedSyncNote;
+          historyCoordinator?.notifyLiveBoardNonBlocking?.({
+            matches: [],
+            boardMeta: cachedBoardMeta,
+          });
+        }
+
+        lastMatchFetchAt = nowAfter;
+        return {
+          matches: cachedMatches,
+          syncNote: cachedSyncNote,
+          boardMeta: cachedBoardMeta,
+        };
       } finally {
         inFlightMatchLoad = null;
       }
@@ -170,7 +264,7 @@ export function createAppRoutes(opts = {}) {
     );
   }
 
-  function buildInitialWorkspaceBundle(matches, syncNote) {
+  function buildInitialWorkspaceBundle(matches, syncNote, boardMeta) {
     const initialPicks = [];
     const workspace = evaluateQuantWorkspace(
       {
@@ -186,7 +280,7 @@ export function createAppRoutes(opts = {}) {
       },
       matches
     );
-    return { matches, syncNote, initialPicks, workspace };
+    return { matches, syncNote, boardMeta, initialPicks, workspace };
   }
 
   async function resolveBootstrapSession({
@@ -222,8 +316,8 @@ export function createAppRoutes(opts = {}) {
         `yj_auth_tok=${rawAuthToken}${cookieSuffix(req, 31536000)}`
       );
     }
-    const { matches, syncNote } = await ensureMatchesLoaded(false);
-    const bundle = buildInitialWorkspaceBundle(matches, syncNote);
+    const { matches, syncNote, boardMeta } = await ensureMatchesLoaded(false);
+    const bundle = buildInitialWorkspaceBundle(matches, syncNote, boardMeta);
     if (!accountManager) {
       return { authToken: null, cookiesOut, payload: bundle };
     }
@@ -344,9 +438,14 @@ export function createAppRoutes(opts = {}) {
           }
 
           sess.authToken = loginRes.authToken;
-          const { matches, syncNote } = await ensureMatchesLoaded(false);
+          const { matches, syncNote, boardMeta } =
+            await ensureMatchesLoaded(false);
           const sessionMatches = mergeSessionAlerts(matches, sess);
-          const bundle = buildInitialWorkspaceBundle(sessionMatches, syncNote);
+          const bundle = buildInitialWorkspaceBundle(
+            sessionMatches,
+            syncNote,
+            boardMeta
+          );
 
           const syncedLoginLedger = loginRes.user?.id
             ? await resolveSyncedUserLedger(
@@ -619,7 +718,8 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "同步校验失败",
         },
         async ({ sess, data, user }) => {
-          const { matches, syncNote } = await ensureMatchesLoaded(true);
+          const { matches, syncNote, boardMeta } =
+            await ensureMatchesLoaded(true);
           const sessionMatches = mergeSessionAlerts(matches, sess);
           const workspace = evaluateQuantWorkspace(
             data?.workspaceParams || {},
@@ -631,6 +731,7 @@ export function createAppRoutes(opts = {}) {
           return {
             matches: sessionMatches,
             syncNote,
+            boardMeta,
             workspace,
             ledger: syncedLedger.ledger,
             newlySettledCount: syncedLedger.newlySettledCount,

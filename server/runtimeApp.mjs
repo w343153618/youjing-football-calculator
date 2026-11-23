@@ -1,13 +1,15 @@
 import path from "node:path";
-import { createXiaoGaoService } from "./xiaogaoCore.mjs";
 import { createAccountManager } from "./accountManager.mjs";
 import { createAppRoutes } from "./appRoutes.mjs";
+import { createSportteryHistoryCoordinator } from "./history/historyCoordinator.mjs";
 import { createLedgerManager } from "./ledgerManager.mjs";
 import { createManualQaEngine } from "./manualQaEngine.mjs";
 import { createSecurityShield } from "./securityShield.mjs";
+import { createXiaoGaoService } from "./xiaogaoCore.mjs";
 
 /**
  * 统一服务端运行时装配模块（Node 生产入口、Vite 开发中间件与全栈契约测试共用唯一装配接缝）
+ * 默认 enableHistoryCollector = false，确保 vite build 与常规并发单测零后台线程副作用。
  */
 export function createYouJingRuntime(opts = {}) {
   const dataDir = path.resolve(
@@ -28,6 +30,24 @@ export function createYouJingRuntime(opts = {}) {
     typeof opts.getApiKey === "function"
       ? opts.getApiKey
       : () => String(opts.apiKey || process.env.OPENCODE_API_KEY || "");
+
+  const enableHistoryCollector = Boolean(opts.enableHistoryCollector);
+  const historyCoordinator =
+    opts.historyCoordinator ||
+    createSportteryHistoryCoordinator({
+      dataDir,
+      historyDir: opts.historyDir,
+      enableCollector: enableHistoryCollector,
+      autoPoll: opts.historyAutoPoll !== false,
+      storageBackend: opts.historyStorageBackend || "auto",
+      simulateSqliteUnavailable: Boolean(opts.simulateSqliteUnavailable),
+      fetchFn: opts.historyFetchFn || opts.fetchFn,
+      nowFn: opts.nowFn,
+    });
+
+  if (enableHistoryCollector) {
+    void historyCoordinator.start().catch(() => {});
+  }
 
   const xiaogaoService = createXiaoGaoService({
     transport: opts.xiaogaoTransport,
@@ -59,6 +79,7 @@ export function createYouJingRuntime(opts = {}) {
     accountManager,
     ledgerManager,
     manualQaEngine,
+    historyCoordinator,
     xiaogaoService,
     getApiKey,
     nowFn: opts.nowFn,
@@ -90,10 +111,12 @@ export function createYouJingRuntime(opts = {}) {
     accountManager,
     ledgerManager,
     manualQaEngine,
+    historyCoordinator,
     appRoutes,
     gateway,
-    dispose() {
+    async dispose() {
       xiaogaoService.dispose?.();
+      await historyCoordinator.dispose?.();
     },
   };
 }

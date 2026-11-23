@@ -1,27 +1,35 @@
-import path from 'node:path';
-import { defineConfig, loadEnv } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
-import { createYouJingRuntime } from './server/runtimeApp.mjs';
+import path from "node:path";
+import { defineConfig, loadEnv } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { createYouJingRuntime } from "./server/runtimeApp.mjs";
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '');
-  const apiKey = env.OPENCODE_API_KEY || process.env.OPENCODE_API_KEY || '';
-  const { gateway } = createYouJingRuntime({
-    dataDir: path.resolve(process.cwd(), 'data'),
+  const env = loadEnv(mode, process.cwd(), "");
+  const apiKey = env.OPENCODE_API_KEY || process.env.OPENCODE_API_KEY || "";
+  const runtime = createYouJingRuntime({
+    dataDir: path.resolve(process.cwd(), "data"),
     getApiKey: () => apiKey,
+    enableHistoryCollector: false,
   });
+  const { gateway } = runtime;
 
   return {
     plugins: [
       react(),
       tailwindcss(),
       {
-        name: 'youjing-security-and-quant-gateway',
+        name: "youjing-security-and-quant-gateway",
         configureServer(server) {
+          void runtime.historyCoordinator
+            .start({ forceEnable: true })
+            .catch(() => {});
+          server.httpServer?.once("close", () => {
+            void runtime.dispose();
+          });
           server.middlewares.use(async (req, res, next) => {
             try {
-              const u = new URL(req.url || '/', 'http://localhost');
+              const u = new URL(req.url || "/", "http://localhost");
               const handled = await gateway.handleRequest(req, res, u.pathname);
               if (!handled) next();
             } catch (err) {
@@ -33,7 +41,7 @@ export default defineConfig(({ mode }) => {
     ],
     build: {
       sourcemap: false,
-      minify: 'esbuild',
+      minify: "esbuild",
     },
     server: {
       port: 5173,

@@ -225,6 +225,39 @@ declare module "../server/xiaogaoCore.mjs" {
   export const createXiaoGaoService: (...args: any[]) => any;
 }
 
+declare module "../server/history/historyCoordinator.mjs" {
+  export const HISTORY_SNAPSHOT_SCHEMA_VERSION: number;
+  export const createSportteryHistoryCoordinator: (...args: any[]) => any;
+  export const buildBoardFreshnessMeta: (...args: any[]) => any;
+  export const formatBeijingMonthDayHM: (epochMs: number) => string;
+  export const parseBeijingDateTimeMs: (
+    dateStr?: string | null,
+    timeStr?: string | null
+  ) => number | null;
+}
+
+declare module "../scripts/history-ctl.mjs" {
+  export const runHistoryCtlCli: (...args: any[]) => Promise<any>;
+}
+
+declare module "node:zlib" {
+  const zlib: {
+    gzipSync(buf: any): Buffer;
+    gunzipSync(buf: any): Buffer;
+  };
+  export default zlib;
+  export function gzipSync(buf: any): Buffer;
+  export function gunzipSync(buf: any): Buffer;
+}
+
+declare module "node:child_process" {
+  export function execFileSync(
+    file: string,
+    args?: readonly string[],
+    options?: any
+  ): any;
+}
+
 declare module "../scripts/bench-quant.mjs" {
   export const runQuantScientificBenchmarks: (...args: any[]) => any;
   export const computePoolRps: (...args: any[]) => number;
