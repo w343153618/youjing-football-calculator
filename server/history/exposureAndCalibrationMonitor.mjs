@@ -8,7 +8,7 @@ import {
 } from "./sportteryHistoryNormalizers.mjs";
 
 export const FROZEN_PRODUCTION_MODEL_VERSION =
-  "coherent-shin-dc-pareto3p1-v2.7.1-frozen";
+  "coherent-shin-dc-pareto3p1-v2.8.0-frozen";
 
 const ALL_POOLS = Object.freeze(["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
 

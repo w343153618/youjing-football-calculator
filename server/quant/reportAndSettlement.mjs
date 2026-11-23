@@ -4335,7 +4335,7 @@ export function buildXiaoGaoWarnings(picks, matches) {
       id: `xiaogao-${m.id}`,
       severity: m.aiAlert.level === "high" ? "danger" : "warn",
       title: `🧹 扫地僧小高靶向排雷 · ${m.matchNumStr} ${m.aiAlert.tag}`,
-      detail: `${m.aiAlert.summary}（Price-In 消化度：${m.aiAlert.priceInStatus}${
+      detail: `${m.aiAlert.summary}（消息与变价时序对照：${m.aiAlert.priceInStatus}${
         m.aiAlert.suggestedDelta ? ` · ${m.aiAlert.suggestedDelta}` : ""
       }）`,
     });

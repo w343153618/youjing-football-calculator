@@ -65,6 +65,16 @@ Use `grep` on these stable symbol anchors instead of scanning line offsets acros
   - Transport ECDH/AES-GCM/HMAC envelope, anti-scraper decoy & 48h `hwFp`/IP fuse: `export function deriveSessionSubkeys`, `export function encryptEnvelope`, `export function decryptEnvelope`, `export function createSecurityShield`
 - **`server/appRoutes.mjs`**:
   - Authenticated domain route dispatcher & XiaoGao match-alert reconciliation: `export function reconcileComboAlertsToMatchMap`, `export function createAppRoutes`
+- **`server/xiaogaoCore.mjs`**:
+  - Objective-facts XiaoGao diagnosis service, strict canonical match binding & 30m quote-version cache: `export function computeMatchAlertBinding`, `export function isMatchAlertBindingValid`, `export function matchesCanonicalSportteryItem`, `export function buildSingleMatchDiagnosisContext`, `export function buildComboDiagnosisContext`, `export function createXiaoGaoService`
+- **`server/history/historyCoordinator.mjs`**:
+  - Explicit-owner SQLite WAL worker coordinator & immutable in-memory snapshot swap: `export function createSportteryHistoryCoordinator`
+- **`server/history/dualAxisMovement.mjs`**:
+  - Dual-axis market movement computation (Shin fair-prob shift vs last-hop odds change): `export function computePoolDualAxisMovements`, `export function computeMatchDualAxisMovements`, `export function summarizeMatchDualAxisMovements`, `export function hydrateMatchesWithDualAxisMovement`
+- **`server/history/exposureAndCalibrationMonitor.mjs`**:
+  - Frozen-kernel empirical replay, read-only workbench exposure & calibration monitor: `export const FROZEN_PRODUCTION_MODEL_VERSION`, `export function createEmptyWorkbenchExposureState`, `export function createExposureAndCalibrationMonitor`
+- **`server/history/xiaogaoObjectiveFacts.mjs`**:
+  - Four-pillar objective historical facts builder (rest-interval upper bound, 90d point-in-time ledger, dual-axis movement & news-odds timeline): `export function invertIndependentPoissonGoalDiffFromHadProbs`, `export function buildMatchRestIntervalEvidence`, `export function buildMatchRecent90dLedgerEvidence`, `export function buildMatchDualAxisEvidence`, `export function buildNewsOddsTimelineAlignment`, `export function buildMatchObjectiveFactsBundle`
 - **`server/ledgerManager.mjs`**:
   - Single authoritative print-snapshot sealer & Dual-Track Stop-Loss Ledger: `export function sealAuthoritativePrintSnapshot`, `export function createLedgerManager`
 - **`server/manualQaEngine.mjs`**:

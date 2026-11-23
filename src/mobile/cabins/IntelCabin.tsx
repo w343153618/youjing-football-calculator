@@ -111,7 +111,7 @@ export function IntelCabin({
           className="help-pill"
           onClick={() => onOpenManual("xiaogao")}
         >
-          ? 什么是消息消化度
+          ? 消息与变价时序对照
         </button>
       </div>
       <div
@@ -223,7 +223,7 @@ export function IntelCabin({
             </div>
             {residualList.length > 0 && (
               <div style={{ marginTop: 4 }}>
-                <strong>⚡ 盘面未消化残余暗雷：</strong>
+                <strong>⚡ 盘面残余实战暗雷：</strong>
                 {residualList.map((rk, rIdx) => (
                   <div key={rIdx}>· {rk}</div>
                 ))}
@@ -262,7 +262,7 @@ export function IntelCabin({
                     className="small num"
                     style={{ color: "var(--mark)", margin: 0, fontWeight: 600 }}
                   >
-                    消化度：{pm.priceInStatus}
+                    消息与变价时序对照：{pm.priceInStatus}
                   </div>
                 </div>
               ))}
@@ -273,7 +273,7 @@ export function IntelCabin({
             className="small num"
             style={{ color: "var(--mark)", fontWeight: 600 }}
           >
-            📊 消息入价消化度（Price-In）：{comboReport.priceInVerdict}
+            📊 消息与变价时序对照：{comboReport.priceInVerdict}
           </div>
           <div className="small">{comboReport.source}</div>
         </div>
@@ -412,7 +412,7 @@ export function IntelCabin({
                       className="small num"
                       style={{ color: "var(--mark)", fontWeight: 600 }}
                     >
-                      消息消化度：{digest.aiAlert.priceInStatus}
+                      消息与变价时序对照：{digest.aiAlert.priceInStatus}
                       {digest.aiAlert.suggestedDelta
                         ? ` · ${digest.aiAlert.suggestedDelta}`
                         : ""}

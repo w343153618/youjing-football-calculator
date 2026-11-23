@@ -14,8 +14,8 @@ android {
     applicationId = "io.yjty.jisuanqi"
     minSdk = 26
     targetSdk = 36
-    versionCode = 271
-    versionName = "2.7.1"
+    versionCode = 280
+    versionName = "2.8.0"
   }
 
   signingConfigs {

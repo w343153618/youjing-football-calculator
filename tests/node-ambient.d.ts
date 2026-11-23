@@ -222,6 +222,11 @@ declare module "../server/manualQaEngine.mjs" {
 declare module "../server/xiaogaoCore.mjs" {
   export const PRIMARY_MODEL: string;
   export const FALLBACK_MODEL: string;
+  export const matchesCanonicalSportteryItem: (...args: any[]) => boolean;
+  export const buildSingleMatchDiagnosisContext: (...args: any[]) => any;
+  export const buildComboDiagnosisContext: (...args: any[]) => any;
+  export const computeMatchAlertBinding: (...args: any[]) => any;
+  export const isMatchAlertBindingValid: (...args: any[]) => boolean;
   export const createXiaoGaoService: (...args: any[]) => any;
 }
 
@@ -240,6 +245,19 @@ declare module "../server/history/dualAxisMovement.mjs" {
   export const computeMatchDualAxisMovements: (...args: any[]) => any;
   export const hydrateMatchesWithDualAxisMovement: (...args: any[]) => any[];
   export const summarizeMatchDualAxisMovements: (...args: any[]) => any;
+}
+
+declare module "../server/history/exposureAndCalibrationMonitor.mjs" {
+  export const FROZEN_PRODUCTION_MODEL_VERSION: string;
+  export const createExposureAndCalibrationMonitor: (...args: any[]) => any;
+}
+
+declare module "../scripts/check-guardrails.mjs" {
+  export const runRepositoryGuardrails: (...args: any[]) => {
+    ok: boolean;
+    version: string;
+    errors: string[];
+  };
 }
 
 declare module "../scripts/history-ctl.mjs" {

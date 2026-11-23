@@ -1,3 +1,7 @@
+import {
+  buildMatchObjectiveFactsBundle,
+  buildNewsOddsTimelineAlignment,
+} from "./history/xiaogaoObjectiveFacts.mjs";
 import { sanitizeAndDeduplicatePicks } from "./quant/reportAndSettlement.mjs";
 
 const OPENCODE_BASE_URL =
@@ -93,8 +97,31 @@ function formatTrendArrow(trend) {
   return "";
 }
 
-function formatOptionsSummary(options = [], includePrefix = true) {
-  return options
+export const XIAOGAO_ALERT_TTL_MS = 30 * 60_000;
+
+const ALL_POOL_SPECS = Object.freeze([
+  ["HAD", "胜平负"],
+  ["HHAD", "让球盘"],
+  ["TTG", "总进球"],
+  ["HAFU", "半全场"],
+  ["CRS", "比分"],
+]);
+
+function getValidSellingOptions(pool) {
+  if (!pool || pool.selling === false || !Array.isArray(pool.options)) {
+    return [];
+  }
+  return pool.options.filter(
+    (o) => Number.isFinite(Number(o?.odds)) && Number(o.odds) > 1
+  );
+}
+
+function formatPoolOddsSummary(pool, includePrefix = true) {
+  const validOpts = getValidSellingOptions(pool);
+  if (validOpts.length === 0) {
+    return "该玩法无有效报价";
+  }
+  return validOpts
     .map(
       (o) =>
         `${o.label}@${Number(o.odds).toFixed(2)}${formatTrendArrow(o.trend)}(${
@@ -104,18 +131,117 @@ function formatOptionsSummary(options = [], includePrefix = true) {
     .join(" / ");
 }
 
+function formatPoolVigEntry(pool, label) {
+  const validOpts = getValidSellingOptions(pool);
+  if (validOpts.length === 0) {
+    return `${label}：该玩法无有效报价`;
+  }
+  const invSum = validOpts.reduce((acc, o) => acc + 1 / Number(o.odds), 0);
+  const payoutRatio = invSum > 0 ? 1 / invSum : 1;
+  const realVigPct = Math.max(0, 1 - payoutRatio) * 100;
+  return `${label}抽水${realVigPct.toFixed(1)}%`;
+}
+
+function buildMatchVigSummary(m) {
+  return ALL_POOL_SPECS.map(([code, label]) =>
+    formatPoolVigEntry(m?.pools?.[code], label)
+  ).join("，");
+}
+
+function formatXgSummaryOrMissing(m, mq, totalPrefix = "总预期") {
+  const hXg = Number(mq?.homeXG);
+  const aXg = Number(mq?.awayXG);
+  const tXg = Number(mq?.totalXG);
+  if (!Number.isFinite(hXg) || !Number.isFinite(aXg) || !Number.isFinite(tXg)) {
+    return "无可核验信息";
+  }
+  return `${m.home} ${mq.homeXG} : ${mq.awayXG} ${m.away} (${totalPrefix}${mq.totalXG}球)`;
+}
+
+function resolveOneGoalSharePct(mq) {
+  const raw = mq?.oneGoalShareOfWins;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.round(raw <= 1 ? raw * 100 : raw);
+  }
+  return null;
+}
+
 function formatMatchTrends(m) {
-  const hadTrends = (m?.pools?.HAD?.options || [])
+  const hadTrends = getValidSellingOptions(m?.pools?.HAD)
     .filter((o) => o.trend !== 0)
     .map((o) => `主盘${o.label}${formatTrendArrow(o.trend)}`);
-  const hhadTrends = (m?.pools?.HHAD?.options || [])
+  const hhadTrends = getValidSellingOptions(m?.pools?.HHAD)
     .filter((o) => o.trend !== 0)
     .map((o) => `${o.label}${formatTrendArrow(o.trend)}`);
   return [...hadTrends, ...hhadTrends].join("、");
 }
 
 /**
- * 统一权威赛事标识对齐判定（兼容内部赛事 id、体彩编号 matchNumStr 与标题内嵌编号，供串关会诊解析与会话告警回填共用）
+ * 计算单场排雷结论与缓存强绑定签名：{ matchId, activePoolsMask, hhadGoalLine, quoteVersionSig, analyzedAt }
+ */
+export function computeMatchAlertBinding(match, analyzedAt = Date.now()) {
+  const maskParts = [];
+  const quoteParts = [];
+  for (const [code] of ALL_POOL_SPECS) {
+    const pool = match?.pools?.[code];
+    const validOpts = getValidSellingOptions(pool);
+    const isOpen = validOpts.length > 0;
+    const canSingle = isOpen && Boolean(pool?.canSingle ?? pool?.single);
+    const canAllUp = isOpen && pool?.canAllUp !== false;
+    maskParts.push(
+      isOpen ? `${code}:${canSingle ? 1 : 0}${canAllUp ? 1 : 0}` : `${code}:00`
+    );
+    if (!isOpen) {
+      quoteParts.push(`${code}:-`);
+      continue;
+    }
+    const gl = code === "HHAD" ? String(pool?.goalLine ?? "").trim() : "";
+    const optsSig = validOpts
+      .map((o) => `${String(o.key)}:${Number(o.odds).toFixed(4)}`)
+      .sort()
+      .join(",");
+    quoteParts.push(`${code}[${gl}](${optsSig})`);
+  }
+  return Object.freeze({
+    matchId: String(match?.id ?? "").trim(),
+    activePoolsMask: maskParts.join("|"),
+    hhadGoalLine: String(match?.pools?.HHAD?.goalLine ?? "").trim(),
+    quoteVersionSig: quoteParts.join("|"),
+    analyzedAt: Number(analyzedAt),
+  });
+}
+
+export function isMatchAlertBindingValid(
+  alertOrBinding,
+  match,
+  nowMs = Date.now(),
+  ttlMs = XIAOGAO_ALERT_TTL_MS
+) {
+  const b = alertOrBinding?.binding ?? alertOrBinding;
+  if (!b || typeof b !== "object" || !match || typeof match !== "object") {
+    return false;
+  }
+  const mid = String(match.id ?? "").trim();
+  if (!mid || String(b.matchId ?? "").trim() !== mid) {
+    return false;
+  }
+  if (
+    typeof b.analyzedAt !== "number" ||
+    !Number.isFinite(b.analyzedAt) ||
+    nowMs - b.analyzedAt > ttlMs
+  ) {
+    return false;
+  }
+  const cur = computeMatchAlertBinding(match, nowMs);
+  return (
+    b.activePoolsMask === cur.activePoolsMask &&
+    b.hhadGoalLine === cur.hhadGoalLine &&
+    b.quoteVersionSig === cur.quoteVersionSig
+  );
+}
+
+/**
+ * 统一权威赛事标识严格对齐判定（100% 仅认官方唯一 matchId，严禁按展示编号如“周六001”或标题子串猜测）
  */
 export function matchesCanonicalSportteryItem(pm, canonical) {
   if (
@@ -126,28 +252,25 @@ export function matchesCanonicalSportteryItem(pm, canonical) {
   ) {
     return false;
   }
-  const canonicalId = String(canonical.id ?? canonical.matchId ?? "");
-  const canonicalNum = canonical.matchNumStr
-    ? String(canonical.matchNumStr)
-    : "";
+  const canonicalId = String(canonical.id ?? canonical.matchId ?? "").trim();
   const rawId =
-    pm.matchId !== undefined && pm.matchId !== null ? String(pm.matchId) : "";
-  const rawTitle = pm.matchTitle ? String(pm.matchTitle) : "";
-  return (
-    (Boolean(canonicalId) && rawId === canonicalId) ||
-    (Boolean(canonicalNum) && rawId === canonicalNum) ||
-    Boolean(canonicalNum && rawTitle && rawTitle.includes(canonicalNum))
-  );
+    pm.matchId !== undefined && pm.matchId !== null
+      ? String(pm.matchId).trim()
+      : "";
+  return Boolean(canonicalId) && rawId === canonicalId;
 }
 
 /**
- * 服务端权威盘口上下文构建（单场点诊）：直接基于服务端赛事快照生成完整排雷输入，杜绝前端拼接提示上下文
+ * 服务端权威盘口上下文构建（单场点诊）：直接基于服务端赛事快照与客观历史底座生成完整排雷输入，杜绝前端拼接提示上下文
  */
-export function buildSingleMatchDiagnosisContext(m, userNote) {
+export function buildSingleMatchDiagnosisContext(m, userNote, opts = {}) {
   if (!m) throw new Error("Match not found");
   const mq = m.microQuant || {};
-  const hadVig = ((Number(m.pools?.HAD?.vig) || 0) * 100).toFixed(1);
-  const hafuVig = ((Number(m.pools?.HAFU?.vig) || 0) * 100).toFixed(1);
+  const objectiveFacts = buildMatchObjectiveFactsBundle(m, {
+    ...opts,
+    userNote,
+  });
+  const binding = computeMatchAlertBinding(m, objectiveFacts.decisionEpochMs);
   return {
     matchId: m.id,
     matchNumStr: m.matchNumStr,
@@ -155,35 +278,63 @@ export function buildSingleMatchDiagnosisContext(m, userNote) {
     kickoff: m.kickoff,
     home: m.home,
     away: m.away,
-    hadOdds: formatOptionsSummary(m.pools?.HAD?.options || [], true),
-    hhadOdds: formatOptionsSummary(m.pools?.HHAD?.options || [], true),
-    vigSummary: `胜平负抽水${hadVig}%，半全场抽水${hafuVig}%`,
-    xgSummary: `${m.home} ${mq.homeXG ?? "-"} : ${mq.awayXG ?? "-"} ${m.away} (总预期${mq.totalXG ?? "-"}球)`,
-    oneGoalSharePct: Math.round((Number(mq.oneGoalShareOfWins) || 0.45) * 100),
-    droppingTrends: formatMatchTrends(m),
+    hadOdds: formatPoolOddsSummary(m.pools?.HAD, true),
+    hhadOdds: formatPoolOddsSummary(m.pools?.HHAD, true),
+    ttgSelling: getValidSellingOptions(m.pools?.TTG).length > 0,
+    vigSummary: buildMatchVigSummary(m),
+    xgSummary: formatXgSummaryOrMissing(m, mq, "总预期"),
+    oneGoalSharePct: resolveOneGoalSharePct(mq),
+    droppingTrends: objectiveFacts.dualAxisSummary || formatMatchTrends(m),
+    restIntervalSummary: objectiveFacts.restIntervalSummary,
+    recentLedgerSummary: objectiveFacts.recentLedgerSummary,
+    dualAxisSummary: objectiveFacts.dualAxisSummary,
+    newsTimelineSummary: objectiveFacts.newsTimelineSummary,
+    hasVerifiedNews: objectiveFacts.hasVerifiedNews,
+    binding,
     userNote,
   };
 }
 
 function buildDefaultPoolImpact(it) {
-  const oneGoalPct = Number(it?.oneGoalSharePct) || 45;
+  const hasOneGoal =
+    typeof it?.oneGoalSharePct === "number" &&
+    Number.isFinite(it.oneGoalSharePct);
+  const oneGoalPct = hasOneGoal ? it.oneGoalSharePct : null;
   const totalXgMatch = String(it?.xgSummary || "").match(
     /(?:合计|总预期)\s*([\d.]+)/
   );
-  const totalXg = totalXgMatch ? Number(totalXgMatch[1]) : 2.4;
-  const spfPart = it?.droppingTrends
-    ? `胜平负关注异动（${it.droppingTrends}）是否已透支热度`
-    : "胜平负主盘定价均衡，宜结合去水真率把握正路";
+  const totalXg =
+    totalXgMatch && Number.isFinite(Number(totalXgMatch[1]))
+      ? Number(totalXgMatch[1])
+      : null;
+
+  const spfPart =
+    it?.hadOdds === "该玩法无有效报价"
+      ? "胜平负：该玩法无有效报价"
+      : it?.droppingTrends
+        ? `胜平负结合双维走势（${String(it.droppingTrends).slice(0, 48)}）审视去水真率`
+        : "胜平负主盘定价均衡，宜结合去水真率把握正路";
+
   const hhadPart =
-    oneGoalPct >= 50
-      ? `让球盘赢1球卡盘率达${oneGoalPct}%，慎追单边穿盘宜防让平`
-      : `让球盘一球卡盘率${oneGoalPct}%处于常规带`;
+    it?.hhadOdds === "该玩法无有效报价"
+      ? "让球盘：该玩法无有效报价"
+      : oneGoalPct === null
+        ? "让球盘一球卡盘率：无可核验信息"
+        : oneGoalPct >= 50
+          ? `让球盘赢1球卡盘率达${oneGoalPct}%，慎追单边穿盘宜防让平`
+          : `让球盘一球卡盘率${oneGoalPct}%处于常规带`;
+
   const ttgPart =
-    totalXg >= 2.75
-      ? `总进球预期${totalXg.toFixed(2)}球偏开放，重心2~4球`
-      : totalXg <= 2.15
-        ? `总进球预期${totalXg.toFixed(2)}球偏胶着，重心1~2球防闷平`
-        : `总进球预期${totalXg.toFixed(2)}球属均衡节奏，重心2~3球`;
+    it?.ttgSelling === false
+      ? "总进球：该玩法无有效报价"
+      : totalXg === null
+        ? "总进球预期：无可核验信息"
+        : totalXg >= 2.75
+          ? `总进球预期${totalXg.toFixed(2)}球偏开放，重心2~4球`
+          : totalXg <= 2.15
+            ? `总进球预期${totalXg.toFixed(2)}球偏胶着，重心1~2球防闷平`
+            : `总进球预期${totalXg.toFixed(2)}球属均衡节奏，重心2~3球`;
+
   return `${spfPart}；${hhadPart}；${ttgPart}。`;
 }
 
@@ -199,6 +350,10 @@ export function buildComboDiagnosisContext({
   planSpec = null,
   insights = null,
   userNote,
+  verifiedNews = null,
+  historySnapshot = null,
+  historyCoordinator = null,
+  decisionEpochMs = undefined,
 }) {
   const safePicks = sanitizeAndDeduplicatePicks(picks, 512);
   const planLegsByMatch = new Map();
@@ -223,8 +378,22 @@ export function buildComboDiagnosisContext({
   );
   const bankerMatchLabels = [];
   const dualCoveredMatches = [];
+  const allVisibleQuoteTimestamps = [];
   const matchesPayload = targetMatches.slice(0, 8).map((m) => {
     const mq = m.microQuant || {};
+    const objectiveFacts = buildMatchObjectiveFactsBundle(m, {
+      historySnapshot,
+      historyCoordinator,
+      decisionEpochMs,
+      userNote,
+      verifiedNews,
+    });
+    for (const ts of objectiveFacts.visibleQuoteTimestamps || []) {
+      const prefixed = `${m.matchNumStr || m.id}·${ts}`;
+      if (!allVisibleQuoteTimestamps.includes(prefixed)) {
+        allVisibleQuoteTimestamps.push(prefixed);
+      }
+    }
     const isBanker = sourceMode === "picked" && bankerSet.has(m.id);
     if (isBanker) {
       bankerMatchLabels.push(`${m.matchNumStr || m.home}`);
@@ -268,15 +437,21 @@ export function buildComboDiagnosisContext({
       home: m.home,
       away: m.away,
       userPickedDesc,
-      hadOdds: formatOptionsSummary(m.pools?.HAD?.options || [], false),
-      hhadOdds: formatOptionsSummary(m.pools?.HHAD?.options || [], false),
-      xgSummary: `${m.home} ${mq.homeXG ?? "-"} : ${mq.awayXG ?? "-"} ${m.away} (合计${mq.totalXG ?? "-"}球)`,
-      oneGoalSharePct: Math.round(
-        (Number(mq.oneGoalShareOfWins) || 0.45) * 100
-      ),
+      hadOdds: formatPoolOddsSummary(m.pools?.HAD, false),
+      hhadOdds: formatPoolOddsSummary(m.pools?.HHAD, false),
+      ttgSelling: getValidSellingOptions(m.pools?.TTG).length > 0,
+      vigSummary: buildMatchVigSummary(m),
+      xgSummary: formatXgSummaryOrMissing(m, mq, "合计"),
+      oneGoalSharePct: resolveOneGoalSharePct(mq),
       paceLabel: mq.paceLabel || "均衡节奏",
       alphaScanSummary: mq.alphaScanSummary || "",
-      droppingTrends: formatMatchTrends(m),
+      droppingTrends: objectiveFacts.dualAxisSummary || formatMatchTrends(m),
+      restIntervalSummary: objectiveFacts.restIntervalSummary,
+      recentLedgerSummary: objectiveFacts.recentLedgerSummary,
+      dualAxisSummary: objectiveFacts.dualAxisSummary,
+      newsTimelineSummary: objectiveFacts.newsTimelineSummary,
+      hasVerifiedNews: objectiveFacts.hasVerifiedNews,
+      binding: computeMatchAlertBinding(m, objectiveFacts.decisionEpochMs),
     };
   });
 
@@ -526,6 +701,12 @@ export function buildComboDiagnosisContext({
       legSource: p.legSource,
     }));
 
+  const comboNewsTimeline = buildNewsOddsTimelineAlignment({
+    userNote,
+    verifiedNews,
+    visibleQuoteTimestamps: allVisibleQuoteTimestamps,
+  });
+
   return {
     modeDesc,
     orderSummary,
@@ -533,6 +714,8 @@ export function buildComboDiagnosisContext({
     matches: matchesPayload,
     sanitizedPickCount: safePicks.length,
     auditedLegSources,
+    newsTimelineSummary: comboNewsTimeline.summary,
+    hasVerifiedNews: comboNewsTimeline.hasVerifiedNews,
     userNote,
   };
 }
@@ -652,27 +835,115 @@ export function createXiaoGaoService(opts = {}) {
     }
   }
 
+  const FORBIDDEN_SUBJECTIVE_CLAIM_RE =
+    /消化\s*\d+%|已部分反映市场热度|已部分消化市场一致预期|提前下调消化利好|必然回归|市场追热/;
+
+  function resolveTimelineField(
+    rawModelText,
+    hasVerifiedNews,
+    deterministicTimeline
+  ) {
+    if (!hasVerifiedNews) {
+      return "无可核验信息";
+    }
+    const clean = redactModelLeak(rawModelText || "");
+    if (!clean || FORBIDDEN_SUBJECTIVE_CLAIM_RE.test(clean)) {
+      return redactModelLeak(deterministicTimeline || "无可核验信息");
+    }
+    return clean;
+  }
+
+  function scrubSubjectiveRegressionClaims(str) {
+    return redactModelLeak(str)
+      .replace(/下场必然回归|必然均值回归|必然回归/g, "历史同期偏差记录")
+      .replace(/市场追热/g, "盘面变价记录");
+  }
+
+  const singleDiagnosisCache = new Map();
+  const comboDiagnosisCache = new Map();
+  const MAX_DIAGNOSIS_CACHE = 64;
+
+  function formatCardPanPctText(pct) {
+    return typeof pct === "number" && Number.isFinite(pct)
+      ? `${pct}%`
+      : "无可核验信息";
+  }
+
+  function putBoundedCache(cacheMap, key, value, nowMs) {
+    for (const [k, v] of cacheMap.entries()) {
+      if (nowMs - Number(v.analyzedAt || 0) > XIAOGAO_ALERT_TTL_MS) {
+        cacheMap.delete(k);
+      }
+    }
+    if (!cacheMap.has(key) && cacheMap.size >= MAX_DIAGNOSIS_CACHE) {
+      const oldestKey = cacheMap.keys().next().value;
+      if (oldestKey !== undefined) cacheMap.delete(oldestKey);
+    }
+    cacheMap.set(key, {
+      analyzedAt: nowMs,
+      value: structuredClone(value),
+    });
+  }
+
+  function getValidBoundedCache(cacheMap, key, nowMs) {
+    if (!key || !cacheMap.has(key)) return null;
+    const hit = cacheMap.get(key);
+    if (!hit || nowMs - Number(hit.analyzedAt || 0) > XIAOGAO_ALERT_TTL_MS) {
+      cacheMap.delete(key);
+      return null;
+    }
+    return structuredClone(hit.value);
+  }
+
   async function analyzeMatch(apiKey, req) {
+    const nowMs = nowFn();
+    const restIntervalSummary = req.restIntervalSummary || "无可核验信息";
+    const recentLedgerSummary = req.recentLedgerSummary || "无可核验信息";
+    const dualAxisSummary =
+      req.dualAxisSummary || req.droppingTrends || "无可核验信息";
+    const newsTimelineSummary = req.newsTimelineSummary || "无可核验信息";
+    const hasVerifiedNews = Boolean(req.hasVerifiedNews);
+    const safeNote = sanitizeUserIntelNote(req.userNote, 280);
+
+    const cacheKey =
+      req?.binding?.matchId && req?.binding?.quoteVersionSig
+        ? `${req.binding.matchId}|${req.binding.activePoolsMask}|${req.binding.hhadGoalLine}|${req.binding.quoteVersionSig}|${safeNote}|${restIntervalSummary}|${recentLedgerSummary}|${dualAxisSummary}`
+        : null;
+    const cachedAlert = getValidBoundedCache(
+      singleDiagnosisCache,
+      cacheKey,
+      nowMs
+    );
+    if (cachedAlert) {
+      return cachedAlert;
+    }
+
     const sysPrompt = `你是“扫地僧小高”，一位极其老辣、冷静克制的中国体彩竞彩足球精算与风控排雷参谋。
-请根据用户提供的体彩实盘水位、真实隐含概率、精算师预期进球(xG)、一球卡盘率、降水异动信号及补充情报，输出靶向排雷结论。
-严禁在回复中提及任何AI或底层模型名称，保持纯粹客观精算师口吻。
+请根据服务端提供的体彩实盘水位、真实隐含概率、精算师预期进球(xG)、一球卡盘率、赛程休息间隔上界、近90天竞彩客观战绩账本、双维盘面走势及消息与变价时序对照，输出靶向排雷结论。
+严守客观事实铁律：
+1. 严禁在回复中提及任何AI或底层模型名称，严禁修改真实隐含概率或配单权重。
+2. 赛程间隔观测值仅为真实休息间隔上界，两上界之差对真实间隔差无上下界保证；近90天战绩对照仅陈述历史事实，严禁硬判“下场必然回归”或“市场追热”。
+3. 「消息与变价时序对照」（priceInStatus）仅在存在明确来源与发布时间的外部消息时并列陈述发布时刻与变价时刻，绝不推断消化比例；无核验外部消息时必须固定输出“无可核验信息”。
 必须只输出合法的 JSON 对象（不要任何多余解释文字），字段如下：
 {
   "level": "high" 或 "medium",
-  "tag": "4到8个字的风险核心标签，如：防一球小胜卡盘 / 警惕浅降诱买 / 调水滞后窗口",
-  "summary": "60到95字以内的犀利排雷正文，直指水位结构隐患、抽水坑或战意盲区",
-  "priceInStatus": "25字以内的定价消化度研判，说明当前体彩水位是否已充分消化预期",
-  "suggestedDelta": "一句简短的主观概率微调建议，如：建议主胜微调 -4% 或 维持客观真实隐含概率"
+  "tag": "4到8个字的风险核心标签，如：防一球小胜卡盘 / 密集赛程观察 / 双维同向调水",
+  "summary": "60到95字以内的客观排雷正文，结合双维盘面走势、卡盘率与客观战绩/休息间隔上界指出风险点",
+  "priceInStatus": "存在核验消息时并列陈述消息与变价时序（不推断消化比例）；无核验消息时固定填 无可核验信息",
+  "suggestedDelta": "存在明确可核验赛前消息时给出一句谨慎微调参考，否则固定填 维持客观真实隐含概率"
 }`;
 
-    const safeNote = sanitizeUserIntelNote(req.userNote, 280);
+    const cardPanPctText = formatCardPanPctText(req.oneGoalSharePct);
     const userPrompt = `比赛：${req.matchNumStr || ""} ${req.league || ""} (${req.kickoff || ""}) ${req.home || ""} vs ${req.away || ""}
-胜平负水位与真实隐含概率：${req.hadOdds || ""}
-让球盘水位与真实隐含概率：${req.hhadOdds || ""}
-抽水结构：${req.vigSummary || ""}
-泊松预期进球：${req.xgSummary || ""}，赢球即净胜1球卡盘占比：${req.oneGoalSharePct ?? 45}%
-盘口官方升降异动：${req.droppingTrends || "暂无剧烈升降"}
-${safeNote ? `用户补充赛前情报：${safeNote}` : ""}`;
+胜平负水位与真实隐含概率：${req.hadOdds || "该玩法无有效报价"}
+让球盘水位与真实隐含概率：${req.hhadOdds || "该玩法无有效报价"}
+抽水结构：${req.vigSummary || "无可核验信息"}
+泊松预期进球：${req.xgSummary || "无可核验信息"}，赢球即净胜1球卡盘占比：${cardPanPctText}
+赛程休息间隔上界：${restIntervalSummary}
+近90天竞彩客观战绩账本：${recentLedgerSummary}
+双维盘面走势：${dualAxisSummary}
+消息与变价时序对照：${newsTimelineSummary}
+${safeNote ? `用户补充赛前备注：${safeNote}` : ""}`;
 
     const { content } = await invokeWithAutoFailover(apiKey, [
       { role: "system", content: sysPrompt },
@@ -680,24 +951,49 @@ ${safeNote ? `用户补充赛前情报：${safeNote}` : ""}`;
     ]);
 
     const parsed = extractJsonObject(content);
-    const now = new Date();
+    const finishedMs = nowFn();
+    const now = new Date(finishedMs);
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
-    return {
+    const defaultSummary = `一球卡盘率 ${cardPanPctText}；赛程间隔：${restIntervalSummary.slice(
+      0,
+      46
+    )}；${dualAxisSummary.slice(0, 52)}。`;
+
+    const resolvedBinding = req?.binding
+      ? {
+          matchId: String(req.binding.matchId),
+          activePoolsMask: String(req.binding.activePoolsMask),
+          hhadGoalLine: String(req.binding.hhadGoalLine),
+          quoteVersionSig: String(req.binding.quoteVersionSig),
+          analyzedAt: finishedMs,
+        }
+      : undefined;
+
+    const resultAlert = {
       level: parsed.level === "high" ? "high" : "medium",
-      tag: redactModelLeak(parsed.tag || "临场盘面排雷"),
-      summary: redactModelLeak(
-        parsed.summary ||
-          "当前盘口存在隐性抽水与卡盘分化，切忌盲目重注单边低水。"
+      tag: scrubSubjectiveRegressionClaims(parsed.tag || "临场客观排雷"),
+      summary: scrubSubjectiveRegressionClaims(
+        parsed.summary || defaultSummary
       ),
-      priceInStatus: redactModelLeak(
-        parsed.priceInStatus || "体彩实盘水位已部分反映市场热度"
+      priceInStatus: resolveTimelineField(
+        parsed.priceInStatus,
+        hasVerifiedNews,
+        newsTimelineSummary
       ),
-      suggestedDelta: redactModelLeak(
-        parsed.suggestedDelta || "建议维持客观真实隐含概率审慎配平"
-      ),
+      suggestedDelta: hasVerifiedNews
+        ? scrubSubjectiveRegressionClaims(
+            parsed.suggestedDelta || "维持客观真实隐含概率"
+          )
+        : "维持客观真实隐含概率",
       source: `扫地僧小高实时诊盘 · ${hhmm}`,
+      ...(resolvedBinding ? { binding: resolvedBinding } : {}),
     };
+
+    if (cacheKey) {
+      putBoundedCache(singleDiagnosisCache, cacheKey, resultAlert, finishedMs);
+    }
+    return resultAlert;
   }
 
   async function analyzeComboMatches(apiKey, comboReq) {
@@ -719,30 +1015,61 @@ ${safeNote ? `用户补充赛前情报：${safeNote}` : ""}`;
       hedgeHint: null,
     };
 
+    const comboHasVerifiedNews =
+      Boolean(comboReq.hasVerifiedNews) ||
+      items.some((it) => Boolean(it.hasVerifiedNews));
+    const comboNewsTimelineSummary =
+      comboReq.newsTimelineSummary || "无可核验信息";
+    const safeComboNote = sanitizeUserIntelNote(comboReq.userNote, 320);
+
+    const nowMs = nowFn();
+    const allHaveBindings = items.every(
+      (it) => it?.binding?.matchId && it?.binding?.quoteVersionSig
+    );
+    const comboCacheKey = allHaveBindings
+      ? `${items
+          .map(
+            (it) =>
+              `${it.binding.matchId}#${it.binding.activePoolsMask}#${it.binding.hhadGoalLine}#${it.binding.quoteVersionSig}#${it.userPickedDesc || ""}`
+          )
+          .join(
+            "||"
+          )}@@${actCtx.badge || ""}|${comboReq.orderSummary || ""}|${safeComboNote}`
+      : null;
+    const cachedCombo = getValidBoundedCache(
+      comboDiagnosisCache,
+      comboCacheKey,
+      nowMs
+    );
+    if (cachedCombo) {
+      return cachedCombo;
+    }
+
     const sysPrompt = `你是“扫地僧小高”，一位极其老辣、冷静克制的中国体彩竞彩足球多场串关风控与精算协同会诊参谋。
 请严格执行【双维客观协同会诊】，做到既客观犀利绝不报喜不报忧，又与系统精算配单前后逻辑自洽、绝不自我打脸：
 1. 第一维（actuarySynergy · 已构筑的精算防线/结构体检）：
    - 若用户已启用【3+1精算配单】或【三模奖金优化】（见输入“当前精算配单防线”），必须如实肯定该数学结构已经帮用户锁住了什么坑（如不等倍配平已实现0假中奖、同盘双选已对冲一球卡盘、或旋转矩阵已锁死错1场回血），切忌再当成散户裸买死串去批评“没做分倍/没防假中奖”！
    - 若用户是手动未优化的等倍裸串且存在假中奖或单边穿盘漏洞，则一针见血指出数学结构软肋。
-2. 第二维（residualRisks + priceInVerdict · 盘面消化度与残余实战暗雷）：
-   - 客观指出数学分倍无法消除的赛场基本面隐患、水位红升绿降背离、利好已被降赔榨干（Price-In 接盘风险）或极端连黑冷门情景，并给出与精算工作台无缝衔接的可执行动作（structureAdvice）。
+2. 第二维（residualRisks + priceInVerdict · 消息与变价时序对照及残余实战暗雷）：
+   - 客观结合赛程休息间隔上界（注意各队观测值仅为真实休息间隔上界，两上界之差对真实间隔差无上下界保证）、近90天竞彩客观战绩账本（严禁硬判“下场必然回归”或“市场追热”）与双维盘面走势，指出数学分倍无法消除的赛场隐患，并给出与精算工作台无缝衔接的可执行动作（structureAdvice）。
+   - 「消息与变价时序对照」（priceInVerdict 及每场 priceInStatus）仅在存在明确来源与发布时间的外部消息时并列陈述消息发布时刻与盘面变价时刻，绝不推断消息消化比例；无核验外部消息时必须固定输出“无可核验信息”。
 严禁提及任何AI或底层模型名称，严禁任何绝对无损稳赚夸大措辞。必须只输出合法的 JSON 对象（不要任何多余文字），格式如下：
 {
   "level": "high" 或 "medium" 或 "low",
-  "comboTag": "6到14字的协同会诊核心定性，如：稳健保本已配平·防次关利好透支",
-  "summary": "65到110字的整单客观总评，兼顾当前配单结构特征与赛场核心矛盾",
+  "comboTag": "6到14字的协同会诊核心定性，如：稳健保本已配平·盯防密集赛程",
+  "summary": "65到110字的整单客观总评，兼顾当前配单结构特征与赛场客观证据",
   "actuarySynergy": "45到85字：如实评价当前注单已构筑的数学精算防线（或手动裸串尚未弥补的结构漏洞）",
-  "residualRisks": "45到85字：直指数学分倍之外仍需警惕的盘口异动、冷门共振或全黑风险边界",
-  "weakestLeg": "点名这几场里最易出冷或最需盯防的那1场比赛及具体原因（35到65字）",
+  "residualRisks": "45到85字：直指数学分倍之外仍需警惕的双维走势变化、密集赛程或全黑风险边界",
+  "weakestLeg": "点名这几场里最易出冷或最需盯防的那1场比赛及具体客观原因（35到65字）",
   "structureAdvice": "与当前精算状态自洽的下一步实操建议，如维持当前保本分倍、晚场时间差锁利或启用容错缩水（40到75字）",
-  "priceInVerdict": "整单消息入价消化度（Price-In）白话研判：说明哪些赔率已提前消化预期、哪些尚有窗口（30到55字）",
+  "priceInVerdict": "整单消息与变价时序对照：有核验消息时并列陈述发布与变价时序，无核验消息时固定填 无可核验信息",
   "perMatch": [
     {
-      "matchId": "原样返回比赛matchId",
+      "matchId": "原样返回比赛官方唯一matchId",
       "matchTitle": "如 周三001 科里蒂巴vs桑托斯",
       "tag": "4到8字单场排雷签",
-      "note": "35到65字针对该场盘面、基本面及当前选号方向的精算点评",
-      "priceInStatus": "20到35字白话说明该场赔率对市场预期的消化程度",
+      "note": "35到65字针对该场双维走势、客观战绩/间隔上界及当前选号方向的精算点评",
+      "priceInStatus": "有核验消息时并列陈述消息与变价时序，无核验消息时固定填 无可核验信息",
       "poolImpact": "35到65字具体拆解对【胜平负 / 让球 / 总进球】三个维度的实战影响"
     }
   ]
@@ -753,18 +1080,23 @@ ${safeNote ? `用户补充赛前情报：${safeNote}` : ""}`;
         (it, idx) =>
           `【第${idx + 1}场 | matchId=${it.matchId}】${it.matchNumStr || ""} ${it.league || ""} (${it.kickoff || ""}) ${it.home || ""} vs ${it.away || ""}
   - 当前方案覆盖买法：${it.userPickedDesc || "暂未下注（请求纯客观盘面联合把脉）"}
-  - 胜平负水位(含红升↑/绿降↓)：${it.hadOdds || ""}
-  - 让球水位(含红升↑/绿降↓)：${it.hhadOdds || ""}
-  - 预期进球xG：${it.xgSummary || ""} | 节奏：${it.paceLabel || "均衡节奏"} | 赢1球卡盘率：${it.oneGoalSharePct ?? 45}% | 异动：${it.droppingTrends || "平稳"}`
+  - 胜平负水位：${it.hadOdds || "该玩法无有效报价"}
+  - 让球水位：${it.hhadOdds || "该玩法无有效报价"}
+  - 抽水结构：${it.vigSummary || "无可核验信息"}
+  - 预期进球xG：${it.xgSummary || "无可核验信息"} | 节奏：${it.paceLabel || "均衡节奏"} | 赢1球卡盘率：${formatCardPanPctText(it.oneGoalSharePct)}
+  - 赛程休息间隔上界：${it.restIntervalSummary || "无可核验信息"}
+  - 近90天竞彩客观战绩账本：${it.recentLedgerSummary || "无可核验信息"}
+  - 双维盘面走势：${it.dualAxisSummary || it.droppingTrends || "无可核验信息"}
+  - 消息与变价时序对照：${it.newsTimelineSummary || "无可核验信息"}`
       )
       .join("\n");
 
-    const safeComboNote = sanitizeUserIntelNote(comboReq.userNote, 320);
     const userPrompt = `会诊模式：${comboReq.modeDesc || `${items.length}场联合串关会诊`}
 串关整体指标：${comboReq.orderSummary || `共 ${items.length} 场比赛`}
 当前精算配单防线：${actCtx.shieldSummary}${actCtx.ticketLinesBrief ? `\n实票拆解结构：${actCtx.ticketLinesBrief}` : ""}
+整单消息与变价时序对照：${comboNewsTimelineSummary}
 ${linesText}
-${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
+${safeComboNote ? `用户补充赛前备注/疑问：${safeComboNote}` : ""}`;
 
     const { content } = await invokeWithAutoFailover(
       apiKey,
@@ -777,39 +1109,53 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
     );
 
     const parsed = extractJsonObject(content);
-    const now = new Date();
+    const finishedMs = nowFn();
+    const now = new Date(finishedMs);
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
     const rawPerMatch = Array.isArray(parsed.perMatch) ? parsed.perMatch : [];
-    const matchedRawSet = new Set();
-    const explicitMatches = items.map((srcItem) => {
-      const found = rawPerMatch.find((x) =>
-        matchesCanonicalSportteryItem(x, srcItem)
-      );
-      if (found) matchedRawSet.add(found);
-      return found || null;
-    });
-    const perMatch = items.map((srcItem, idx) => {
-      const positional = rawPerMatch[idx];
+    const perMatch = items.map((srcItem) => {
+      // 100% strict canonical matchId matching ONLY (zero matchNumStr, matchTitle substring, or positional fallback!)
       const pm =
-        explicitMatches[idx] ??
-        (positional && !matchedRawSet.has(positional) ? positional : null);
+        rawPerMatch.find((x) => matchesCanonicalSportteryItem(x, srcItem)) ||
+        null;
+      const itemHasNews = Boolean(
+        srcItem.hasVerifiedNews || comboHasVerifiedNews
+      );
+      const itemTimeline =
+        srcItem.newsTimelineSummary || comboNewsTimelineSummary;
+      const cardPanPctText = formatCardPanPctText(srcItem.oneGoalSharePct);
+      const defaultItemNote = `一球卡盘率 ${cardPanPctText}；赛程间隔：${(
+        srcItem.restIntervalSummary || "无可核验信息"
+      ).slice(0, 38)}；${(
+        srcItem.dualAxisSummary || "建议结合去水真率控制串关风险"
+      ).slice(0, 42)}。`;
+      const itemBinding = srcItem?.binding
+        ? {
+            matchId: String(srcItem.binding.matchId),
+            activePoolsMask: String(srcItem.binding.activePoolsMask),
+            hhadGoalLine: String(srcItem.binding.hhadGoalLine),
+            quoteVersionSig: String(srcItem.binding.quoteVersionSig),
+            analyzedAt: finishedMs,
+          }
+        : undefined;
       return {
         matchId: String(srcItem.matchId),
         matchTitle: redactModelLeak(
           pm?.matchTitle ||
             `${srcItem.matchNumStr} ${srcItem.home}vs${srcItem.away}`
         ),
-        tag: redactModelLeak(pm?.tag || "联合排雷关注"),
-        note: redactModelLeak(
-          pm?.note || "建议结合去水真实胜率与卡盘温度计控制串关风险。"
+        tag: scrubSubjectiveRegressionClaims(pm?.tag || "联合排雷关注"),
+        note: scrubSubjectiveRegressionClaims(pm?.note || defaultItemNote),
+        priceInStatus: resolveTimelineField(
+          pm?.priceInStatus,
+          itemHasNews,
+          itemTimeline
         ),
-        priceInStatus: redactModelLeak(
-          pm?.priceInStatus || "当前水位已部分消化市场一致预期"
-        ),
-        poolImpact: redactModelLeak(
+        poolImpact: scrubSubjectiveRegressionClaims(
           pm?.poolImpact || buildDefaultPoolImpact(srcItem)
         ),
+        ...(itemBinding ? { binding: itemBinding } : {}),
       };
     });
 
@@ -820,7 +1166,7 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
         : `${actCtx.shieldSummary}。单线等倍结构对黑单缺乏缓冲垫，需结合盘面稳定性控制仓位。`;
 
     const defaultResidual =
-      "分倍数学无法消除主方向全黑的赛场冷门风险；请重点核查大幅绿降场次是否已提前透支利好，警惕热门强队只赢1球卡盘或闷平冷门。";
+      "分倍数学无法消除主方向全黑的赛场冷门风险；请结合各场双维盘面走势、休息间隔上界与一球卡盘率审慎控制串关风险。";
 
     const defaultAdvice = actCtx.isOptimized
       ? actCtx.hedgeHint
@@ -828,7 +1174,7 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
         : `维持当前【${actCtx.badge}】实票配平结构即可，配合每日止损护栏理性出票。`
       : "若场次≥3场，建议切至【② 精算配单】选用稳健保本或容错缩水方案构建回血底垫。";
 
-    return {
+    const comboResult = {
       level:
         parsed.level === "high"
           ? "high"
@@ -838,28 +1184,45 @@ ${safeComboNote ? `用户补充赛前情报/疑问：${safeComboNote}` : ""}`;
       planContextBadge: redactModelLeak(
         parsed.planContextBadge || actCtx.badge
       ),
-      comboTag: redactModelLeak(
+      comboTag: scrubSubjectiveRegressionClaims(
         parsed.comboTag || `${items.length}场联合串关靶向会诊`
       ),
-      summary: redactModelLeak(
+      summary: scrubSubjectiveRegressionClaims(
         parsed.summary ||
-          "多场组合需兼顾抽水损耗与强队小胜卡盘，切忌在已大幅降赔透支的大热场次上盲目重仓。"
+          "多场组合需兼顾连乘抽水损耗、双维盘面走势与强队一球小胜卡盘风险，宜结合客观证据理性控仓。"
       ),
-      actuarySynergy: redactModelLeak(parsed.actuarySynergy || defaultSynergy),
-      residualRisks: redactModelLeak(parsed.residualRisks || defaultResidual),
-      weakestLeg: redactModelLeak(
+      actuarySynergy: scrubSubjectiveRegressionClaims(
+        parsed.actuarySynergy || defaultSynergy
+      ),
+      residualRisks: scrubSubjectiveRegressionClaims(
+        parsed.residualRisks || defaultResidual
+      ),
+      weakestLeg: scrubSubjectiveRegressionClaims(
         parsed.weakestLeg ||
           "建议重点复核单场真实过关率最低的一关，必要时补防平局。"
       ),
-      structureAdvice: redactModelLeak(parsed.structureAdvice || defaultAdvice),
-      priceInVerdict: redactModelLeak(
-        parsed.priceInVerdict ||
-          "热门场次胜平负水位多已提前下调消化利好，半全场或总进球偶有滞后空间。"
+      structureAdvice: scrubSubjectiveRegressionClaims(
+        parsed.structureAdvice || defaultAdvice
+      ),
+      priceInVerdict: resolveTimelineField(
+        parsed.priceInVerdict,
+        comboHasVerifiedNews,
+        comboNewsTimelineSummary
       ),
       perMatch,
       matchCount: items.length,
       source: `扫地僧小高 ${items.length}场协同会诊 · ${hhmm}`,
     };
+
+    if (comboCacheKey) {
+      putBoundedCache(
+        comboDiagnosisCache,
+        comboCacheKey,
+        comboResult,
+        finishedMs
+      );
+    }
+    return comboResult;
   }
 
   function getPublicStatus(configured) {

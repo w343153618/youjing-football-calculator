@@ -115,6 +115,14 @@ export interface MatchMicroQuant {
   alphaScanSummary: string;
 }
 
+export interface XiaoGaoAlertBinding {
+  matchId: string;
+  activePoolsMask: string;
+  hhadGoalLine: string;
+  quoteVersionSig: string;
+  analyzedAt: number;
+}
+
 export interface MatchItem {
   id: string;
   matchNumStr: string;
@@ -138,6 +146,7 @@ export interface MatchItem {
     priceInStatus: string;
     source: string;
     suggestedDelta?: string;
+    binding?: XiaoGaoAlertBinding;
   };
   pools: Record<PoolCode, MatchPool>;
   microQuant: MatchMicroQuant;

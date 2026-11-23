@@ -268,6 +268,11 @@ export function createSportteryHistoryCoordinator(opts = {}) {
     return callWorkerRpc("backfillMatchHead", [matchId, callOpts]);
   }
 
+  function notifyMatchHeadNonBlocking(matchId, callOpts) {
+    if (!worker || disposed) return;
+    trackBackgroundOp(callWorkerRpc("backfillMatchHead", [matchId, callOpts]));
+  }
+
   async function backfillResultsWindow(callOpts) {
     if (!worker) return null;
     return callWorkerRpc("backfillResultsWindow", [callOpts]);
@@ -357,6 +362,7 @@ export function createSportteryHistoryCoordinator(opts = {}) {
     fetchMatchDetailOnDemand,
     backfillMatchOpeningQuotes,
     backfillMatchHead,
+    notifyMatchHeadNonBlocking,
     backfillResultsWindow,
     backfillResultsRange,
     archiveAndPruneHotStorage,

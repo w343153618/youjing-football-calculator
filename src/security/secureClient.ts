@@ -952,6 +952,13 @@ export interface XiaoGaoAlert {
   priceInStatus: string;
   source: string;
   suggestedDelta?: string;
+  binding?: {
+    matchId: string;
+    activePoolsMask: string;
+    hhadGoalLine: string;
+    quoteVersionSig: string;
+    analyzedAt: number;
+  };
 }
 
 export interface XiaoGaoComboPerMatch {
@@ -961,6 +968,13 @@ export interface XiaoGaoComboPerMatch {
   note: string;
   priceInStatus: string;
   poolImpact?: string;
+  binding?: {
+    matchId: string;
+    activePoolsMask: string;
+    hhadGoalLine: string;
+    quoteVersionSig: string;
+    analyzedAt: number;
+  };
 }
 
 export interface XiaoGaoComboReport {

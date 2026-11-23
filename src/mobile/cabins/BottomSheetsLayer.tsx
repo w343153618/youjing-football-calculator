@@ -413,9 +413,12 @@ export function BottomSheetsLayer({
 
             <div className="sec num">
               总进球 · {sheetMatch.pools.TTG.single ? "单关" : "仅串关"} ·
-              最高6关 (返还率{" "}
-              {(sheetMatch.pools.TTG.payoutRatio * 100).toFixed(1)}% · 抽水{" "}
-              {(sheetMatch.pools.TTG.vig * 100).toFixed(1)}%)
+              最高6关 (
+              {sheetMatch.pools.TTG.selling !== false &&
+              sheetMatch.pools.TTG.options.length > 0
+                ? `返还率 ${(sheetMatch.pools.TTG.payoutRatio * 100).toFixed(1)}% · 抽水 ${(sheetMatch.pools.TTG.vig * 100).toFixed(1)}%`
+                : "该玩法无有效报价"}
+              )
             </div>
             {(sheetMatch.pools.TTG.selling === false ||
               sheetMatch.pools.TTG.options.length === 0) && (
@@ -456,9 +459,12 @@ export function BottomSheetsLayer({
 
             <div className="sec num" style={{ marginTop: 16 }}>
               半全场 · {sheetMatch.pools.HAFU.single ? "单关" : "仅串关"} ·
-              最高4关 (返还率{" "}
-              {(sheetMatch.pools.HAFU.payoutRatio * 100).toFixed(1)}% · 抽水{" "}
-              {(sheetMatch.pools.HAFU.vig * 100).toFixed(1)}%)
+              最高4关 (
+              {sheetMatch.pools.HAFU.selling !== false &&
+              sheetMatch.pools.HAFU.options.length > 0
+                ? `返还率 ${(sheetMatch.pools.HAFU.payoutRatio * 100).toFixed(1)}% · 抽水 ${(sheetMatch.pools.HAFU.vig * 100).toFixed(1)}%`
+                : "该玩法无有效报价"}
+              )
             </div>
             {(sheetMatch.pools.HAFU.selling === false ||
               sheetMatch.pools.HAFU.options.length === 0) && (
@@ -500,7 +506,12 @@ export function BottomSheetsLayer({
             <div className="sec-row">
               <span className="sec num">
                 比分 · {sheetMatch.pools.CRS.single ? "单关" : "仅串关"} ·
-                最高4关 (抽水 {(sheetMatch.pools.CRS.vig * 100).toFixed(1)}%)
+                最高4关 (
+                {sheetMatch.pools.CRS.selling !== false &&
+                sheetMatch.pools.CRS.options.length > 0
+                  ? `抽水 ${(sheetMatch.pools.CRS.vig * 100).toFixed(1)}%`
+                  : "该玩法无有效报价"}
+                )
               </span>
               <SpringSegmented
                 small
@@ -651,10 +662,22 @@ export function BottomSheetsLayer({
                   </div>
                   <div className="tile">
                     <span>各玩法暗扣抽水对比</span>
-                    <b>主{(sheetMatch.pools.HAD.vig * 100).toFixed(1)}%</b>
+                    <b>
+                      {sheetMatch.pools.HAD.selling !== false &&
+                      sheetMatch.pools.HAD.options.length > 0
+                        ? `主${(sheetMatch.pools.HAD.vig * 100).toFixed(1)}%`
+                        : "主·该玩法无有效报价"}
+                    </b>
                     <em>
-                      半全{(sheetMatch.pools.HAFU.vig * 100).toFixed(1)}% · 进球
-                      {(sheetMatch.pools.TTG.vig * 100).toFixed(1)}%
+                      {sheetMatch.pools.HAFU.selling !== false &&
+                      sheetMatch.pools.HAFU.options.length > 0
+                        ? `半全${(sheetMatch.pools.HAFU.vig * 100).toFixed(1)}%`
+                        : "半全·无有效报价"}{" "}
+                      ·{" "}
+                      {sheetMatch.pools.TTG.selling !== false &&
+                      sheetMatch.pools.TTG.options.length > 0
+                        ? `进球${(sheetMatch.pools.TTG.vig * 100).toFixed(1)}%`
+                        : "进球·无有效报价"}
                     </em>
                   </div>
                   <div
@@ -733,7 +756,7 @@ export function BottomSheetsLayer({
                       }}
                     >
                       {sheetMatch.aiAlert
-                        ? `${sheetMatch.aiAlert.summary}（${sheetMatch.aiAlert.priceInStatus}${sheetMatch.aiAlert.suggestedDelta ? ` · ${sheetMatch.aiAlert.suggestedDelta}` : ""} · ${sheetMatch.aiAlert.source}）`
+                        ? `${sheetMatch.aiAlert.summary}（消息与变价时序对照：${sheetMatch.aiAlert.priceInStatus}${sheetMatch.aiAlert.suggestedDelta ? ` · ${sheetMatch.aiAlert.suggestedDelta}` : ""} · ${sheetMatch.aiAlert.source}）`
                         : mq.steamSignal}
                     </b>
                     <div className="note-act">

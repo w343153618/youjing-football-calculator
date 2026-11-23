@@ -33,6 +33,7 @@ import {
   type SelectedPick,
   type SyntheticSingleMode,
   type UserStance,
+  type XiaoGaoAlertBinding,
 } from "../prototype/quantTypes.ts";
 
 export type MatchMode = "mix" | "spf" | "bf" | "zjq" | "bqc" | "single";
@@ -377,7 +378,9 @@ export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
     : "胜平负暂未开售单关/串关固定奖池";
 
   const goalLine = match.pools.HHAD?.goalLine || "-1";
-  const rawOneGoal = Number(mq.oneGoalShareOfWins) || 0;
+  const rawOneGoal = Number.isFinite(Number(mq.oneGoalShareOfWins))
+    ? Number(mq.oneGoalShareOfWins)
+    : 0;
   const sharePct = Math.round(rawOneGoal <= 1 ? rawOneGoal * 100 : rawOneGoal);
   const hhadImpact =
     sharePct >= 46
@@ -469,6 +472,74 @@ export interface TogglePickVerdict {
   blockedReason?: string;
 }
 
+export const CLIENT_XIAOGAO_ALERT_TTL_MS = 30 * 60_000;
+
+export function computeClientMatchAlertBinding(
+  match: MatchItem,
+  analyzedAt = Date.now()
+): XiaoGaoAlertBinding {
+  const poolOrder: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  const maskParts: string[] = [];
+  const quoteParts: string[] = [];
+  for (const code of poolOrder) {
+    const pool = match.pools?.[code];
+    const validOpts =
+      pool && pool.selling !== false && Array.isArray(pool.options)
+        ? pool.options.filter(
+            (o) => Number.isFinite(Number(o.odds)) && Number(o.odds) > 1
+          )
+        : [];
+    const isOpen = validOpts.length > 0;
+    const canSingle = isOpen && Boolean(pool?.canSingle ?? pool?.single);
+    const canAllUp = isOpen && pool?.canAllUp !== false;
+    maskParts.push(
+      isOpen ? `${code}:${canSingle ? 1 : 0}${canAllUp ? 1 : 0}` : `${code}:00`
+    );
+    if (!isOpen) {
+      quoteParts.push(`${code}:-`);
+      continue;
+    }
+    const gl = code === "HHAD" ? String(pool?.goalLine ?? "").trim() : "";
+    const optsSig = validOpts
+      .map((o) => `${String(o.key)}:${Number(o.odds).toFixed(4)}`)
+      .sort()
+      .join(",");
+    quoteParts.push(`${code}[${gl}](${optsSig})`);
+  }
+  return {
+    matchId: String(match.id ?? "").trim(),
+    activePoolsMask: maskParts.join("|"),
+    hhadGoalLine: String(match.pools?.HHAD?.goalLine ?? "").trim(),
+    quoteVersionSig: quoteParts.join("|"),
+    analyzedAt,
+  };
+}
+
+export function isClientMatchAlertBindingValid(
+  alert: MatchItem["aiAlert"] | undefined,
+  match: MatchItem,
+  nowMs = Date.now(),
+  ttlMs = CLIENT_XIAOGAO_ALERT_TTL_MS
+): boolean {
+  if (!alert) return false;
+  const b = alert.binding;
+  if (!b) return true;
+  if (String(b.matchId).trim() !== String(match.id ?? "").trim()) return false;
+  if (
+    typeof b.analyzedAt !== "number" ||
+    !Number.isFinite(b.analyzedAt) ||
+    nowMs - b.analyzedAt > ttlMs
+  ) {
+    return false;
+  }
+  const cur = computeClientMatchAlertBinding(match, nowMs);
+  return (
+    b.activePoolsMask === cur.activePoolsMask &&
+    b.hhadGoalLine === cur.hhadGoalLine &&
+    b.quoteVersionSig === cur.quoteVersionSig
+  );
+}
+
 export interface BetSlipControllerOptions {
   computeWorkspace: (
     params: QuantWorkspaceParams,
@@ -476,6 +547,7 @@ export interface BetSlipControllerOptions {
   ) => QuantWorkspaceResponse | Promise<QuantWorkspaceResponse>;
   debounceMs?: number;
   autoSyncRadar?: boolean;
+  nowFn?: () => number;
   onOfflineNetworkError?: () => void;
   onComputeSuccess?: () => void;
 }
@@ -1250,6 +1322,7 @@ function buildPresetPicks(
 export function createBetSlipController(options: BetSlipControllerOptions) {
   const debounceMs = options.debounceMs ?? 18;
   const autoSyncRadar = options.autoSyncRadar ?? false;
+  const nowFn = options.nowFn ?? (() => Date.now());
   const listeners = new Set<() => void>();
   let bootstrapped = false;
   let computeSeq = 0;
@@ -1971,6 +2044,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       bootstrapped = true;
       computeSeq += 1;
 
+      const nowMs = nowFn();
       const isLiveXiaoGaoAlert = (a?: MatchItem["aiAlert"]) => {
         if (!a?.source) return false;
         return (
@@ -1982,14 +2056,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         );
       };
       const mergedMatches = res.matches.map((nm) => {
-        if (isLiveXiaoGaoAlert(nm.aiAlert)) return nm;
-        const prev = state.matches.find(
-          (em) =>
-            em.id === nm.id ||
-            (Boolean(em.matchNumStr) && em.matchNumStr === nm.matchNumStr)
-        );
+        if (isLiveXiaoGaoAlert(nm.aiAlert)) {
+          return isClientMatchAlertBindingValid(nm.aiAlert, nm, nowMs)
+            ? nm
+            : { ...nm, aiAlert: undefined };
+        }
+        const prev = state.matches.find((em) => em.id === nm.id);
         if (isLiveXiaoGaoAlert(prev?.aiAlert)) {
-          return { ...nm, aiAlert: prev!.aiAlert };
+          return isClientMatchAlertBindingValid(prev!.aiAlert, nm, nowMs)
+            ? { ...nm, aiAlert: prev!.aiAlert }
+            : { ...nm, aiAlert: undefined };
         }
         if (nm.aiAlert) return nm;
         return prev?.aiAlert ? { ...nm, aiAlert: prev.aiAlert } : nm;
@@ -2088,14 +2164,19 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       matchId: string,
       alert: NonNullable<MatchItem["aiAlert"]>
     ) {
+      const nowMs = nowFn();
       state = {
         ...state,
-        matches: state.matches.map((item) =>
-          item.id === matchId ||
-          (Boolean(item.matchNumStr) && item.matchNumStr === matchId)
-            ? { ...item, aiAlert: alert }
-            : item
-        ),
+        matches: state.matches.map((item) => {
+          if (item.id !== matchId) return item;
+          const stampedAlert = alert.binding
+            ? alert
+            : {
+                ...alert,
+                binding: computeClientMatchAlertBinding(item, nowMs),
+              };
+          return { ...item, aiAlert: stampedAlert };
+        }),
       };
       emit();
       await scheduleRefresh();
@@ -2110,9 +2191,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         tag: string;
         note: string;
         priceInStatus: string;
+        binding?: XiaoGaoAlertBinding;
       }>;
     }) {
       if (!Array.isArray(rep?.perMatch) || rep.perMatch.length === 0) return;
+      const nowMs = nowFn();
       const byMatchId = new Map(
         rep.perMatch
           .filter((x) => Boolean(x?.matchId))
@@ -2131,6 +2214,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
               summary: pm.note,
               priceInStatus: pm.priceInStatus,
               source: rep.source,
+              binding:
+                pm.binding ?? computeClientMatchAlertBinding(item, nowMs),
             },
           };
         }),

@@ -157,6 +157,16 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
         `[honesty-guardrail] Forbidden break-even-blind claim "命中任一组均盈利" found in ${rel}`
       );
     }
+    if (src.includes("真防冷急降")) {
+      errors.push(
+        `[honesty-guardrail] Retired single-axis movement claim "真防冷急降" found in ${rel} (use dual-axis movement per ADR-0018)`
+      );
+    }
+    if (src.includes("消息入价消化度")) {
+      errors.push(
+        `[honesty-guardrail] Retired subjective label "消息入价消化度" found in ${rel} (use objective "消息与变价时序对照" per ADR-0018)`
+      );
+    }
     if (rel.startsWith(`src${path.sep}`) && src.includes("单池暗扣")) {
       errors.push(
         `[honesty-guardrail] Deprecated misleading parlay vig label "单池暗扣" found in ${rel}`
@@ -278,7 +288,7 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
     }
   }
 
-  // 7. Enforce 100% zero transitive I/O (fs / http / fetch) inside server/quantEngine.mjs graph
+  // 7. Enforce 100% zero transitive I/O (fs / http / fetch / sqlite / worker_threads / zlib / history/) inside server/quantEngine.mjs graph
   const quantEntry = path.join(rootDir, "server", "quantEngine.mjs");
   if (fs.existsSync(quantEntry)) {
     const visited = new Set();
@@ -286,7 +296,7 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
     const relImportRe =
       /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["'](\.[^"']+)["']|import\(\s*["'](\.[^"']+)["']\s*\)/g;
     const forbiddenIoRe =
-      /\bnode:(?:fs|http|https|net)\b|\bfrom\s+["'](?:fs|fs\/promises|http|https)["']|\bfetch\s*\(/;
+      /\bnode:(?:fs|http|https|net|sqlite|worker_threads|zlib)\b|\bfrom\s+["'](?:fs|fs\/promises|http|https|sqlite|worker_threads|zlib)["']|\bimport\(\s*["']node:(?:fs|http|https|net|sqlite|worker_threads|zlib)["']\s*\)|\bfetch\s*\(/;
     while (queue.length > 0) {
       const cur = queue.shift();
       if (!cur || visited.has(cur) || !fs.existsSync(cur)) continue;
@@ -303,6 +313,18 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
         const spec = m[1] || m[2];
         if (!spec) continue;
         const resolved = path.resolve(path.dirname(cur), spec);
+        const resolvedRel = path
+          .relative(rootDir, resolved)
+          .replace(/\\/g, "/");
+        if (
+          /(?:^|\/)history\//.test(spec) ||
+          resolvedRel.startsWith("server/history/")
+        ) {
+          errors.push(
+            `[pure-quant-io] Forbidden history/ dependency inside pure quant graph: ${relCur} -> ${spec}`
+          );
+          continue;
+        }
         if (fs.existsSync(resolved) && !visited.has(resolved)) {
           queue.push(resolved);
         }

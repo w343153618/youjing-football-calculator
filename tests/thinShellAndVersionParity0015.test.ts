@@ -589,22 +589,22 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
     );
   });
 
-  it("Slice 4 (4-Way Release Version v2.7.1 Parity & Verified domain.md Navigation Anchors): locks 2.7.1 / versionCode=271 across all 4 surfaces + /api/health and verifies every symbol anchor in docs/agents/domain.md exists in its target module", async () => {
+  it("Slice 4 (4-Way Release Version v2.8.0 Parity & Verified domain.md Navigation Anchors): locks 2.8.0 / versionCode=280 across all 4 surfaces + /api/health and verifies every symbol anchor in docs/agents/domain.md exists in its target module", async () => {
     const repoRoot = process.cwd();
     const { runRepositoryGuardrails } =
       await import("../scripts/check-guardrails.mjs");
     const { createSecurityShield } =
       await import("../server/securityShield.mjs");
 
-    // 1. Guardrails 4-way version parity at 2.7.1 (versionCode = 271)
+    // 1. Guardrails 4-way version parity at 2.8.0 (versionCode = 280)
     const guardrails = runRepositoryGuardrails({ rootDir: repoRoot });
     assert.deepEqual(guardrails.errors, []);
     assert.equal(guardrails.ok, true);
-    assert.equal(guardrails.version, "2.7.1");
+    assert.equal(guardrails.version, "2.8.0");
 
-    // 2. Runtime /api/health endpoint reports 2.7.1
+    // 2. Runtime /api/health endpoint reports 2.8.0
     const os = await import("node:os");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-v271-health-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-v280-health-"));
     try {
       const shield = createSecurityShield({
         stateFile: path.join(tmpDir, "bans.json"),
@@ -636,7 +636,7 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
       assert.equal(statusCode, 200);
       const parsedHealth = JSON.parse(rawBody);
       assert.equal(parsedHealth.ok, true);
-      assert.equal(parsedHealth.version, "2.7.1");
+      assert.equal(parsedHealth.version, "2.8.0");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

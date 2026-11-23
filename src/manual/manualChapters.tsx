@@ -610,25 +610,25 @@ function renderChapterSvg(sectionId: IllustratedManualSectionId) {
   const cards = [
     {
       tx: 18,
-      bg: "#fef2f2",
-      bd: "#fecaca",
-      hc: "#b91c1c",
-      cc: "#dc2626",
-      h: "① 已充分消化（接盘陷阱）",
-      l1: "例：头号射手伤停昨天已传遍全网",
-      l2: "赔率早已从 1.90 暴跌到 1.46 ▼",
-      c: "结论：油水已被榨干，再去重注纯属接盘！",
-    },
-    {
-      tx: 264,
       bg: "#ecfdf5",
       bd: "#a7f3d0",
       hc: "#047857",
       cc: "#059669",
-      h: "② 尚未消化（调水滞后黄金窗）",
-      l1: "例：赛前25分钟刚出大轮换首发",
-      l2: "胜平负刚微调，半全场/进球未动",
-      c: "结论：体彩调水滞后，果断抓错价红利！",
+      h: "① 有核验消息：客观并列时序",
+      l1: "条件：具备明确来源与发布时刻的赛前消息",
+      l2: "并列展示：消息发布时刻 vs 可见变价时刻",
+      c: "铁律：仅陈述时间先后，绝不臆断消化比例！",
+    },
+    {
+      tx: 264,
+      bg: "#f8fafc",
+      bd: "#cbd5e1",
+      hc: "#334155",
+      cc: "#0f172a",
+      h: "② 无外部消息：如实标明边界",
+      l1: "条件：未提供带明确来源与时间的外部消息",
+      l2: "盘面变动交由「双维盘面走势」客观呈现",
+      c: "输出：统一标注「无可核验信息」零编造！",
     },
     {
       tx: 510,
@@ -636,10 +636,10 @@ function renderChapterSvg(sectionId: IllustratedManualSectionId) {
       bd: "#fde68a",
       hc: "#b45309",
       cc: "#d97706",
-      h: "③ 盘面逆向背离（冷门暗雷）",
-      l1: "例：全网都在吹强队必胜",
-      l2: "强队赔率却一路亮红箭头 ▲ 上涨",
-      c: "结论：机构看衰散热，严禁拿它做串关稳胆！",
+      h: "③ 唯一标识绑定与 30m 自动撤回",
+      l1: "100% 按官方唯一比赛标识对齐（防同名串台）",
+      l2: "强绑定开售池、让球线、报价版本与分析时刻",
+      c: "护栏：变盘或超过 30 分钟立即自动撤回！",
     },
   ];
   return (
@@ -820,7 +820,7 @@ export function ManualQaSection({
             value={askInput}
             disabled={asking}
             onChange={(e) => onAskInputChange(e.target.value)}
-            placeholder="例如：主观胜率微调滑块往左拉和往右拉是什么意思？Price-In 消化度怎么看？"
+            placeholder="例如：主观胜率微调滑块往左拉和往右拉是什么意思？消息与变价时序对照怎么看？"
             style={{
               flex: 1,
               minWidth: 220,

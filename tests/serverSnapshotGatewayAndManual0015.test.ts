@@ -634,7 +634,7 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
       );
       const healthBody = JSON.parse(healthEx.getResult().body);
       assert.equal(healthBody.ok, true);
-      assert.equal(healthBody.version, "2.7.1");
+      assert.equal(healthBody.version, "2.8.0");
 
       const createdMember = runtime.accountManager.createAccount({
         username: "t7_member",
@@ -831,14 +831,14 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
     }
   });
 
-  it("Slice 3: reconciles XiaoGao combo perMatch alerts across id, matchNumStr & shuffled matchTitle onto canonical session matches via single server mapper", async () => {
+  it("Slice 3: reconciles XiaoGao combo perMatch alerts strictly by canonical matchId across shuffled order while rejecting matchNumStr / matchTitle heuristics (ADR-0018)", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-t7-combo-map-"));
     let clock = 1_721_000_000_000;
     let nonceSeq = 1;
     const [m0, m1] = FALLBACK_MATCHES as MatchItem[];
 
-    // Upstream LLM returns perMatch in reversed order with non-canonical matchId ("leg-2" / m0.matchNumStr)
-    // and matchTitle containing m1.matchNumStr: both xiaogaoCore & reconcileComboAlertsToMatchMap MUST align them!
+    // Upstream LLM returns perMatch in reversed order with canonical matchId for m1 & m0:
+    // both xiaogaoCore & reconcileComboAlertsToMatchMap MUST align strictly by canonical matchId!
     const runtime = createYouJingRuntime({
       dataDir: tmpDir,
       nowFn: () => clock,
@@ -857,22 +857,22 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
           residualRisks: "次关临场热度集中。",
           weakestLeg: `${m1.matchNumStr} 卡盘风险偏高`,
           structureAdvice: "建议次关双选防平。",
-          priceInVerdict: "次关利好已充分消化。",
+          priceInVerdict: "无可核验信息",
           perMatch: [
             {
-              matchId: "leg-reversed-second",
+              matchId: m1.id,
               matchTitle: `${m1.matchNumStr} ${m1.home}vs${m1.away}`,
               tag: "次关防平暗雷",
               note: "次关只赢一球或闷平风险极高。",
-              priceInStatus: "利好已充分消化",
+              priceInStatus: "无可核验信息",
               poolImpact: "胜平负慎追低水；让球防平；总进球偏小。",
             },
             {
-              matchId: m0.matchNumStr,
+              matchId: m0.id,
               matchTitle: `${m0.home}vs${m0.away}`,
               tag: "首关稳态观察",
               note: "首关主盘结构平稳。",
-              priceInStatus: "尚未过度透支",
+              priceInStatus: "无可核验信息",
               poolImpact: "胜平负正路稳健；让球适中；总进球2~3球。",
             },
           ],
@@ -966,10 +966,10 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
         afterComboCompute.decrypted.allWarnings.some((w: any) =>
           String(w.title || "").includes("次关防平暗雷")
         ),
-        "Session aiAlerts must reconcile reversed matchTitle item onto canonical m1.id"
+        "Session aiAlerts must reconcile reversed canonical matchId item onto m1.id"
       );
 
-      // Direct mapper check on custom matchNumStr / matchTitle report: stamps canonical matchId onto perMatch!
+      // Direct mapper check: non-canonical matchNumStr / matchTitle is rejected, while canonical matchId succeeds!
       const rawCustomReport = {
         level: "medium" as const,
         source: "扫地僧小高 2场协同会诊 · 21:30",
@@ -977,22 +977,29 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
           {
             matchId: "custom-unknown",
             matchTitle: `焦点战 ${m1.matchNumStr}`,
-            tag: "标题编号命中",
-            note: "通过赛事编号对齐成功",
-            priceInStatus: "尚未消化",
+            tag: "标题编号不应猜测命中",
+            note: "严禁按赛事编号猜测匹配",
+            priceInStatus: "无可核验信息",
+          },
+          {
+            matchId: m0.id,
+            matchTitle: `${m0.matchNumStr} ${m0.home}vs${m0.away}`,
+            tag: "官方唯一ID精准命中",
+            note: "通过唯一matchId对齐",
+            priceInStatus: "无可核验信息",
           },
         ],
       };
-      const customMap = reconcileComboAlertsToMatchMap(rawCustomReport, [
-        m0,
-        m1,
-      ]);
-      assert.equal(customMap.get(m1.id)?.tag, "标题编号命中");
-      assert.equal(
-        rawCustomReport.perMatch[0].matchId,
-        m1.id,
-        "reconcileComboAlertsToMatchMap must stamp canonical matchId onto perMatch items"
+      const customMap = reconcileComboAlertsToMatchMap(
+        rawCustomReport,
+        [m0, m1],
+        new Map(),
+        32,
+        { nowMs: clock }
       );
+      assert.equal(customMap.has(m1.id), false);
+      assert.equal(customMap.get(m0.id)?.tag, "官方唯一ID精准命中");
+      assert.equal(customMap.get(m0.id)?.binding?.matchId, m0.id);
     } finally {
       runtime.dispose();
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -127,20 +127,37 @@ function resolveEffectivePoolFrames(
   normGoalLine,
   pool,
   historySnapshot,
-  { isFallbackReadOnly = false, nowMs = Date.now(), matchDate = null } = {}
+  {
+    isFallbackReadOnly = false,
+    nowMs = Date.now(),
+    decisionEpochMs = null,
+    matchDate = null,
+  } = {}
 ) {
   const seg =
     historySnapshot?.getPoolSegmentFrames?.(matchId, poolCode, normGoalLine) ??
     null;
+  const effectiveNowMs =
+    typeof decisionEpochMs === "number" && Number.isFinite(decisionEpochMs)
+      ? decisionEpochMs
+      : nowMs;
   const liveFrame = buildVirtualLiveFrame(
     poolCode,
     normGoalLine,
     pool,
     matchDate,
-    nowMs
+    effectiveNowMs
   );
 
-  const candidateFrames = Array.isArray(seg?.frames) ? [...seg.frames] : [];
+  const hasExplicitDecisionCutoff =
+    typeof decisionEpochMs === "number" && Number.isFinite(decisionEpochMs);
+  const rawSegFrames = Array.isArray(seg?.frames) ? seg.frames : [];
+  const candidateFrames = hasExplicitDecisionCutoff
+    ? rawSegFrames.filter((f) => {
+        const ts = f?.sourcePublishedAt ?? f?.firstLocallySeenAt ?? null;
+        return ts === null || ts <= decisionEpochMs;
+      })
+    : [...rawSegFrames];
   if (candidateFrames.length === 0) {
     if (liveFrame) candidateFrames.push(liveFrame);
   } else if (!isFallbackReadOnly && liveFrame) {
@@ -571,13 +588,24 @@ export function hydrateMatchesWithDualAxisMovement(
 ) {
   if (!Array.isArray(matches) || matches.length === 0) return [];
   const isFallbackReadOnly = Boolean(opts.boardMeta?.isFallbackReadOnly);
-  const nowMs = typeof opts.nowMs === "number" ? opts.nowMs : Date.now();
+  const decisionEpochMs =
+    typeof opts.decisionEpochMs === "number" &&
+    Number.isFinite(opts.decisionEpochMs)
+      ? opts.decisionEpochMs
+      : null;
+  const nowMs =
+    typeof opts.nowMs === "number"
+      ? opts.nowMs
+      : decisionEpochMs !== null
+        ? decisionEpochMs
+        : Date.now();
 
   return matches.map((m) => {
     if (!m || typeof m !== "object" || !m.pools) return m;
     const poolMovements = computeMatchDualAxisMovements(m, historySnapshot, {
       isFallbackReadOnly,
       nowMs,
+      decisionEpochMs,
       matchDate: m.matchDate ?? null,
     });
 

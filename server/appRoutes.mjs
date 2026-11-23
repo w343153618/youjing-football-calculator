@@ -12,6 +12,8 @@ import {
 import {
   buildComboDiagnosisContext,
   buildSingleMatchDiagnosisContext,
+  computeMatchAlertBinding,
+  isMatchAlertBindingValid,
   matchesCanonicalSportteryItem,
 } from "./xiaogaoCore.mjs";
 
@@ -34,13 +36,14 @@ export function findCanonicalMatchForReportItem(pm, canonicalMatches = []) {
 
 /**
  * 扫地僧小高串关会诊后单场告警统一对齐映射器：
- * 将会诊返回的 perMatch 项按 id / 赛事编号 / 标题赛事编号对齐至权威在售赛事 ID 并写入有界告警字典。
+ * 100% 严格按官方唯一 matchId 对齐权威在售赛事并绑定 { matchId, activePoolsMask, hhadGoalLine, quoteVersionSig, analyzedAt }。
  */
 export function reconcileComboAlertsToMatchMap(
   comboReport,
   canonicalMatches = [],
   targetAlertMap = new Map(),
-  maxCap = 32
+  maxCap = 32,
+  opts = {}
 ) {
   if (
     !Array.isArray(comboReport?.perMatch) ||
@@ -48,6 +51,10 @@ export function reconcileComboAlertsToMatchMap(
   ) {
     return targetAlertMap;
   }
+  const analyzedAt =
+    typeof opts.nowMs === "number" && Number.isFinite(opts.nowMs)
+      ? opts.nowMs
+      : Date.now();
   const level = comboReport.level === "high" ? "high" : "medium";
   for (const pm of comboReport.perMatch) {
     if (!pm || typeof pm !== "object") continue;
@@ -55,21 +62,23 @@ export function reconcileComboAlertsToMatchMap(
       pm,
       canonicalMatches
     );
-    if (matchedCanonical?.id) {
-      pm.matchId = String(matchedCanonical.id);
-    }
-    const canonicalId =
-      matchedCanonical?.id || (pm.matchId ? String(pm.matchId) : "");
-    if (!canonicalId) continue;
+    if (!matchedCanonical?.id) continue;
+    const canonicalId = String(matchedCanonical.id);
+    pm.matchId = canonicalId;
+    const binding =
+      pm.binding && String(pm.binding.matchId) === canonicalId
+        ? pm.binding
+        : computeMatchAlertBinding(matchedCanonical, analyzedAt);
     setBoundedAlertMap(
       targetAlertMap,
-      String(canonicalId),
+      canonicalId,
       {
         level,
         tag: pm.tag,
         summary: pm.note,
         priceInStatus: pm.priceInStatus,
         source: comboReport.source,
+        binding,
       },
       maxCap
     );
@@ -296,11 +305,17 @@ export function createAppRoutes(opts = {}) {
     }
   }
 
-  function mergeSessionAlerts(baseMatches, sess) {
+  function mergeSessionAlerts(baseMatches, sess, nowMs = nowFn()) {
     if (!sess?.aiAlerts || sess.aiAlerts.size === 0) return baseMatches;
-    return baseMatches.map((m) =>
-      sess.aiAlerts.has(m.id) ? { ...m, aiAlert: sess.aiAlerts.get(m.id) } : m
-    );
+    return baseMatches.map((m) => {
+      if (!sess.aiAlerts.has(m.id)) return m;
+      const stored = sess.aiAlerts.get(m.id);
+      if (isMatchAlertBindingValid(stored, m, nowMs)) {
+        return { ...m, aiAlert: stored };
+      }
+      sess.aiAlerts.delete(m.id);
+      return { ...m, aiAlert: undefined };
+    });
   }
 
   function buildInitialWorkspaceBundle(matches, syncNote, boardMeta) {
@@ -838,15 +853,32 @@ export function createAppRoutes(opts = {}) {
           }
           const reqCtx = buildSingleMatchDiagnosisContext(
             targetMatch,
-            data?.userNote
+            data?.userNote,
+            {
+              verifiedNews: data?.verifiedNews,
+              historySnapshot: historyCoordinator?.getSnapshot?.() ?? null,
+              historyCoordinator,
+              decisionEpochMs: nowFn(),
+            }
           );
 
           const qCheck = consumeUserAiQuota(user, res, sendJson);
           if (!qCheck.ok) return { __handled: true };
 
           const alert = await xiaogaoService.analyzeMatch(apiKey, reqCtx);
-          setBoundedAlertMap(sess.aiAlerts, String(targetMatch.id), alert, 32);
-          return { alert, aiRemaining: qCheck.remaining };
+          const stampedAlert = alert?.binding
+            ? alert
+            : {
+                ...alert,
+                binding: computeMatchAlertBinding(targetMatch, nowFn()),
+              };
+          setBoundedAlertMap(
+            sess.aiAlerts,
+            String(targetMatch.id),
+            stampedAlert,
+            32
+          );
+          return { alert: stampedAlert, aiRemaining: qCheck.remaining };
         }
       );
     }
@@ -956,6 +988,10 @@ export function createAppRoutes(opts = {}) {
             planSpec: data?.planSpec ?? null,
             insights: ws?.insights ?? null,
             userNote: data?.userNote,
+            verifiedNews: data?.verifiedNews,
+            historySnapshot: historyCoordinator?.getSnapshot?.() ?? null,
+            historyCoordinator,
+            decisionEpochMs: nowFn(),
           });
 
           const qCheck = consumeUserAiQuota(user, res, sendJson);
@@ -969,7 +1005,8 @@ export function createAppRoutes(opts = {}) {
             comboReport,
             sessionMatches,
             sess.aiAlerts,
-            32
+            32,
+            { nowMs: nowFn() }
           );
           return { comboReport, aiRemaining: qCheck.remaining };
         }

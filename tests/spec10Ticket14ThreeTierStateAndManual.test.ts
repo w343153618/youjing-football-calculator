@@ -1576,15 +1576,15 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
 
     assert.equal(LOCAL_CURATED_QA.length >= 25, true);
 
-    // 4. 4-Way Release Version Parity at 2.7.1 (versionCode = 271) + /api/health
+    // 4. 4-Way Release Version Parity at 2.8.0 (versionCode = 280) + /api/health
     const { runRepositoryGuardrails } =
       await import("../scripts/check-guardrails.mjs");
     const guardrails = runRepositoryGuardrails({ rootDir: process.cwd() });
     assert.deepEqual(guardrails.errors, []);
     assert.equal(guardrails.ok, true);
-    assert.equal(guardrails.version, "2.7.1");
+    assert.equal(guardrails.version, "2.8.0");
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-v271-health-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-v280-health-"));
     try {
       const shield = createSecurityShield({
         stateFile: path.join(tmpDir, "bans.json"),
@@ -1615,7 +1615,7 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
       assert.equal(handled, true);
       assert.equal(statusCode, 200);
       const parsedHealth = JSON.parse(rawBody);
-      assert.equal(parsedHealth.version, "2.7.1");
+      assert.equal(parsedHealth.version, "2.8.0");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

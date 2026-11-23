@@ -36,6 +36,7 @@ import {
 } from "../security/secureClient.ts";
 import {
   createBetSlipController,
+  isClientMatchAlertBindingValid,
   type BetSlipState,
   type PlayabilityGates,
   type SealedLedgerDraft,
@@ -241,11 +242,12 @@ function computeRemainingQuota(user: PublicAccountUser | null): number | null {
 }
 
 function extractMatchAiAlerts(
-  matches: MatchItem[]
+  matches: MatchItem[],
+  nowMs: number
 ): Record<string, NonNullable<MatchItem["aiAlert"]>> {
   const out: Record<string, NonNullable<MatchItem["aiAlert"]>> = {};
   for (const m of matches) {
-    if (m.aiAlert) {
+    if (m.aiAlert && isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)) {
       out[m.id] = m.aiAlert;
     }
   }
@@ -347,6 +349,7 @@ export function createWorkbenchController(
   const betSlip = createBetSlipController({
     debounceMs: options.debounceMs ?? 18,
     autoSyncRadar: options.autoSyncRadar ?? true,
+    nowFn: () => clockPort.now(),
     computeWorkspace: (params, matches) =>
       quantPort.computeWorkspace(params, matches),
     onComputeSuccess: () => {
@@ -411,7 +414,10 @@ export function createWorkbenchController(
       comboSelectedIds,
       comboReport,
       remainingAiQuota,
-      matchAiAlerts: extractMatchAiAlerts(betSlipState.matches),
+      matchAiAlerts: extractMatchAiAlerts(
+        betSlipState.matches,
+        clockPort.now()
+      ),
     };
   }
 
