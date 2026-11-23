@@ -336,7 +336,7 @@ export function IntelCabin({
                         title={tm.interpretation}
                       >
                         {tm.poolName}·{tm.optionLabel} @{tm.odds.toFixed(2)}
-                        <i>{tm.trend === -1 ? "▼绿降设防" : "▲红升散热"}</i>
+                        <i>{tm.trend === -1 ? "▼末跳下调" : "▲末跳上调"}</i>
                       </span>
                     ))}
                   </div>

@@ -3,7 +3,9 @@ import type {
   BoardFreshnessMeta,
   BridgeMatchCandidate,
   BridgeMatchPreview,
+  DualAxisOptionMovement,
   MatchItem,
+  OddsOption,
   PoolCode,
   SelectedPick,
 } from "../../prototype/quantTypes.ts";
@@ -16,29 +18,39 @@ import type {
 } from "../../workspace/betSlipController.ts";
 import {
   RADAR_QUICK_FILTERS,
+  buildCompactOptionMovementViewModel,
   buildMatchRadarBoardFreshnessBanner,
   buildMatchRadarSelectedSubPoolPills,
   buildMatchRadarSingleBadge,
+  buildTrendArrowSpec,
   type QuickFilter,
   type SheetState,
 } from "./cabinViewModels.ts";
 
-export function renderTrendArrow(trend?: -1 | 0 | 1) {
-  if (trend === 1) {
-    return (
-      <i className="trd up" title="水位上调(红升)">
-        ▲
-      </i>
-    );
-  }
-  if (trend === -1) {
-    return (
-      <i className="trd dn" title="水位下调(绿降)">
-        ▼
-      </i>
-    );
-  }
-  return null;
+export function renderTrendArrow(
+  trend?: -1 | 0 | 1,
+  movement?: DualAxisOptionMovement | null
+) {
+  const spec = buildTrendArrowSpec(trend, movement);
+  if (!spec) return null;
+  return (
+    <i className={spec.className} title={spec.title}>
+      {spec.symbol}
+    </i>
+  );
+}
+
+export function renderCompactDeltaBadge(opt: OddsOption, probDecimals = 0) {
+  const badge = buildCompactOptionMovementViewModel(
+    opt,
+    probDecimals
+  ).deltaBadge;
+  if (!badge) return null;
+  return (
+    <em className={`dp-badge ${badge.tone}`} title={badge.title}>
+      {badge.text}
+    </em>
+  );
 }
 
 export function BridgeCandidatesCard({
@@ -474,11 +486,14 @@ export function MatchRadarCabin({
                     className={`key cell num ${isPicked(m.id, "TTG", opt.key) ? "on" : ""}`}
                   >
                     <small>
-                      {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
+                      <span>
+                        {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
+                      </span>
+                      {renderCompactDeltaBadge(opt, 0)}
                     </small>
                     <b>
                       {opt.odds.toFixed(2)}
-                      {renderTrendArrow(opt.trend)}
+                      {renderTrendArrow(opt.trend, opt.movement)}
                     </b>
                   </button>
                 ))}
@@ -526,11 +541,14 @@ export function MatchRadarCabin({
                     className={`key cell num ${isPicked(m.id, "HAFU", opt.key) ? "on" : ""}`}
                   >
                     <small>
-                      {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                      <span>
+                        {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                      </span>
+                      {renderCompactDeltaBadge(opt, 1)}
                     </small>
                     <b>
                       {opt.odds.toFixed(2)}
-                      {renderTrendArrow(opt.trend)}
+                      {renderTrendArrow(opt.trend, opt.movement)}
                     </b>
                   </button>
                 ))}
@@ -641,10 +659,11 @@ export function MatchRadarCabin({
                     >
                       <span className="ko">
                         {hadOpt.odds.toFixed(2)}
-                        {renderTrendArrow(hadOpt.trend)}
+                        {renderTrendArrow(hadOpt.trend, hadOpt.movement)}
                       </span>
                       <span className="kp">
-                        {(hadOpt.fairProb * 100).toFixed(0)}%
+                        <span>{(hadOpt.fairProb * 100).toFixed(0)}%</span>
+                        {renderCompactDeltaBadge(hadOpt, 0)}
                       </span>
                     </button>
                   ) : (
@@ -670,10 +689,11 @@ export function MatchRadarCabin({
                     >
                       <span className="ko">
                         {hhadOpt.odds.toFixed(2)}
-                        {renderTrendArrow(hhadOpt.trend)}
+                        {renderTrendArrow(hhadOpt.trend, hhadOpt.movement)}
                       </span>
                       <span className="kp">
-                        {(hhadOpt.fairProb * 100).toFixed(0)}%
+                        <span>{(hhadOpt.fairProb * 100).toFixed(0)}%</span>
+                        {renderCompactDeltaBadge(hhadOpt, 0)}
                       </span>
                     </button>
                   ) : (

@@ -236,6 +236,12 @@ declare module "../server/history/historyCoordinator.mjs" {
   ) => number | null;
 }
 
+declare module "../server/history/dualAxisMovement.mjs" {
+  export const computeMatchDualAxisMovements: (...args: any[]) => any;
+  export const hydrateMatchesWithDualAxisMovement: (...args: any[]) => any[];
+  export const summarizeMatchDualAxisMovements: (...args: any[]) => any;
+}
+
 declare module "../scripts/history-ctl.mjs" {
   export const runHistoryCtlCli: (...args: any[]) => Promise<any>;
 }

@@ -7,10 +7,12 @@ import {
   type BridgeMatchCandidate,
   type BridgeMatchPreview,
   type ComboRow,
+  type DualAxisOptionMovement,
   type LedgerSettlementDetail,
   type MatchItem,
   type MatchMicroQuant,
   type MatchPool,
+  type OddsOption,
   type PartialCoveragePreview,
   type PlanTicketLine,
   type PoolCode,
@@ -157,9 +159,316 @@ export const RADAR_MODE_OPTS: Array<[MatchMode, string]> = [
 export const RADAR_QUICK_FILTERS: Array<[QuickFilter, string]> = [
   ["all", "全部"],
   ["low-vig", "浅抽水"],
-  ["drop", "🔻急降水"],
+  ["drop", "▼末跳降水"],
   ["arb", "省钱差价"],
 ];
+
+export interface TrendArrowSpec {
+  direction: -1 | 1;
+  symbol: "▼" | "▲";
+  className: "trd dn" | "trd up";
+  title: "末跳水位下调" | "末跳水位上调";
+}
+
+export function buildTrendArrowSpec(
+  trend?: -1 | 0 | 1,
+  movement?: DualAxisOptionMovement | null
+): TrendArrowSpec | null {
+  const dir = movement?.lastHopDirection ?? trend ?? 0;
+  if (dir === 1) {
+    return {
+      direction: 1,
+      symbol: "▲",
+      className: "trd up",
+      title: "末跳水位上调",
+    };
+  }
+  if (dir === -1) {
+    return {
+      direction: -1,
+      symbol: "▼",
+      className: "trd dn",
+      title: "末跳水位下调",
+    };
+  }
+  return null;
+}
+
+export interface CompactDeltaProbBadgeSpec {
+  text: string;
+  tone: "pos" | "neg";
+  baselineSource: "official-archive-open" | "local-first-seen";
+  hasLocalInitMarker: boolean;
+  title: string;
+}
+
+export interface CompactOptionMovementViewModel {
+  oddsText: string;
+  fairProbText: string;
+  trendArrow: TrendArrowSpec | null;
+  deltaBadge: CompactDeltaProbBadgeSpec | null;
+}
+
+export function buildCompactOptionMovementViewModel(
+  opt: Pick<OddsOption, "odds" | "fairProb" | "trend" | "movement">,
+  probDecimals = 0
+): CompactOptionMovementViewModel {
+  const oddsText = Number(opt.odds || 0).toFixed(2);
+  const fairProbText = `${(
+    Math.max(0, Number(opt.fairProb) || 0) * 100
+  ).toFixed(probDecimals)}%`;
+  const trendArrow = buildTrendArrowSpec(opt.trend, opt.movement);
+
+  const mov = opt.movement;
+  let deltaBadge: CompactDeltaProbBadgeSpec | null = null;
+  if (
+    mov &&
+    mov.frameCount >= 2 &&
+    mov.baselineSource !== "single-frame" &&
+    typeof mov.cumFairProbDeltaPp === "number" &&
+    Number.isFinite(mov.cumFairProbDeltaPp) &&
+    Math.abs(mov.cumFairProbDeltaPp) >= 0.1
+  ) {
+    const dp = mov.cumFairProbDeltaPp;
+    const sign = dp > 0 ? "+" : "";
+    const hasLocalInitMarker = mov.baselineSource === "local-first-seen";
+    const srcText = hasLocalInitMarker ? "自本系统首次观测" : "自官方归档首报";
+    deltaBadge = {
+      text: `${sign}${dp.toFixed(1)}pp${hasLocalInitMarker ? "初" : ""}`,
+      tone: dp > 0 ? "pos" : "neg",
+      baselineSource: mov.baselineSource,
+      hasLocalInitMarker,
+      title: `${srcText}累计真实隐含概率净变化 ${sign}${dp.toFixed(2)}pp`,
+    };
+  }
+
+  return {
+    oddsText,
+    fairProbText,
+    trendArrow,
+    deltaBadge,
+  };
+}
+
+export interface DualAxisOptionRowViewModel {
+  optionKey: string;
+  optionLabel: string;
+  fairProbText: string;
+  axis1ValueText: string;
+  axis1SubText: string;
+  axis1Tone: "pos" | "neg" | "neutral";
+  axis2ValueText: string;
+  axis2TimeText: string;
+  axis2Direction: -1 | 0 | 1;
+  isSameDirectionAsFairProb: boolean;
+}
+
+export interface DualAxisPoolCardViewModel {
+  poolCode: PoolCode;
+  poolTitle: string;
+  goalLine: string;
+  goalLineSegmentLabel: string | null;
+  baselineSource: "official-archive-open" | "local-first-seen" | "single-frame";
+  baselineBadgeText:
+    "自官方归档首报" | "自本系统首次观测" | "仅单帧观测·暂不判趋势";
+  frameCount: number;
+  hasSameDirectionWarning: boolean;
+  sameDirectionWarningText: string | null;
+  rows: DualAxisOptionRowViewModel[];
+}
+
+export interface MatchDualAxisDrawerViewModel {
+  sectionTitle: "双维盘面走势";
+  sectionSubtitle: string;
+  axis1Header: string;
+  axis2Header: string;
+  pools: DualAxisPoolCardViewModel[];
+}
+
+function resolveBaselineBadgeText(
+  src: DualAxisOptionMovement["baselineSource"]
+): DualAxisPoolCardViewModel["baselineBadgeText"] {
+  if (src === "official-archive-open") return "自官方归档首报";
+  if (src === "local-first-seen") return "自本系统首次观测";
+  return "仅单帧观测·暂不判趋势";
+}
+
+export function buildMatchDualAxisDrawerViewModel(
+  match: Pick<MatchItem, "id" | "pools">,
+  options?: {
+    poolCodes?: PoolCode[];
+    maxSubPoolRows?: number;
+  }
+): MatchDualAxisDrawerViewModel {
+  const poolCodes: PoolCode[] = options?.poolCodes ?? [
+    "HAD",
+    "HHAD",
+    "TTG",
+    "HAFU",
+    "CRS",
+  ];
+  const maxSubPoolRows = Math.max(2, options?.maxSubPoolRows ?? 4);
+  const poolCards: DualAxisPoolCardViewModel[] = [];
+
+  for (const code of poolCodes) {
+    const pool = match.pools?.[code];
+    if (
+      !pool ||
+      pool.selling === false ||
+      !Array.isArray(pool.options) ||
+      pool.options.length === 0
+    ) {
+      continue;
+    }
+
+    const goalLine =
+      code === "HHAD" ? String(pool.goalLine ?? "-1").trim() : "";
+    const goalLineSegmentLabel =
+      code === "HHAD" ? `当前让球分段 ${goalLine}（换线独立起算）` : null;
+    const poolTitle =
+      code === "HHAD"
+        ? `让球胜平负(${goalLine})`
+        : POOL_SHORT_SINGLE_NAMES[code] || pool.name;
+
+    const firstMov = pool.options[0]?.movement;
+    const baselineSource: DualAxisPoolCardViewModel["baselineSource"] =
+      firstMov &&
+      firstMov.frameCount >= 2 &&
+      firstMov.baselineSource !== "single-frame"
+        ? firstMov.baselineSource
+        : "single-frame";
+    const baselineBadgeText = resolveBaselineBadgeText(baselineSource);
+    const frameCount = Math.max(1, Number(firstMov?.frameCount ?? 1));
+
+    let chosenOptions = pool.options;
+    if (code !== "HAD" && code !== "HHAD") {
+      const moved = pool.options
+        .filter((o) => {
+          const m = o.movement;
+          const dir = m?.lastHopDirection ?? o.trend ?? 0;
+          const dp =
+            typeof m?.cumFairProbDeltaPp === "number"
+              ? Math.abs(m.cumFairProbDeltaPp)
+              : 0;
+          return dp >= 0.1 || dir !== 0;
+        })
+        .sort((a, b) => {
+          const ad = Math.abs(a.movement?.cumFairProbDeltaPp ?? 0);
+          const bd = Math.abs(b.movement?.cumFairProbDeltaPp ?? 0);
+          if (Math.abs(bd - ad) > 1e-6) return bd - ad;
+          return (
+            Math.abs(b.movement?.lastHopDirection ?? b.trend ?? 0) -
+            Math.abs(a.movement?.lastHopDirection ?? a.trend ?? 0)
+          );
+        });
+      chosenOptions =
+        moved.length > 0
+          ? moved.slice(0, maxSubPoolRows)
+          : [...pool.options]
+              .sort((a, b) => b.fairProb - a.fairProb)
+              .slice(0, Math.min(3, maxSubPoolRows));
+    }
+
+    const rows: DualAxisOptionRowViewModel[] = chosenOptions.map((opt) => {
+      const mov = opt.movement;
+      const optFrames = Number(mov?.frameCount ?? 1);
+      const hasMulti =
+        Boolean(mov) &&
+        optFrames >= 2 &&
+        mov!.baselineSource !== "single-frame" &&
+        typeof mov!.cumFairProbDeltaPp === "number" &&
+        Number.isFinite(mov!.cumFairProbDeltaPp);
+      const dp = hasMulti ? mov!.cumFairProbDeltaPp! : null;
+      const dir: -1 | 0 | 1 = mov?.lastHopDirection ?? opt.trend ?? 0;
+      const curOdds = Number(mov?.currentOdds ?? opt.odds ?? 0);
+
+      let axis1ValueText = "仅单帧观测·暂不判趋势";
+      let axis1SubText = mov?.openAt
+        ? `首见于 ${mov.openAt} · 待满两帧实算`
+        : "当前仅单帧报价 · 不判累计趋势";
+      let axis1Tone: "pos" | "neg" | "neutral" = "neutral";
+
+      if (dp !== null && mov) {
+        const sign = dp > 0 ? "+" : "";
+        axis1ValueText = `${sign}${dp.toFixed(2)}pp`;
+        const openTxt =
+          typeof mov.openOdds === "number" && mov.openOdds > 1
+            ? ` · 首@${mov.openOdds.toFixed(2)}`
+            : "";
+        const atTxt = mov.openAt ? ` (${mov.openAt})` : "";
+        axis1SubText = `${resolveBaselineBadgeText(mov.baselineSource)}${openTxt}${atTxt}`;
+        axis1Tone = dp > 0.05 ? "pos" : dp < -0.05 ? "neg" : "neutral";
+      }
+
+      let axis2ValueText: string;
+      let axis2TimeText: string;
+      if (
+        mov &&
+        optFrames >= 2 &&
+        typeof mov.prevOdds === "number" &&
+        mov.prevOdds > 1
+      ) {
+        const dirWord = dir === 1 ? "▲升" : dir === -1 ? "▼降" : "→平";
+        axis2ValueText = `${mov.prevOdds.toFixed(2)} → ${curOdds.toFixed(2)} ${dirWord}`;
+        axis2TimeText =
+          mov.prevAt && mov.currentAt
+            ? `${mov.prevAt} → ${mov.currentAt}`
+            : mov.currentAt || "最新快照";
+      } else {
+        const dirWord =
+          dir === 1 ? "▲末跳升" : dir === -1 ? "▼末跳降" : "→无升降";
+        axis2ValueText = `当前 @${curOdds.toFixed(2)} ${dirWord}`;
+        axis2TimeText = mov?.currentAt ? `观测于 ${mov.currentAt}` : "实时单帧";
+      }
+
+      const isSameDirectionAsFairProb = Boolean(
+        dp !== null && ((dir === -1 && dp < -0.05) || (dir === 1 && dp > 0.05))
+      );
+
+      return {
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        fairProbText: `${(Math.max(0, Number(opt.fairProb) || 0) * 100).toFixed(
+          code === "HAD" || code === "HHAD" ? 1 : 1
+        )}%`,
+        axis1ValueText,
+        axis1SubText,
+        axis1Tone,
+        axis2ValueText,
+        axis2TimeText,
+        axis2Direction: dir,
+        isSameDirectionAsFairProb,
+      };
+    });
+
+    const hasSameDirectionWarning = rows.some(
+      (r) => r.isSameDirectionAsFairProb
+    );
+    poolCards.push({
+      poolCode: code,
+      poolTitle,
+      goalLine,
+      goalLineSegmentLabel,
+      baselineSource,
+      baselineBadgeText,
+      frameCount,
+      hasSameDirectionWarning,
+      sameDirectionWarningText: hasSameDirectionWarning
+        ? "⚠️ 整池返还率同步调整：单项水位与去水真率同向变化，切勿反转箭头充趋势"
+        : null,
+      rows,
+    });
+  }
+
+  return {
+    sectionTitle: "双维盘面走势",
+    sectionSubtitle:
+      "① 累计去水真率净变化 ∥ ② 末跳水位变动（整池调返还率时可同向变化）",
+    axis1Header: "① 累计去水真率净变化",
+    axis2Header: "② 末跳水位变动",
+    pools: poolCards,
+  };
+}
 
 export interface MatchRadarBoardFreshnessBannerViewModel {
   headline: string;
