@@ -86,6 +86,7 @@ export function createAppRoutes(opts = {}) {
   const ledgerManager = opts.ledgerManager || null;
   const manualQaEngine = opts.manualQaEngine || null;
   const historyCoordinator = opts.historyCoordinator || null;
+  const exposureMonitor = opts.exposureMonitor || null;
   const xiaogaoService = opts.xiaogaoService;
   const getApiKey = opts.getApiKey || (() => "");
   const nowFn = opts.nowFn || (() => Date.now());
@@ -583,6 +584,12 @@ export function createAppRoutes(opts = {}) {
               auditLogs: accountManager.listAuditLogs(),
               fusedIpsCount: stats.fusedIpsCount,
               fusedHwCount: stats.fusedHwCount,
+              historyMonitor: exposureMonitor
+                ? exposureMonitor.buildHistoryMonitorOverview({
+                    coordinator: historyCoordinator,
+                    boardMeta: cachedBoardMeta,
+                  })
+                : undefined,
             };
           }
           if (subEndpoint === "admin/create-user") {
@@ -698,9 +705,18 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "加密信封校验失败或会话已过期",
         },
         async ({ sess, data }) => {
-          const { matches } = await ensureMatchesLoaded(false);
+          const { matches, boardMeta } = await ensureMatchesLoaded(false);
           const sessionMatches = mergeSessionAlerts(matches, sess);
-          return evaluateQuantWorkspace(data, sessionMatches);
+          const workspace = evaluateQuantWorkspace(data, sessionMatches);
+          exposureMonitor?.recordWorkbenchEvaluation?.({
+            endpoint: "quant/compute",
+            params: data,
+            matches: sessionMatches,
+            boardMeta,
+            workspace,
+            coordinator: historyCoordinator,
+          });
+          return workspace;
         }
       );
     }
@@ -725,6 +741,14 @@ export function createAppRoutes(opts = {}) {
             data?.workspaceParams || {},
             sessionMatches
           );
+          exposureMonitor?.recordWorkbenchEvaluation?.({
+            endpoint: "quant/sync",
+            params: data?.workspaceParams || {},
+            matches: sessionMatches,
+            boardMeta,
+            workspace,
+            coordinator: historyCoordinator,
+          });
           const syncedLedger = user?.id
             ? await resolveSyncedUserLedger(user.id, sessionMatches, true)
             : { ledger: undefined, newlySettledCount: 0 };

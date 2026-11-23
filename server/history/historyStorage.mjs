@@ -107,6 +107,13 @@ export async function createHistoryStorage(opts = {}) {
       pendingRecentDetailIds: [],
     },
     endpoints: {},
+    workbenchExposureState: {
+      rawEvaluationFrames: 0,
+      rawMatchExposureFrames: 0,
+      skippedFallbackEvaluations: 0,
+      canonicalMatches: {},
+      canonicalEvaluations: [],
+    },
   };
 
   function hydrateBucketRecord(bucket, key, val) {
@@ -122,6 +129,8 @@ export async function createHistoryStorage(opts = {}) {
       state.naturalMissingPoolIntervals = val;
     else if (bucket === "meta" && key === "lastFreshBoardPools")
       state.lastFreshBoardPools = val;
+    else if (bucket === "meta" && key === "workbenchExposureState")
+      state.workbenchExposureState = val;
   }
 
   if (backend === "sqlite" && db) {
@@ -741,6 +750,7 @@ export async function createHistoryStorage(opts = {}) {
       samplingIntervals: state.samplingIntervals,
       cursors: state.cursors,
       endpoints: state.endpoints,
+      workbenchExposureState: state.workbenchExposureState,
       coverage: computeCoverageSummary(),
       storageBytes: measureStorageBytes(),
     };

@@ -194,11 +194,191 @@ export interface AdminAuditLogEntry {
   detail: string;
 }
 
+export type HistoryEndpointKey =
+  "liveCalculator" | "uniformMatchResult" | "fixedBonus" | "matchHead";
+
+export interface HistoryEndpointTelemetry {
+  endpointKey: HistoryEndpointKey;
+  label: string;
+  lastSuccessAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  backoffMs: number;
+}
+
+export interface HistoryWindowCursorSummary {
+  key: string;
+  beginDate: string;
+  endDate: string;
+  status: "completed" | "partial";
+  expectedPages: number | null;
+  expectedTotal: number | null;
+  verifiedPagesCount: number;
+  uniqueMatchCount: number;
+  nextRetryPage: number;
+  lastError: string | null;
+  updatedAt: number;
+}
+
+export interface HistoryCursorSummary {
+  totalWindows: number;
+  completedWindows: number;
+  partialWindows: number;
+  verifiedUniqueMatches: number;
+  pendingOpenQuoteCount: number;
+  pendingRecentDetailCount: number;
+  windows: Record<string, HistoryWindowCursorSummary>;
+}
+
+export interface HistoryCoverageSummary {
+  earliestQuoteAt: number | null;
+  latestQuoteAt: number | null;
+  earliestResultDate: string | null;
+  latestResultDate: string | null;
+  settledResultRecordCount: number;
+  quoteSegmentCount: number;
+  coldArchiveShards: string[];
+  coverageBoundaryNote: string;
+}
+
+export interface HistoryStorageBytesSummary {
+  hotDbBytes: number;
+  walBytes: number;
+  coldArchiveBytes: number;
+  backupBytes: number;
+  totalBytes: number;
+  totalHistoryBytes: number;
+  coldShardCount: number;
+}
+
+export interface NaturalMissingPoolIntervalItem {
+  matchId: string;
+  poolCode: string;
+  kind: string;
+  lastSeenSellingAt: number | null;
+  firstAbsentAfterLastSeenAt: number;
+  lastObservedAbsentAt: number;
+  resumedAt: number | null;
+}
+
+export interface NaturalMissingPoolSummary {
+  totalIntervals: number;
+  activeOpenIntervals: number;
+  distinctMatchCount: number;
+  hadMissingIntervalCount: number;
+  byPool: Record<"HAD" | "HHAD" | "TTG" | "HAFU" | "CRS", number>;
+  recentIntervals: NaturalMissingPoolIntervalItem[];
+}
+
+export interface CanonicalMatchExposureRecord {
+  matchId: string;
+  matchNumStr: string | null;
+  decidedAt: number;
+  endpoint: "quant/compute" | "quant/sync";
+  modelVersion: string;
+  quoteInputSig: string;
+  hasMissingPool: boolean;
+  missingPoolCodes: string[];
+  poolStates: Record<
+    "HAD" | "HHAD" | "TTG" | "HAFU" | "CRS",
+    {
+      selling: boolean;
+      canSingle: boolean;
+      canAllUp: boolean;
+      goalLine: string;
+      optionCount: number;
+    }
+  >;
+  quotes: Record<string, Record<string, number | string>>;
+  rawFrameCount: number;
+}
+
+export interface WorkbenchExposureSummary {
+  modelVersion: string;
+  rawEvaluationFrames: number;
+  rawMatchExposureFrames: number;
+  skippedFallbackEvaluations: number;
+  deduplicatedMatchCount: number;
+  deduplicatedMissingPoolMatchCount: number;
+  deduplicatedEvaluationCount: number;
+  pendingMatchCount: number;
+  embargoedSettledMatchCount: number;
+  settledUnembargoedMatchCount: number;
+  voidMatchCount: number;
+  recentCanonicalMatches: CanonicalMatchExposureRecord[];
+}
+
+export type MonitorSlotKey =
+  "max-profit-prob" | "max-ev-utility" | "max-cvar-wheel" | "alpha-radar";
+
+export interface SlotAdmissionSummaryItem {
+  key: MonitorSlotKey;
+  label: string;
+  admittedCount: number;
+  rejectedCount: number;
+  admissionRate: number | null;
+  calibratedSampleCount: number;
+  brierScore: number | null;
+  logLoss: number | null;
+}
+
+export interface ReturnBucketMetric {
+  key: "wipeout" | "underwater" | "breakEven" | "strictNetGain";
+  label: string;
+  empiricalCount: number;
+  empiricalRate: number | null;
+  meanPredictedProb: number | null;
+  calibrationGap: number | null;
+}
+
+export interface FourBucketCalibrationSummary {
+  modelVersion: string;
+  sampleCount: number;
+  embargoHeldEvaluationCount: number;
+  pendingEvaluationCount: number;
+  brierScore: number | null;
+  logLoss: number | null;
+  buckets: {
+    wipeout: ReturnBucketMetric;
+    underwater: ReturnBucketMetric;
+    breakEven: ReturnBucketMetric;
+    strictNetGain: ReturnBucketMetric;
+  };
+}
+
+export interface HistoryMonitorOverview {
+  generatedAt: number;
+  modelVersion: string;
+  collector: {
+    isStarted: boolean;
+    isWorkerRunning: boolean;
+    storageBackend: string;
+    snapshotSeq: number;
+    rejectedSwapCount: number;
+    boardMeta: BoardFreshnessMeta;
+  };
+  endpoints: Record<HistoryEndpointKey, HistoryEndpointTelemetry>;
+  cursors: HistoryCursorSummary;
+  coverage: HistoryCoverageSummary;
+  storageBytes: HistoryStorageBytesSummary;
+  naturalMissingPools: NaturalMissingPoolSummary;
+  workbenchExposures: WorkbenchExposureSummary;
+  slotAdmissions: {
+    liveDeduplicatedSampleCount: number;
+    settledUnembargoedSampleCount: number;
+    liveBySlot: Record<MonitorSlotKey, SlotAdmissionSummaryItem>;
+    settledBySlot: Record<MonitorSlotKey, SlotAdmissionSummaryItem>;
+  };
+  fourBucketCalibration: FourBucketCalibrationSummary;
+}
+
 export interface AdminOverviewResponse {
   accounts: PublicAccountUser[];
   auditLogs: AdminAuditLogEntry[];
   fusedIpsCount: number;
   fusedHwCount: number;
+  historyMonitor?: HistoryMonitorOverview;
 }
 
 export class AuthLoginError extends Error {

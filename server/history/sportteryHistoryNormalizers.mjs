@@ -688,6 +688,13 @@ export function buildEmptySnapshotPayload() {
       pendingRecentDetailIds: [],
     },
     endpoints: {},
+    workbenchExposureState: {
+      rawEvaluationFrames: 0,
+      rawMatchExposureFrames: 0,
+      skippedFallbackEvaluations: 0,
+      canonicalMatches: {},
+      canonicalEvaluations: [],
+    },
     storageBytes: {
       hotDbBytes: 0,
       walBytes: 0,
@@ -930,6 +937,15 @@ export function hydrateImmutableHistorySnapshot(envelope) {
     resultsRecordsById,
     quoteSegments: quoteSegmentsObj,
     matchesMeta: matchesMetaObj,
+    workbenchExposureState: deepFreezeShallowGraph(
+      payload.workbenchExposureState || {
+        rawEvaluationFrames: 0,
+        rawMatchExposureFrames: 0,
+        skippedFallbackEvaluations: 0,
+        canonicalMatches: {},
+        canonicalEvaluations: [],
+      }
+    ),
     telemetry: Object.freeze({
       endpoints: deepFreezeShallowGraph(payload.endpoints || {}),
       cursors: deepFreezeShallowGraph(payload.cursors || {}),

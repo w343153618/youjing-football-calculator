@@ -49,6 +49,22 @@ export function createSportteryHistoryCoordinator(opts = {}) {
   let disposed = false;
   let nextRpcId = 1;
   const pendingRpcs = new Map();
+  const pendingBackgroundOps = new Set();
+
+  function trackBackgroundOp(promise) {
+    if (!promise || typeof promise.finally !== "function") return;
+    const wrapped = promise
+      .catch(() => {})
+      .finally(() => {
+        pendingBackgroundOps.delete(wrapped);
+      });
+    pendingBackgroundOps.add(wrapped);
+  }
+
+  async function flushPendingWork() {
+    if (pendingBackgroundOps.size === 0) return;
+    await Promise.allSettled(Array.from(pendingBackgroundOps));
+  }
 
   function applySnapshotEnvelope(envelope) {
     if (!envelope || typeof envelope !== "object") {
@@ -207,7 +223,14 @@ export function createSportteryHistoryCoordinator(opts = {}) {
 
   function notifyLiveBoardNonBlocking(callOpts) {
     if (!worker || disposed) return;
-    void callWorkerRpc("ingestLiveBoard", [callOpts]).catch(() => {});
+    trackBackgroundOp(callWorkerRpc("ingestLiveBoard", [callOpts]));
+  }
+
+  function notifyWorkbenchExposureNonBlocking(exposureState) {
+    if (!worker || disposed) return;
+    trackBackgroundOp(
+      callWorkerRpc("syncWorkbenchExposureState", [exposureState])
+    );
   }
 
   async function pollLiveBoardOnce() {
@@ -267,6 +290,7 @@ export function createSportteryHistoryCoordinator(opts = {}) {
 
   async function dispose() {
     if (disposed) return;
+    await flushPendingWork();
     disposed = true;
     started = false;
     startPromise = null;
@@ -324,6 +348,8 @@ export function createSportteryHistoryCoordinator(opts = {}) {
     start,
     ingestLiveBoard,
     notifyLiveBoardNonBlocking,
+    notifyWorkbenchExposureNonBlocking,
+    flushPendingWork,
     pollLiveBoardOnce,
     computeNextLivePollDelayMs,
     drainPendingOpenQuotes,

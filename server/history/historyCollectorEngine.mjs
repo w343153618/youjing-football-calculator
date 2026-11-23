@@ -749,6 +749,15 @@ export function createHistoryCollectorEngine({
     return storage.verifyColdArchives();
   }
 
+  async function syncWorkbenchExposureState(nextState) {
+    if (!nextState || typeof nextState !== "object") return { ok: false };
+    const nowMs = nowFn();
+    storage.state.workbenchExposureState = nextState;
+    storage.persistRecord("meta", "workbenchExposureState", nextState, nowMs);
+    publish(nowMs);
+    return { ok: true };
+  }
+
   return {
     publish,
     ingestLiveBoard,
@@ -763,5 +772,6 @@ export function createHistoryCollectorEngine({
     backfillResultsRange,
     archiveAndPruneHotStorage,
     verifyColdArchives,
+    syncWorkbenchExposureState,
   };
 }

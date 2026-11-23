@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createAccountManager } from "./accountManager.mjs";
 import { createAppRoutes } from "./appRoutes.mjs";
+import { createExposureAndCalibrationMonitor } from "./history/exposureAndCalibrationMonitor.mjs";
 import { createSportteryHistoryCoordinator } from "./history/historyCoordinator.mjs";
 import { createLedgerManager } from "./ledgerManager.mjs";
 import { createManualQaEngine } from "./manualQaEngine.mjs";
@@ -49,6 +50,15 @@ export function createYouJingRuntime(opts = {}) {
     void historyCoordinator.start().catch(() => {});
   }
 
+  const exposureMonitor =
+    opts.exposureMonitor ||
+    createExposureAndCalibrationMonitor({
+      nowFn: opts.nowFn,
+      onSyncExposureState: (nextState) => {
+        historyCoordinator?.notifyWorkbenchExposureNonBlocking?.(nextState);
+      },
+    });
+
   const xiaogaoService = createXiaoGaoService({
     transport: opts.xiaogaoTransport,
     enableProbe: opts.enableXiaoGaoProbe,
@@ -80,6 +90,7 @@ export function createYouJingRuntime(opts = {}) {
     ledgerManager,
     manualQaEngine,
     historyCoordinator,
+    exposureMonitor,
     xiaogaoService,
     getApiKey,
     nowFn: opts.nowFn,
@@ -112,6 +123,7 @@ export function createYouJingRuntime(opts = {}) {
     ledgerManager,
     manualQaEngine,
     historyCoordinator,
+    exposureMonitor,
     appRoutes,
     gateway,
     async dispose() {
