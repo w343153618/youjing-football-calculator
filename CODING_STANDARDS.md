@@ -17,7 +17,8 @@
 - **加密信封入参复杂度与权威赔率校验**：
   - 经 `/api/quant/evaluate`、`/api/ledger/*`、`/api/xiaogao/*` 解密后的客户端载荷一律视为不可信输入，显式校验集合规模与遍历深度上界：不可信 `snapshotPlan.lines <= 64`（`512` 条上限仅向服务端内部 `TRUSTED_SERVER_BONUS_PLANS` 开放）、单张实票内部 `matchId` 互异、串关 `M <= 8` / 纯单关 `M <= 15`；商空间预计算状态乘积 `prodSize` 的提前退出上限须严格高于 `EXACT_JOINT_STATE_CAP`（不可信快照 `<= 131,072` 态），且递归枚举器配备硬性叶子计数器（`MAX_SCALAR_LEAVES`），杜绝跨池高基数快照阻塞事件循环。
   - 当服务端权威赛事盘口（`matchMap`）存在时，赔率与开售状态一律取自服务端盘口快照；仅在显式沙盒推演场次不在权威库中时才允许按合法区间（`[1.01, 1000]`）读取自定义赔率。
-  - 当 `/api/ledger/mutate`（`add-entry`）显式传入 `workspaceParams` 时，必须由服务端权威快照封存核验通过（`canCheckout === true`）方可落库，严禁因附带非零 `cost`/`paperRefCost` 而静默降级写入无快照摘要单；实盘同步刷新时须保留会话内已生成的扫地僧小高实时诊盘/协同会诊标签，不被静态默认提示覆盖。
+  - 当 `/api/ledger/mutate`（`add-entry`）显式传入 `workspaceParams` 时，必须由服务端权威快照封存核验通过（`canCheckout === true`）方可落库，严禁因附带非零 `cost`/`paperRefCost` 而静默降级写入无快照摘要单；实盘同步刷新时须保留会话内已生成的扫地僧小高实时诊盘/协同会诊标签（仅在绑定有效且未超 `30m` 有效期时保留），同时对客户端回传的 `clientAlerts` 按服务端会话与盘口签名（`{ matchId, activePoolsMask, hhadGoalLine, quoteVersionSig, analyzedAt }`）强制验签剥离，严禁未经核验的客户端回传复活已变盘或超期撤回的旧告警（`ADR-0018`）。
+  - 经 `/api/xiaogao/*` 解密的辅助上下文数组（如 `verifiedNews <= 8`）须显式限制遍历长度并对全部文本字段执行提示词注入与厂商标识净化（`sanitizeUserIntelNote`）；诊盘缓存键须完整绑定盘口版本签名与四维客观证据摘要（含核验消息时序签名），杜绝跨请求或跨会话污染。
 
 ## 3. 中国体彩法定算奖、科学诚实性与高压风控不变量
 

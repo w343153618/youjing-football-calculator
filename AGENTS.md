@@ -20,7 +20,7 @@
    - 跨会话复杂需求先跑 `wayfinder` 建图消雾；单会话增量需求联合执行 `grilling` 与 `domain-modeling` 确认全部分支，同步更新 `GLOSSARY.md`、`docs/adr/` 与 `docs/specs/NNNN-*.md`。
    - **完成判据**：设计树零未决分支，用户已确认共享理解，规范文档落盘。
 2. **深模块与服务端黑盒边界设计（`codebase-design`）**
-   - 算奖、去水、五池闭合校准与 `3+1 精算配单` 归属零 I/O 纯内存 `server/quantEngine.mjs`（及 `server/quant/*`）；数据源、鉴权风控、权威快照封存、铁笼问答与小高路由归属 `server/{runtimeApp,appRoutes,securityShield,ledgerManager,accountManager,manualQaEngine,xiaogaoCore,sportteryFeed}.mjs`；客户端 `src/` 与 `android/` 保持薄状态与纯渲染视图，通过 `createYouJingRuntime`、`createWorkbenchController` 与 `createBetSlipController` 暴露可注入时钟/存储/网络桩的测试接缝。
+   - 算奖、去水、五池闭合校准与 `3+1 精算配单` 归属零 I/O 纯内存 `server/quantEngine.mjs`（及 `server/quant/*`）；单写者历史采集/WAL 存储、双维走势、暴露校准监测与客观历史事实归属 `server/history/*`；数据源、鉴权风控、权威快照封存、铁笼问答与小高路由归属 `server/{runtimeApp,appRoutes,securityShield,ledgerManager,accountManager,manualQaEngine,xiaogaoCore,sportteryFeed}.mjs`；客户端 `src/` 与 `android/` 保持薄状态与纯渲染视图，通过 `createYouJingRuntime`、`createSportteryHistoryCoordinator`、`createWorkbenchController` 与 `createBetSlipController` 暴露可注入时钟/存储/网络桩的测试接缝。
    - **完成判据**：`pnpm run check:guardrails` 通过（零客户端算术泄露、零厂商名外泄、零敏感路径跟踪）。
 3. **测试驱动红绿循环（`tdd` / `diagnosing-bugs`）**
    - 在 `tests/*.test.ts` 围绕公开模块接缝先写覆盖正常路径、体彩法定极值与恶意入参的失败测试（_red_），再编写最小完备实现转绿（_green_）并重构。

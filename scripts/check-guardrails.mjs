@@ -167,6 +167,23 @@ export function runRepositoryGuardrails({ rootDir = DEFAULT_ROOT_DIR } = {}) {
         `[honesty-guardrail] Retired subjective label "消息入价消化度" found in ${rel} (use objective "消息与变价时序对照" per ADR-0018)`
       );
     }
+    if (
+      src.includes("体彩实盘水位已部分反映市场热度") ||
+      src.includes("当前水位已部分消化市场一致预期") ||
+      src.includes("热门场次胜平负水位多已提前下调消化利好")
+    ) {
+      errors.push(
+        `[honesty-guardrail] Retired ungrounded default Price-In claim found in ${rel} (use "无可核验信息" when verified external news is absent per ADR-0018)`
+      );
+    }
+    if (
+      src.includes("wbsjStats") &&
+      rel !== path.join("server", "history", "sportteryHistoryNormalizers.mjs")
+    ) {
+      errors.push(
+        `[leakage-guardrail] Post-match leakage field "wbsjStats" referenced outside normalizer strip boundary in ${rel}`
+      );
+    }
     if (rel.startsWith(`src${path.sep}`) && src.includes("单池暗扣")) {
       errors.push(
         `[honesty-guardrail] Deprecated misleading parlay vig label "单池暗扣" found in ${rel}`
