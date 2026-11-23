@@ -314,7 +314,10 @@ export interface MatchIntelDigest {
   aiAlert: MatchItem["aiAlert"] | null;
 }
 
-export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
+export function buildMatchIntelDigest(
+  match: MatchItem,
+  nowMs: number = Date.now()
+): MatchIntelDigest {
   const mq = match.microQuant;
   const trendMovements: MatchTrendMovement[] = [];
   const poolOrder: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
@@ -415,7 +418,11 @@ export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
       ttg: ttgImpact,
     },
     arbitrages: mq.arbitrages ?? [],
-    aiAlert: match.aiAlert ?? null,
+    aiAlert:
+      match.aiAlert &&
+      isClientMatchAlertBindingValid(match.aiAlert, match, nowMs)
+        ? match.aiAlert
+        : null,
   };
 }
 
@@ -1341,7 +1348,54 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     allowSlotFallback: boolean;
   } | null = null;
 
+  function scrubStateInvalidAlerts(
+    s: BetSlipState,
+    nowMs: number
+  ): BetSlipState {
+    let matchesChanged = false;
+    const validAlertIds = new Set<string>();
+    const nextMatches = s.matches.map((m) => {
+      if (!m.aiAlert) return m;
+      if (isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)) {
+        validAlertIds.add(m.id);
+        return m;
+      }
+      matchesChanged = true;
+      return { ...m, aiAlert: undefined };
+    });
+
+    const curWarnings = s.workspace?.allWarnings;
+    let nextWorkspace = s.workspace;
+    if (Array.isArray(curWarnings) && curWarnings.length > 0) {
+      const filteredWarnings = curWarnings.filter((w) => {
+        if (!w.id.startsWith("xiaogao-")) return true;
+        const mid = w.id.slice("xiaogao-".length);
+        return validAlertIds.has(mid);
+      });
+      if (filteredWarnings.length !== curWarnings.length) {
+        nextWorkspace = {
+          ...s.workspace,
+          allWarnings: filteredWarnings,
+        };
+      }
+    }
+
+    if (!matchesChanged && nextWorkspace === s.workspace) {
+      return s;
+    }
+    return {
+      ...s,
+      matches: matchesChanged ? nextMatches : s.matches,
+      workspace: nextWorkspace,
+    };
+  }
+
   function reconcileState(): BetSlipState {
+    const scrubbed = scrubStateInvalidAlerts(state, nowFn());
+    if (scrubbed !== state) {
+      state = scrubbed;
+      lastReconciledRef = null;
+    }
     if (lastReconciledRef === state) return state;
     const qMeta = computeClientPortfolioQuoteMeta(state);
     if (qMeta.inputSig !== lastKnownInputSig) {
@@ -1437,9 +1491,12 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   }
 
   function buildWorkspaceParams(s: BetSlipState = state): QuantWorkspaceParams {
+    const nowMs = nowFn();
     const clientAlerts: Record<string, NonNullable<MatchItem["aiAlert"]>> = {};
     for (const m of s.matches) {
-      if (m.aiAlert) clientAlerts[m.id] = m.aiAlert;
+      if (m.aiAlert && isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)) {
+        clientAlerts[m.id] = m.aiAlert;
+      }
     }
     const qMeta = computeClientPortfolioQuoteMeta(s);
     return {
@@ -1711,14 +1768,20 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     cancelPendingTimer();
     bootstrapped = true;
     computeSeq += 1;
+    const nowMs = nowFn();
+    const cleanMatches = bundle.matches.map((m) =>
+      m.aiAlert && !isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)
+        ? { ...m, aiAlert: undefined }
+        : m
+    );
     const baseState = buildInitialState();
-    const radarSync = syncAutoRadarFields(bundle.initialPicks, bundle.matches, {
+    const radarSync = syncAutoRadarFields(bundle.initialPicks, cleanMatches, {
       ...baseState,
-      targetIds: bundle.matches.slice(0, 2).map((m) => m.id),
+      targetIds: cleanMatches.slice(0, 2).map((m) => m.id),
     });
     const nextState: BetSlipState = {
       ...baseState,
-      matches: bundle.matches,
+      matches: cleanMatches,
       picks: bundle.initialPicks,
       manualDraftPicks: bundle.initialPicks,
       ...radarSync,
@@ -2067,8 +2130,15 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             ? { ...nm, aiAlert: prev!.aiAlert }
             : { ...nm, aiAlert: undefined };
         }
-        if (nm.aiAlert) return nm;
-        return prev?.aiAlert ? { ...nm, aiAlert: prev.aiAlert } : nm;
+        if (nm.aiAlert) {
+          return isClientMatchAlertBindingValid(nm.aiAlert, nm, nowMs)
+            ? nm
+            : { ...nm, aiAlert: undefined };
+        }
+        return prev?.aiAlert &&
+          isClientMatchAlertBindingValid(prev.aiAlert, nm, nowMs)
+          ? { ...nm, aiAlert: prev.aiAlert }
+          : nm;
       });
 
       const validTargets = mergedMatches

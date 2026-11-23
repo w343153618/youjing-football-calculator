@@ -8,6 +8,7 @@ import {
   buildEmptySnapshotPayload,
   computeSnapshotChecksum,
   formatBeijingDate,
+  isValidSellingQuoteFrame,
   parseBeijingDateTimeMs,
   subtractCalendarMonthsMs,
 } from "./sportteryHistoryNormalizers.mjs";
@@ -367,9 +368,14 @@ export async function createHistoryStorage(opts = {}) {
       return (a.firstLocallySeenAt ?? 0) - (b.firstLocallySeenAt ?? 0);
     });
 
-    const openFrame = frames[0] || null;
-    const latestFrame = frames[frames.length - 1] || null;
-    const prevFrame = frames.length >= 2 ? frames[frames.length - 2] : null;
+    const sellingFrames = frames.filter(isValidSellingQuoteFrame);
+    const openFrame = sellingFrames[0] || null;
+    const latestFrame =
+      sellingFrames.length > 0 ? sellingFrames[sellingFrames.length - 1] : null;
+    const prevFrame =
+      sellingFrames.length >= 2
+        ? sellingFrames[sellingFrames.length - 2]
+        : null;
     const nextSeg = {
       matchId: String(matchId),
       poolCode: String(evt.poolCode),

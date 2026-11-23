@@ -120,7 +120,7 @@ function independentShinOracle(oddsList: number[]): number[] {
 }
 
 describe("Spec #15 · Ticket #17: Dual-Axis Market Movement & 390px Clean-Front / Rich-Back UI", () => {
-  it("Slice 1 (Runtime Dual-Axis Calculation, Same-Direction Payout Shift, CRS s-1sh Alignment & HHAD GoalLine Segmentation): computes cumulative fairProb delta pp on identical valid option set without inverting SP arrow, isolates HHAD goalLine segments, and labels official-archive-open vs local-first-seen vs single-frame", async () => {
+  it("Slice 1 (Runtime Dual-Axis Calculation, Same-Direction Payout Shift, CRS s-1sh Alignment & HHAD GoalLine Segmentation): computes cumulative fairProb delta pp on identical valid option set without inverting water-level trend arrow, isolates HHAD goalLine segments, and labels official-archive-open vs local-first-seen vs single-frame", async () => {
     const tmpDir = makeTempDir("yj-spec15-t17-s1-");
     let nowMs = parseBeijingDateTimeMs("2026-11-23", "10:00:00")!;
     let stage: "t1-initial" | "t2-second-hop" | "t3-hhad-line2-second" =

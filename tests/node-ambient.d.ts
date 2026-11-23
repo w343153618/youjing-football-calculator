@@ -222,12 +222,43 @@ declare module "../server/manualQaEngine.mjs" {
 declare module "../server/xiaogaoCore.mjs" {
   export const PRIMARY_MODEL: string;
   export const FALLBACK_MODEL: string;
+  export const sanitizeUserIntelNote: (
+    rawNote?: unknown,
+    maxLen?: number
+  ) => string;
   export const matchesCanonicalSportteryItem: (...args: any[]) => boolean;
   export const buildSingleMatchDiagnosisContext: (...args: any[]) => any;
   export const buildComboDiagnosisContext: (...args: any[]) => any;
   export const computeMatchAlertBinding: (...args: any[]) => any;
   export const isMatchAlertBindingValid: (...args: any[]) => boolean;
   export const createXiaoGaoService: (...args: any[]) => any;
+}
+
+declare module "../server/history/xiaogaoObjectiveFacts.mjs" {
+  export const extractVerifiedExternalNews: (...args: any[]) => any[];
+  export const buildNewsOddsTimelineAlignment: (...args: any[]) => any;
+  export const buildMatchRestIntervalEvidence: (...args: any[]) => any;
+  export const buildMatchRecent90dLedgerEvidence: (...args: any[]) => any;
+  export const buildMatchDualAxisEvidence: (...args: any[]) => any;
+  export const buildMatchObjectiveFactsBundle: (...args: any[]) => any;
+}
+
+declare module "../server/history/sportteryHistoryNormalizers.mjs" {
+  export const normalizeFixedBonusPayload: (...args: any[]) => any;
+  export const extractLiveBoardEvents: (...args: any[]) => any;
+  export const hydrateImmutableHistorySnapshot: (...args: any[]) => any;
+  export const summarizeResultWindowCursors: (...args: any[]) => any;
+  export const parseBeijingDateTimeMs: (
+    dateStr?: string | null,
+    timeStr?: string | null
+  ) => number | null;
+}
+
+declare module "../server/quant/coherentCalibration.mjs" {
+  export const devigPoolProbabilities: (...args: any[]) => any;
+  export const calibrateMatchCoherentModel: (...args: any[]) => any;
+  export const analyzeMatchMicroQuant: (...args: any[]) => any;
+  export const formatDualAxisSteamSignal: (...args: any[]) => string;
 }
 
 declare module "../server/history/historyCoordinator.mjs" {

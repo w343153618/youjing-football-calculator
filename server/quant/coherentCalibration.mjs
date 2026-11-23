@@ -2773,6 +2773,63 @@ function formatMatchAlphaScanSummary(scan) {
   return `五池定价严密：各玩法经经验贝叶斯收缩校准后最高期望返还 ${maxRetPct}（未达 101.0% 纯+EV门禁），无跨盘错价洼地`;
 }
 
+export function formatDualAxisSteamSignal({
+  hasMultiFrameTrend = false,
+  primaryBaselineLabel = "多帧观测",
+  topMultiItem = null,
+  singleHopItems = [],
+} = {}) {
+  if (!hasMultiFrameTrend) {
+    if (Array.isArray(singleHopItems) && singleHopItems.length > 0) {
+      const top = singleHopItems
+        .slice(0, 2)
+        .map((x) => {
+          const dirTxt = x.lastHopDirection === 1 ? "▲上调" : "▼下调";
+          const oddsNum = Number(x.currentOdds ?? 0);
+          const oddsTxt =
+            Number.isFinite(oddsNum) && oddsNum > 1
+              ? `@${oddsNum.toFixed(2)}`
+              : "";
+          return `${x.poolName}·${x.label}${oddsTxt}(${dirTxt})`;
+        })
+        .join("、");
+      return `📊 双维盘面走势（仅单帧观测·暂不判趋势）：末跳水位【${top}】`;
+    }
+    return "📊 双维盘面走势（仅单帧观测·暂不判趋势）：当前报价暂无历史帧对照，末跳水位无升降";
+  }
+
+  if (!topMultiItem) {
+    return `📊 双维盘面走势（${primaryBaselineLabel}）：各在售池累计去水真率波动 <0.1pp，末跳水位平稳`;
+  }
+
+  const srcLabel = topMultiItem.srcLabel || primaryBaselineLabel;
+  const dp =
+    typeof topMultiItem.cumFairProbDeltaPp === "number" &&
+    Number.isFinite(topMultiItem.cumFairProbDeltaPp)
+      ? topMultiItem.cumFairProbDeltaPp
+      : null;
+  const dpSign = (dp ?? 0) > 0 ? "+" : "";
+  const dpStr = dp !== null ? `${dpSign}${dp.toFixed(2)}pp` : "无有效同集基准";
+  const prevOdds =
+    typeof topMultiItem.prevOdds === "number" ? topMultiItem.prevOdds : null;
+  const curOdds =
+    typeof topMultiItem.currentOdds === "number"
+      ? topMultiItem.currentOdds
+      : null;
+  const dir = topMultiItem.lastHopDirection ?? 0;
+  const hopStr =
+    prevOdds !== null && curOdds !== null
+      ? `${prevOdds.toFixed(2)}→${curOdds.toFixed(2)}(${
+          dir === 1 ? "▲上调" : dir === -1 ? "▼下调" : "→持平"
+        })`
+      : `@${Number(curOdds || 0).toFixed(2)}`;
+
+  if (topMultiItem.isSameDirectionShift) {
+    return `📊 双维盘面走势（${srcLabel}）：${topMultiItem.poolName}·${topMultiItem.label} 末跳水位 ${hopStr}，整池返还率同步调整下累计去水真率 ${dpStr}（同向变化，切勿反转水位箭头充趋势）`;
+  }
+  return `📊 双维盘面走势（${srcLabel}）：${topMultiItem.poolName}·${topMultiItem.label} 累计真率 ${dpStr}｜末跳水位 ${hopStr}`;
+}
+
 function buildPureObjectiveDualAxisSteamSignal(m) {
   const poolCodes = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
   let hasMultiFrame = false;
@@ -2825,9 +2882,9 @@ function buildPureObjectiveDualAxisSteamSignal(m) {
             poolName,
             label: opt.label || opt.key,
             srcLabel,
-            dp,
-            dir,
-            sameDir,
+            cumFairProbDeltaPp: dp,
+            lastHopDirection: dir,
+            isSameDirectionShift: sameDir,
             prevOdds: mov.prevOdds ?? null,
             currentOdds: mov.currentOdds ?? opt.odds ?? null,
           });
@@ -2837,56 +2894,31 @@ function buildPureObjectiveDualAxisSteamSignal(m) {
           rank,
           poolName,
           label: opt.label || opt.key,
-          dir,
-          odds: Number(opt.odds || 0),
+          lastHopDirection: dir,
+          currentOdds: Number(opt.odds || 0),
         });
       }
     }
   }
 
-  if (!hasMultiFrame) {
-    if (singleHopNotable.length > 0) {
-      singleHopNotable.sort((a, b) => a.rank - b.rank);
-      const top = singleHopNotable
-        .slice(0, 2)
-        .map(
-          (x) =>
-            `${x.poolName}·${x.label}${x.odds > 1 ? `@${x.odds.toFixed(2)}` : ""}(${x.dir === 1 ? "▲上调" : "▼下调"})`
-        )
-        .join("、");
-      return `📊 双维盘面走势（仅单帧观测·暂不判趋势）：末跳水位【${top}】`;
-    }
-    return "📊 双维盘面走势（仅单帧观测·暂不判趋势）：当前报价暂无历史帧对照，末跳水位无升降";
-  }
-
-  if (multiNotable.length === 0) {
-    return `📊 双维盘面走势（${primaryMultiBaselineLabel}）：各在售池累计去水真率波动 <0.1pp，末跳水位平稳`;
-  }
-
+  singleHopNotable.sort((a, b) => a.rank - b.rank);
   multiNotable.sort((a, b) => {
-    if (a.sameDir !== b.sameDir) return a.sameDir ? -1 : 1;
+    if (a.isSameDirectionShift !== b.isSameDirectionShift) {
+      return a.isSameDirectionShift ? -1 : 1;
+    }
     if (a.rank !== b.rank) return a.rank - b.rank;
-    const ad = Math.abs(a.dp ?? 0);
-    const bd = Math.abs(b.dp ?? 0);
+    const ad = Math.abs(a.cumFairProbDeltaPp ?? 0);
+    const bd = Math.abs(b.cumFairProbDeltaPp ?? 0);
     if (Math.abs(bd - ad) > 1e-6) return bd - ad;
-    return Math.abs(b.dir) - Math.abs(a.dir);
+    return Math.abs(b.lastHopDirection) - Math.abs(a.lastHopDirection);
   });
 
-  const top = multiNotable[0];
-  const dpSign = (top.dp ?? 0) > 0 ? "+" : "";
-  const dpStr =
-    top.dp !== null ? `${dpSign}${top.dp.toFixed(2)}pp` : "无有效同集基准";
-  const hopStr =
-    top.prevOdds !== null && top.currentOdds !== null
-      ? `${top.prevOdds.toFixed(2)}→${top.currentOdds.toFixed(2)}(${
-          top.dir === 1 ? "▲上调" : top.dir === -1 ? "▼下调" : "→持平"
-        })`
-      : `@${Number(top.currentOdds || 0).toFixed(2)}`;
-
-  if (top.sameDir) {
-    return `📊 双维盘面走势（${top.srcLabel}）：${top.poolName}·${top.label} 末跳水位 ${hopStr}，整池返还率同步调整下累计去水真率 ${dpStr}（同向变化，切勿反转水位箭头充趋势）`;
-  }
-  return `📊 双维盘面走势（${top.srcLabel}）：${top.poolName}·${top.label} 累计真率 ${dpStr}｜末跳水位 ${hopStr}`;
+  return formatDualAxisSteamSignal({
+    hasMultiFrameTrend: hasMultiFrame,
+    primaryBaselineLabel: primaryMultiBaselineLabel,
+    topMultiItem: multiNotable[0] || null,
+    singleHopItems: singleHopNotable,
+  });
 }
 
 /** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + Dixon-Coles 低比分联动修正系数 ρ + 跨盘错价扫描） */

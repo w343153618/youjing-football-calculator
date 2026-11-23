@@ -31,6 +31,8 @@ export function createSportteryHistoryCoordinator(opts = {}) {
   const hasCustomFetch = typeof opts.fetchFn === "function";
   const fetchFn = hasCustomFetch ? opts.fetchFn : globalThis.fetch;
   const autoPoll = opts.autoPoll !== false;
+  const autoBackfill =
+    opts.autoBackfill !== undefined ? Boolean(opts.autoBackfill) : autoPoll;
 
   const initialPayload = buildEmptySnapshotPayload();
   let currentSnapshot = hydrateImmutableHistorySnapshot({
@@ -153,6 +155,10 @@ export function createSportteryHistoryCoordinator(opts = {}) {
           useRealClock: !hasCustomNow,
           initialNowMs: nowFn(),
           autoPoll,
+          autoBackfill,
+          backfillTickMs: opts.backfillTickMs,
+          idleBackfillMs: opts.idleBackfillMs,
+          initialBackfillDelayMs: opts.initialBackfillDelayMs,
         },
       });
       worker = w;
@@ -251,6 +257,11 @@ export function createSportteryHistoryCoordinator(opts = {}) {
   async function drainPendingRecentDetails(callOpts) {
     if (!worker) return null;
     return callWorkerRpc("drainPendingRecentDetails", [callOpts]);
+  }
+
+  async function stepColdStartBackfillOnce(callOpts) {
+    if (!worker) return null;
+    return callWorkerRpc("stepColdStartBackfillOnce", [callOpts]);
   }
 
   async function fetchMatchDetailOnDemand(matchId) {
@@ -359,6 +370,7 @@ export function createSportteryHistoryCoordinator(opts = {}) {
     computeNextLivePollDelayMs,
     drainPendingOpenQuotes,
     drainPendingRecentDetails,
+    stepColdStartBackfillOnce,
     fetchMatchDetailOnDemand,
     backfillMatchOpeningQuotes,
     backfillMatchHead,

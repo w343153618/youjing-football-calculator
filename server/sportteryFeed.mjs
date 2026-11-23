@@ -174,19 +174,27 @@ export async function fetchOfficialMatchResultsServer(opts = {}) {
     ? Number(opts.ttlMs)
     : 180_000;
 
+  const historyResultsMap =
+    opts.historyResultsById instanceof Map ? opts.historyResultsById : null;
+
   if (
     !opts.forceRefresh &&
     OFFICIAL_RESULTS_MEM_CACHE.key === cacheKey &&
     nowMs - OFFICIAL_RESULTS_MEM_CACHE.fetchedAt < ttlMs &&
     OFFICIAL_RESULTS_MEM_CACHE.resultsById.size > 0
   ) {
+    if (historyResultsMap && historyResultsMap.size > 0) {
+      const unionMap = new Map(historyResultsMap);
+      for (const [k, v] of OFFICIAL_RESULTS_MEM_CACHE.resultsById.entries()) {
+        unionMap.set(k, v);
+      }
+      return unionMap;
+    }
     return OFFICIAL_RESULTS_MEM_CACHE.resultsById;
   }
 
   const fetchImpl = opts.fetchFn || globalThis.fetch;
   const cacheFilePath = opts.cacheFilePath || null;
-  const historyResultsMap =
-    opts.historyResultsById instanceof Map ? opts.historyResultsById : null;
   const merged = new Map();
   if (historyResultsMap) {
     for (const [k, v] of historyResultsMap.entries()) {

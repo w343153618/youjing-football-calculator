@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSportteryHistoryCoordinator } from "../server/history/historyCoordinator.mjs";
+import { summarizeResultWindowCursors } from "../server/history/sportteryHistoryNormalizers.mjs";
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_DATA_DIR = path.resolve(
@@ -27,34 +28,6 @@ function parseCliFlags(argv = []) {
   return { cmd, flags };
 }
 
-function summarizeCursors(snap) {
-  const windowsObj = snap?.telemetry?.cursors?.windows || {};
-  const entries = Object.values(windowsObj);
-  let completedWindows = 0;
-  let partialWindows = 0;
-  let verifiedUniqueMatches = 0;
-  for (const w of entries) {
-    if (w?.status === "completed") {
-      completedWindows += 1;
-      verifiedUniqueMatches += Number(w.uniqueMatchCount || 0);
-    } else {
-      partialWindows += 1;
-    }
-  }
-  return {
-    totalWindows: entries.length,
-    completedWindows,
-    partialWindows,
-    verifiedUniqueMatches,
-    pendingOpenQuoteCount: (snap?.telemetry?.cursors?.pendingOpenQuoteIds || [])
-      .length,
-    pendingRecentDetailCount: (
-      snap?.telemetry?.cursors?.pendingRecentDetailIds || []
-    ).length,
-    windows: windowsObj,
-  };
-}
-
 export async function runHistoryCtlCli(
   argv = process.argv.slice(2),
   envOpts = {}
@@ -79,7 +52,7 @@ export async function runHistoryCtlCli(
   try {
     if (cmd === "status" || cmd === "verify-cursors") {
       const snap = coordinator.getSnapshot();
-      const cursors = summarizeCursors(snap);
+      const cursors = summarizeResultWindowCursors(snap?.telemetry?.cursors);
       const out = {
         ok: cmd === "verify-cursors" ? cursors.partialWindows === 0 : true,
         command: cmd,
@@ -132,7 +105,7 @@ export async function runHistoryCtlCli(
         command: cmd,
         backfill,
         matchDetail,
-        cursors: summarizeCursors(snap),
+        cursors: summarizeResultWindowCursors(snap?.telemetry?.cursors),
         storageBytes: snap.telemetry.storageBytes,
       };
       if (!silent) {

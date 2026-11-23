@@ -15,6 +15,7 @@ import {
   computeMatchAlertBinding,
   isMatchAlertBindingValid,
   matchesCanonicalSportteryItem,
+  sanitizeVerifiedNewsInput,
 } from "./xiaogaoCore.mjs";
 
 function setBoundedAlertMap(map, key, val, maxCap = 32) {
@@ -285,8 +286,41 @@ export function createAppRoutes(opts = {}) {
         newlySettledTitles: [],
       };
     }
+    const historyResultsById =
+      historyCoordinator?.getSnapshot?.()?.resultsById ?? null;
+    let fetchedResults = null;
+    let fetchSucceeded = false;
     try {
-      const resultsById = await fetchResultsFn(forceRefresh);
+      fetchedResults = await fetchResultsFn(forceRefresh);
+      fetchSucceeded = true;
+    } catch {
+      fetchedResults = null;
+    }
+    const resultsById = new Map();
+    if (historyResultsById instanceof Map) {
+      for (const [k, v] of historyResultsById.entries()) {
+        resultsById.set(String(k), v);
+      }
+    }
+    if (fetchedResults instanceof Map) {
+      for (const [k, v] of fetchedResults.entries()) {
+        resultsById.set(String(k), v);
+      }
+    } else if (Array.isArray(fetchedResults)) {
+      for (const item of fetchedResults) {
+        if (item?.matchId != null) {
+          resultsById.set(String(item.matchId), item);
+        }
+      }
+    }
+    if (!fetchSucceeded && resultsById.size === 0) {
+      return {
+        ledger: ledgerManager.getUserLedger(userId),
+        newlySettledCount: 0,
+        newlySettledTitles: [],
+      };
+    }
+    try {
       const settled = ledgerManager.autoSettleUserLedger(userId, {
         resultsById,
         liveMatchesById: liveMatches,
@@ -316,6 +350,41 @@ export function createAppRoutes(opts = {}) {
       sess.aiAlerts.delete(m.id);
       return { ...m, aiAlert: undefined };
     });
+  }
+
+  function sanitizeWorkspaceParamsClientAlerts(
+    rawParams,
+    sessionMatches,
+    sess,
+    nowMs = nowFn()
+  ) {
+    if (!rawParams || typeof rawParams !== "object") return {};
+    if (!rawParams.clientAlerts || typeof rawParams.clientAlerts !== "object") {
+      return rawParams;
+    }
+    const safeAlerts = {};
+    const matchMap = new Map(
+      (sessionMatches || []).map((m) => [String(m.id), m])
+    );
+    const entries = Object.entries(rawParams.clientAlerts).slice(0, 32);
+    for (const [rawMid, rawAlert] of entries) {
+      const mid = String(rawMid).trim();
+      if (!mid) continue;
+      const serverStored = sess?.aiAlerts?.get?.(mid);
+      const canonicalMatch = matchMap.get(mid);
+      if (!serverStored || !canonicalMatch) continue;
+      if (
+        isMatchAlertBindingValid(serverStored, canonicalMatch, nowMs) &&
+        (!rawAlert?.binding ||
+          isMatchAlertBindingValid(rawAlert, canonicalMatch, nowMs))
+      ) {
+        safeAlerts[mid] = serverStored;
+      }
+    }
+    return {
+      ...rawParams,
+      clientAlerts: safeAlerts,
+    };
   }
 
   function buildInitialWorkspaceBundle(matches, syncNote, boardMeta) {
@@ -701,8 +770,9 @@ export function createAppRoutes(opts = {}) {
         },
         async ({ sess, data, user }) => {
           const act = String(data?.action || "");
+          const nowMs = nowFn();
           const { matches } = await ensureMatchesLoaded(false);
-          const sessionMatches = mergeSessionAlerts(matches, sess);
+          const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
 
           if (act === "auto-settle") {
             const synced = await resolveSyncedUserLedger(
@@ -718,9 +788,25 @@ export function createAppRoutes(opts = {}) {
             };
           }
 
-          const mutated = ledgerManager.mutateUserLedger(user.id, data || {}, {
-            authoritativeMatches: sessionMatches,
-          });
+          const safeMutateData =
+            data?.workspaceParams && typeof data.workspaceParams === "object"
+              ? {
+                  ...data,
+                  workspaceParams: sanitizeWorkspaceParamsClientAlerts(
+                    data.workspaceParams,
+                    sessionMatches,
+                    sess,
+                    nowMs
+                  ),
+                }
+              : data || {};
+          const mutated = ledgerManager.mutateUserLedger(
+            user.id,
+            safeMutateData,
+            {
+              authoritativeMatches: sessionMatches,
+            }
+          );
 
           const shouldAutoSyncNow =
             mutated.ok &&
@@ -758,12 +844,19 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "加密信封校验失败或会话已过期",
         },
         async ({ sess, data }) => {
+          const nowMs = nowFn();
           const { matches, boardMeta } = await ensureMatchesLoaded(false);
-          const sessionMatches = mergeSessionAlerts(matches, sess);
-          const workspace = evaluateQuantWorkspace(data, sessionMatches);
+          const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
+          const safeParams = sanitizeWorkspaceParamsClientAlerts(
+            data,
+            sessionMatches,
+            sess,
+            nowMs
+          );
+          const workspace = evaluateQuantWorkspace(safeParams, sessionMatches);
           exposureMonitor?.recordWorkbenchEvaluation?.({
             endpoint: "quant/compute",
-            params: data,
+            params: safeParams,
             matches: sessionMatches,
             boardMeta,
             workspace,
@@ -789,14 +882,18 @@ export function createAppRoutes(opts = {}) {
         async ({ sess, data, user }) => {
           const { matches, syncNote, boardMeta } =
             await ensureMatchesLoaded(true);
-          const sessionMatches = mergeSessionAlerts(matches, sess);
-          const workspace = evaluateQuantWorkspace(
+          const nowMs = nowFn();
+          const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
+          const safeParams = sanitizeWorkspaceParamsClientAlerts(
             data?.workspaceParams || {},
-            sessionMatches
+            sessionMatches,
+            sess,
+            nowMs
           );
+          const workspace = evaluateQuantWorkspace(safeParams, sessionMatches);
           exposureMonitor?.recordWorkbenchEvaluation?.({
             endpoint: "quant/sync",
-            params: data?.workspaceParams || {},
+            params: safeParams,
             matches: sessionMatches,
             boardMeta,
             workspace,
@@ -855,7 +952,7 @@ export function createAppRoutes(opts = {}) {
             targetMatch,
             data?.userNote,
             {
-              verifiedNews: data?.verifiedNews,
+              verifiedNews: sanitizeVerifiedNewsInput(data?.verifiedNews, 8),
               historySnapshot: historyCoordinator?.getSnapshot?.() ?? null,
               historyCoordinator,
               decisionEpochMs: nowFn(),
@@ -988,7 +1085,7 @@ export function createAppRoutes(opts = {}) {
             planSpec: data?.planSpec ?? null,
             insights: ws?.insights ?? null,
             userNote: data?.userNote,
-            verifiedNews: data?.verifiedNews,
+            verifiedNews: sanitizeVerifiedNewsInput(data?.verifiedNews, 8),
             historySnapshot: historyCoordinator?.getSnapshot?.() ?? null,
             historyCoordinator,
             decisionEpochMs: nowFn(),

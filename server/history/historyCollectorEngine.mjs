@@ -159,6 +159,7 @@ export function createHistoryCollectorEngine({
     endDate,
     observationOrigin = "result-index-backfill",
     force = false,
+    maxPages = Infinity,
   }) {
     const subWindows = splitDateRangeIntoWindows(beginDate, endDate, 60);
     if (subWindows.length !== 1) {
@@ -180,6 +181,10 @@ export function createHistoryCollectorEngine({
       };
     }
 
+    const pageBudget =
+      Number.isFinite(maxPages) && maxPages >= 1
+        ? Math.floor(maxPages)
+        : Infinity;
     const verifiedPageSet = new Set(
       !force && Array.isArray(prevCursor?.verifiedPages)
         ? prevCursor.verifiedPages
@@ -206,6 +211,8 @@ export function createHistoryCollectorEngine({
         : 1;
 
     let pageNo = startPage;
+    let pagesFetched = 0;
+    let pausedByBudget = false;
     let lastError = null;
 
     while (true) {
@@ -220,8 +227,13 @@ export function createHistoryCollectorEngine({
         pageNo += 1;
         continue;
       }
+      if (pagesFetched >= pageBudget) {
+        pausedByBudget = true;
+        break;
+      }
 
       try {
+        pagesFetched += 1;
         const json = await fetchJsonChecked(
           "uniformMatchResult",
           buildUniformMatchResultUrl({
@@ -331,9 +343,11 @@ export function createHistoryCollectorEngine({
       lastError: isCompleted
         ? null
         : lastError ||
-          (!countReconciled
-            ? "unique_match_id_count_mismatch"
-            : "incomplete_pages"),
+          (pausedByBudget
+            ? null
+            : !countReconciled
+              ? "unique_match_id_count_mismatch"
+              : "incomplete_pages"),
       updatedAt: nowFn(),
     };
 
@@ -552,7 +566,8 @@ export function createHistoryCollectorEngine({
 
     const { matchMetas, matchQuoteEvents } = extractLiveBoardEvents(
       matches,
-      nowMs
+      nowMs,
+      storage.state.quoteSegments
     );
     const openQueue = new Set(storage.state.cursors.pendingOpenQuoteIds || []);
     let queueDirty = false;
@@ -758,6 +773,77 @@ export function createHistoryCollectorEngine({
     return { ok: true };
   }
 
+  function isEndpointCoolingDown(endpointName, nowMs = nowFn()) {
+    const ep = storage.state.endpoints?.[endpointName];
+    return Boolean(
+      ep &&
+      Number(ep.backoffMs) > 0 &&
+      typeof ep.lastErrorAt === "number" &&
+      nowMs - ep.lastErrorAt < ep.backoffMs
+    );
+  }
+
+  async function stepColdStartBackfillOnce({
+    months = 24,
+    maxPagesPerTick = 2,
+    maxOpenQuoteItems = 6,
+    maxRecentDetailItems = 3,
+  } = {}) {
+    const nowMs = nowFn();
+    if (
+      (storage.state.cursors.pendingOpenQuoteIds?.length ?? 0) > 0 &&
+      !isEndpointCoolingDown("fixedBonus", nowMs)
+    ) {
+      await drainPendingOpenQuotes({ maxItems: maxOpenQuoteItems });
+    }
+
+    const resolvedEnd = formatBeijingDate(nowFn());
+    const resolvedBegin = formatBeijingDate(
+      subtractCalendarMonthsMs(nowFn(), months)
+    );
+    const windows = splitDateRangeIntoWindows(resolvedBegin, resolvedEnd, 60);
+    const nextWindow = [...windows]
+      .reverse()
+      .find(
+        (win) =>
+          storage.state.cursors.windows?.[win.key]?.status !== "completed"
+      );
+
+    if (nextWindow && !isEndpointCoolingDown("uniformMatchResult", nowFn())) {
+      await backfillResultsWindow({
+        beginDate: nextWindow.beginDate,
+        endDate: nextWindow.endDate,
+        maxPages: maxPagesPerTick,
+      });
+    }
+
+    if (
+      (storage.state.cursors.pendingRecentDetailIds?.length ?? 0) > 0 &&
+      !isEndpointCoolingDown("fixedBonus", nowFn()) &&
+      !isEndpointCoolingDown("matchHead", nowFn())
+    ) {
+      await drainPendingRecentDetails({ maxItems: maxRecentDetailItems });
+    }
+
+    const hasIncompleteWindow = windows.some(
+      (win) => storage.state.cursors.windows?.[win.key]?.status !== "completed"
+    );
+    const pendingOpenQuotes =
+      storage.state.cursors.pendingOpenQuoteIds?.length ?? 0;
+    const pendingRecentDetails =
+      storage.state.cursors.pendingRecentDetailIds?.length ?? 0;
+
+    return {
+      hasIncompleteWindow,
+      pendingOpenQuotes,
+      pendingRecentDetails,
+      hasMoreWork:
+        hasIncompleteWindow ||
+        pendingOpenQuotes > 0 ||
+        pendingRecentDetails > 0,
+    };
+  }
+
   return {
     publish,
     ingestLiveBoard,
@@ -765,6 +851,7 @@ export function createHistoryCollectorEngine({
     computeNextLivePollDelayMs,
     drainPendingOpenQuotes,
     drainPendingRecentDetails,
+    stepColdStartBackfillOnce,
     fetchMatchDetailOnDemand,
     backfillMatchOpeningQuotes,
     backfillMatchHead,

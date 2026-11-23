@@ -1,4 +1,5 @@
 import { devigPoolProbabilities } from "../quant/coherentCalibration.mjs";
+import { sanitizeUserIntelNote } from "../xiaogaoCore.mjs";
 import {
   formatBaselineSourceLabel,
   hydrateMatchesWithDualAxisMovement,
@@ -527,10 +528,12 @@ export function buildMatchDualAxisEvidence(
 }
 
 const SOURCE_ATTR_RE =
-  /(?:官网|官方|公告|发布会|赛前名单|首发名单|伤停名单|日报|体育报|日刊|天空体育|队报|欧足联|亚足联|国际足联|足协|俱乐部|记者\S{1,8}|来源\s*[:：]|据\s*\S{2,12}(?:官方|媒体|报道))/i;
+  /(?:官网|官方|公告|发布会|赛前名单|首发名单|伤停名单|日报|体育报|日刊|天空体育|队报|欧足联|亚足联|国际足联|足协|俱乐部|记者\S{1,8}|来源\s*[:：]\s*\S{1,16}|据\s*\S{2,12}(?:官方|媒体|报道))/i;
 
 const PUBLISH_TIME_RE =
   /(?:\b\d{4}-\d{2}-\d{2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b|\b(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b|\b\d{1,3}\s*(?:分钟|小时)前\b|\b\d{1,2}月\d{1,2}日\s*(?:\d{1,2}[点时:]\d{0,2})?)/i;
+
+export const MAX_VERIFIED_NEWS_ITEMS = 8;
 
 export function extractVerifiedExternalNews(
   userNote = "",
@@ -538,30 +541,40 @@ export function extractVerifiedExternalNews(
 ) {
   const verified = [];
   if (Array.isArray(explicitNews)) {
-    for (const item of explicitNews) {
-      const src = String(item?.source ?? "").trim();
-      const pub = String(item?.publishedAt ?? "").trim();
-      const text = String(item?.summary ?? item?.title ?? "").trim();
+    const maxScan = Math.min(explicitNews.length, MAX_VERIFIED_NEWS_ITEMS);
+    for (let i = 0; i < maxScan; i += 1) {
+      const item = explicitNews[i];
+      if (!item || typeof item !== "object") continue;
+      const src = sanitizeUserIntelNote(item.source, 48);
+      const pub = sanitizeUserIntelNote(item.publishedAt, 32);
+      const text = sanitizeUserIntelNote(item.summary ?? item.title ?? "", 120);
       if (src && pub) {
         verified.push({
-          source: src.slice(0, 48),
-          publishedAt: pub.slice(0, 32),
-          summary: text.slice(0, 120),
+          source: src,
+          publishedAt: pub,
+          summary: text,
         });
       }
     }
   }
 
-  const cleanNote = String(userNote || "").trim();
+  const cleanNote = sanitizeUserIntelNote(userNote, 280);
   if (cleanNote && verified.length === 0) {
     const srcMatch = cleanNote.match(SOURCE_ATTR_RE);
     const timeMatch = cleanNote.match(PUBLISH_TIME_RE);
     if (srcMatch && timeMatch) {
-      verified.push({
-        source: srcMatch[0].replace(/^来源\s*[:：]\s*/, "").trim(),
-        publishedAt: timeMatch[0].trim(),
-        summary: cleanNote.slice(0, 140),
-      });
+      const src = sanitizeUserIntelNote(
+        srcMatch[0].replace(/^来源\s*[:：]\s*/, ""),
+        48
+      );
+      const pub = sanitizeUserIntelNote(timeMatch[0], 32);
+      if (src && pub) {
+        verified.push({
+          source: src,
+          publishedAt: pub,
+          summary: cleanNote.slice(0, 120),
+        });
+      }
     }
   }
 
@@ -582,7 +595,11 @@ export function buildNewsOddsTimelineAlignment({
   }
 
   const newsDesc = items
-    .map((n) => `${n.source} 发布于 ${n.publishedAt}`)
+    .map((n) =>
+      n.summary
+        ? `${n.source} 发布于 ${n.publishedAt}（${n.summary}）`
+        : `${n.source} 发布于 ${n.publishedAt}`
+    )
     .join("；");
   const quotesDesc =
     Array.isArray(visibleQuoteTimestamps) && visibleQuoteTimestamps.length > 0

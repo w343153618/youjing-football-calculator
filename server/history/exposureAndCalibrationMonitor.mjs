@@ -5,6 +5,7 @@ import {
 import {
   buildBoardFreshnessMeta,
   parseBeijingDateTimeMs,
+  summarizeResultWindowCursors,
 } from "./sportteryHistoryNormalizers.mjs";
 
 export const FROZEN_PRODUCTION_MODEL_VERSION =
@@ -603,55 +604,7 @@ export function createExposureAndCalibrationMonitor(opts = {}) {
       };
     }
 
-    const windowsRaw = telemetry.cursors?.windows || {};
-    const windowSummaryMap = {};
-    let completedWindows = 0;
-    let partialWindows = 0;
-    let verifiedUniqueMatches = 0;
-    for (const [winKey, w] of Object.entries(windowsRaw)) {
-      const isCompleted = w?.status === "completed";
-      if (isCompleted) {
-        completedWindows += 1;
-        verifiedUniqueMatches += Number(w?.uniqueMatchCount || 0);
-      } else {
-        partialWindows += 1;
-      }
-      windowSummaryMap[winKey] = {
-        key: String(w?.key || winKey),
-        beginDate: String(w?.beginDate || ""),
-        endDate: String(w?.endDate || ""),
-        status: isCompleted ? "completed" : "partial",
-        expectedPages:
-          typeof w?.expectedPages === "number" ? w.expectedPages : null,
-        expectedTotal:
-          typeof w?.expectedTotal === "number" ? w.expectedTotal : null,
-        verifiedPagesCount: Array.isArray(w?.verifiedPages)
-          ? w.verifiedPages.length
-          : 0,
-        uniqueMatchCount: Number(w?.uniqueMatchCount || 0),
-        nextRetryPage: Number(w?.nextRetryPage || 1),
-        lastError: w?.lastError ? String(w.lastError) : null,
-        updatedAt: Number(w?.updatedAt || 0),
-      };
-    }
-
-    const cursors = {
-      totalWindows: Object.keys(windowSummaryMap).length,
-      completedWindows,
-      partialWindows,
-      verifiedUniqueMatches,
-      pendingOpenQuoteCount: Array.isArray(
-        telemetry.cursors?.pendingOpenQuoteIds
-      )
-        ? telemetry.cursors.pendingOpenQuoteIds.length
-        : 0,
-      pendingRecentDetailCount: Array.isArray(
-        telemetry.cursors?.pendingRecentDetailIds
-      )
-        ? telemetry.cursors.pendingRecentDetailIds.length
-        : 0,
-      windows: windowSummaryMap,
-    };
+    const cursors = summarizeResultWindowCursors(telemetry.cursors);
 
     const covRaw = telemetry.coverage || {};
     const coverage = {

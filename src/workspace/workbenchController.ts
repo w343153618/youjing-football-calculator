@@ -241,6 +241,35 @@ function computeRemainingQuota(user: PublicAccountUser | null): number | null {
   return Math.max(0, (user.dailyAiLimit ?? 0) - (user.aiUsedToday ?? 0));
 }
 
+function resolveValidComboReport(
+  rep: XiaoGaoComboReport | null,
+  matches: MatchItem[],
+  nowMs: number
+): XiaoGaoComboReport | null {
+  if (!rep) return null;
+  if (!Array.isArray(rep.perMatch) || rep.perMatch.length === 0) return rep;
+  const boundItems = rep.perMatch.filter((pm) => Boolean(pm?.binding));
+  if (boundItems.length === 0) return rep;
+  const matchMap = new Map(matches.map((m) => [m.id, m]));
+  for (const pm of boundItems) {
+    const m = matchMap.get(pm.matchId);
+    if (!m) return null;
+    const valid = isClientMatchAlertBindingValid(
+      {
+        level: rep.level === "high" ? "high" : "medium",
+        tag: pm.tag,
+        summary: pm.note,
+        priceInStatus: pm.priceInStatus,
+        source: rep.source,
+        binding: pm.binding,
+      },
+      m,
+      nowMs
+    );
+    if (!valid) return null;
+  }
+  return rep;
+}
 function extractMatchAiAlerts(
   matches: MatchItem[],
   nowMs: number
@@ -367,7 +396,16 @@ export function createWorkbenchController(
   });
 
   function buildSnapshot(): WorkbenchSnapshot {
+    const nowMs = clockPort.now();
     const betSlipState = betSlip.getState();
+    const validComboReport = resolveValidComboReport(
+      comboReport,
+      betSlipState.matches,
+      nowMs
+    );
+    if (validComboReport !== comboReport) {
+      comboReport = validComboReport;
+    }
     const playabilityGates = betSlip.getPlayabilityGates(activeArchKey);
     const liveEntriesCount = ledger.entries.filter(
       (e) => e.kind === "live"
@@ -414,11 +452,36 @@ export function createWorkbenchController(
       comboSelectedIds,
       comboReport,
       remainingAiQuota,
-      matchAiAlerts: extractMatchAiAlerts(
-        betSlipState.matches,
-        clockPort.now()
-      ),
+      matchAiAlerts: extractMatchAiAlerts(betSlipState.matches, nowMs),
     };
+  }
+
+  function hasSnapshotStaleAlerts(
+    snap: WorkbenchSnapshot,
+    nowMs: number
+  ): boolean {
+    for (const m of snap.betSlipState.matches) {
+      if (m.aiAlert && !isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)) {
+        return true;
+      }
+    }
+    for (const [mid, alert] of Object.entries(snap.matchAiAlerts)) {
+      const m = snap.betSlipState.matches.find((x) => x.id === mid);
+      if (!m || !isClientMatchAlertBindingValid(alert, m, nowMs)) {
+        return true;
+      }
+    }
+    if (
+      snap.comboReport &&
+      resolveValidComboReport(
+        snap.comboReport,
+        snap.betSlipState.matches,
+        nowMs
+      ) === null
+    ) {
+      return true;
+    }
+    return false;
   }
 
   let currentSnapshot: WorkbenchSnapshot = buildSnapshot();
@@ -790,7 +853,12 @@ export function createWorkbenchController(
 
   return {
     betSlip,
-    getState: () => currentSnapshot,
+    getState: () => {
+      if (hasSnapshotStaleAlerts(currentSnapshot, clockPort.now())) {
+        currentSnapshot = buildSnapshot();
+      }
+      return currentSnapshot;
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {

@@ -34,12 +34,39 @@ async function bridgedFetch(url, init = {}) {
 let storage = null;
 let engine = null;
 let autoPollTimer = null;
+let autoBackfillTimer = null;
 let shuttingDown = false;
+
+const backfillTickMs = Math.max(
+  5,
+  Number.isFinite(Number(workerData?.backfillTickMs))
+    ? Number(workerData.backfillTickMs)
+    : 4_000
+);
+const idleBackfillMs = Math.max(
+  backfillTickMs,
+  Number.isFinite(Number(workerData?.idleBackfillMs))
+    ? Number(workerData.idleBackfillMs)
+    : 30 * 60_000
+);
+const initialBackfillDelayMs = Math.max(
+  1,
+  Number.isFinite(Number(workerData?.initialBackfillDelayMs))
+    ? Number(workerData.initialBackfillDelayMs)
+    : 350
+);
 
 function stopAutoPoll() {
   if (autoPollTimer !== null) {
     clearTimeout(autoPollTimer);
     autoPollTimer = null;
+  }
+}
+
+function stopAutoBackfill() {
+  if (autoBackfillTimer !== null) {
+    clearTimeout(autoBackfillTimer);
+    autoBackfillTimer = null;
   }
 }
 
@@ -59,6 +86,31 @@ function scheduleNextAutoPoll() {
       scheduleNextAutoPoll();
     }
   }, delayMs);
+  autoPollTimer.unref?.();
+}
+
+function scheduleNextAutoBackfill(delayMs = backfillTickMs) {
+  if (shuttingDown || !workerData?.autoBackfill || !engine) return;
+  stopAutoBackfill();
+  autoBackfillTimer = setTimeout(async () => {
+    if (shuttingDown || !engine) return;
+    let nextDelay = backfillTickMs;
+    try {
+      const step = await engine.stepColdStartBackfillOnce({
+        maxPagesPerTick: 2,
+        maxOpenQuoteItems: 6,
+        maxRecentDetailItems: 3,
+      });
+      nextDelay = step?.hasMoreWork ? backfillTickMs : idleBackfillMs;
+    } catch {
+      nextDelay = Math.max(backfillTickMs, 15_000);
+    } finally {
+      if (!shuttingDown) {
+        scheduleNextAutoBackfill(nextDelay);
+      }
+    }
+  }, delayMs);
+  autoBackfillTimer.unref?.();
 }
 
 const initPromise = (async () => {
@@ -86,7 +138,7 @@ const initPromise = (async () => {
   parentPort.postMessage({ type: "ready", envelope: initialEnv });
 
   if (workerData?.autoPoll) {
-    // Trigger initial non-blocking live poll & tier-2/3/4 background warmup
+    // Trigger initial non-blocking live poll & tier-3 opening quotes warmup
     queueMicrotask(async () => {
       if (shuttingDown || !engine) return;
       try {
@@ -98,6 +150,10 @@ const initPromise = (async () => {
         scheduleNextAutoPoll();
       }
     });
+  }
+
+  if (workerData?.autoBackfill) {
+    scheduleNextAutoBackfill(initialBackfillDelayMs);
   }
 })();
 
@@ -131,6 +187,7 @@ parentPort.on("message", async (msg) => {
       if (method === "shutdown") {
         shuttingDown = true;
         stopAutoPoll();
+        stopAutoBackfill();
         for (const [, p] of pendingHostFetches.entries()) {
           p.reject(new Error("worker_shutting_down"));
         }

@@ -1,8 +1,12 @@
-import { devigPoolProbabilities } from "../quant/coherentCalibration.mjs";
+import {
+  devigPoolProbabilities,
+  formatDualAxisSteamSignal,
+} from "../quant/coherentCalibration.mjs";
 import {
   CRS_CANONICAL_KEY_TO_LABEL,
   CRS_LABEL_TO_CANONICAL_KEY,
   formatBeijingMonthDayHM,
+  isValidSellingQuoteFrame,
   parseBeijingDateTimeMs,
 } from "./sportteryHistoryNormalizers.mjs";
 
@@ -151,7 +155,9 @@ function resolveEffectivePoolFrames(
 
   const hasExplicitDecisionCutoff =
     typeof decisionEpochMs === "number" && Number.isFinite(decisionEpochMs);
-  const rawSegFrames = Array.isArray(seg?.frames) ? seg.frames : [];
+  const rawSegFrames = Array.isArray(seg?.frames)
+    ? seg.frames.filter(isValidSellingQuoteFrame)
+    : [];
   const candidateFrames = hasExplicitDecisionCutoff
     ? rawSegFrames.filter((f) => {
         const ts = f?.sourcePublishedAt ?? f?.firstLocallySeenAt ?? null;
@@ -511,62 +517,25 @@ export function summarizeMatchDualAxisMovements(match) {
     return Math.abs(b.lastHopDirection) - Math.abs(a.lastHopDirection);
   });
 
-  let steamSignal;
-  if (!hasMultiFrameTrend) {
-    const singleHopItems = notableMovements.filter(
-      (x) => x.lastHopDirection !== 0
-    );
-    if (singleHopItems.length > 0) {
-      const top = singleHopItems
-        .slice(0, 2)
-        .map((x) => {
-          const dirTxt = x.lastHopDirection === 1 ? "▲上调" : "▼下调";
-          const oddsTxt =
-            x.currentOdds !== null ? `@${x.currentOdds.toFixed(2)}` : "";
-          return `${x.poolName}·${x.label}${oddsTxt}(${dirTxt})`;
-        })
-        .join("、");
-      steamSignal = `📊 双维盘面走势（仅单帧观测·暂不判趋势）：末跳水位【${top}】`;
-    } else {
-      steamSignal =
-        "📊 双维盘面走势（仅单帧观测·暂不判趋势）：当前报价暂无历史帧对照，末跳水位无升降";
-    }
-  } else {
-    const multiItems = notableMovements.filter((x) => x.frameCount >= 2);
-    if (multiItems.length === 0) {
-      const primarySrc =
-        poolsSummary.HAD?.frameCount >= 2
-          ? poolsSummary.HAD.baselineLabel
-          : poolsSummary.HHAD?.frameCount >= 2
-            ? poolsSummary.HHAD.baselineLabel
-            : "多帧观测";
-      steamSignal = `📊 双维盘面走势（${primarySrc}）：各在售池累计去水真率波动 <0.1pp，末跳水位平稳`;
-    } else {
-      const top = multiItems[0];
-      const srcLabel = formatBaselineSourceLabel(top.baselineSource);
-      const dpSign = (top.cumFairProbDeltaPp ?? 0) > 0 ? "+" : "";
-      const dpStr =
-        top.cumFairProbDeltaPp !== null
-          ? `${dpSign}${top.cumFairProbDeltaPp.toFixed(2)}pp`
-          : "无有效同集基准";
-      const hopStr =
-        top.prevOdds !== null && top.currentOdds !== null
-          ? `${top.prevOdds.toFixed(2)}→${top.currentOdds.toFixed(2)}(${
-              top.lastHopDirection === 1
-                ? "▲上调"
-                : top.lastHopDirection === -1
-                  ? "▼下调"
-                  : "→持平"
-            })`
-          : `@${(top.currentOdds ?? 0).toFixed(2)}`;
-
-      if (top.isSameDirectionShift) {
-        steamSignal = `📊 双维盘面走势（${srcLabel}）：${top.poolName}·${top.label} 末跳水位 ${hopStr}，整池返还率同步调整下累计去水真率 ${dpStr}（同向变化，切勿反转水位箭头充趋势）`;
-      } else {
-        steamSignal = `📊 双维盘面走势（${srcLabel}）：${top.poolName}·${top.label} 累计真率 ${dpStr}｜末跳水位 ${hopStr}`;
-      }
-    }
-  }
+  const multiItems = notableMovements.filter((x) => x.frameCount >= 2);
+  const topMulti = multiItems[0] || null;
+  const primaryBaselineLabel =
+    poolsSummary.HAD?.frameCount >= 2
+      ? poolsSummary.HAD.baselineLabel
+      : poolsSummary.HHAD?.frameCount >= 2
+        ? poolsSummary.HHAD.baselineLabel
+        : "多帧观测";
+  const steamSignal = formatDualAxisSteamSignal({
+    hasMultiFrameTrend,
+    primaryBaselineLabel,
+    topMultiItem: topMulti
+      ? {
+          ...topMulti,
+          srcLabel: formatBaselineSourceLabel(topMulti.baselineSource),
+        }
+      : null,
+    singleHopItems: notableMovements.filter((x) => x.lastHopDirection !== 0),
+  });
 
   return Object.freeze({
     matchId: match?.id ? String(match.id) : "",

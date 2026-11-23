@@ -75,6 +75,24 @@ export function parseBeijingDateTimeMs(dateStr, timeStr = null) {
   return utcMs - BJ_OFFSET_MS;
 }
 
+export function endOfBeijingDateMs(dateStr) {
+  const dayStartMs = parseBeijingDateTimeMs(dateStr, "00:00:00");
+  return dayStartMs !== null ? dayStartMs + 86_400_000 - 1 : null;
+}
+
+export function isValidSellingQuoteFrame(frame) {
+  if (!frame || typeof frame !== "object" || frame.selling === false) {
+    return false;
+  }
+  if (!frame.options || typeof frame.options !== "object") {
+    return false;
+  }
+  return Object.values(frame.options).some((opt) => {
+    const odds = Number(opt?.odds ?? opt ?? 0);
+    return Number.isFinite(odds) && odds > 1;
+  });
+}
+
 export function formatBeijingDate(epochMs) {
   if (typeof epochMs !== "number" || !Number.isFinite(epochMs)) return "";
   return new Date(epochMs + BJ_OFFSET_MS).toISOString().slice(0, 10);
@@ -324,10 +342,18 @@ export function normalizeFixedBonusPayload(
   const singleFlags = {};
   if (Array.isArray(hist.singleList)) {
     for (const item of hist.singleList) {
-      const code = String(item?.poolCode ?? item ?? "")
-        .trim()
-        .toUpperCase();
-      if (code) singleFlags[code] = true;
+      if (typeof item === "string") {
+        const code = item.trim().toUpperCase();
+        if (code) singleFlags[code] = true;
+      } else if (item && typeof item === "object") {
+        const code = String(item.poolCode ?? "")
+          .trim()
+          .toUpperCase();
+        if (code) {
+          const rawFlag = item.single ?? item.bettingSingle ?? 0;
+          singleFlags[code] = rawFlag === true || Number(rawFlag) === 1;
+        }
+      }
     }
   }
 
@@ -383,7 +409,35 @@ export function normalizeFixedBonusPayload(
   };
 }
 
-export function extractLiveBoardEvents(matches = [], nowMs = Date.now()) {
+function findActiveSellingSegmentsForPool(
+  prevQuoteSegments,
+  matchId,
+  poolCode
+) {
+  if (!prevQuoteSegments) return [];
+  const prefix = `${String(matchId)}|${String(poolCode)}|`;
+  const active = [];
+  const entries =
+    prevQuoteSegments instanceof Map
+      ? prevQuoteSegments.entries()
+      : Object.entries(prevQuoteSegments);
+  for (const [segKey, seg] of entries) {
+    if (!String(segKey).startsWith(prefix)) continue;
+    const frames = seg?.frames;
+    if (!Array.isArray(frames) || frames.length === 0) continue;
+    const tail = frames[frames.length - 1];
+    if (tail && tail.selling !== false) {
+      active.push(seg);
+    }
+  }
+  return active;
+}
+
+export function extractLiveBoardEvents(
+  matches = [],
+  nowMs = Date.now(),
+  prevQuoteSegments = null
+) {
   const matchMetas = [];
   const matchQuoteEvents = [];
 
@@ -415,16 +469,15 @@ export function extractLiveBoardEvents(matches = [], nowMs = Date.now()) {
 
     for (const poolCode of ["HAD", "HHAD", "TTG", "HAFU", "CRS"]) {
       const p = m.pools?.[poolCode];
-      if (!p) continue;
-      const selling = p.selling !== false;
-      const canSingle = Boolean(p.canSingle ?? p.single);
-      const canAllUp = p.canAllUp !== false && selling;
+      const rawSelling = Boolean(p) && p.selling !== false;
+      const canSingle = rawSelling && Boolean(p?.canSingle ?? p?.single);
+      const canAllUp = rawSelling && p?.canAllUp !== false;
       const goalLine =
-        poolCode === "HHAD" ? String(p.goalLine ?? "").trim() : "";
+        poolCode === "HHAD" ? String(p?.goalLine ?? "").trim() : "";
 
       const options = {};
       let validCount = 0;
-      for (const opt of p.options || []) {
+      for (const opt of p?.options || []) {
         const oddsNum = Number(opt?.odds || 0);
         if (!Number.isFinite(oddsNum) || oddsNum <= 1) continue;
         const canonicalKey =
@@ -439,7 +492,46 @@ export function extractLiveBoardEvents(matches = [], nowMs = Date.now()) {
         };
         validCount += 1;
       }
-      if (!selling || validCount === 0) continue;
+
+      const effectiveSelling =
+        rawSelling && (canSingle || canAllUp) && validCount > 0;
+      if (!effectiveSelling) {
+        const activePrevSegs = findActiveSellingSegmentsForPool(
+          prevQuoteSegments,
+          matchId,
+          poolCode
+        );
+        for (const prevSeg of activePrevSegs) {
+          const stopGoalLine =
+            poolCode === "HHAD" ? String(prevSeg.goalLine ?? "").trim() : "";
+          const stopStateSig = computeOptionsStateSig({
+            goalLine: stopGoalLine,
+            selling: false,
+            canSingle: false,
+            canAllUp: false,
+            options: {},
+          });
+          matchQuoteEvents.push({
+            matchId,
+            event: {
+              poolCode,
+              goalLine: stopGoalLine,
+              frameOrigin: "live-poll",
+              isBackfilled: false,
+              selling: false,
+              canSingle: false,
+              canAllUp: false,
+              options: {},
+              stateSig: stopStateSig,
+              sourcePublishedAt: null,
+              sourcePublishedText: null,
+              firstLocallySeenAt: nowMs,
+              lastLocallySeenAt: nowMs,
+            },
+          });
+        }
+        continue;
+      }
 
       const updateDate = p.updateDate || m.matchDate || "";
       const updateTime =
@@ -452,7 +544,7 @@ export function extractLiveBoardEvents(matches = [], nowMs = Date.now()) {
         updateDate && updateTime ? `${updateDate} ${updateTime}` : null;
       const stateSig = computeOptionsStateSig({
         goalLine,
-        selling,
+        selling: true,
         canSingle,
         canAllUp,
         options,
@@ -465,7 +557,7 @@ export function extractLiveBoardEvents(matches = [], nowMs = Date.now()) {
           goalLine,
           frameOrigin: "live-poll",
           isBackfilled: false,
-          selling,
+          selling: true,
           canSingle,
           canAllUp,
           options,
@@ -670,6 +762,54 @@ function deepFreezeShallowGraph(obj) {
   return obj;
 }
 
+export function summarizeResultWindowCursors(cursorsRaw = {}) {
+  const windowsRaw = cursorsRaw?.windows || {};
+  const windowSummaryMap = {};
+  let completedWindows = 0;
+  let partialWindows = 0;
+  let verifiedUniqueMatches = 0;
+  for (const [winKey, w] of Object.entries(windowsRaw)) {
+    const isCompleted = w?.status === "completed";
+    if (isCompleted) {
+      completedWindows += 1;
+      verifiedUniqueMatches += Number(w?.uniqueMatchCount || 0);
+    } else {
+      partialWindows += 1;
+    }
+    windowSummaryMap[winKey] = {
+      key: String(w?.key || winKey),
+      beginDate: String(w?.beginDate || ""),
+      endDate: String(w?.endDate || ""),
+      status: isCompleted ? "completed" : "partial",
+      expectedPages:
+        typeof w?.expectedPages === "number" ? w.expectedPages : null,
+      expectedTotal:
+        typeof w?.expectedTotal === "number" ? w.expectedTotal : null,
+      verifiedPagesCount: Array.isArray(w?.verifiedPages)
+        ? w.verifiedPages.length
+        : Number(w?.verifiedPagesCount || 0),
+      uniqueMatchCount: Number(w?.uniqueMatchCount || 0),
+      nextRetryPage: Number(w?.nextRetryPage || 1),
+      lastError: w?.lastError ? String(w.lastError) : null,
+      updatedAt: Number(w?.updatedAt || 0),
+    };
+  }
+
+  return {
+    totalWindows: Object.keys(windowSummaryMap).length,
+    completedWindows,
+    partialWindows,
+    verifiedUniqueMatches,
+    pendingOpenQuoteCount: Array.isArray(cursorsRaw?.pendingOpenQuoteIds)
+      ? cursorsRaw.pendingOpenQuoteIds.length
+      : 0,
+    pendingRecentDetailCount: Array.isArray(cursorsRaw?.pendingRecentDetailIds)
+      ? cursorsRaw.pendingRecentDetailIds.length
+      : 0,
+    windows: windowSummaryMap,
+  };
+}
+
 export function buildEmptySnapshotPayload() {
   return {
     boardMeta: buildBoardFreshnessMeta({
@@ -753,6 +893,19 @@ export function hydrateImmutableHistorySnapshot(envelope) {
     );
   }
 
+  // Ensure every hydrated quote segment computes openFrame / prevFrame / latestFrame strictly over valid selling frames
+  for (const seg of Object.values(quoteSegmentsObj)) {
+    if (!seg || typeof seg !== "object" || !Array.isArray(seg.frames)) continue;
+    const sellingFrames = seg.frames.filter(isValidSellingQuoteFrame);
+    seg.openFrame = sellingFrames[0] || null;
+    seg.latestFrame =
+      sellingFrames.length > 0 ? sellingFrames[sellingFrames.length - 1] : null;
+    seg.prevFrame =
+      sellingFrames.length >= 2
+        ? sellingFrames[sellingFrames.length - 2]
+        : null;
+  }
+
   // Merge match metadata + result records per matchId for team kickoff & 90d ledger queries
   const allMatchIds = new Set([
     ...Object.keys(matchesMetaObj),
@@ -764,22 +917,23 @@ export function hydrateImmutableHistorySnapshot(envelope) {
     const homeTeamId = meta?.homeTeamId || resRec?.homeTeamId || null;
     const awayTeamId = meta?.awayTeamId || resRec?.awayTeamId || null;
     const matchDate = meta?.matchDate || resRec?.matchDate || null;
-    const kickoffEpochMs =
-      typeof meta?.kickoffEpochMs === "number"
+    const hasExactKickoff = Boolean(
+      meta?.kickoffDateTime ||
+      (typeof meta?.kickoffEpochMs === "number" &&
+        Number.isFinite(meta.kickoffEpochMs))
+    );
+    const kickoffEpochMs = hasExactKickoff
+      ? typeof meta?.kickoffEpochMs === "number" &&
+        Number.isFinite(meta.kickoffEpochMs)
         ? meta.kickoffEpochMs
-        : meta?.kickoffDateTime
-          ? parseBeijingDateTimeMs(meta.kickoffDateTime)
-          : matchDate
-            ? parseBeijingDateTimeMs(matchDate, "12:00:00")
-            : null;
+        : parseBeijingDateTimeMs(meta.kickoffDateTime)
+      : null;
     const ref = Object.freeze({
       matchId,
       matchDate,
       kickoffDateTime: meta?.kickoffDateTime || null,
       kickoffEpochMs,
-      hasExactKickoff: Boolean(
-        meta?.kickoffDateTime || typeof meta?.kickoffEpochMs === "number"
-      ),
+      hasExactKickoff: kickoffEpochMs !== null,
       leagueId: meta?.leagueId || resRec?.leagueId || null,
       leagueName: meta?.leagueName || resRec?.leagueName || null,
       homeTeamId,
@@ -798,8 +952,11 @@ export function hydrateImmutableHistorySnapshot(envelope) {
       pushTeamMatchRef(awayTeamId, ref);
   }
 
+  const resolveRefOrderMs = (item) =>
+    item.kickoffEpochMs ?? endOfBeijingDateMs(item.matchDate) ?? 0;
+
   for (const arr of matchesByTeamId.values()) {
-    arr.sort((a, b) => (b.kickoffEpochMs ?? 0) - (a.kickoffEpochMs ?? 0));
+    arr.sort((a, b) => resolveRefOrderMs(b) - resolveRefOrderMs(a));
     Object.freeze(arr);
   }
 
@@ -824,32 +981,51 @@ export function hydrateImmutableHistorySnapshot(envelope) {
 
   function getTeamKickoffHistory(sportteryTeamId, beforeEpochMs = Infinity) {
     const arr = matchesByTeamId.get(String(sportteryTeamId)) || [];
-    return arr.filter(
-      (item) =>
-        typeof item.kickoffEpochMs === "number" &&
-        item.kickoffEpochMs < beforeEpochMs
-    );
+    return arr.filter((item) => {
+      if (typeof item.kickoffEpochMs === "number") {
+        return item.kickoffEpochMs < beforeEpochMs;
+      }
+      const dayStartMs = item.matchDate
+        ? parseBeijingDateTimeMs(item.matchDate, "00:00:00")
+        : null;
+      return dayStartMs !== null && dayStartMs < beforeEpochMs;
+    });
   }
 
-  function resolvePreKickoffHadQuote(matchId, kickoffEpochMs, decisionEpochMs) {
+  function resolvePreKickoffHadQuote(
+    matchId,
+    kickoffEpochMs,
+    decisionEpochMs,
+    matchDate = null
+  ) {
     const seg = getPoolSegmentFrames(matchId, "HAD", "");
     if (seg && Array.isArray(seg.frames) && seg.frames.length > 0) {
+      const matchDayEndMs =
+        typeof kickoffEpochMs !== "number" && matchDate
+          ? endOfBeijingDateMs(matchDate)
+          : null;
       const upperBound =
         typeof kickoffEpochMs === "number"
           ? Math.min(kickoffEpochMs, decisionEpochMs)
-          : decisionEpochMs;
+          : matchDayEndMs !== null
+            ? Math.min(matchDayEndMs, decisionEpochMs)
+            : decisionEpochMs;
       let chosen = null;
       for (const f of seg.frames) {
+        if (!isValidSellingQuoteFrame(f)) continue;
+        if (!(
+          f.options?.h?.odds > 1 &&
+          f.options?.d?.odds > 1 &&
+          f.options?.a?.odds > 1
+        )) {
+          continue;
+        }
         const frameTs = f.sourcePublishedAt ?? f.firstLocallySeenAt ?? 0;
         if (frameTs <= upperBound) {
           chosen = f;
         }
       }
-      if (
-        chosen?.options?.h?.odds > 1 &&
-        chosen?.options?.d?.odds > 1 &&
-        chosen?.options?.a?.odds > 1
-      ) {
+      if (chosen) {
         return {
           h: chosen.options.h.odds,
           d: chosen.options.d.odds,
@@ -883,20 +1059,23 @@ export function hydrateImmutableHistorySnapshot(envelope) {
       const rec = item.resultRecord;
       if (!rec || !rec.settled || rec.isVoid) continue;
       if (decisionEpochMs < (rec.embargoUntilMs ?? 0)) continue;
-      const matchMs =
-        item.kickoffEpochMs ??
-        parseBeijingDateTimeMs(rec.matchDate, "12:00:00");
+      const dayStartMs = parseBeijingDateTimeMs(rec.matchDate, "00:00:00");
+      const dayEndMs = endOfBeijingDateMs(rec.matchDate);
+      const lowerCheckMs = item.kickoffEpochMs ?? dayEndMs;
+      const upperCheckMs = item.kickoffEpochMs ?? dayStartMs;
       if (
-        typeof matchMs !== "number" ||
-        matchMs < windowStartMs ||
-        matchMs >= decisionEpochMs
+        typeof lowerCheckMs !== "number" ||
+        typeof upperCheckMs !== "number" ||
+        lowerCheckMs < windowStartMs ||
+        upperCheckMs >= decisionEpochMs
       ) {
         continue;
       }
       const hadQuote = resolvePreKickoffHadQuote(
         item.matchId,
         item.kickoffEpochMs,
-        decisionEpochMs
+        decisionEpochMs,
+        rec.matchDate
       );
       if (!hadQuote) continue;
       out.push(

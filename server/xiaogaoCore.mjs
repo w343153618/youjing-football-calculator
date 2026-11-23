@@ -55,18 +55,41 @@ export async function defaultOpenCodeTransport(
 }
 
 const INTEL_REDACT_RE =
-  /deepseek[\w.-]*|glm[\w.-]*|chatgpt|openai|claude|anthropic|qwen|kimi|moonshot|豆包|字节跳动|opencode|深度求索|智谱清言|大语言模型|人工智能模型/gi;
+  /deepseek[\w.-]*|glm[\w.-]*|chatgpt|openai|claude|anthropic|qwen|doubao|kimi|moonshot|豆包|字节跳动|opencode|深度求索|智谱清言|大语言模型|人工智能模型/gi;
 
-function sanitizeUserIntelNote(rawNote, maxLen = 280) {
+export function sanitizeUserIntelNote(rawNote, maxLen = 280) {
   if (!rawNote) return "";
   return String(rawNote)
+    .slice(0, Math.max(maxLen * 4, 1024))
+    .replace(/[\r\n\t]+/g, " ")
     .replace(
-      /ignore\s+previous|system\s+prompt|忽略.*指令|无视.*规则|什么模型|哪个大模型|提示词/gi,
+      /ignore\s+(?:all\s+)?previous(?:\s+instructions?)?|system\s+prompt|developer\s+message|忽略[^\n。；，]{0,16}(?:指令|规则|提示)|无视[^\n。；，]{0,16}(?:指令|规则|提示)|什么模型|哪个大模型|提示词/gi,
       ""
     )
     .replace(INTEL_REDACT_RE, "")
+    .replace(/\s{2,}/g, " ")
     .trim()
     .slice(0, maxLen);
+}
+
+export function sanitizeVerifiedNewsInput(rawNews, maxItems = 8) {
+  if (!Array.isArray(rawNews)) return [];
+  const limit = Math.min(rawNews.length, Math.max(1, maxItems));
+  const out = [];
+  for (let i = 0; i < limit; i += 1) {
+    const item = rawNews[i];
+    if (!item || typeof item !== "object") continue;
+    const source = sanitizeUserIntelNote(item.source, 48);
+    const publishedAt = sanitizeUserIntelNote(item.publishedAt, 32);
+    const summary = sanitizeUserIntelNote(
+      item.summary ?? item.title ?? "",
+      120
+    );
+    if (source && publishedAt) {
+      out.push({ source, publishedAt, summary });
+    }
+  }
+  return out;
 }
 
 function redactModelLeak(str) {
@@ -260,17 +283,50 @@ export function matchesCanonicalSportteryItem(pm, canonical) {
   return Boolean(canonicalId) && rawId === canonicalId;
 }
 
+function pickObjectiveFactsFields(objectiveFacts) {
+  return {
+    restIntervalSummary: objectiveFacts.restIntervalSummary,
+    recentLedgerSummary: objectiveFacts.recentLedgerSummary,
+    dualAxisSummary: objectiveFacts.dualAxisSummary,
+    newsTimelineSummary: objectiveFacts.newsTimelineSummary,
+    hasVerifiedNews: Boolean(objectiveFacts.hasVerifiedNews),
+  };
+}
+
+function resolveNormalizedObjectiveFacts(src) {
+  const base = src?.objectiveFacts || {};
+  return {
+    restIntervalSummary:
+      src?.restIntervalSummary || base.restIntervalSummary || "无可核验信息",
+    recentLedgerSummary:
+      src?.recentLedgerSummary || base.recentLedgerSummary || "无可核验信息",
+    dualAxisSummary:
+      src?.dualAxisSummary ||
+      base.dualAxisSummary ||
+      src?.droppingTrends ||
+      "无可核验信息",
+    newsTimelineSummary:
+      src?.newsTimelineSummary || base.newsTimelineSummary || "无可核验信息",
+    hasVerifiedNews: Boolean(src?.hasVerifiedNews ?? base.hasVerifiedNews),
+  };
+}
+
+function buildObjectiveFactsSignature(facts) {
+  return `${facts.restIntervalSummary}|${facts.recentLedgerSummary}|${facts.dualAxisSummary}|${facts.newsTimelineSummary}|${facts.hasVerifiedNews ? 1 : 0}`;
+}
+
 /**
  * 服务端权威盘口上下文构建（单场点诊）：直接基于服务端赛事快照与客观历史底座生成完整排雷输入，杜绝前端拼接提示上下文
  */
 export function buildSingleMatchDiagnosisContext(m, userNote, opts = {}) {
   if (!m) throw new Error("Match not found");
   const mq = m.microQuant || {};
-  const objectiveFacts = buildMatchObjectiveFactsBundle(m, {
+  const rawBundle = buildMatchObjectiveFactsBundle(m, {
     ...opts,
     userNote,
   });
-  const binding = computeMatchAlertBinding(m, objectiveFacts.decisionEpochMs);
+  const objectiveFacts = pickObjectiveFactsFields(rawBundle);
+  const binding = computeMatchAlertBinding(m, rawBundle.decisionEpochMs);
   return {
     matchId: m.id,
     matchNumStr: m.matchNumStr,
@@ -285,11 +341,8 @@ export function buildSingleMatchDiagnosisContext(m, userNote, opts = {}) {
     xgSummary: formatXgSummaryOrMissing(m, mq, "总预期"),
     oneGoalSharePct: resolveOneGoalSharePct(mq),
     droppingTrends: objectiveFacts.dualAxisSummary || formatMatchTrends(m),
-    restIntervalSummary: objectiveFacts.restIntervalSummary,
-    recentLedgerSummary: objectiveFacts.recentLedgerSummary,
-    dualAxisSummary: objectiveFacts.dualAxisSummary,
-    newsTimelineSummary: objectiveFacts.newsTimelineSummary,
-    hasVerifiedNews: objectiveFacts.hasVerifiedNews,
+    objectiveFacts,
+    ...objectiveFacts,
     binding,
     userNote,
   };
@@ -381,14 +434,15 @@ export function buildComboDiagnosisContext({
   const allVisibleQuoteTimestamps = [];
   const matchesPayload = targetMatches.slice(0, 8).map((m) => {
     const mq = m.microQuant || {};
-    const objectiveFacts = buildMatchObjectiveFactsBundle(m, {
+    const rawBundle = buildMatchObjectiveFactsBundle(m, {
       historySnapshot,
       historyCoordinator,
       decisionEpochMs,
       userNote,
       verifiedNews,
     });
-    for (const ts of objectiveFacts.visibleQuoteTimestamps || []) {
+    const objectiveFacts = pickObjectiveFactsFields(rawBundle);
+    for (const ts of rawBundle.visibleQuoteTimestamps || []) {
       const prefixed = `${m.matchNumStr || m.id}·${ts}`;
       if (!allVisibleQuoteTimestamps.includes(prefixed)) {
         allVisibleQuoteTimestamps.push(prefixed);
@@ -446,12 +500,9 @@ export function buildComboDiagnosisContext({
       paceLabel: mq.paceLabel || "均衡节奏",
       alphaScanSummary: mq.alphaScanSummary || "",
       droppingTrends: objectiveFacts.dualAxisSummary || formatMatchTrends(m),
-      restIntervalSummary: objectiveFacts.restIntervalSummary,
-      recentLedgerSummary: objectiveFacts.recentLedgerSummary,
-      dualAxisSummary: objectiveFacts.dualAxisSummary,
-      newsTimelineSummary: objectiveFacts.newsTimelineSummary,
-      hasVerifiedNews: objectiveFacts.hasVerifiedNews,
-      binding: computeMatchAlertBinding(m, objectiveFacts.decisionEpochMs),
+      objectiveFacts,
+      ...objectiveFacts,
+      binding: computeMatchAlertBinding(m, rawBundle.decisionEpochMs),
     };
   });
 
@@ -897,17 +948,19 @@ export function createXiaoGaoService(opts = {}) {
 
   async function analyzeMatch(apiKey, req) {
     const nowMs = nowFn();
-    const restIntervalSummary = req.restIntervalSummary || "无可核验信息";
-    const recentLedgerSummary = req.recentLedgerSummary || "无可核验信息";
-    const dualAxisSummary =
-      req.dualAxisSummary || req.droppingTrends || "无可核验信息";
-    const newsTimelineSummary = req.newsTimelineSummary || "无可核验信息";
-    const hasVerifiedNews = Boolean(req.hasVerifiedNews);
+    const facts = resolveNormalizedObjectiveFacts(req);
+    const {
+      restIntervalSummary,
+      recentLedgerSummary,
+      dualAxisSummary,
+      newsTimelineSummary,
+      hasVerifiedNews,
+    } = facts;
     const safeNote = sanitizeUserIntelNote(req.userNote, 280);
 
     const cacheKey =
       req?.binding?.matchId && req?.binding?.quoteVersionSig
-        ? `${req.binding.matchId}|${req.binding.activePoolsMask}|${req.binding.hhadGoalLine}|${req.binding.quoteVersionSig}|${safeNote}|${restIntervalSummary}|${recentLedgerSummary}|${dualAxisSummary}`
+        ? `${req.binding.matchId}|${req.binding.activePoolsMask}|${req.binding.hhadGoalLine}|${req.binding.quoteVersionSig}|${safeNote}|${buildObjectiveFactsSignature(facts)}`
         : null;
     const cachedAlert = getValidBoundedCache(
       singleDiagnosisCache,
@@ -1017,7 +1070,7 @@ ${safeNote ? `用户补充赛前备注：${safeNote}` : ""}`;
 
     const comboHasVerifiedNews =
       Boolean(comboReq.hasVerifiedNews) ||
-      items.some((it) => Boolean(it.hasVerifiedNews));
+      items.some((it) => resolveNormalizedObjectiveFacts(it).hasVerifiedNews);
     const comboNewsTimelineSummary =
       comboReq.newsTimelineSummary || "无可核验信息";
     const safeComboNote = sanitizeUserIntelNote(comboReq.userNote, 320);
@@ -1028,13 +1081,13 @@ ${safeNote ? `用户补充赛前备注：${safeNote}` : ""}`;
     );
     const comboCacheKey = allHaveBindings
       ? `${items
-          .map(
-            (it) =>
-              `${it.binding.matchId}#${it.binding.activePoolsMask}#${it.binding.hhadGoalLine}#${it.binding.quoteVersionSig}#${it.userPickedDesc || ""}`
-          )
+          .map((it) => {
+            const lf = resolveNormalizedObjectiveFacts(it);
+            return `${it.binding.matchId}#${it.binding.activePoolsMask}#${it.binding.hhadGoalLine}#${it.binding.quoteVersionSig}#${it.userPickedDesc || ""}#${buildObjectiveFactsSignature(lf)}`;
+          })
           .join(
             "||"
-          )}@@${actCtx.badge || ""}|${comboReq.orderSummary || ""}|${safeComboNote}`
+          )}@@${actCtx.badge || ""}|${comboReq.orderSummary || ""}|${safeComboNote}|${comboNewsTimelineSummary}|${comboHasVerifiedNews ? 1 : 0}`
       : null;
     const cachedCombo = getValidBoundedCache(
       comboDiagnosisCache,
