@@ -40,12 +40,87 @@ import type {
   WorkbenchController,
   WorkbenchSnapshot,
 } from "../../workspace/workbenchController.ts";
-import { renderTrendArrow } from "./MatchRadarCabin.tsx";
 import {
+  renderCompactDeltaBadge,
+  renderTrendArrow,
+} from "./MatchRadarCabin.tsx";
+import {
+  buildMatchDualAxisDrawerViewModel,
   buildPosterSlipRows,
   formatPaceCorrelationTileLabel,
   type SheetState,
 } from "./cabinViewModels.ts";
+
+function DualAxisMovementSection({ match }: { match: MatchItem }) {
+  const vm = buildMatchDualAxisDrawerViewModel(match);
+  if (vm.pools.length === 0) return null;
+  return (
+    <div className="dual-axis-card num">
+      <div className="da-card-top">
+        <b>📊 {vm.sectionTitle}</b>
+        <span>{vm.sectionSubtitle}</span>
+      </div>
+      {vm.pools.map((pool) => (
+        <div key={pool.poolCode} className="da-pool">
+          <div className="da-pool-head">
+            <div className="da-pool-title">
+              <strong>{pool.poolTitle}</strong>
+              {pool.goalLineSegmentLabel && (
+                <em className="da-seg-tag">{pool.goalLineSegmentLabel}</em>
+              )}
+            </div>
+            <span
+              className={`qpill ${
+                pool.baselineSource === "official-archive-open"
+                  ? "hi"
+                  : pool.baselineSource === "local-first-seen"
+                    ? "warn"
+                    : ""
+              }`}
+              style={{ flexShrink: 0 }}
+            >
+              {pool.baselineBadgeText}
+            </span>
+          </div>
+          {pool.sameDirectionWarningText && (
+            <div className="da-same-dir-warn">
+              {pool.sameDirectionWarningText}
+            </div>
+          )}
+          <div className="da-col-hdr">
+            <span>选项(真率)</span>
+            <span>{vm.axis1Header}</span>
+            <span>{vm.axis2Header}</span>
+          </div>
+          {pool.rows.map((row) => (
+            <div key={row.optionKey} className="da-row">
+              <div className="da-opt">
+                <b>{row.optionLabel}</b>
+                <small>{row.fairProbText}</small>
+              </div>
+              <div className={`da-col ${row.axis1Tone}`}>
+                <b>{row.axis1ValueText}</b>
+                <small>{row.axis1SubText}</small>
+              </div>
+              <div
+                className={`da-col ${
+                  row.axis2Direction === 1
+                    ? "up"
+                    : row.axis2Direction === -1
+                      ? "dn"
+                      : "neutral"
+                }`}
+              >
+                <b>{row.axis2ValueText}</b>
+                <small>{row.axis2TimeText}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 type TactileConfigState = ReturnType<typeof getTactileState>;
 
@@ -366,11 +441,14 @@ export function BottomSheetsLayer({
                   className={`key cell num ${isPicked(sheetMatch.id, "TTG", opt.key) ? "on" : ""}`}
                 >
                   <small>
-                    {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
+                    <span>
+                      {opt.label} · {(opt.fairProb * 100).toFixed(0)}%
+                    </span>
+                    {renderCompactDeltaBadge(opt, 0)}
                   </small>
                   <b>
                     {opt.odds.toFixed(2)}
-                    {renderTrendArrow(opt.trend)}
+                    {renderTrendArrow(opt.trend, opt.movement)}
                   </b>
                 </button>
               ))}
@@ -406,11 +484,14 @@ export function BottomSheetsLayer({
                   className={`key cell num ${isPicked(sheetMatch.id, "HAFU", opt.key) ? "on" : ""}`}
                 >
                   <small>
-                    {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                    <span>
+                      {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                    </span>
+                    {renderCompactDeltaBadge(opt, 1)}
                   </small>
                   <b>
                     {opt.odds.toFixed(2)}
-                    {renderTrendArrow(opt.trend)}
+                    {renderTrendArrow(opt.trend, opt.movement)}
                   </b>
                 </button>
               ))}
@@ -475,14 +556,21 @@ export function BottomSheetsLayer({
                     className={`key cell num ${isPicked(sheetMatch.id, "CRS", opt.key) ? "on" : ""}`}
                   >
                     <small>
-                      {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                      <span>
+                        {opt.label} · {(opt.fairProb * 100).toFixed(1)}%
+                      </span>
+                      {renderCompactDeltaBadge(opt, 1)}
                     </small>
                     <b>
                       {opt.odds.toFixed(2)}
-                      {renderTrendArrow(opt.trend)}
+                      {renderTrendArrow(opt.trend, opt.movement)}
                     </b>
                   </button>
                 ))}
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <DualAxisMovementSection match={sheetMatch} />
             </div>
           </>
         )}
@@ -535,6 +623,10 @@ export function BottomSheetsLayer({
                 </div>
 
                 <SpringProbBar probs={[hP, dP, aP]} />
+
+                <div style={{ margin: "0 0 8px" }}>
+                  <DualAxisMovementSection match={sheetMatch} />
+                </div>
 
                 <div className="tiles pop num">
                   <div className="tile">

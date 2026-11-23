@@ -2773,6 +2773,122 @@ function formatMatchAlphaScanSummary(scan) {
   return `五池定价严密：各玩法经经验贝叶斯收缩校准后最高期望返还 ${maxRetPct}（未达 101.0% 纯+EV门禁），无跨盘错价洼地`;
 }
 
+function buildPureObjectiveDualAxisSteamSignal(m) {
+  const poolCodes = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  let hasMultiFrame = false;
+  let primaryMultiBaselineLabel = "多帧观测";
+  const multiNotable = [];
+  const singleHopNotable = [];
+
+  for (const code of poolCodes) {
+    const pool = m?.pools?.[code];
+    if (
+      !pool ||
+      pool.selling === false ||
+      !Array.isArray(pool.options) ||
+      pool.options.length === 0
+    ) {
+      continue;
+    }
+    const poolName = pool.name || code;
+    const rank = code === "HAD" ? 0 : code === "HHAD" ? 1 : 2;
+    for (const opt of pool.options) {
+      const mov = opt?.movement;
+      const dir =
+        mov?.lastHopDirection === 1 || mov?.lastHopDirection === -1
+          ? mov.lastHopDirection
+          : opt?.trend === 1 || opt?.trend === -1
+            ? opt.trend
+            : 0;
+      const frameCount = Number(mov?.frameCount || 0);
+      if (frameCount >= 2 && mov?.baselineSource !== "single-frame") {
+        hasMultiFrame = true;
+        const srcLabel =
+          mov.baselineSource === "official-archive-open"
+            ? "自官方归档首报"
+            : "自本系统首次观测";
+        if (primaryMultiBaselineLabel === "多帧观测" || rank < 2) {
+          primaryMultiBaselineLabel = srcLabel;
+        }
+        const dp =
+          typeof mov.cumFairProbDeltaPp === "number" &&
+          Number.isFinite(mov.cumFairProbDeltaPp)
+            ? mov.cumFairProbDeltaPp
+            : null;
+        if ((dp !== null && Math.abs(dp) >= 0.1) || dir !== 0) {
+          const sameDir = Boolean(
+            dp !== null &&
+            ((dir === -1 && dp < -0.05) || (dir === 1 && dp > 0.05))
+          );
+          multiNotable.push({
+            rank,
+            poolName,
+            label: opt.label || opt.key,
+            srcLabel,
+            dp,
+            dir,
+            sameDir,
+            prevOdds: mov.prevOdds ?? null,
+            currentOdds: mov.currentOdds ?? opt.odds ?? null,
+          });
+        }
+      } else if (dir !== 0) {
+        singleHopNotable.push({
+          rank,
+          poolName,
+          label: opt.label || opt.key,
+          dir,
+          odds: Number(opt.odds || 0),
+        });
+      }
+    }
+  }
+
+  if (!hasMultiFrame) {
+    if (singleHopNotable.length > 0) {
+      singleHopNotable.sort((a, b) => a.rank - b.rank);
+      const top = singleHopNotable
+        .slice(0, 2)
+        .map(
+          (x) =>
+            `${x.poolName}·${x.label}${x.odds > 1 ? `@${x.odds.toFixed(2)}` : ""}(${x.dir === 1 ? "▲上调" : "▼下调"})`
+        )
+        .join("、");
+      return `📊 双维盘面走势（仅单帧观测·暂不判趋势）：末跳水位【${top}】`;
+    }
+    return "📊 双维盘面走势（仅单帧观测·暂不判趋势）：当前报价暂无历史帧对照，末跳水位无升降";
+  }
+
+  if (multiNotable.length === 0) {
+    return `📊 双维盘面走势（${primaryMultiBaselineLabel}）：各在售池累计去水真率波动 <0.1pp，末跳水位平稳`;
+  }
+
+  multiNotable.sort((a, b) => {
+    if (a.sameDir !== b.sameDir) return a.sameDir ? -1 : 1;
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const ad = Math.abs(a.dp ?? 0);
+    const bd = Math.abs(b.dp ?? 0);
+    if (Math.abs(bd - ad) > 1e-6) return bd - ad;
+    return Math.abs(b.dir) - Math.abs(a.dir);
+  });
+
+  const top = multiNotable[0];
+  const dpSign = (top.dp ?? 0) > 0 ? "+" : "";
+  const dpStr =
+    top.dp !== null ? `${dpSign}${top.dp.toFixed(2)}pp` : "无有效同集基准";
+  const hopStr =
+    top.prevOdds !== null && top.currentOdds !== null
+      ? `${top.prevOdds.toFixed(2)}→${top.currentOdds.toFixed(2)}(${
+          top.dir === 1 ? "▲上调" : top.dir === -1 ? "▼下调" : "→持平"
+        })`
+      : `@${Number(top.currentOdds || 0).toFixed(2)}`;
+
+  if (top.sameDir) {
+    return `📊 双维盘面走势（${top.srcLabel}）：${top.poolName}·${top.label} 末跳水位 ${hopStr}，整池返还率同步调整下累计去水真率 ${dpStr}（同向变化，切勿反转水位箭头充趋势）`;
+  }
+  return `📊 双维盘面走势（${top.srcLabel}）：${top.poolName}·${top.label} 累计真率 ${dpStr}｜末跳水位 ${hopStr}`;
+}
+
 /** 1. 单场精算师底牌反推（服务端黑盒：五池闭合 xG + 全让球线统一一球卡盘率 + Dixon-Coles 低比分联动修正系数 ρ + 跨盘错价扫描） */
 export function analyzeMatchMicroQuant(m, precomputedCal) {
   const cal = precomputedCal ?? calibrateMatchCoherentModel(m);
@@ -2842,18 +2958,7 @@ export function analyzeMatchMicroQuant(m, precomputedCal) {
 
   const arbitrages = computeEquivalentArbitrages(m);
 
-  const droppingOpts = [
-    ...(m.pools.HAD?.options ?? [])
-      .filter((o) => o.trend === -1)
-      .map((o) => `主盘${o.label}`),
-    ...(m.pools.HHAD?.options ?? [])
-      .filter((o) => o.trend === -1)
-      .map((o) => o.label),
-  ];
-  const steamSignal =
-    droppingOpts.length > 0
-      ? `🔥 真防冷急降：体彩正下调【${droppingOpts.slice(0, 2).join("/")}】赔付`
-      : "⚖️ 盘面平稳：暂无剧烈急跌诱盘";
+  const steamSignal = buildPureObjectiveDualAxisSteamSignal(m);
 
   const microBadges = [
     { text: `xG ${homeXG}:${awayXG}`, tone: "sky" },
@@ -2870,9 +2975,6 @@ export function analyzeMatchMicroQuant(m, precomputedCal) {
       text: `💰省钱差价 +${arbitrages[0].edgePct}%`,
       tone: "emerald",
     });
-  }
-  if (droppingOpts.length > 0) {
-    microBadges.push({ text: `🔻${droppingOpts[0]}降水`, tone: "purple" });
   }
 
   // paceCorrelation 为 Dixon-Coles {0:0, 1:0, 0:1, 1:1} 低比分联动修正系数 ρ（非全场总进球 Pearson 相关系数）

@@ -322,17 +322,31 @@ export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
     const pool = match.pools[pCode];
     if (!pool || !Array.isArray(pool.options)) continue;
     for (const opt of pool.options) {
-      if (opt.trend === -1 || opt.trend === 1) {
+      const effectiveDir = opt.movement?.lastHopDirection ?? opt.trend;
+      if (effectiveDir === -1 || effectiveDir === 1) {
+        const mov = opt.movement;
+        const hasMultiFrame =
+          mov &&
+          mov.frameCount >= 2 &&
+          mov.baselineSource !== "single-frame" &&
+          typeof mov.cumFairProbDeltaPp === "number" &&
+          Number.isFinite(mov.cumFairProbDeltaPp);
+        const hopPrefix =
+          effectiveDir === -1 ? "▼末跳水位下调" : "▲末跳水位上调";
+        const interpretation = hasMultiFrame
+          ? `${hopPrefix} · ${
+              mov.baselineSource === "official-archive-open"
+                ? "自官方归档首报"
+                : "自本系统首次观测"
+            }累计真率 ${mov.cumFairProbDeltaPp! > 0 ? "+" : ""}${mov.cumFairProbDeltaPp!.toFixed(2)}pp`
+          : `${hopPrefix} · 仅单帧观测暂不判累计趋势`;
         trendMovements.push({
           poolCode: pCode,
           poolName: pool.name,
           optionLabel: opt.label,
           odds: opt.odds,
-          trend: opt.trend,
-          interpretation:
-            opt.trend === -1
-              ? "绿降▼ 机构下调赔付设防"
-              : "红升▲ 抬高赔付散热预警",
+          trend: effectiveDir,
+          interpretation,
         });
       }
     }
@@ -342,12 +356,22 @@ export function buildMatchIntelDigest(match: MatchItem): MatchIntelDigest {
     (a, b) => b.fairProb - a.fairProb
   );
   const topHad = hadOpts[0];
+  const topHadMov = topHad?.movement;
+  const topHadDir = topHadMov?.lastHopDirection ?? topHad?.trend ?? 0;
   const hadTrendTag =
-    topHad?.trend === 1
-      ? "（热门红升▲散热，慎做裸胆）"
-      : topHad?.trend === -1
-        ? "（绿降▼设防加固）"
-        : "";
+    topHadMov &&
+    topHadMov.frameCount >= 2 &&
+    topHadMov.baselineSource !== "single-frame" &&
+    typeof topHadMov.cumFairProbDeltaPp === "number" &&
+    Math.abs(topHadMov.cumFairProbDeltaPp) >= 0.1
+      ? `（累计真率 ${topHadMov.cumFairProbDeltaPp > 0 ? "+" : ""}${topHadMov.cumFairProbDeltaPp.toFixed(1)}pp${
+          topHadMov.baselineSource === "local-first-seen" ? "初" : ""
+        }）`
+      : topHadDir === 1
+        ? "（末跳水位▲上调）"
+        : topHadDir === -1
+          ? "（末跳水位▼下调）"
+          : "";
   const hadImpact = topHad
     ? `胜平负首推关注「${topHad.label} @${topHad.odds.toFixed(2)}」（五池去水真率 ${(topHad.fairProb * 100).toFixed(0)}%）${hadTrendTag}`
     : "胜平负暂未开售单关/串关固定奖池";
@@ -4023,7 +4047,9 @@ export function filterAndGroupRadarMatches(
     if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
   } else if (opts.qFilter === "drop") {
     const sub = list.filter((m) =>
-      Object.values(m.pools).some((p) => p.options.some((o) => o.trend === -1))
+      Object.values(m.pools).some((p) =>
+        p.options.some((o) => (o.movement?.lastHopDirection ?? o.trend) === -1)
+      )
     );
     if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
   } else if (opts.qFilter === "arb") {

@@ -2,6 +2,7 @@ import {
   evaluateQuantWorkspace,
   sanitizeAndDeduplicatePicks,
 } from "./quantEngine.mjs";
+import { hydrateMatchesWithDualAxisMovement } from "./history/dualAxisMovement.mjs";
 import { buildBoardFreshnessMeta } from "./history/sportteryHistoryNormalizers.mjs";
 import {
   FALLBACK_MATCHES,
@@ -113,11 +114,44 @@ export function createAppRoutes(opts = {}) {
   let lastMatchFetchAt = 0;
   let inFlightMatchLoad = null;
 
+  let memoRawMatches = null;
+  let memoSnapshotSeq = -1;
+  let memoBoardState = "";
+  let memoHydratedMatches = null;
+
+  function resolveHydratedMatches(baseMatches, boardMeta, nowMs) {
+    const snap = historyCoordinator?.getSnapshot?.() ?? null;
+    const seq = typeof snap?.seq === "number" ? snap.seq : 0;
+    const bState = `${boardMeta?.boardState || ""}|${Boolean(
+      boardMeta?.isFallbackReadOnly
+    )}`;
+    if (
+      memoHydratedMatches &&
+      memoRawMatches === baseMatches &&
+      memoSnapshotSeq === seq &&
+      memoBoardState === bState
+    ) {
+      return memoHydratedMatches;
+    }
+    memoRawMatches = baseMatches;
+    memoSnapshotSeq = seq;
+    memoBoardState = bState;
+    memoHydratedMatches = hydrateMatchesWithDualAxisMovement(
+      baseMatches,
+      snap,
+      {
+        boardMeta,
+        nowMs,
+      }
+    );
+    return memoHydratedMatches;
+  }
+
   async function ensureMatchesLoaded(force = false) {
     const now = nowFn();
     if (!force && lastMatchFetchAt > 0 && now - lastMatchFetchAt < 120_000) {
       return {
-        matches: cachedMatches,
+        matches: resolveHydratedMatches(cachedMatches, cachedBoardMeta, now),
         syncNote: cachedSyncNote,
         boardMeta: cachedBoardMeta,
       };
@@ -207,7 +241,11 @@ export function createAppRoutes(opts = {}) {
 
         lastMatchFetchAt = nowAfter;
         return {
-          matches: cachedMatches,
+          matches: resolveHydratedMatches(
+            cachedMatches,
+            cachedBoardMeta,
+            nowAfter
+          ),
           syncNote: cachedSyncNote,
           boardMeta: cachedBoardMeta,
         };

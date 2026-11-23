@@ -25,6 +25,7 @@ export interface DualAxisOptionMovement {
   openAt?: string | null;
   prevOdds?: number | null;
   prevAt?: string | null;
+  currentOdds?: number | null;
   currentAt?: string | null;
   lastHopDirection: -1 | 0 | 1;
 }
