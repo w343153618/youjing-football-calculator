@@ -63,6 +63,10 @@ export interface LedgerEntry {
   title: string;
   modeLabel: string;
   betCount: number;
+  betCountUnit?: "logical-lines" | "stake-units";
+  logicalLineCount?: number;
+  stakeUnitsCount?: number;
+  physicalSlipCount?: number;
   cost: number;
   paperRefCost: number;
   minPayout: number;
@@ -72,6 +76,11 @@ export interface LedgerEntry {
   netProfit: number;
   manualOverride?: boolean;
   autoSettled?: boolean;
+  boardState?: string;
+  boardSource?: string;
+  boardSyncedAt?: number | null;
+  quoteVersion?: string | number | null;
+  quotedAt?: number | null;
   snapshot?: LedgerTicketSnapshot;
   settlementDetail?: LedgerSettlementDetail;
   createdAt: number;
@@ -111,6 +120,10 @@ export type LedgerMutatePayload =
       title: string;
       modeLabel: string;
       betCount: number;
+      betCountUnit?: "logical-lines" | "stake-units";
+      logicalLineCount?: number;
+      stakeUnitsCount?: number;
+      physicalSlipCount?: number;
       cost: number;
       paperRefCost?: number;
       minPayout: number;
@@ -930,6 +943,7 @@ export async function requestServerMatchesSync(
 ): Promise<{
   matches: MatchItem[];
   syncNote: string;
+  freshBoardForRequest?: boolean;
   boardMeta?: BoardFreshnessMeta;
   workspace: QuantWorkspaceResponse;
   ledger?: UserLedgerSnapshot;
@@ -938,6 +952,7 @@ export async function requestServerMatchesSync(
   return postEncryptedApi<{
     matches: MatchItem[];
     syncNote: string;
+    freshBoardForRequest?: boolean;
     boardMeta?: BoardFreshnessMeta;
     workspace: QuantWorkspaceResponse;
     ledger?: UserLedgerSnapshot;

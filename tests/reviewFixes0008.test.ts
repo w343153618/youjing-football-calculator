@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -318,25 +322,31 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
 
     const slipCtrl = createBetSlipController({
       debounceMs: 0,
-      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      computeWorkspace: (p, ms) => ({
+        ...evaluateQuantWorkspace(p, ms),
+        boardMeta: freshOfficialBoard,
+      }),
     });
-    slipCtrl.initializeMatches(
-      FALLBACK_MATCHES as MatchItem[],
-      [],
-      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
-    );
+    slipCtrl.applyAuthenticatedBundle({
+      matches: withConfirmedSaleRights(FALLBACK_MATCHES as MatchItem[]),
+      initialPicks: [],
+      workspace: evaluateQuantWorkspace(
+        { picks: [], multiple: 5 },
+        FALLBACK_MATCHES
+      ),
+      boardMeta: freshOfficialBoard,
+    });
     slipCtrl.togglePick(m0, "HAD", "h");
     slipCtrl.togglePick(m1, "HAD", "h");
     slipCtrl.setDirectMultiple(150);
     await slipCtrl.flush();
+    assert.equal(slipCtrl.getShopkeeperBlockReason(), null);
     const wechatTxt = slipCtrl.formatShopkeeperWeChatSlip();
     assert.ok(wechatTxt.includes("共2张实票"));
     const posterRows = buildPosterSlipRows(
       slipCtrl.getState().workspace.effectiveReport,
-      null,
-      null,
-      slipCtrl.getState().picks,
-      150,
+      slipCtrl.getState().matches,
+      slipCtrl.getState().workspace.boardMeta,
       new Set()
     );
     assert.equal(posterRows.length, 2);
@@ -376,7 +386,8 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       100,
       "objective",
       false,
-      []
+      [],
+      { allowSaveCash: true }
     )[3] as ArchetypePlan;
     assert.equal(slot4PosEv.available, true);
     assert.equal(slot4PosEv.alphaKind, "positive-ev");
@@ -529,8 +540,9 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       fairProb: awayOpt.fairProb,
     };
     assert.equal(
-      generateParetoPortfolio([mHafuHomeLag], 100, "objective", false, [])[3]
-        .available,
+      generateParetoPortfolio([mHafuHomeLag], 100, "objective", false, [], {
+        allowSaveCash: true,
+      })[3].available,
       true
     );
     const slot4AnchoredAway = generateParetoPortfolio(
@@ -1092,15 +1104,30 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
     };
 
     // 1. Single-capable 1-match underdog anchor (日本 vs 巴拉圭, anchor 巴拉圭 客胜 HAD a):
-    // Slots ①, ②, ③ must prioritize HAD a + compatible draw cushion HAD d (NEVER betting 日本 主胜 HAD h, and Slot ② spear must stay HAD a!)
+    // Under ADR-0019 (T Δ S = ∅), pure HAD:a (p ≈ 13% < 18%/20%) is never expanded with unpicked HAD:d without consent (Slot ③ >= 12% stays available);
+    // when user explicitly anchors [HAD:a, HAD:d], all 3 slots are available with spear HAD:a and zero HAD:h!
     const mSingle = FALLBACK_MATCHES[1] as MatchItem;
     const awayUnderdogAnchor = pickFromMatch(mSingle, "HAD", "a");
-    const plansUnderdog = generateParetoPortfolio(
+    const drawCushionAnchor = pickFromMatch(mSingle, "HAD", "d");
+    const pureUnderdogPlans = generateParetoPortfolio(
       [mSingle],
       100,
       "objective",
       false,
       [awayUnderdogAnchor]
+    );
+    assert.equal(
+      pureUnderdogPlans.every((p) => p.lines.length === 0),
+      true,
+      "Pure ~13.6% underdog (>86% wipeout) must abstain rather than injecting unpicked HAD:d without consent"
+    );
+
+    const plansUnderdog = generateParetoPortfolio(
+      [mSingle],
+      100,
+      "objective",
+      false,
+      [awayUnderdogAnchor, drawCushionAnchor]
     );
     for (const idx of [0, 1, 2]) {
       const p = plansUnderdog[idx] as ArchetypePlan;
@@ -1175,13 +1202,14 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
         false,
         [drawAnc]
       );
+      // ADR-0019: Single draw anchor (~20% hit / ~80% wipeout) passes Slot ② (<=80% wipeout, >=18% strict gain) while Slots ①/③ enforce <=75% wipeout; every available slot must emit ONLY draw-compatible legs
+      assert.equal(
+        drawPlans[1].available,
+        true,
+        `Draw anchor [${label}] Slot ② (<=80% wipeout) must be available`
+      );
       for (const idx of [0, 1, 2]) {
         const p = drawPlans[idx] as ArchetypePlan;
-        assert.equal(
-          p.available,
-          true,
-          `Draw anchor [${label}] Slot ${idx + 1} must be available`
-        );
         for (const ln of p.lines) {
           for (const g of ln.legs) {
             assert.equal(
@@ -1276,6 +1304,8 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
     }
 
     // (3d) mPlus1 (goalLine = +1), anchor HAD h (home underdog): NEVER HHAD:ha, HHAD:hd, HAFU:aa, HAFU:da
+    // ADR-0019: home underdog (~16% win prob) is honestly blocked by Slot ①/②/③ objective gates (>=20% / >=18% / >=12% & EV >= -40%),
+    // and never leaks away-win legs or false over-budget copy.
     const mPlus1HomePlans = generateParetoPortfolio(
       [mPlus1],
       100,
@@ -1283,9 +1313,13 @@ describe("Spec 0008 · Post-Review Security, Bounds & Fidelity Fixes", () => {
       false,
       [pickFromMatch(mPlus1, "HAD", "h")]
     );
+    assert.equal(
+      (mPlus1HomePlans[1].emptyReason ?? "").includes("超出当前预算"),
+      false,
+      `¥6 exact single at ¥100 budget must never claim 超出当前预算: ${mPlus1HomePlans[1].emptyReason}`
+    );
     for (const idx of [0, 1, 2]) {
       const p = mPlus1HomePlans[idx] as ArchetypePlan;
-      assert.equal(p.available, true);
       for (const g of p.lines.flatMap((l) => l.legs)) {
         assert.equal(mPlus1.pools[g.poolCode].single, true);
         assert.equal(

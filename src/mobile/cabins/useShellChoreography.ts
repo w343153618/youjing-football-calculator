@@ -54,6 +54,16 @@ import type {
 
 export const APP_DOC_TITLE = "优竞体育内部专用 · 智能精算与风控工作台";
 
+export interface BankerConfirmPromptState {
+  matchId: string;
+  homeName: string;
+  promptText: string;
+  beforeLabel: string;
+  afterLabel: string;
+  beforeCost: number;
+  afterCost: number;
+}
+
 export function useShellChoreography({
   initialSkin,
   embedded,
@@ -123,20 +133,22 @@ export function useShellChoreography({
   );
   const [cutoffTickNow, setCutoffTickNow] = useState<number>(() => Date.now());
   const [tactileCfg, setTactileCfg] = useState(() => getTactileState());
+  const [bankerConfirmPrompt, setBankerConfirmPrompt] =
+    useState<BankerConfirmPromptState | null>(null);
 
   const skinLinkRef = useRef<HTMLLinkElement | null>(null);
   const puckSpringRef = useRef<Spring | null>(null);
   const prevAmtRef = useRef<number>(-1);
   const prevBalRef = useRef<number>(wbSnap.ledger.dailyRemaining);
-  const prevUwRef = useRef<number>(
-    wbSnap.betSlipState.workspace.effectiveReport.underwaterCount
-  );
+  const baseEffectiveReport =
+    wbSnap.betSlipState.workspace.baselineReport ??
+    wbSnap.betSlipState.workspace.effectiveReport;
+  const prevUwRef = useRef<number>(baseEffectiveReport.underwaterCount);
 
   const betCtrl = wbCtrl.betSlip;
-  const { authUser, ledger, playabilityGates } = wbSnap;
-  const { matches, planSpec, lastPoolSwitchUndo, workspace } =
-    wbSnap.betSlipState;
-  const effectiveReport = workspace.effectiveReport;
+  const { authUser, ledger } = wbSnap;
+  const { matches, planSpec, lastPoolSwitchUndo } = wbSnap.betSlipState;
+  const effectiveReport = baseEffectiveReport;
 
   useEffect(() => {
     if (embedded) return;
@@ -298,6 +310,21 @@ export function useShellChoreography({
   }, [tab, mode, qFilter]);
 
   useEffect(() => {
+    if (isDesktop) return;
+    const rafId = requestAnimationFrame(() => placePuck(false));
+    const navEl = refs.navRef.current;
+    if (!navEl || typeof ResizeObserver === "undefined") {
+      return () => cancelAnimationFrame(rafId);
+    }
+    const ro = new ResizeObserver(() => placePuck(false));
+    ro.observe(navEl);
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
+  }, [isDesktop, tab]);
+
+  useEffect(() => {
     const timer = window.setInterval(
       () => setCutoffTickNow(Date.now()),
       60_000
@@ -330,16 +357,11 @@ export function useShellChoreography({
 
   useLayoutEffect(() => {
     if (effectiveReport.totalCost !== prevAmtRef.current) {
-      if (prevAmtRef.current >= 0 && refs.slipAmtRef.current) {
-        animateNumber(
-          refs.slipAmtRef.current,
-          prevAmtRef.current,
-          effectiveReport.totalCost,
-          (v) => `¥${Math.round(v)}`
-        );
-        fxOf(refs.slipAmtRef.current).scale.config(600, 14).kick(1.9);
-      } else if (refs.slipAmtRef.current) {
+      if (refs.slipAmtRef.current) {
         refs.slipAmtRef.current.textContent = `¥${effectiveReport.totalCost}`;
+        if (prevAmtRef.current >= 0) {
+          fxOf(refs.slipAmtRef.current).scale.config(600, 14).kick(1.6);
+        }
       }
     }
     prevAmtRef.current = effectiveReport.totalCost;
@@ -415,9 +437,14 @@ export function useShellChoreography({
           `🎉 同步水位并自动对奖完成：新结 ${res.newlySettledCount} 笔订单`
         );
       } else if (toastOnDone) {
-        notifyToast(
-          `已加密同步 ${res.matchCount ?? matches.length} 场官网实盘`
-        );
+        const latestMeta = wbCtrl.getState().boardMeta;
+        if (latestMeta?.isFallbackReadOnly) {
+          notifyToast("官方源暂未返回新盘，当前展示只读回退快照");
+        } else {
+          notifyToast(
+            `已加密同步 ${res.matchCount ?? matches.length} 场官网实盘`
+          );
+        }
       }
     } else if (toastOnDone) {
       notifyToast("同步繁忙，请稍后再试");
@@ -443,6 +470,7 @@ export function useShellChoreography({
     poolCode: PoolCode,
     optKey: string
   ) => {
+    const hadLockedPlan = Boolean(betCtrl.getState().planSpec);
     const verdict = betCtrl.togglePick(m, poolCode, optKey);
     if (!verdict.ok) {
       shudderDangerElement(el);
@@ -456,6 +484,13 @@ export function useShellChoreography({
       notifyToast("同时选同场两个单关玩法，已按体彩规则自动锁定【单关】");
     } else if (verdict.autoLockedSingleReason === "over-8-matches") {
       notifyToast("超过 8 场赛事，已按体彩规则自动锁定【单关】");
+    } else if (hadLockedPlan) {
+      const stillLocked = Boolean(betCtrl.getState().planSpec);
+      notifyToast(
+        stillLocked
+          ? "已更新手选草稿（核对台仍锁定原已审方案，可点「回到我的手选」切换）"
+          : "已解除原智能方案锁定并按最新手选重算"
+      );
     }
     const removed = verdict.action === "removed";
     kickElement(el, removed ? -1.4 : 2.8);
@@ -479,27 +514,38 @@ export function useShellChoreography({
     arb: EquivalentArbItem,
     triggerEl?: HTMLElement | null
   ) => {
+    const pv = betCtrl.previewEquivalentSwap(arb);
+    if (!pv.ok) {
+      shudderDangerElement(triggerEl ?? null);
+      haptic(12);
+      notifyToast(pv.blockedReason || "同场跨池串关受限，暂无法局部替换");
+      return;
+    }
     if (!betCtrl.applyEquivalentSwap(arb)) return;
+    const afterSt = betCtrl.getState();
+    const afterRep =
+      afterSt.workspace.baselineReport ?? afterSt.workspace.effectiveReport;
+    const shownCost =
+      afterRep.totalCost > 0 ? afterRep.totalCost : pv.targetBudgetCost;
     playTactileCue("optimize-arpeggio");
     if (triggerEl) burstCelebrationSparks(triggerEl, 16);
-    notifyToast(`已切换高水同义项 · ${arb.betterChoice}`);
+    notifyToast(
+      `已等本金切换高水同义项 · ${arb.betterChoice}（应付 ¥${shownCost}）`
+    );
   };
 
   const switchSyntheticSingleModeUI = (nextMode: SyntheticSingleMode) => {
     betCtrl.setSyntheticSingleMode(nextMode);
     haptic(7);
     playTactileCue("tap-on");
-    notifyToast(
-      nextMode === "partial-cover"
-        ? "⚠️ 已确认授权：部分覆盖/超额配平合成单关"
-        : nextMode === "full-3way"
-          ? playabilityGates.hasSyntheticInherentBlindSpot
-            ? "🛡️ 已切换：常规比分覆盖配平合成单关"
-            : "🛡️ 已切换：3项全包无死角配平合成单关"
-          : nextMode === "trim-2way"
-            ? "⚡ 已切换：2项省本搏常规（请注意逆转漏网风险）"
-            : "🌉 已展开过桥配菜搭子，点选任一搭子即凑 2串1"
-    );
+    if (nextMode === "off") {
+      notifyToast("已保留原选方向，可加选另一场组成串关");
+    } else {
+      setDkFocusStep(3);
+      setDkRightTab("audit");
+      setTab("audit");
+      notifyToast("已选合成方式，请核对审单台的票行与金额");
+    }
   };
 
   const applyArchetype = (plan: ArchetypePlan) => {
@@ -532,7 +578,24 @@ export function useShellChoreography({
     homeName: string,
     triggerEl?: HTMLElement | null
   ) => {
-    const res = betCtrl.toggleBankerMatch(matchId);
+    const res = betCtrl.toggleBankerMatch(matchId, {
+      requireConfirmOnPassChange: true,
+    });
+    if (res.requiresConfirm && res.preview) {
+      haptic(8);
+      setBankerConfirmPrompt({
+        matchId,
+        homeName,
+        promptText:
+          res.preview.promptText ||
+          `设胆需将过关从【${res.preview.beforeLabel} · ¥${res.preview.beforeCost}】改为【${res.preview.afterLabel} · ¥${res.preview.afterCost}】，是否确认？`,
+        beforeLabel: res.preview.beforeLabel,
+        afterLabel: res.preview.afterLabel,
+        beforeCost: res.preview.beforeCost,
+        afterCost: res.preview.afterCost,
+      });
+      return;
+    }
     if (!res.ok) {
       haptic(12);
       notifyToast(res.reason || "当前不可设胆");
@@ -542,10 +605,29 @@ export function useShellChoreography({
     playTactileCue(res.isBanker ? "tap-on" : "tap-off");
     notifyToast(
       res.isBanker
-        ? `📌 已设【${homeName}】为必出稳胆（自动剔除无胆冗余组合）`
+        ? `📌 已设【${homeName}】为必出稳胆（剔除不含稳胆的组合）`
         : `已取消【${homeName}】胆码`
     );
   };
+
+  const confirmBankerToggle = () => {
+    const prompt = bankerConfirmPrompt;
+    setBankerConfirmPrompt(null);
+    if (!prompt) return;
+    const res = betCtrl.toggleBankerMatch(prompt.matchId, { confirmed: true });
+    if (!res.ok) {
+      haptic(12);
+      notifyToast(res.reason || "当前不可设胆");
+      return;
+    }
+    haptic(8);
+    playTactileCue("tap-on");
+    notifyToast(
+      `📌 已确认改为【${prompt.afterLabel} · ¥${prompt.afterCost}】并设【${prompt.homeName}】为稳胆`
+    );
+  };
+
+  const dismissBankerConfirm = () => setBankerConfirmPrompt(null);
 
   const applyBridgeCandidateUI = (
     cand: BridgeMatchCandidate,
@@ -664,6 +746,7 @@ export function useShellChoreography({
     cutoffTickNow,
     tactileCfg,
     setTactileCfg,
+    bankerConfirmPrompt,
     switchSkinSmooth,
     actions: {
       applyAuthenticatedBundle,
@@ -675,6 +758,8 @@ export function useShellChoreography({
       applyArchetype,
       restoreEqualMultiple,
       toggleBankerMatchUI,
+      confirmBankerToggle,
+      dismissBankerConfirm,
       applyBridgeCandidateUI,
       finalizeLedgerRecord,
       recordToLedger,

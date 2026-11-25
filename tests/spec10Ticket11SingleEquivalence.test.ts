@@ -1,4 +1,6 @@
+import { freshOfficialBoard } from "./fixtures/officialSaleBoard.ts";
 import assert from "node:assert/strict";
+import { confirmQuotedSynthetic } from "./fixtures/confirmQuotedSynthetic.ts";
 import { describe, it } from "node:test";
 import {
   FALLBACK_MATCHES,
@@ -653,7 +655,11 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
                 ],
               },
             },
-            { authoritativeMatches: [m1, m2], strictValidate: true }
+            {
+              boardMeta: freshOfficialBoard,
+              authoritativeMatches: [m1, m2],
+              strictValidate: true,
+            }
           ),
         /仅限单关/
       );
@@ -828,7 +834,7 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
     }
   });
 
-  it("Slice C: auto-mounts default synthetic single ONLY when exact-equivalent & within authorized cap, blocks silent ¥90 / non-equivalent mounts with partialCoveragePreview + bridgeCandidates, and unlocks on explicit partial-cover opt-in", async () => {
+  it("Slice C: quotes an exact-equivalent synthetic single within the cap and mounts it on confirmation, blocks silent ¥90 / non-equivalent mounts with partialCoveragePreview + bridgeCandidates, and unlocks on explicit partial-cover opt-in", async () => {
     const os = await import("node:os");
     const fs = await import("node:fs");
     const path = await import("node:path");
@@ -837,21 +843,28 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
     ) as MatchItem[];
     const [m1, m2, m3] = liveMatches;
 
-    // 1. Ordinary HAD exact-equivalent within authorized cap (<= max(12, 1*2*5) = ¥12) auto-mounts seamlessly!
+    // 1. Confirm the exact HAD equivalent within the quoted ¥12 cap.
     const ctrl = createBetSlipController({
       debounceMs: 0,
       autoSyncRadar: true,
-      computeWorkspace: (params, matches) =>
-        evaluateQuantWorkspace(params, matches),
+      computeWorkspace: (params, matches) => ({
+        ...evaluateQuantWorkspace(params, matches),
+        boardMeta: freshOfficialBoard,
+      }),
     });
-    ctrl.initializeMatches(
-      liveMatches,
-      [],
-      evaluateQuantWorkspace({ picks: [], multiple: 5 }, liveMatches)
-    );
+    ctrl.applyAuthenticatedBundle({
+      matches: liveMatches,
+      initialPicks: [],
+      workspace: evaluateQuantWorkspace(
+        { picks: [], multiple: 5 },
+        liveMatches
+      ),
+      boardMeta: freshOfficialBoard,
+    });
     ctrl.togglePick(m1, "HAD", "h");
     await ctrl.flush();
 
+    await confirmQuotedSynthetic(ctrl);
     const stExact = ctrl.getState();
     assert.equal(stExact.syntheticSingleMode, "full-3way");
     assert.equal(stExact.workspace.effectiveReport.canCheckout, true);
@@ -859,12 +872,13 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
     assert.equal(stExact.workspace.effectiveReport.syntheticBlindSpotProb, 0);
     assert.ok(
       stExact.workspace.effectiveReport.totalCost <= 12,
-      `Exact 3-way HAFU at 5x must auto-mount within ¥12 cap, got ¥${stExact.workspace.effectiveReport.totalCost}`
+      `Exact 3-way HAFU at 5x must match the confirmed quote within the ¥12 cap, got ¥${stExact.workspace.effectiveReport.totalCost}`
     );
     assert.equal(
       stExact.workspace.effectiveReport.partialCoveragePreview ?? null,
       null
     );
+    assert.equal(ctrl.getShopkeeperBlockReason(), null);
     const slipExact = ctrl.formatShopkeeperWeChatSlip();
     assert.ok(
       slipExact.includes("胜胜") &&
@@ -879,7 +893,11 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
       const addExact = lm.mutateUserLedger(
         "u-t11-exact",
         { action: "add-entry", kind: "live", ...draftExact },
-        { authoritativeMatches: liveMatches, trustedServerSnapshot: true }
+        {
+          boardMeta: freshOfficialBoard,
+          authoritativeMatches: liveMatches,
+          trustedServerSnapshot: true,
+        }
       );
       assert.equal(addExact.ok, true);
       const comebackRes = parseSportteryResultsJson({
@@ -975,10 +993,11 @@ describe("Spec #10 · Ticket #11: Sales Eligibility Split, Exact Set Equivalence
         assert.ok((slotPlan as any).partialCoveragePreview);
       }
 
-      // 3. Explicit opt-in via setSyntheticSingleMode("partial-cover") mounts the 24-bet CRS plan with synthetic-blind-spot warning!
+      // 3. Select the 24-line CRS quote, inspect its blind spot, then authorize its cost.
       ctrl.setSyntheticSingleMode("partial-cover" as any);
       await ctrl.flush();
 
+      await confirmQuotedSynthetic(ctrl);
       const stConfirmed = ctrl.getState();
       const effConfirmed = stConfirmed.workspace.effectiveReport;
       assert.equal(stConfirmed.syntheticSingleMode, "partial-cover");

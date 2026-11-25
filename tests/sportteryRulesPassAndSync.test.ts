@@ -472,14 +472,107 @@ describe("Spec 0005: Official China Sporttery Selection Rules, Multi-Pass State 
     const iron = wsAnchored.portfolioPlans.find(
       (p) => p.key === "max-profit-prob"
     )!;
-    const mainLine = iron.lines[0];
+    // ADR-0019 §2: extreme 4.18 × 4.50 double-underdog parlay (~4% hit rate, ~96% wipeout) is honestly blocked on Slot ①;
+    // when paired with draw shields ([a,d] + [h,d]), Slot ① activates and strictly honors ONLY user-selected options!
+    assert.equal(iron.available, false);
+
+    const m1 = FALLBACK_MATCHES[4]; // 比利时 vs 意大利: default favorite is 'h' @2.38
+    const m2 = FALLBACK_MATCHES[2]; // 波兰 vs 瑞典: default favorite is 'h' @2.38
+    const shieldedUnderdogPicks: SelectedPick[] = [
+      {
+        matchId: m1.id,
+        matchNumStr: m1.matchNumStr,
+        home: m1.home,
+        away: m1.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: Boolean(m1.pools.HAD.single),
+        optionKey: "a",
+        optionLabel: "客胜",
+        odds: m1.pools.HAD.options[2].odds,
+        fairProb: m1.pools.HAD.options[2].fairProb,
+      },
+      {
+        matchId: m1.id,
+        matchNumStr: m1.matchNumStr,
+        home: m1.home,
+        away: m1.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: Boolean(m1.pools.HAD.single),
+        optionKey: "d",
+        optionLabel: "平",
+        odds: m1.pools.HAD.options[1].odds,
+        fairProb: m1.pools.HAD.options[1].fairProb,
+      },
+      {
+        matchId: m2.id,
+        matchNumStr: m2.matchNumStr,
+        home: m2.home,
+        away: m2.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: Boolean(m2.pools.HAD.single),
+        optionKey: "a",
+        optionLabel: "客胜",
+        odds: m2.pools.HAD.options[2].odds,
+        fairProb: m2.pools.HAD.options[2].fairProb,
+      },
+      {
+        matchId: m2.id,
+        matchNumStr: m2.matchNumStr,
+        home: m2.home,
+        away: m2.away,
+        poolCode: "HAD",
+        poolName: "胜平负",
+        singleAllowed: Boolean(m2.pools.HAD.single),
+        optionKey: "d",
+        optionLabel: "平",
+        odds: m2.pools.HAD.options[1].odds,
+        fairProb: m2.pools.HAD.options[1].fairProb,
+      },
+    ];
+    const wsShielded = evaluateQuantWorkspace(
+      {
+        picks: shieldedUnderdogPicks,
+        multiple: 5,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: [m1.id, m2.id],
+        anchorToRadarPicks: true,
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      FALLBACK_MATCHES
+    );
+    const shieldedIron = wsShielded.portfolioPlans.find(
+      (p) => p.key === "max-profit-prob"
+    )!;
+    assert.equal(shieldedIron.available, true);
     assert.ok(
-      mainLine.legs.some((lg) => lg.matchId === m0.id && lg.optionKey === "a"),
-      "max-profit-prob primary line must honor user-selected 巴林 客胜"
+      shieldedIron.lines.some((ln) =>
+        ln.legs.some((lg) => lg.matchId === m1.id && lg.optionKey === "a")
+      ),
+      "max-profit-prob lines must honor user-selected m1 客胜"
     );
     assert.ok(
-      mainLine.legs.some((lg) => lg.matchId === m3.id && lg.optionKey === "h"),
-      "max-profit-prob primary line must honor user-selected 威尔士 主胜"
+      shieldedIron.lines.some((ln) =>
+        ln.legs.some((lg) => lg.matchId === m2.id && lg.optionKey === "a")
+      ),
+      "max-profit-prob lines must honor user-selected m2 客胜"
+    );
+    assert.equal(
+      shieldedIron.lines.some((ln) =>
+        ln.legs.some(
+          (lg) =>
+            (lg.matchId === m1.id && lg.optionKey === "h") ||
+            (lg.matchId === m2.id && lg.optionKey === "h")
+        )
+      ),
+      false,
+      "max-profit-prob MUST NEVER inject unselected favorites (m1 主胜 or m2 主胜)"
     );
   });
 

@@ -68,12 +68,20 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
         stance,
         false,
         [
-          makePick(m, "HAD", optKey),
+          makePick(m, "HAD", "h"),
+          makePick(m, "HAD", "d"),
+          makePick(m, "HAD", "a"),
           makePick(FALLBACK_MATCHES[2] as MatchItem, "HAD", "h"),
         ]
       );
       const p0 = plans.find((p: any) => p.lines.length > 0)!;
-      const leg = p0.lines[0].legs.find(
+      const lineWithOpt = p0.lines.find((ln: any) =>
+        ln.legs.some(
+          (g: { matchId: string; optionKey: string }) =>
+            g.matchId === m.id && g.optionKey === optKey
+        )
+      )!;
+      const leg = lineWithOpt.legs.find(
         (g: { matchId: string }) => g.matchId === m.id
       )!;
       return leg.fairProb as number;
@@ -1430,7 +1438,8 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
       100,
       "objective",
       false,
-      []
+      [],
+      { allowSaveCash: true }
     )[3] as ArchetypePlan;
     assert.equal(
       pairedNonSingleAlpha.available,
@@ -1467,7 +1476,8 @@ describe("Spec 0008 · Seam B: Quotient State-Space Evaluator, Conserving Sandbo
       100,
       "objective",
       false,
-      []
+      [],
+      { allowSaveCash: true }
     )[3] as ArchetypePlan;
     assert.equal(posEvSlot4Guarded.available, true);
     assert.equal(posEvSlot4Guarded.alphaKind, "positive-ev");

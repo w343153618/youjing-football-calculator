@@ -303,11 +303,27 @@ describe("Seam 2: Bonus Optimizer, Five Archetypes, Equivalent Arbitrage & Stagg
         },
       },
     };
-    const activePlans = generateFiveArchetypes(
+    // ADR-0019 C===B: default allowSaveCash=false gates 36% light-stake behind explicit save-cash-preview confirmation
+    const defaultNoSaveAlpha = generateFiveArchetypes(
       [laggedMatch, FALLBACK_MATCHES[1]],
       100,
       "objective",
       false
+    ).find((p) => p.key === "alpha-radar")!;
+    assert.equal(defaultNoSaveAlpha.available, false);
+    assert.ok(
+      defaultNoSaveAlpha.remediationActions?.some(
+        (a) => a.kind === "save-cash-preview" && (a.previewCost ?? 0) <= 44
+      )
+    );
+
+    const activePlans = generateFiveArchetypes(
+      [laggedMatch, FALLBACK_MATCHES[1]],
+      100,
+      "objective",
+      false,
+      [],
+      { allowSaveCash: true }
     );
     const activeAlpha = activePlans.find((p) => p.key === "alpha-radar")!;
     assert.equal(activeAlpha.available, true);
@@ -320,12 +336,14 @@ describe("Seam 2: Bonus Optimizer, Five Archetypes, Equivalent Arbitrage & Stagg
     const early: MatchItem = {
       ...FALLBACK_MATCHES[0],
       id: "m-early",
+      matchNumStr: "周六001",
       kickoff: "20:00",
     };
     const lateBase = FALLBACK_MATCHES[1];
     const late: MatchItem = {
       ...lateBase,
       id: "m-late",
+      matchNumStr: "周六002",
       kickoff: "00:30", // 24:30 -> 270 mins after 20:00 (>= 110 mins)
       pools: {
         ...lateBase.pools,

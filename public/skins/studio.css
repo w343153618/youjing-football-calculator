@@ -1,67 +1,159 @@
 /* 06 · 工坊 Studio — Teenage Engineering / OP-1 instrument. */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap");
 :root {
   --font-num: "IBM Plex Mono", "SF Mono", Menlo, monospace;
   --font-big: "IBM Plex Mono", "SF Mono", Menlo, monospace;
-  --page: #D9D8D3; --bg: #E4E3DE; --bg-img: none;
-  --text: #1D1D1B; --text-2: #5E5D58; --text-3: #8F8D86; --line: rgba(29, 29, 27, 0.10);
-  --accent: #FF5A1F; --mark: #FF5A1F; --live: #FF5A1F;
-  --h1-fs: 21px; --h1-fw: 600; --h1-ls: -0.02em;
-  --tn-fs: 14px; --tn-fw: 500; --num-fw: 500; --big-fw: 500;
+  --page: #d9d8d3;
+  --bg: #e4e3de;
+  --bg-img: none;
+  --text: #1d1d1b;
+  --text-2: #4e4d48;
+  --text-3: #595751;
+  --line: rgba(29, 29, 27, 0.1);
+  --accent: #ff5a1f;
+  --mark: #ff5a1f;
+  --live: #ff5a1f;
+  --h1-fs: 21px;
+  --h1-fw: 600;
+  --h1-ls: -0.02em;
+  --tn-fs: 14px;
+  --tn-fw: 500;
+  --num-fw: 500;
+  --big-fw: 500;
 
-  --card: #EEEDE9; --card-r: 14px; --card-border: none;
-  --card-sh: 0 0 0 1px rgba(29, 29, 27, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --card: #eeede9;
+  --card-r: 14px;
+  --card-border: none;
+  --card-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.7);
 
-  --key: linear-gradient(180deg, #FBFAF6, #F1F0EB); --key-text: #1D1D1B; --key-r: 7px;
-  --key-sh: 0 0 0 1px rgba(29, 29, 27, 0.13), 0 2px 0 #C6C4BC, 0 3px 6px -1px rgba(29, 29, 27, 0.16), inset 0 1px 0 #fff;
-  --key-down: linear-gradient(180deg, #ECEBE5, #F4F3EF);
-  --key-down-sh: 0 0 0 1px rgba(29, 29, 27, 0.14), 0 0 0 #C6C4BC, inset 0 1px 2px rgba(29, 29, 27, 0.14);
-  --key-on: linear-gradient(180deg, #3A3A37, #262624); --key-on-text: #F7F6F1;
-  --key-on-sh: 0 0 0 1px #1A1A18, 0 2px 0 #0E0E0D, 0 3px 6px -1px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --key: linear-gradient(180deg, #fbfaf6, #f1f0eb);
+  --key-text: #1d1d1b;
+  --key-r: 7px;
+  --key-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.13), 0 2px 0 #c6c4bc,
+    0 3px 6px -1px rgba(29, 29, 27, 0.16), inset 0 1px 0 #fff;
+  --key-down: linear-gradient(180deg, #ecebe5, #f4f3ef);
+  --key-down-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.14), 0 0 0 #c6c4bc,
+    inset 0 1px 2px rgba(29, 29, 27, 0.14);
+  --key-on: linear-gradient(180deg, #3a3a37, #262624);
+  --key-on-text: #f7f6f1;
+  --key-on-sh:
+    0 0 0 1px #1a1a18, 0 2px 0 #0e0e0d, 0 3px 6px -1px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
   --key-on-sheen: none;
-  --key-on-down: linear-gradient(180deg, #232321, #2E2E2B); --key-on-down-sh: 0 0 0 1px #111, inset 0 1px 3px rgba(0, 0, 0, 0.5);
-  --cell-sub: #8F8D86; --cell-sub-on: rgba(247, 246, 241, 0.55);
+  --key-on-down: linear-gradient(180deg, #232321, #2e2e2b);
+  --key-on-down-sh: 0 0 0 1px #111, inset 0 1px 3px rgba(0, 0, 0, 0.5);
+  --cell-sub: #595751;
+  --cell-sub-on: #d8d6ce;
 
-  --track: #D6D5CF; --track-r: 9px; --thumb-r: 6px;
-  --track-sh: inset 0 1px 2px rgba(29, 29, 27, 0.18), 0 1px 0 rgba(255, 255, 255, 0.7);
-  --thumb: linear-gradient(180deg, #FBFAF6, #F1F0EB);
-  --thumb-sh: 0 0 0 1px rgba(29, 29, 27, 0.12), 0 1.5px 0 #C6C4BC, 0 2px 4px rgba(29, 29, 27, 0.12);
-  --seg-text: #8D8B84; --seg-on: #1D1D1B;
+  --track: #d6d5cf;
+  --track-r: 9px;
+  --thumb-r: 6px;
+  --track-sh:
+    inset 0 1px 2px rgba(29, 29, 27, 0.18), 0 1px 0 rgba(255, 255, 255, 0.7);
+  --thumb: linear-gradient(180deg, #fbfaf6, #f1f0eb);
+  --thumb-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.12), 0 1.5px 0 #c6c4bc,
+    0 2px 4px rgba(29, 29, 27, 0.12);
+  --seg-text: #595751;
+  --seg-on: #1d1d1b;
 
-  --sw-off: #D6D5CF; --sw-on: #FF5A1F; --sw-on-sh: inset 0 1px 2px rgba(0, 0, 0, 0.25);
-  --knob: linear-gradient(180deg, #FBFAF6, #EDECE6);
+  --sw-off: #d6d5cf;
+  --sw-on: #ff5a1f;
+  --sw-on-sh: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  --knob: linear-gradient(180deg, #fbfaf6, #edece6);
 
-  --slip: linear-gradient(180deg, #2F2F2D, #1E1E1C); --slip-r: 16px;
-  --slip-sh: 0 0 0 1px #121211, 0 3px 0 #0D0D0C, 0 14px 26px -12px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  --slip-go: linear-gradient(180deg, #FF6E36, #F2501A); --slip-go-text: #FFFFFF;
-  --slip-go-sh: 0 0 0 1px #C93E10, 0 2px 0 #A8340D, inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  --slip-go-down: linear-gradient(180deg, #E84A15, #F45C24); --slip-go-down-sh: 0 0 0 1px #A8340D, inset 0 1px 3px rgba(0, 0, 0, 0.3);
-  --slip-trash: #262624; --slip-trash-sh: 0 0 0 1px #111, inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --slip: linear-gradient(180deg, #2f2f2d, #1e1e1c);
+  --slip-r: 16px;
+  --slip-sh:
+    0 0 0 1px #121211, 0 3px 0 #0d0d0c, 0 14px 26px -12px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  --slip-go: linear-gradient(180deg, #ff6e36, #f2501a);
+  --slip-go-text: #ffffff;
+  --slip-go-sh:
+    0 0 0 1px #c93e10, 0 2px 0 #a8340d, inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  --slip-go-down: linear-gradient(180deg, #e84a15, #f45c24);
+  --slip-go-down-sh: 0 0 0 1px #a8340d, inset 0 1px 3px rgba(0, 0, 0, 0.3);
+  --slip-trash: #262624;
+  --slip-trash-sh: 0 0 0 1px #111, inset 0 1px 2px rgba(0, 0, 0, 0.5);
 
-  --dock: #E9E8E3; --dock-line: rgba(29, 29, 27, 0.1); --dock-blur: none;
-  --puck: linear-gradient(180deg, #FBFAF6, #F1F0EB); --puck-r: 10px;
-  --puck-sh: 0 0 0 1px rgba(29, 29, 27, 0.12), 0 2px 0 #C6C4BC, 0 3px 6px -2px rgba(29, 29, 27, 0.15);
-  --nav-text: #8F8D86; --nav-on: #1D1D1B;
-  --sheet: #ECEBE6; --grabber: #BDBBB3;
-  --tile: #F4F3EF; --tile-sh: 0 0 0 1px rgba(29, 29, 27, 0.08);
-  --chip: #262624; --chip-r: 6px;
-  --poster: #1E1E1C;
-  --prob1: #FF5A1F; --prob2: #1D1D1B; --prob3: #C6C4BC; --prob-track: #D6D5CF;
+  --dock: #e9e8e3;
+  --dock-line: rgba(29, 29, 27, 0.1);
+  --dock-blur: none;
+  --puck: linear-gradient(180deg, #fbfaf6, #f1f0eb);
+  --puck-r: 10px;
+  --puck-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.12), 0 2px 0 #c6c4bc,
+    0 3px 6px -2px rgba(29, 29, 27, 0.15);
+  --nav-text: #8f8d86;
+  --nav-on: #1d1d1b;
+  --sheet: #ecebe6;
+  --grabber: #bdbbb3;
+  --tile: #f4f3ef;
+  --tile-sh: 0 0 0 1px rgba(29, 29, 27, 0.08);
+  --chip: #262624;
+  --chip-r: 6px;
+  --poster: #1e1e1c;
+  --prob1: #ff5a1f;
+  --prob2: #1d1d1b;
+  --prob3: #c6c4bc;
+  --prob-track: #d6d5cf;
   --crest-filter: none;
-  --ava: #D9D8D2; --ava-text: #1D1D1B;
-  --orb: #F1F0EB; --orb-sh: 0 0 0 1px rgba(29, 29, 27, 0.12), 0 3px 0 #C6C4BC;
-  --round-key: linear-gradient(180deg, #FBFAF6, #F1F0EB);
-  --round-key-sh: 0 0 0 1px rgba(29, 29, 27, 0.13), 0 2px 0 #C6C4BC, inset 0 1px 0 #fff;
-  --toast: #1E1E1C; --dash: #B5B3AB;
+  --ava: #d9d8d2;
+  --ava-text: #1d1d1b;
+  --orb: #f1f0eb;
+  --orb-sh: 0 0 0 1px rgba(29, 29, 27, 0.12), 0 3px 0 #c6c4bc;
+  --round-key: linear-gradient(180deg, #fbfaf6, #f1f0eb);
+  --round-key-sh:
+    0 0 0 1px rgba(29, 29, 27, 0.13), 0 2px 0 #c6c4bc, inset 0 1px 0 #fff;
+  --toast: #1e1e1c;
+  --dash: #b5b3ab;
   --spring-press: 1300 56;
   --spring-release: 500 11;
 }
-.meta, .colhead, .sub, .small, .slip-sub, .sec, .sec-lbl, .qpill { font-family: var(--font-num); }
-.colhead { letter-spacing: 0.12em; }
-.key.num { letter-spacing: -0.03em; font-size: 13px; }
-.key.down, .round-key.down { translate: 0 1.5px; }
-.tag { border-radius: 1px; }
-.badge { font-family: var(--font-num); }
-.key.dark { background: linear-gradient(180deg, #FF6E36, #F2501A); color: #fff; box-shadow: 0 0 0 1px #C93E10, 0 2px 0 #A8340D, inset 0 1px 0 rgba(255, 255, 255, 0.3); }
-.key.dark.down { background: linear-gradient(180deg, #E84A15, #F45C24); box-shadow: 0 0 0 1px #A8340D, inset 0 1px 3px rgba(0, 0, 0, 0.3); }
-.key.dark::after { display: none; }
+.meta,
+.colhead,
+.sub,
+.small,
+.slip-sub,
+.sec,
+.sec-lbl,
+.qpill {
+  font-family: var(--font-num);
+}
+.colhead {
+  letter-spacing: 0.12em;
+}
+.key.num {
+  letter-spacing: -0.03em;
+  font-size: 13px;
+}
+.key.down,
+.round-key.down {
+  translate: 0 1.5px;
+}
+.tag {
+  border-radius: 1px;
+}
+.badge {
+  font-family: var(--font-num);
+}
+.key.dark {
+  background: linear-gradient(180deg, #ff6e36, #f2501a);
+  color: #fff;
+  box-shadow:
+    0 0 0 1px #c93e10,
+    0 2px 0 #a8340d,
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.key.dark.down {
+  background: linear-gradient(180deg, #e84a15, #f45c24);
+  box-shadow:
+    0 0 0 1px #a8340d,
+    inset 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.key.dark::after {
+  display: none;
+}

@@ -7,6 +7,7 @@ import {
 } from "react";
 import type { ManualSectionId } from "../../manual/UserManualModal.tsx";
 import type {
+  BoardFreshnessMeta,
   BridgeMatchCandidate,
   PartialCoveragePreview,
   SyntheticSingleMode,
@@ -19,6 +20,7 @@ import type {
 import { BridgeCandidatesCard } from "./MatchRadarCabin.tsx";
 import {
   KEYPAD_MULTIPLIER_PRESETS,
+  buildBoardHeaderStatusText,
   buildDockBridgeStripItemSpec,
   buildSyntheticModePillSpecs,
   formatBetBarPayoutSummary,
@@ -151,6 +153,8 @@ export function MobileBottomDock({
 
 export function DesktopCommandHeader({
   visibleMatchCount,
+  boardMeta,
+  offlineMode = false,
   syncClock,
   syncing,
   isSuperAdmin,
@@ -161,6 +165,8 @@ export function DesktopCommandHeader({
   onOpenAdmin,
 }: {
   visibleMatchCount: number;
+  boardMeta?: BoardFreshnessMeta | null;
+  offlineMode?: boolean;
   syncClock: string;
   syncing: boolean;
   isSuperAdmin: boolean;
@@ -170,6 +176,11 @@ export function DesktopCommandHeader({
   onOpenManual: () => void;
   onOpenAdmin: () => void;
 }) {
+  const boardHdr = buildBoardHeaderStatusText(
+    visibleMatchCount,
+    boardMeta,
+    offlineMode
+  );
   return (
     <header className="dk-topbar">
       <div className="dk-brand">
@@ -177,8 +188,8 @@ export function DesktopCommandHeader({
         <div>
           <h1>优竞体育内部专用</h1>
           <p className="num">
-            智能精算与风控工作台 · 实盘 {visibleMatchCount} 场 · 同步{" "}
-            {syncClock}
+            智能精算与风控工作台 · {boardHdr.text}
+            {!boardHdr.isFallbackReadOnly ? ` · 同步 ${syncClock}` : ""}
           </p>
         </div>
       </div>
@@ -229,6 +240,8 @@ export function DesktopCommandHeader({
 export function MobileCompactTopBar({
   tab,
   visibleMatchCount,
+  boardMeta,
+  offlineMode = false,
   syncClock,
   syncing,
   isSuperAdmin,
@@ -240,6 +253,8 @@ export function MobileCompactTopBar({
 }: {
   tab: AppTab;
   visibleMatchCount: number;
+  boardMeta?: BoardFreshnessMeta | null;
+  offlineMode?: boolean;
   syncClock: string;
   syncing: boolean;
   isSuperAdmin: boolean;
@@ -249,17 +264,24 @@ export function MobileCompactTopBar({
   onSync: () => void;
   onOpenFilter: () => void;
 }) {
+  const boardHdr = buildBoardHeaderStatusText(
+    visibleMatchCount,
+    boardMeta,
+    offlineMode
+  );
   return (
     <div className="title-row">
       <div style={{ minWidth: 0 }}>
         <span className="h1">优竞体育内部专用</span>
         <span className="sub num">
           {tab === "match"
-            ? `实盘 ${visibleMatchCount} 场 · 同步 ${syncClock.slice(0, 5)}`
+            ? boardHdr.isFallbackReadOnly
+              ? boardHdr.text
+              : `${boardHdr.text} · 同步 ${syncClock.slice(0, 5)}`
             : tab === "archetypes"
               ? "五池闭合校准 · 3+1 帕累托精算配单"
               : tab === "audit"
-                ? "五维审单 · 智能分倍 · 锁利核对"
+                ? "三层实票核对 · 四桶客观分布 · 赛果推演"
                 : "精算×情报协同会诊 · 双轨止损账本"}
         </span>
       </div>
@@ -411,6 +433,7 @@ export function SyntheticModePills({
   canTrim2Way,
   hasInherentBlindSpot = false,
   partialPreview = null,
+  trimLegCount = 2,
   compactMobile = false,
   containerClassName,
   containerStyle,
@@ -420,6 +443,7 @@ export function SyntheticModePills({
   canTrim2Way: boolean;
   hasInherentBlindSpot?: boolean;
   partialPreview?: PartialCoveragePreview | null;
+  trimLegCount?: number;
   compactMobile?: boolean;
   containerClassName?: string;
   containerStyle?: CSSProperties;
@@ -429,7 +453,8 @@ export function SyntheticModePills({
     canTrim2Way,
     hasInherentBlindSpot,
     compactMobile,
-    partialPreview
+    partialPreview,
+    trimLegCount
   );
   const effectiveActiveMode: SyntheticSingleMode =
     partialPreview?.requiresExplicitConfirm && mode === "full-3way"
@@ -461,6 +486,7 @@ export function SyntheticModePills({
 export function PersistentBetBar({
   variant,
   tab,
+  hideAuditDuplicateStrips = false,
   slipRef,
   slipAmtRef,
   wbCtrl,
@@ -475,6 +501,7 @@ export function PersistentBetBar({
 }: {
   variant: "desktop" | "mobile";
   tab: AppTab;
+  hideAuditDuplicateStrips?: boolean;
   slipRef: RefObject<HTMLElement | null>;
   slipAmtRef: RefObject<HTMLElement | null>;
   wbCtrl: WorkbenchController;
@@ -530,11 +557,32 @@ export function PersistentBetBar({
   };
   const onRequirePickToast = () => notifyToast("请先在列表点选至少 1 场球队");
 
-  const { picks, multiple, activeAuditedSlip, syntheticSingleMode, workspace } =
-    snap.betSlipState;
+  const {
+    picks,
+    multiple,
+    activeAuditedSlip,
+    livePortfolioQuote,
+    pendingSyntheticChoice,
+    syntheticSingleMode,
+    workspace,
+  } = snap.betSlipState;
   const playabilityGates = snap.playabilityGates;
   const manualReport = workspace.manualReport;
-  const effectiveReport = workspace.effectiveReport;
+  const effectiveReport = workspace.baselineReport ?? workspace.effectiveReport;
+  const referenceOnly =
+    Boolean(playabilityGates.shopkeeperBlockReason) &&
+    effectiveReport.canCheckout;
+  const stakeUnitsCount =
+    effectiveReport.stakeUnitsCount ??
+    Math.max(
+      effectiveReport.betCount,
+      Math.round(effectiveReport.totalCost / 2)
+    );
+  const maxParlayK = Math.max(
+    1,
+    Math.min(8, manualReport.poolCap || 8, manualReport.matchCount || 2)
+  );
+  const maxParlayPassLabel = maxParlayK === 1 ? "单关" : `${maxParlayK}串1`;
   const bridgeCandidates = workspace.insights.bridgeCandidates ?? [];
   const pickedMatchIds = useMemo(
     () => Array.from(new Set(picks.map((p) => p.matchId))),
@@ -619,13 +667,13 @@ export function PersistentBetBar({
               <div style={{ display: "flex", gap: 6 }}>
                 <button
                   type="button"
-                  className="key mini"
+                  className="key mini num"
                   onClick={() => {
                     onResetPassAuto();
                     haptic(5);
                   }}
                 >
-                  自动最优
+                  最高串关（当前 {maxParlayPassLabel}）
                 </button>
                 <button
                   type="button"
@@ -657,27 +705,39 @@ export function PersistentBetBar({
                     active: false,
                     disabledReason: "请先选比赛",
                   }))
-              ).map((fp) => (
-                <button
-                  key={fp.size}
-                  type="button"
-                  onClick={() => onToggleFreePassSize(fp.size)}
-                  className={`pass-cell ${fp.active && !appliedPlan ? "on" : ""} ${
-                    !fp.enabled ? "dis" : ""
-                  }`}
-                >
-                  <b>{fp.label}</b>
-                  <small>
-                    {fp.active && !appliedPlan
-                      ? "✓ 已选"
-                      : fp.enabled
-                        ? fp.size === 1
-                          ? "单场即买"
-                          : `${fp.size}串1`
-                        : fp.disabledReason || "不可选"}
-                  </small>
-                </button>
-              ))}
+              ).map((fp) => {
+                const isOptimisticActive =
+                  !appliedPlan &&
+                  (snap.betSlipState.passSpec.mode === "free" &&
+                  Array.isArray(snap.betSlipState.passSpec.passSizes) &&
+                  snap.betSlipState.passSpec.passSizes.length > 0
+                    ? snap.betSlipState.passSpec.passSizes.includes(fp.size) &&
+                      fp.enabled
+                    : snap.betSlipState.passSpec.mode === "combo"
+                      ? false
+                      : fp.active);
+                return (
+                  <button
+                    key={fp.size}
+                    type="button"
+                    onClick={() => onToggleFreePassSize(fp.size)}
+                    className={`pass-cell ${isOptimisticActive ? "on" : ""} ${
+                      !fp.enabled ? "dis" : ""
+                    }`}
+                  >
+                    <b>{fp.label}</b>
+                    <small>
+                      {isOptimisticActive
+                        ? `${fp.size === 1 ? "单关" : `${fp.size}串1`} ✓`
+                        : fp.enabled
+                          ? fp.size === 1
+                            ? "单场即买"
+                            : `${fp.size}串1`
+                          : fp.disabledReason || "不可选"}
+                    </small>
+                  </button>
+                );
+              })}
             </div>
 
             {canToggleBanker && (
@@ -749,7 +809,7 @@ export function PersistentBetBar({
               <div>
                 <b className="num">投倍设置 · 当前 {multiple} 倍</b>
                 <div className="small num">
-                  共 {effectiveReport.betCount} 注 · 应付总额 ¥
+                  共 {stakeUnitsCount} 注 · 应付总额 ¥
                   {effectiveReport.totalCost}
                 </div>
               </div>
@@ -975,7 +1035,7 @@ export function PersistentBetBar({
     return (
       <>
         <footer ref={slipRef as RefObject<HTMLElement>} className="dk-betdock">
-          {isSyntheticPlayable && (
+          {!hideAuditDuplicateStrips && isSyntheticPlayable && (
             <div
               style={{
                 display: "flex",
@@ -1001,12 +1061,13 @@ export function PersistentBetBar({
                 canTrim2Way={canTrimSynthetic2Way}
                 hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
                 partialPreview={partialCoveragePreview}
+                trimLegCount={partialCoveragePreview?.trim2WayLegCount ?? 2}
                 containerStyle={{ display: "flex", gap: 6, flexWrap: "wrap" }}
                 onSelect={onSwitchSyntheticMode}
               />
             </div>
           )}
-          {showBridgeFinder && (
+          {!hideAuditDuplicateStrips && showBridgeFinder && (
             <div
               style={{
                 display: "flex",
@@ -1192,7 +1253,7 @@ export function PersistentBetBar({
             <div className="dk-bet-mid num">
               <div className="dk-bet-kpi">
                 <b>
-                  应付{" "}
+                  {referenceOnly ? "参考" : "应付"}{" "}
                   <span ref={slipAmtRef as RefObject<HTMLSpanElement>}>
                     ¥{effectiveReport.totalCost}
                   </span>{" "}
@@ -1203,8 +1264,16 @@ export function PersistentBetBar({
                       color: "var(--text-3)",
                     }}
                   >
-                    ({effectiveReport.betCount}注)
+                    ({stakeUnitsCount}注)
                   </span>
+                  {livePortfolioQuote.isStale && (
+                    <span
+                      className="qpill warn"
+                      style={{ marginLeft: 6, fontSize: 10 }}
+                    >
+                      ⏳ 重算中…
+                    </span>
+                  )}
                 </b>
                 <small
                   style={{
@@ -1223,15 +1292,25 @@ export function PersistentBetBar({
             </div>
 
             <div className="dk-bet-right">
-              <button
-                type="button"
-                className="key sm dark"
-                disabled={!effectiveReport.canCheckout}
-                style={{ opacity: effectiveReport.canCheckout ? 1 : 0.45 }}
-                onClick={onOpenPoster}
-              >
-                🧾 查看实票核对单
-              </button>
+              {pendingSyntheticChoice ? (
+                <button
+                  type="button"
+                  className="key sm dark"
+                  onClick={() => onSwitchTab("audit")}
+                >
+                  核对合成票行
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="key sm dark"
+                  disabled={!effectiveReport.canCheckout}
+                  style={{ opacity: effectiveReport.canCheckout ? 1 : 0.45 }}
+                  onClick={onOpenPoster}
+                >
+                  {referenceOnly ? "🧪 查看模拟单" : "🧾 查看实票核对单"}
+                </button>
+              )}
             </div>
           </div>
         </footer>
@@ -1330,7 +1409,7 @@ export function PersistentBetBar({
             }}
           >
             <b ref={slipAmtRef as RefObject<HTMLElement>}>
-              ¥{effectiveReport.totalCost}
+              {referenceOnly ? "参考 " : ""}¥{effectiveReport.totalCost}
             </b>
           </div>
 
@@ -1355,7 +1434,11 @@ export function PersistentBetBar({
             style={{ flexShrink: 0 }}
             onClick={() => {
               setBarPopover(null);
-              if (compactPrimaryAction.kind === "poster") {
+              if (pendingSyntheticChoice) {
+                document
+                  .querySelector("[data-synthetic-review]")
+                  ?.scrollIntoView({ block: "start" });
+              } else if (compactPrimaryAction.kind === "poster") {
                 onOpenPoster();
               } else if (compactPrimaryAction.kind === "partial-preview") {
                 setConfirmingCompactPartial(true);
@@ -1391,7 +1474,11 @@ export function PersistentBetBar({
               }
             }}
           >
-            {compactPrimaryAction.label}
+            {pendingSyntheticChoice
+              ? "核对合成票行"
+              : compactPrimaryAction.kind === "poster" && referenceOnly
+                ? "查看模拟单"
+                : compactPrimaryAction.label}
           </button>
         </div>
       ) : (
@@ -1405,6 +1492,7 @@ export function PersistentBetBar({
               canTrim2Way={canTrimSynthetic2Way}
               hasInherentBlindSpot={hasSyntheticInherentBlindSpot}
               partialPreview={partialCoveragePreview}
+              trimLegCount={partialCoveragePreview?.trim2WayLegCount ?? 2}
               compactMobile
               containerClassName="m-syn-strip"
               onSelect={onSwitchSyntheticMode}
@@ -1552,10 +1640,11 @@ export function PersistentBetBar({
             <span
               style={{ fontSize: 10.5, opacity: 0.78, whiteSpace: "nowrap" }}
             >
-              {effectiveReport.betCount}注
+              {stakeUnitsCount}注
               {effectiveReport.poolCap < 8
                 ? `·限${effectiveReport.poolCap}关`
                 : ""}
+              {livePortfolioQuote.isStale ? "·重算中" : ""}
             </span>
           </div>
 
@@ -1611,7 +1700,7 @@ export function PersistentBetBar({
 
             <div className="m-bet-sum">
               <b ref={slipAmtRef as RefObject<HTMLElement>}>
-                ¥{effectiveReport.totalCost}
+                {referenceOnly ? "参考 " : ""}¥{effectiveReport.totalCost}
               </b>
               <small>
                 {formatBetBarPayoutSummary(effectiveReport, "mobile")}
@@ -1623,7 +1712,10 @@ export function PersistentBetBar({
               className="m-bet-go"
               onClick={() => {
                 setBarPopover(null);
-                if (picks.length === 0 && activeAuditedSlip.matchCount > 0) {
+                if (
+                  pendingSyntheticChoice ||
+                  (picks.length === 0 && activeAuditedSlip.matchCount > 0)
+                ) {
                   onSwitchTab("audit");
                   return;
                 }
@@ -1634,11 +1726,13 @@ export function PersistentBetBar({
                 onSwitchTab("archetypes");
               }}
             >
-              {picks.length > 0
-                ? "下一步:②配单 ›"
-                : activeAuditedSlip.matchCount > 0
-                  ? "查看③审单 ›"
-                  : "先选球"}
+              {pendingSyntheticChoice
+                ? "核对合成票行 ›"
+                : picks.length > 0
+                  ? "下一步:②配单 ›"
+                  : activeAuditedSlip.matchCount > 0
+                    ? "查看③审单 ›"
+                    : "先选球"}
             </button>
           </div>
         </div>

@@ -22,6 +22,7 @@ import {
 import { createWorkbenchController } from "../workspace/workbenchController";
 import { AuditCockpitCabin } from "./cabins/AuditCockpitCabin";
 import {
+  BankerConfirmModal,
   BottomSheetsLayer,
   HoneypotTrapLink,
   StopLossInterceptModal,
@@ -47,6 +48,7 @@ import {
   DESKTOP_RIGHT_CABIN_TABS,
   RADAR_MODE_OPTS,
   buildMobileTab4CabinOptions,
+  resolveAuditCabinLifecycleState,
   type AppTab,
   type DesktopRightCabinTab,
   type HandoffBannerState,
@@ -112,8 +114,13 @@ export function SkinPhoneApp({
     stopLossPrompt,
   } = wbSnap;
   const { matches, picks, mode, budget, workspace } = betSlipState;
-  const effectiveReport = workspace.effectiveReport;
+  const effectiveReport = workspace.baselineReport ?? workspace.effectiveReport;
   const { appliedPlan, portfolioPlans } = playabilityGates;
+  const auditLifecycle = resolveAuditCabinLifecycleState(
+    betSlipState.manualDraft,
+    effectiveReport,
+    betSlipState.activeAuditedSlip
+  );
 
   const shellRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -145,6 +152,7 @@ export function SkinPhoneApp({
     cutoffTickNow,
     tactileCfg,
     setTactileCfg,
+    bankerConfirmPrompt,
     switchSkinSmooth,
     actions,
   } = useShellChoreography({
@@ -270,6 +278,11 @@ export function SkinPhoneApp({
       onFallbackToMatchTab={() => {
         if (!isDesktop || embedded) setTab("match");
       }}
+      onNavigateToAudit={() => {
+        setDkFocusStep(3);
+        setDkRightTab("audit");
+        setTab("audit");
+      }}
       onChangeArchKey={selectArchKey}
       onApplyArchetype={actions.applyArchetype}
     />
@@ -285,6 +298,7 @@ export function SkinPhoneApp({
       onGoToArchetypes={() => actions.handleSelectFlowStep(2)}
       onRestoreEqualMultiple={actions.restoreEqualMultiple}
       onOpenManual={openManual}
+      onOpenMorePool={(matchId) => setSheet({ type: "more", matchId })}
       onSwitchSyntheticMode={actions.switchSyntheticSingleModeUI}
       onApplyBridgeCandidate={actions.applyBridgeCandidateUI}
       onApplyEquivalentSwap={actions.applyEquivalentSwap}
@@ -338,7 +352,13 @@ export function SkinPhoneApp({
     onSwitchSyntheticMode: actions.switchSyntheticSingleModeUI,
     onApplyBridgeCandidate: actions.applyBridgeCandidateUI,
     onOpenPoster: () => setSheet({ type: "poster" }),
-    onSwitchTab: setTab,
+    onSwitchTab: (next: AppTab) => {
+      if (next === "audit" && isDesktop) {
+        setDkRightTab("audit");
+        setDkFocusStep(3);
+      }
+      setTab(next);
+    },
   };
 
   const sharedOverlays = (
@@ -376,7 +396,13 @@ export function SkinPhoneApp({
         onDiagnoseSingleMatch={(m) => void actions.triggerXiaoGaoLive(m)}
         onRecordToLedger={actions.recordToLedger}
       />
+      <BankerConfirmModal
+        prompt={bankerConfirmPrompt}
+        onConfirm={actions.confirmBankerToggle}
+        onDismiss={actions.dismissBankerConfirm}
+      />
       <StopLossInterceptModal
+        liveBlocked={Boolean(playabilityGates.shopkeeperBlockReason)}
         stopLossPrompt={stopLossPrompt}
         ledgerBusy={ledgerBusy}
         onConvertPaper={() => {
@@ -423,47 +449,222 @@ export function SkinPhoneApp({
     onSelectStep: actions.handleSelectFlowStep,
   };
 
+  const anyOverlayOpen =
+    Boolean(sheet) ||
+    manualOpen ||
+    adminOpen ||
+    Boolean(stopLossPrompt) ||
+    Boolean(bankerConfirmPrompt);
+
   if (isDesktop && !embedded) {
     return (
       <div className="jz-root">
         <HoneypotTrapLink />
         <div ref={shellRef} className="jz-desktop">
-          <DesktopCommandHeader
-            visibleMatchCount={visibleMatches.length}
-            syncClock={syncClock}
-            syncing={syncing}
-            isSuperAdmin={authUser.role === "superadmin"}
-            stepFlowNode={
-              <StepFlowBar compactMobile={false} {...stepFlowProps} />
-            }
-            onSync={() => void actions.runOfficialSync(true)}
-            onOpenTactile={() => setSheet({ type: "tactile" })}
-            onOpenManual={() => openManual("sandbox")}
-            onOpenAdmin={() => setAdminOpen(true)}
-          />
+          <div
+            style={{ display: "contents" }}
+            inert={anyOverlayOpen || undefined}
+          >
+            <DesktopCommandHeader
+              visibleMatchCount={visibleMatches.length}
+              boardMeta={wbSnap.boardMeta}
+              offlineMode={wbSnap.offlineMode}
+              syncClock={syncClock}
+              syncing={syncing}
+              isSuperAdmin={authUser.role === "superadmin"}
+              stepFlowNode={
+                <StepFlowBar compactMobile={false} {...stepFlowProps} />
+              }
+              onSync={() => void actions.runOfficialSync(true)}
+              onOpenTactile={() => setSheet({ type: "tactile" })}
+              onOpenManual={() => openManual("sandbox")}
+              onOpenAdmin={() => setAdminOpen(true)}
+            />
 
-          <div className="dk-workspace">
-            <section ref={desktopMatchColRef} className="dk-col">
-              <div className="dk-col-head">
-                <div className="dk-col-head-row">
-                  <span className="dk-col-title">
-                    ① 📡 赛事雷达 · 全盘矩阵
+            <div className="dk-workspace">
+              <section ref={desktopMatchColRef} className="dk-col">
+                <div className="dk-col-head">
+                  <div className="dk-col-head-row">
+                    <span className="dk-col-title">
+                      ① 📡 赛事雷达 · 全盘矩阵
+                      <button
+                        type="button"
+                        className="help-pill"
+                        onClick={() => openManual("glossary")}
+                      >
+                        ? 抽水与真率图解
+                      </button>
+                    </span>
+                    <button
+                      type="button"
+                      className="key mini"
+                      onClick={() => setSheet({ type: "filter" })}
+                    >
+                      筛选联赛
+                    </button>
+                  </div>
+                  <SpringSegmented
+                    options={RADAR_MODE_OPTS}
+                    value={mode}
+                    onChange={actions.handleModeChange}
+                    skinKey={skin}
+                  />
+                  <MatchRadarFilterToolbar
+                    qFilter={qFilter}
+                    onSelectQuickFilter={setQFilter}
+                    radarSearchQuery={radarSearchQuery}
+                    onChangeSearchQuery={setRadarSearchQuery}
+                    cutoffStatus={cutoffStatus}
+                  />
+                </div>
+                <div className="dk-col-scroll">{matchCabinNode}</div>
+              </section>
+
+              <section ref={desktopArchColRef} className="dk-col">
+                <div className="dk-col-head">
+                  <div className="dk-col-head-row">
+                    <span className="dk-col-title">
+                      ② 🎯 3+1 精算配单
+                      <span className="small num" style={{ fontWeight: 400 }}>
+                        五池闭合校准 · 3+1 帕累托精算配单
+                      </span>
+                    </span>
                     <button
                       type="button"
                       className="help-pill"
-                      onClick={() => openManual("glossary")}
+                      onClick={() => openManual("archetypes")}
                     >
-                      ? 抽水与真率图解
+                      ? 说明
                     </button>
-                  </span>
-                  <button
-                    type="button"
-                    className="key mini"
-                    onClick={() => setSheet({ type: "filter" })}
-                  >
-                    筛选联赛
-                  </button>
+                  </div>
+                  <PortfolioBudgetHeader
+                    budget={budget}
+                    archKey={archKey}
+                    portfolioPlans={portfolioPlans}
+                    skin={skin}
+                    onChangeBudget={(b) => betCtrl.setBudget(b)}
+                    onConfirmCustomBudget={(norm) =>
+                      notifyToast(
+                        `已按 ¥2 彩票整注对齐预算：¥${norm}（${norm / 2} 注）`
+                      )
+                    }
+                    onChangeArchKey={selectArchKey}
+                  />
                 </div>
+                <div className="dk-col-scroll">{portfolioCabinNode}</div>
+              </section>
+
+              <section ref={desktopAuditColRef} className="dk-col dk-col-right">
+                <div className="dk-col-head">
+                  <div className="dk-col-head-row" style={{ marginBottom: 0 }}>
+                    <SpringSegmented
+                      options={DESKTOP_RIGHT_CABIN_TABS}
+                      value={dkRightTab}
+                      onChange={setDkRightTab}
+                      skinKey={skin}
+                    />
+                    <div style={{ display: "flex", gap: 5 }}>
+                      {dkRightTab === "audit" &&
+                        (picks.length > 0 ||
+                          betSlipState.activeAuditedSlip.isAppliedPlan) && (
+                          <button
+                            type="button"
+                            className="key mini"
+                            onClick={() =>
+                              picks.length > 0
+                                ? betCtrl.clearPicks()
+                                : actions.restoreEqualMultiple()
+                            }
+                          >
+                            {picks.length > 0
+                              ? "清空"
+                              : betSlipState.activeAuditedSlip
+                                  .revertActionLabel}
+                          </button>
+                        )}
+                      <button
+                        type="button"
+                        className="help-pill"
+                        onClick={() =>
+                          openManual(
+                            dkRightTab === "audit" ? "hedge" : "xiaogao"
+                          )
+                        }
+                      >
+                        ? 图解
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="dk-col-scroll">
+                  {dkRightTab === "audit"
+                    ? auditCabinNode
+                    : dkRightTab === "intel"
+                      ? intelCabinNode
+                      : ledgerCabinNode}
+                </div>
+              </section>
+            </div>
+
+            <PersistentBetBar
+              variant="desktop"
+              hideAuditDuplicateStrips={dkRightTab === "audit"}
+              {...sharedBetBarProps}
+            />
+          </div>
+          {sharedOverlays}
+        </div>
+      </div>
+    );
+  }
+
+  const hideMobileBetBar = tab === "archetypes" || tab === "ledger";
+  return (
+    <div className={`jz-root ${embedded ? "embed" : ""}`}>
+      <HoneypotTrapLink />
+      <div
+        ref={shellRef}
+        className={`shell ${
+          tab === "audit" &&
+          auditLifecycle.selectionStatus === "pending-single-auth"
+            ? "is-pending-single"
+            : ""
+        }`}
+      >
+        <div
+          style={{ display: "contents" }}
+          inert={anyOverlayOpen || undefined}
+        >
+          {embedded && (
+            <div className="sbar num">
+              <span>21:06</span>
+              <div className="sbar-i">
+                <span style={{ fontSize: 10.5, opacity: 0.72, marginRight: 4 }}>
+                  距22:00停售 54m
+                </span>
+              </div>
+            </div>
+          )}
+          <div className="top">
+            <MobileCompactTopBar
+              tab={tab}
+              visibleMatchCount={visibleMatches.length}
+              boardMeta={wbSnap.boardMeta}
+              offlineMode={wbSnap.offlineMode}
+              syncClock={syncClock}
+              syncing={syncing}
+              isSuperAdmin={authUser.role === "superadmin"}
+              onOpenTactile={() => setSheet({ type: "tactile" })}
+              onOpenManual={openManual}
+              onOpenAdmin={() => setAdminOpen(true)}
+              onSync={() => void actions.runOfficialSync(true)}
+              onOpenFilter={() => setSheet({ type: "filter" })}
+            />
+            {tab !== "ledger" && (
+              <StepFlowBar compactMobile {...stepFlowProps} />
+            )}
+            {tab === "match" && (
+              <>
                 <SpringSegmented
                   options={RADAR_MODE_OPTS}
                   value={mode}
@@ -477,197 +678,60 @@ export function SkinPhoneApp({
                   onChangeSearchQuery={setRadarSearchQuery}
                   cutoffStatus={cutoffStatus}
                 />
-              </div>
-              <div className="dk-col-scroll">{matchCabinNode}</div>
-            </section>
-
-            <section ref={desktopArchColRef} className="dk-col">
-              <div className="dk-col-head">
-                <div className="dk-col-head-row">
-                  <span className="dk-col-title">
-                    ② 🎯 3+1 精算配单
-                    <span className="small num" style={{ fontWeight: 400 }}>
-                      五池闭合校准 · 3+1 帕累托精算配单
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="help-pill"
-                    onClick={() => openManual("archetypes")}
-                  >
-                    ? 说明
-                  </button>
-                </div>
-                <PortfolioBudgetHeader
-                  budget={budget}
-                  archKey={archKey}
-                  portfolioPlans={portfolioPlans}
-                  skin={skin}
-                  onChangeBudget={(b) => betCtrl.setBudget(b)}
-                  onConfirmCustomBudget={(norm) =>
-                    notifyToast(
-                      `已按 ¥2 彩票整注对齐预算：¥${norm}（${norm / 2} 注）`
-                    )
-                  }
-                  onChangeArchKey={selectArchKey}
-                />
-              </div>
-              <div className="dk-col-scroll">{portfolioCabinNode}</div>
-            </section>
-
-            <section ref={desktopAuditColRef} className="dk-col dk-col-right">
-              <div className="dk-col-head">
-                <div className="dk-col-head-row" style={{ marginBottom: 0 }}>
-                  <SpringSegmented
-                    options={DESKTOP_RIGHT_CABIN_TABS}
-                    value={dkRightTab}
-                    onChange={setDkRightTab}
-                    skinKey={skin}
-                  />
-                  <div style={{ display: "flex", gap: 5 }}>
-                    {dkRightTab === "audit" &&
-                      (picks.length > 0 ||
-                        betSlipState.activeAuditedSlip.isAppliedPlan) && (
-                        <button
-                          type="button"
-                          className="key mini"
-                          onClick={() =>
-                            picks.length > 0
-                              ? betCtrl.clearPicks()
-                              : actions.restoreEqualMultiple()
-                          }
-                        >
-                          {picks.length > 0
-                            ? "清空"
-                            : betSlipState.activeAuditedSlip.revertActionLabel}
-                        </button>
-                      )}
-                    <button
-                      type="button"
-                      className="help-pill"
-                      onClick={() =>
-                        openManual(dkRightTab === "audit" ? "hedge" : "xiaogao")
-                      }
-                    >
-                      ? 图解
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="dk-col-scroll">
-                {dkRightTab === "audit"
-                  ? auditCabinNode
-                  : dkRightTab === "intel"
-                    ? intelCabinNode
-                    : ledgerCabinNode}
-              </div>
-            </section>
-          </div>
-
-          <PersistentBetBar variant="desktop" {...sharedBetBarProps} />
-          {sharedOverlays}
-        </div>
-      </div>
-    );
-  }
-
-  const hideMobileBetBar = tab === "archetypes" || tab === "ledger";
-  return (
-    <div className={`jz-root ${embedded ? "embed" : ""}`}>
-      <HoneypotTrapLink />
-      <div ref={shellRef} className="shell">
-        {embedded && (
-          <div className="sbar num">
-            <span>21:06</span>
-            <div className="sbar-i">
-              <span style={{ fontSize: 10.5, opacity: 0.72, marginRight: 4 }}>
-                距22:00停售 54m
-              </span>
-            </div>
-          </div>
-        )}
-        <div className="top">
-          <MobileCompactTopBar
-            tab={tab}
-            visibleMatchCount={visibleMatches.length}
-            syncClock={syncClock}
-            syncing={syncing}
-            isSuperAdmin={authUser.role === "superadmin"}
-            onOpenTactile={() => setSheet({ type: "tactile" })}
-            onOpenManual={openManual}
-            onOpenAdmin={() => setAdminOpen(true)}
-            onSync={() => void actions.runOfficialSync(true)}
-            onOpenFilter={() => setSheet({ type: "filter" })}
-          />
-          {tab !== "ledger" && <StepFlowBar compactMobile {...stepFlowProps} />}
-          {tab === "match" && (
-            <>
+              </>
+            )}
+            {tab === "archetypes" && (
+              <PortfolioBudgetHeader
+                budget={budget}
+                archKey={archKey}
+                portfolioPlans={portfolioPlans}
+                skin={skin}
+                onChangeBudget={(b) => betCtrl.setBudget(b)}
+                onConfirmCustomBudget={(norm) =>
+                  notifyToast(
+                    `已按 ¥2 彩票整注对齐预算：¥${norm}（${norm / 2} 注）`
+                  )
+                }
+                onChangeArchKey={selectArchKey}
+              />
+            )}
+            {tab === "ledger" && (
               <SpringSegmented
-                options={RADAR_MODE_OPTS}
-                value={mode}
-                onChange={actions.handleModeChange}
+                options={buildMobileTab4CabinOptions(
+                  ledger.entries.length,
+                  matches.length
+                )}
+                value={mobileCabin}
+                onChange={setMobileCabin}
                 skinKey={skin}
               />
-              <MatchRadarFilterToolbar
-                qFilter={qFilter}
-                onSelectQuickFilter={setQFilter}
-                radarSearchQuery={radarSearchQuery}
-                onChangeSearchQuery={setRadarSearchQuery}
-                cutoffStatus={cutoffStatus}
-              />
-            </>
-          )}
-          {tab === "archetypes" && (
-            <PortfolioBudgetHeader
-              budget={budget}
-              archKey={archKey}
-              portfolioPlans={portfolioPlans}
-              skin={skin}
-              onChangeBudget={(b) => betCtrl.setBudget(b)}
-              onConfirmCustomBudget={(norm) =>
-                notifyToast(
-                  `已按 ¥2 彩票整注对齐预算：¥${norm}（${norm / 2} 注）`
-                )
-              }
-              onChangeArchKey={selectArchKey}
-            />
-          )}
-          {tab === "ledger" && (
-            <SpringSegmented
-              options={buildMobileTab4CabinOptions(
-                ledger.entries.length,
-                matches.length
-              )}
-              value={mobileCabin}
-              onChange={setMobileCabin}
-              skinKey={skin}
-            />
-          )}
-        </div>
+            )}
+          </div>
 
-        <div
-          ref={scrollRef}
-          className={`scroll ${hideMobileBetBar ? "no-betbar-pad" : ""}`}
-        >
-          {tab === "match" && matchCabinNode}
-          {tab === "archetypes" && portfolioCabinNode}
-          {tab === "audit" && auditCabinNode}
-          {tab === "ledger" &&
-            (mobileCabin === "intel" ? intelCabinNode : ledgerCabinNode)}
-        </div>
+          <div
+            ref={scrollRef}
+            className={`scroll ${hideMobileBetBar ? "no-betbar-pad" : ""}`}
+          >
+            {tab === "match" && matchCabinNode}
+            {tab === "archetypes" && portfolioCabinNode}
+            {tab === "audit" && auditCabinNode}
+            {tab === "ledger" &&
+              (mobileCabin === "intel" ? intelCabinNode : ledgerCabinNode)}
+          </div>
 
-        <PersistentBetBar variant="mobile" {...sharedBetBarProps} />
-        <MobileBottomDock
-          navRef={navRef}
-          puckRef={puckRef}
-          tab={tab}
-          hasAuditDot={workspace.allWarnings.length > 0}
-          embedded={embedded}
-          onSelectTab={(nextTab) => {
-            setSheet(null);
-            setTab(nextTab);
-          }}
-        />
+          <PersistentBetBar variant="mobile" {...sharedBetBarProps} />
+          <MobileBottomDock
+            navRef={navRef}
+            puckRef={puckRef}
+            tab={tab}
+            hasAuditDot={workspace.allWarnings.length > 0}
+            embedded={embedded}
+            onSelectTab={(nextTab) => {
+              setSheet(null);
+              setTab(nextTab);
+            }}
+          />
+        </div>
         {sharedOverlays}
       </div>
     </div>

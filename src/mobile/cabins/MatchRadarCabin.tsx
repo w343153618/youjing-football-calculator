@@ -22,7 +22,9 @@ import {
   buildMatchRadarBoardFreshnessBanner,
   buildMatchRadarSelectedSubPoolPills,
   buildMatchRadarSingleBadge,
+  buildMatchSingleSubPoolEntryPills,
   buildTrendArrowSpec,
+  isPoolSingleOpenForRadar,
   type QuickFilter,
   type SheetState,
 } from "./cabinViewModels.ts";
@@ -57,12 +59,14 @@ export function BridgeCandidatesCard({
   showBridgeFinder,
   bridgeCandidates,
   compact = false,
+  unstyledInner = false,
   previewBridgeCandidate,
   onApplyBridgeCandidate,
 }: {
   showBridgeFinder: boolean;
   bridgeCandidates: BridgeMatchCandidate[];
   compact?: boolean;
+  unstyledInner?: boolean;
   previewBridgeCandidate?: (
     cand: BridgeMatchCandidate
   ) => BridgeMatchPreview | null;
@@ -75,12 +79,12 @@ export function BridgeCandidatesCard({
   if (!showBridgeFinder || bridgeCandidates.length === 0) return null;
   return (
     <div
-      className="card sonar-card enter num"
+      className={unstyledInner ? "enter num" : "card sonar-card enter num"}
       style={{
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        padding: compact ? "8px 10px" : undefined,
+        padding: unstyledInner ? 0 : compact ? "8px 10px" : undefined,
       }}
     >
       <div className="co-head" style={{ marginBottom: 0 }}>
@@ -360,6 +364,12 @@ export function MatchRadarCabin({
       mode === "mix" || mode === "spf" || mode === "single"
         ? buildMatchRadarSelectedSubPoolPills(m, picks)
         : [];
+    const singleSubEntryPills =
+      mode === "single" ? buildMatchSingleSubPoolEntryPills(m) : [];
+    const hadSingleBlocked =
+      mode === "single" && !isPoolSingleOpenForRadar(m.pools.HAD);
+    const hhadSingleBlocked =
+      mode === "single" && !isPoolSingleOpenForRadar(m.pools.HHAD);
 
     return (
       <div key={m.id} className="card enter">
@@ -646,29 +656,48 @@ export function MatchRadarCabin({
               const hadOpen = m.pools.HAD.selling !== false && Boolean(hadOpt);
               const hhadOpen =
                 m.pools.HHAD.selling !== false && Boolean(hhadOpt);
+              const hadPicked = hadOpt
+                ? isPicked(m.id, "HAD", hadOpt.key)
+                : false;
+              const hhadPicked = hhadOpt
+                ? isPicked(m.id, "HHAD", hhadOpt.key)
+                : false;
+              const hadDisabledSingle = hadSingleBlocked && !hadPicked;
+              const hhadDisabledSingle = hhadSingleBlocked && !hhadPicked;
               return (
                 <div key={idx} className="kcol">
                   {hadOpen && hadOpt ? (
                     <button
                       type="button"
-                      data-spring="0.88"
+                      data-spring={hadDisabledSingle ? undefined : "0.88"}
+                      disabled={hadDisabledSingle}
                       onClick={(e) =>
                         onTogglePick(e.currentTarget, m, "HAD", hadOpt.key)
                       }
-                      className={`key k2 num ${isPicked(m.id, "HAD", hadOpt.key) ? "on" : ""}`}
+                      className={`key k2 num ${
+                        hadPicked ? "on" : hadDisabledSingle ? "unsold" : ""
+                      }`}
                     >
                       <span className="ko">
                         {hadOpt.odds.toFixed(2)}
-                        {renderTrendArrow(hadOpt.trend, hadOpt.movement)}
+                        {!hadDisabledSingle &&
+                          renderTrendArrow(hadOpt.trend, hadOpt.movement)}
                       </span>
                       <span className="kp">
-                        <span>{(hadOpt.fairProb * 100).toFixed(0)}%</span>
-                        {renderCompactDeltaBadge(hadOpt, 0)}
+                        {hadDisabledSingle ? (
+                          <span>仅串关</span>
+                        ) : (
+                          <>
+                            <span>{(hadOpt.fairProb * 100).toFixed(0)}%</span>
+                            {renderCompactDeltaBadge(hadOpt, 0)}
+                          </>
+                        )}
                       </span>
                     </button>
                   ) : (
                     <button
                       type="button"
+                      disabled={mode === "single"}
                       onClick={(e) =>
                         onTogglePick(e.currentTarget, m, "HAD", "closed")
                       }
@@ -681,24 +710,35 @@ export function MatchRadarCabin({
                   {hhadOpen && hhadOpt ? (
                     <button
                       type="button"
-                      data-spring="0.88"
+                      data-spring={hhadDisabledSingle ? undefined : "0.88"}
+                      disabled={hhadDisabledSingle}
                       onClick={(e) =>
                         onTogglePick(e.currentTarget, m, "HHAD", hhadOpt.key)
                       }
-                      className={`key k2 num ${isPicked(m.id, "HHAD", hhadOpt.key) ? "on" : ""}`}
+                      className={`key k2 num ${
+                        hhadPicked ? "on" : hhadDisabledSingle ? "unsold" : ""
+                      }`}
                     >
                       <span className="ko">
                         {hhadOpt.odds.toFixed(2)}
-                        {renderTrendArrow(hhadOpt.trend, hhadOpt.movement)}
+                        {!hhadDisabledSingle &&
+                          renderTrendArrow(hhadOpt.trend, hhadOpt.movement)}
                       </span>
                       <span className="kp">
-                        <span>{(hhadOpt.fairProb * 100).toFixed(0)}%</span>
-                        {renderCompactDeltaBadge(hhadOpt, 0)}
+                        {hhadDisabledSingle ? (
+                          <span>仅串关</span>
+                        ) : (
+                          <>
+                            <span>{(hhadOpt.fairProb * 100).toFixed(0)}%</span>
+                            {renderCompactDeltaBadge(hhadOpt, 0)}
+                          </>
+                        )}
                       </span>
                     </button>
                   ) : (
                     <button
                       type="button"
+                      disabled={mode === "single"}
                       onClick={(e) =>
                         onTogglePick(e.currentTarget, m, "HHAD", "closed")
                       }
@@ -711,6 +751,40 @@ export function MatchRadarCabin({
                 </div>
               );
             })}
+          </div>
+        )}
+
+        {mode === "single" && singleSubEntryPills.length > 0 && (
+          <div
+            className="num"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 5,
+              marginTop: 7,
+              paddingTop: 6,
+              borderTop: "0.5px dashed var(--line)",
+            }}
+          >
+            <span
+              className="small"
+              style={{ margin: 0, fontWeight: 600, color: "var(--good)" }}
+            >
+              ⚡ 可买单关玩法：
+            </span>
+            {singleSubEntryPills.map((sp) => (
+              <button
+                key={sp.poolCode}
+                type="button"
+                data-spring="0.88"
+                className="key mini num"
+                style={{ padding: "2px 8px", fontSize: 11 }}
+                onClick={() => onOpenSheet({ type: "more", matchId: m.id })}
+              >
+                {sp.label} {sp.minOddsText} ›
+              </button>
+            ))}
           </div>
         )}
 

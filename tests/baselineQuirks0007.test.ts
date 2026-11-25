@@ -255,10 +255,22 @@ describe("Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
       Math.abs(mqMinusTwo.oneGoalProb - calMinusTwo.poolProbs.HHAD.hd) > 0.01,
       "Must NOT confuse HHAD(-2).hd (2-goal win) with 1-goal win"
     );
-    assert.equal(mqMinusTwo.microBadges[1].tone, "emerald");
-    assert.equal(
-      mqMinusTwo.microBadges[1].text,
-      `穿盘率 ${(100 - mqMinusTwo.oneGoalShareOfWins * 100).toFixed(0)}%`
+    // ADR-0019: on deep -2 handicap, true cover (z > 2, i.e. win by >= 3 goals) excludes 2-goal push (让平)
+    assert.ok(
+      (mqMinusTwo.favoriteTrueCoverShareOfWins ?? 0) <
+        1 - mqMinusTwo.oneGoalShareOfWins,
+      "Deep -2 true cover share must exclude 2-goal exact push (z = 2)"
+    );
+    const expectedDeepTone =
+      (mqMinusTwo.favoriteTrueCoverShareOfWins ?? 0) <= 0.5
+        ? "amber"
+        : "emerald";
+    assert.equal(mqMinusTwo.microBadges[1].tone, expectedDeepTone);
+    assert.ok(
+      mqMinusTwo.microBadges[1].text.includes("让胜") &&
+        mqMinusTwo.microBadges[1].text.includes(
+          `${((mqMinusTwo.favoriteTrueCoverShareOfWins ?? 0) * 100).toFixed(0)}%`
+        )
     );
 
     // 3. goalLine = +2 defensive away favorite & suspended HHAD (default '-1' trap) & suspended CRS zero-div safety
@@ -412,19 +424,19 @@ describe("Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
     const baseEarly = {
       ...(FALLBACK_MATCHES[1] as MatchItem),
       id: "c-early-2000",
-      matchNumStr: "周二001",
+      matchNumStr: "周六001",
       kickoff: "20:00",
     };
     const baseMidLate = {
       ...(FALLBACK_MATCHES[2] as MatchItem),
       id: "c-mid-0330",
-      matchNumStr: "周二004",
+      matchNumStr: "周六004",
       kickoff: "03:30",
     };
     const baseLate: MatchItem = {
       ...(FALLBACK_MATCHES[3] as MatchItem),
       id: "c-late-0345",
-      matchNumStr: "周二007",
+      matchNumStr: "周六007",
       kickoff: "03:45",
       pools: {
         ...(FALLBACK_MATCHES[3] as MatchItem).pools,
@@ -513,7 +525,7 @@ describe("Spec 0007 Ticket 01: Live Sporttery Purity, CRS One-Goal Card-Pan & St
     const baseEarly1930 = {
       ...baseEarly,
       id: "c-early-1930",
-      matchNumStr: "周二000",
+      matchNumStr: "周六000",
       kickoff: "19:30",
     };
     const threeValidPicks = [
@@ -1168,14 +1180,23 @@ describe("Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
     assert.equal(wsVoid.appliedPlan!.lines[0].unitPayout, 3.6);
     assert.equal(wsVoid.appliedPlan!.lines[0].returnPayout, 28.8);
     assert.equal(wsVoid.appliedPlan!.lines[1].returnPayout, 7.2);
-    assert.equal(wsVoid.effectiveReport.minPayout, 7.2);
-    assert.equal(wsVoid.effectiveReport.maxPayout, 28.8);
-    assert.equal(wsVoid.effectiveReport.underwaterCount, 1);
-    assert.ok(Math.abs(wsVoid.effectiveReport.realProfitProb - 0.22) < 1e-9);
+    // ADR-0019 §4: when sbM1 is void, sbM1 is removed from the hit condition of BOTH lines,
+    // so both lines reduce to {sbM2:h} and co-hit together paying 28.8 + 7.2 = 36.0 whenever sbM2=h!
+    assert.equal(wsVoid.effectiveReport.minPayout, 36);
+    assert.equal(wsVoid.effectiveReport.maxPayout, 36);
+    assert.equal(wsVoid.effectiveReport.underwaterCount, 0);
     assert.ok(
-      Math.abs(wsVoid.effectiveReport.expectedValueRate - -0.6382) < 1e-9
+      Math.abs(
+        wsVoid.effectiveReport.realProfitProb -
+          wsVoid.effectiveReport.anyWinProb
+      ) < 1e-9 && wsVoid.effectiveReport.realProfitProb > 0.4
     );
-    assert.ok(Math.abs(wsVoid.subjectiveEVPct - -63.82) < 1e-7);
+    assert.ok(
+      Math.abs(
+        wsVoid.effectiveReport.expectedValueRate -
+          (36 * wsVoid.effectiveReport.anyWinProb - 20) / 20
+      ) < 1e-9
+    );
 
     // 4. Combined simVoidFirstMatch + subjectiveDeltaPct (+15%) + scaleMultiple (2x -> [16, 4], cost 40)
     const wsVoidScaled = evaluateQuantWorkspace(
@@ -1199,11 +1220,11 @@ describe("Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       [16, 4]
     );
     assert.equal(wsVoidScaled.effectiveReport.totalCost, 40);
-    assert.equal(wsVoidScaled.effectiveReport.minPayout, 14.4);
-    assert.equal(wsVoidScaled.effectiveReport.maxPayout, 57.6);
+    assert.equal(wsVoidScaled.effectiveReport.minPayout, 72);
+    assert.equal(wsVoidScaled.effectiveReport.maxPayout, 72);
     assert.ok(
-      Math.abs(wsVoidScaled.effectiveReport.expectedValueRate - -0.5215195) <
-        1e-9
+      wsVoidScaled.effectiveReport.expectedValueRate >
+        wsVoid.effectiveReport.expectedValueRate
     );
 
     // 5. Probability [0.02, 0.96] clamping + statutory 200,000 cap clipping & void cap relief
@@ -1337,11 +1358,12 @@ describe("Spec 0007 Ticket 02: Sandbox Simulation on Non-Equal Bonus & Archetype
       },
       [capM1, capM2]
     );
-    const coldComboVoid = wsCapVoid.effectiveReport.combos.find(
+    const coldTicketVoid = wsCapVoid.effectiveReport.tickets!.find(
       (c: { id: string }) => c.id === coldLine.id
     )!;
-    assert.equal(coldComboVoid.unitPayout, 800);
-    assert.equal(coldComboVoid.cappedClipped, 0);
+    assert.equal(coldTicketVoid.unitPayout, 800);
+    assert.equal(coldTicketVoid.cappedClipped, 0);
+    assert.equal(wsCapVoid.effectiveReport.combos[0].cappedClipped, 0);
     assert.equal(
       wsCapVoid.allWarnings.some(
         (w: { id: string; severity: string }) =>

@@ -12,8 +12,8 @@
     ),
     radial-gradient(120% 70% at 50% -8%, #1a2742 0%, #0d1628 55%, #090f1c 100%);
   --text: #ece6d8;
-  --text-2: #b8b3a6;
-  --text-3: #6f778a;
+  --text-2: #c6c0b3;
+  --text-3: #9ea8bc;
   --line: rgba(205, 178, 122, 0.12);
   --accent: #cdb27a;
   --mark: #cdb27a;
@@ -62,8 +62,12 @@
   );
   --key-on-down: linear-gradient(180deg, #b89a5e, #d2ba86);
   --key-on-down-sh: inset 0 2px 3px rgba(60, 40, 10, 0.45);
-  --cell-sub: #6f778a;
-  --cell-sub-on: rgba(11, 19, 34, 0.55);
+  --cell-sub: #9ea8bc;
+  --cell-sub-on: #162033;
+  --dp-pos: #4ade80;
+  --dp-neg: #fda4af;
+  --dp-on-pos: #052e16;
+  --dp-on-neg: #4c0519;
 
   --track: #0a1220;
   --track-sh:
@@ -76,7 +80,7 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     inset 0 0 0 0.5px rgba(205, 178, 122, 0.3),
     0 3px 8px -2px rgba(0, 0, 0, 0.6);
-  --seg-text: #6f778a;
+  --seg-text: #9ea8bc;
   --seg-on: #cdb27a;
   --sw-off: #0a1220;
   --sw-off-sh:

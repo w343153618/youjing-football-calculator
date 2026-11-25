@@ -47,6 +47,16 @@ function finalizeUnconditionalOutcomeMetrics({
       realProfitProb: 0,
       strictNetGainProb: 0,
       breakEvenProb: 0,
+      partialLossShortfall: 0,
+      totalCapitalShortfallD: 0,
+      deepLossBelow50Prob: 0,
+      sub80ReturnProb: 0,
+      probGe80: 0,
+      probGe115: 0,
+      goldenBandProb: 0,
+      expectedRampG: 0,
+      expectedMinR1: 0,
+      condLowerEs25: 0,
       conditionalMinHitPayout: 0,
       conditionalMaxHitPayout: 0,
       isUnconditionalFloorGuaranteed: false,
@@ -104,6 +114,51 @@ function finalizeUnconditionalOutcomeMetrics({
   const tierScale =
     tierMassSum > 0 && anyWinProb > 0 ? anyWinProb / tierMassSum : 1;
 
+  let partialLossShortfall = 0;
+  let deepLossBelow50Prob = 0;
+  let sub80ReturnProb = 0;
+  let probGe80 = 0;
+  let probGe115 = 0;
+  let goldenBandProb = 0;
+  let expectedRampG = 0;
+  let expectedMinR1 = 0;
+
+  const targetEsMass = 0.25 * anyWinProb;
+  let remEsMass = targetEsMass;
+  let esReturnAcc = 0;
+
+  for (let i = 0; i < sortedTiers.length; i++) {
+    const p = Math.max(0, Number(sortedTiers[i].prob) || 0) * tierScale;
+    if (!(p > 0)) continue;
+    const pay = Math.max(0, Number(sortedTiers[i].totalPayout) || 0);
+    const r = pay / totalCost;
+    const diffCents = Math.round((pay - totalCost) * 100);
+    if (diffCents < 0) {
+      partialLossShortfall += p * Math.max(0, 1 - r);
+    }
+    if (r > 0 && r < 0.5 - 1e-9) deepLossBelow50Prob += p;
+    if (r > 0 && r < 0.8 - 1e-9) sub80ReturnProb += p;
+    if (r >= 0.8 - 1e-9) probGe80 += p;
+    if (r >= 1.15 - 1e-9) probGe115 += p;
+    if (r >= 1.2 - 1e-9 && r <= 2.8 + 1e-9) goldenBandProb += p;
+    if (r > 1.2) {
+      expectedRampG += p * Math.min(1, (r - 1.2) / 1.6);
+    }
+    expectedMinR1 += p * Math.min(1, r);
+
+    if (remEsMass > 1e-15) {
+      const take = Math.min(remEsMass, p);
+      esReturnAcc += take * r;
+      remEsMass -= take;
+    }
+  }
+
+  const totalCapitalShortfallD = Math.min(
+    1,
+    Math.max(0, zeroPayoutProb + partialLossShortfall)
+  );
+  const condLowerEs25 = targetEsMass > 0 ? esReturnAcc / targetEsMass : 0;
+
   const resolveQuantileAt = (q) => {
     if (zeroPayoutProb >= q - 1e-12 || sortedTiers.length === 0) return 0;
     let cum = zeroPayoutProb;
@@ -135,6 +190,16 @@ function finalizeUnconditionalOutcomeMetrics({
     realProfitProb,
     strictNetGainProb,
     breakEvenProb,
+    partialLossShortfall,
+    totalCapitalShortfallD,
+    deepLossBelow50Prob,
+    sub80ReturnProb,
+    probGe80,
+    probGe115,
+    goldenBandProb,
+    expectedRampG,
+    expectedMinR1,
+    condLowerEs25,
     conditionalMinHitPayout,
     conditionalMaxHitPayout,
     isUnconditionalFloorGuaranteed,
@@ -146,13 +211,25 @@ export function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
   const K = ticketRows.length;
   if (!hitMatrix || hitMatrix.K !== K) return null;
   const origPayouts = new Float64Array(K);
-  const seenOrig = new Uint8Array(K);
-  for (let r = 0; r < K; r++) {
-    const sig = canonicalTicketLegSig(ticketRows[r].legs);
-    const origK = hitMatrix.sigToOrigIdx.get(sig);
-    if (origK === undefined || seenOrig[origK] !== 0) return null;
-    seenOrig[origK] = 1;
-    origPayouts[origK] = Number(ticketRows[r].totalPayout || 0);
+  if (hitMatrix.sigToOrigIndices instanceof Map) {
+    const cursorBySig = new Map();
+    for (let r = 0; r < K; r++) {
+      const sig = canonicalTicketLegSig(ticketRows[r].legs);
+      const indices = hitMatrix.sigToOrigIndices.get(sig);
+      const cur = cursorBySig.get(sig) ?? 0;
+      if (!indices || cur >= indices.length) return null;
+      cursorBySig.set(sig, cur + 1);
+      origPayouts[indices[cur]] = Number(ticketRows[r].totalPayout || 0);
+    }
+  } else {
+    const seenOrig = new Uint8Array(K);
+    for (let r = 0; r < K; r++) {
+      const sig = canonicalTicketLegSig(ticketRows[r].legs);
+      const origK = hitMatrix.sigToOrigIdx?.get(sig);
+      if (origK === undefined || seenOrig[origK] !== 0) return null;
+      seenOrig[origK] = 1;
+      origPayouts[origK] = Number(ticketRows[r].totalPayout || 0);
+    }
   }
 
   let exactExpectedReturn = 0;
@@ -243,10 +320,21 @@ export function evaluateMetricsViaHitMatrix(hitMatrix, ticketRows, totalCost) {
   const likelyMax =
     B > 0 ? Math.min(maxPayout, Math.max(likelyMin, rawLikelyMax)) : 0;
 
+  const zeroPayoutZeroHitProb = Math.min(
+    finalized.zeroPayoutProb,
+    Math.max(0, Number(hitMatrix.zeroPayoutZeroHitProb ?? 0))
+  );
+  const zeroPayoutSubThresholdProb = Math.max(
+    0,
+    finalized.zeroPayoutProb - zeroPayoutZeroHitProb
+  );
+
   return {
     combos: [],
     tiers: activeTiers,
     ...finalized,
+    zeroPayoutZeroHitProb,
+    zeroPayoutSubThresholdProb,
     minPayout,
     maxPayout,
     expectedReturn: exactExpectedReturn,
@@ -500,9 +588,12 @@ export function evaluateTicketsOnQuotientSpace(
       maxPayout: 0,
       rawZeroProb: totalCost > 0 ? 1 : 0,
     });
+    const zProb = emptyFin.zeroPayoutProb;
     return {
       combos: [],
       ...emptyFin,
+      zeroPayoutZeroHitProb: zProb,
+      zeroPayoutSubThresholdProb: 0,
       minPayout: 0,
       maxPayout: 0,
       expectedReturn: 0,
@@ -513,8 +604,243 @@ export function evaluateTicketsOnQuotientSpace(
       tiers: [],
     };
   }
+
+  const voidMatchSet =
+    options?.voidMatchSet instanceof Set && options.voidMatchSet.size > 0
+      ? options.voidMatchSet
+      : null;
+  const isLegVoid = (lg) =>
+    Boolean(
+      lg?.isVoid === true ||
+      (voidMatchSet && lg?.matchId && voidMatchSet.has(String(lg.matchId)))
+    );
+
+  let hasAnyVoidLeg = false;
+  const voidRefundRows = [];
+  const activeRows = [];
+  for (let k = 0; k < ticketRows.length; k++) {
+    const tk = ticketRows[k];
+    const rawLegs = Array.isArray(tk.legs) ? tk.legs : [];
+    let nonVoidCount = 0;
+    for (let i = 0; i < rawLegs.length; i++) {
+      if (isLegVoid(rawLegs[i])) hasAnyVoidLeg = true;
+      else nonVoidCount += 1;
+    }
+    if (rawLegs.length > 0 && nonVoidCount === 0) {
+      voidRefundRows.push({ row: tk, ticketNo: tk.ticketNo ?? k + 1 });
+    } else {
+      activeRows.push(tk);
+    }
+  }
+
+  // Sub-case V1: ALL tickets have 100% voided legs -> guaranteed refund with probability 1.0
+  if (voidRefundRows.length > 0 && activeRows.length === 0) {
+    const refundTotal =
+      Math.round(
+        voidRefundRows.reduce(
+          (acc, x) => acc + Number(x.row.totalPayout || 0),
+          0
+        ) * 100
+      ) / 100;
+    const refundUnit =
+      Math.round(
+        voidRefundRows.reduce(
+          (acc, x) => acc + Number(x.row.unitPayout || 0),
+          0
+        ) * 100
+      ) / 100;
+    const diffCents = Math.round((refundTotal - totalCost) * 100);
+    const isUnderwater = diffCents < 0;
+    const isBreakEven = diffCents === 0;
+    const netProfit = Math.round((refundTotal - totalCost) * 100) / 100;
+    const refundCombo = {
+      id:
+        voidRefundRows.length === 1
+          ? voidRefundRows[0].row.id
+          : "c-void-refund",
+      desc:
+        voidRefundRows.length === 1
+          ? `${voidRefundRows[0].row.desc || "模拟腰斩退本"}（作废退还本金）`
+          : `模拟作废场次全退本金(${voidRefundRows.length}张退本)`,
+      legs: voidRefundRows.flatMap((x) => x.row.legs || []),
+      prob: 1,
+      unitPayout: refundUnit,
+      totalPayout: refundTotal,
+      cappedClipped: 0,
+      netProfit,
+      isUnderwater,
+      hitMatchCount: 0,
+      hitTicketNos: voidRefundRows.map((x) => x.ticketNo),
+      hitTicketIds: voidRefundRows.map((x) => x.row.id),
+      returnMultiple:
+        totalCost > 0 ? Number((refundTotal / totalCost).toFixed(4)) : 1,
+    };
+    const finRefund = finalizeUnconditionalOutcomeMetrics({
+      sortedTiers: [refundCombo],
+      totalCost,
+      minPayout: refundTotal,
+      maxPayout: refundTotal,
+      rawZeroProb: 0,
+      rawPartialProb: isUnderwater ? 1 : 0,
+      rawBreakEvenProb: isBreakEven ? 1 : 0,
+      rawStrictGainProb: !isUnderwater && !isBreakEven ? 1 : 0,
+      zeroStructurallyImpossible: true,
+    });
+    return {
+      combos: Boolean(options?.metricsOnly) ? [] : [refundCombo],
+      tiers: [refundCombo],
+      hitMatrix: null,
+      ...finRefund,
+      zeroPayoutZeroHitProb: 0,
+      zeroPayoutSubThresholdProb: 0,
+      minPayout: refundTotal,
+      maxPayout: refundTotal,
+      expectedReturn: refundTotal,
+      expectedValueRate:
+        totalCost > 0 ? (refundTotal - totalCost) / totalCost : 0,
+      underwaterCount: isUnderwater ? 1 : 0,
+      underwaterShareOfWins: isUnderwater ? 1 : 0,
+      likelyRange: [refundTotal, refundTotal],
+    };
+  }
+
+  // Sub-case V3: Mixed slip with guaranteed all-void refund tickets + active-leg tickets
+  if (voidRefundRows.length > 0 && activeRows.length > 0) {
+    const refundTotal =
+      Math.round(
+        voidRefundRows.reduce(
+          (acc, x) => acc + Number(x.row.totalPayout || 0),
+          0
+        ) * 100
+      ) / 100;
+    const refundUnit =
+      Math.round(
+        voidRefundRows.reduce(
+          (acc, x) => acc + Number(x.row.unitPayout || 0),
+          0
+        ) * 100
+      ) / 100;
+    const refundNos = voidRefundRows.map((x) => x.ticketNo);
+    const refundIds = voidRefundRows.map((x) => x.row.id);
+    const refundLegs = voidRefundRows.flatMap((x) => x.row.legs || []);
+
+    const subRes = evaluateTicketsOnQuotientSpace(
+      activeRows,
+      totalCost,
+      matches,
+      matchAtomicMap,
+      {
+        ...options,
+        reusableHitMatrix: null,
+        captureHitMatrix: false,
+      }
+    );
+
+    const shiftedCombos = [];
+    const srcItems = Boolean(options?.metricsOnly)
+      ? subRes.tiers || []
+      : subRes.combos || [];
+    for (let i = 0; i < srcItems.length; i++) {
+      const c = srcItems[i];
+      const totalPayout = Math.round((c.totalPayout + refundTotal) * 100) / 100;
+      const unitPayout =
+        Math.round(((c.unitPayout || 0) + refundUnit) * 100) / 100;
+      const netProfit = Math.round((totalPayout - totalCost) * 100) / 100;
+      const isUnderwater = Math.round((totalPayout - totalCost) * 100) < 0;
+      shiftedCombos.push({
+        ...c,
+        unitPayout,
+        totalPayout,
+        netProfit,
+        isUnderwater,
+        hitTicketNos: [...refundNos, ...(c.hitTicketNos || [])],
+        hitTicketIds: [...refundIds, ...(c.hitTicketIds || [])],
+        returnMultiple:
+          totalCost > 0 ? Number((totalPayout / totalCost).toFixed(4)) : 0,
+      });
+    }
+
+    if (subRes.zeroPayoutProb > 1e-14) {
+      const diffCents = Math.round((refundTotal - totalCost) * 100);
+      shiftedCombos.push({
+        id: "c-void-partial-refund",
+        desc: `仅作废退本票返还(${voidRefundRows.length}张退本)`,
+        legs: refundLegs,
+        prob: subRes.zeroPayoutProb,
+        unitPayout: refundUnit,
+        totalPayout: refundTotal,
+        cappedClipped: 0,
+        netProfit: Math.round((refundTotal - totalCost) * 100) / 100,
+        isUnderwater: diffCents < 0,
+        hitMatchCount: 0,
+        hitTicketNos: refundNos,
+        hitTicketIds: refundIds,
+        returnMultiple:
+          totalCost > 0 ? Number((refundTotal / totalCost).toFixed(4)) : 0,
+      });
+    }
+
+    shiftedCombos.sort((a, b) => a.totalPayout - b.totalPayout);
+    let pPart = 0;
+    let pBe = 0;
+    let pGain = 0;
+    let uwCount = 0;
+    for (let i = 0; i < shiftedCombos.length; i++) {
+      const c = shiftedCombos[i];
+      const dc = Math.round((c.totalPayout - totalCost) * 100);
+      if (dc < 0) {
+        pPart += c.prob;
+        uwCount += 1;
+      } else if (dc === 0) {
+        pBe += c.prob;
+      } else {
+        pGain += c.prob;
+      }
+    }
+    const minPayout = shiftedCombos[0]?.totalPayout ?? refundTotal;
+    const maxPayout =
+      shiftedCombos[shiftedCombos.length - 1]?.totalPayout ?? refundTotal;
+    const expectedReturn = subRes.expectedReturn + refundTotal;
+    const expectedValueRate =
+      totalCost > 0 ? (expectedReturn - totalCost) / totalCost : 0;
+    const finMixed = finalizeUnconditionalOutcomeMetrics({
+      sortedTiers: shiftedCombos,
+      totalCost,
+      minPayout,
+      maxPayout,
+      rawZeroProb: 0,
+      rawPartialProb: pPart,
+      rawBreakEvenProb: pBe,
+      rawStrictGainProb: pGain,
+      zeroStructurallyImpossible: true,
+    });
+    return {
+      combos: Boolean(options?.metricsOnly) ? [] : shiftedCombos,
+      tiers: shiftedCombos,
+      hitMatrix: null,
+      ...finMixed,
+      zeroPayoutZeroHitProb: 0,
+      zeroPayoutSubThresholdProb: 0,
+      minPayout,
+      maxPayout,
+      expectedReturn,
+      expectedValueRate,
+      underwaterCount: uwCount,
+      underwaterShareOfWins:
+        finMixed.anyWinProb > 0
+          ? Math.min(
+              1,
+              Math.max(0, finMixed.partialLossProb / finMixed.anyWinProb)
+            )
+          : 0,
+      likelyRange: [minPayout, maxPayout],
+    };
+  }
+
   const metricsOnly = Boolean(options?.metricsOnly);
-  const reusableHitMatrix = options?.reusableHitMatrix ?? null;
+  const reusableHitMatrix = !hasAnyVoidLeg
+    ? (options?.reusableHitMatrix ?? null)
+    : null;
   if (
     metricsOnly &&
     reusableHitMatrix &&
@@ -538,6 +864,7 @@ export function evaluateTicketsOnQuotientSpace(
     const legs = ticketRows[k].legs || [];
     for (let i = 0; i < legs.length; i++) {
       const lg = legs[i];
+      if (isLegVoid(lg)) continue;
       let mIdx = matchIndexMap.get(lg.matchId);
       if (mIdx === undefined) {
         mIdx = matchOrder.length;
@@ -666,18 +993,33 @@ export function evaluateTicketsOnQuotientSpace(
 
   // Ticket-match leg lookup: ticketOptIdx[k * M + m] = index in distinctOptsByMatch[m], or -1 if ticket k doesn't involve match m
   const ticketOptIdx = new Int16Array(K * M).fill(-1);
+  const ticketActiveLegCount = new Int16Array(K);
   let isAllSingleTickets = true;
   for (let k = 0; k < K; k++) {
     const legs = ticketRows[k].legs || [];
-    if (legs.length !== 1) isAllSingleTickets = false;
+    let activeCount = 0;
     for (let i = 0; i < legs.length; i++) {
       const lg = legs[i];
+      if (isLegVoid(lg)) continue;
+      activeCount += 1;
       const mIdx = matchIndexMap.get(lg.matchId);
       const jIdx = distinctOptsByMatch[mIdx].findIndex(
         (o) => o.poolCode === lg.poolCode && o.optionKey === lg.optionKey
       );
       ticketOptIdx[k * M + mIdx] = jIdx;
     }
+    ticketActiveLegCount[k] = activeCount;
+    if (activeCount !== 1) isAllSingleTickets = false;
+  }
+
+  let rawAllMatchZeroHitProb = M > 0 ? 1 : 0;
+  for (let m = 0; m < M; m++) {
+    let missP = 0;
+    const qStates = quotientByMatch[m];
+    for (let s = 0; s < qStates.length; s++) {
+      if (qStates[s].hitSet.size === 0) missP += qStates[s].prob;
+    }
+    rawAllMatchZeroHitProb *= missP;
   }
 
   // Exact per-match option probabilities on uncompressed quotient space Ω̃_m -> zero-approximation linear EV
@@ -1051,6 +1393,9 @@ export function evaluateTicketsOnQuotientSpace(
         cappedClipped,
         netProfit,
         isUnderwater,
+        hitMatchCount: b.minHits,
+        returnMultiple:
+          totalCost > 0 ? Number((totalPayout / totalCost).toFixed(4)) : 0,
       };
     });
 
@@ -1141,10 +1486,21 @@ export function evaluateTicketsOnQuotientSpace(
       ? Math.min(maxPayout, Math.max(likelyMin, rawLikelyMax))
       : 0;
 
+    const sglZeroHitProb = Math.min(
+      sglFinalized.zeroPayoutProb,
+      Math.max(0, rawAllMatchZeroHitProb)
+    );
+    const sglSubThresholdProb = Math.max(
+      0,
+      sglFinalized.zeroPayoutProb - sglZeroHitProb
+    );
+
     return {
       combos: metricsOnly ? [] : combos,
       tiers: combos,
       ...sglFinalized,
+      zeroPayoutZeroHitProb: sglZeroHitProb,
+      zeroPayoutSubThresholdProb: sglSubThresholdProb,
       minPayout,
       maxPayout,
       expectedReturn,
@@ -1384,6 +1740,7 @@ export function evaluateTicketsOnQuotientSpace(
       const totalPayout = Math.round(tk.totalPayout * 100) / 100;
       const cappedClipped = Math.round((tk.cappedClipped ?? 0) * 100) / 100;
       const netProfit = Math.round((totalPayout - totalCost) * 100) / 100;
+      const ticketNo = tk.ticketNo ?? k0 + 1;
       return {
         id: tk.id,
         desc: tk.desc,
@@ -1394,6 +1751,11 @@ export function evaluateTicketsOnQuotientSpace(
         cappedClipped,
         netProfit,
         isUnderwater: netProfit < 0,
+        hitMatchCount: ticketActiveLegCount[k0] || (tk.legs || []).length,
+        hitTicketNos: [ticketNo],
+        hitTicketIds: [tk.id],
+        returnMultiple:
+          totalCost > 0 ? Number((totalPayout / totalCost).toFixed(4)) : 0,
       };
     }
 
@@ -1403,9 +1765,13 @@ export function evaluateTicketsOnQuotientSpace(
     let sumClip = 0;
     let hitMatchCount = 0;
     const dedupIds = [];
+    const hitTicketNos = new Array(winCount);
+    const hitTicketIds = new Array(winCount);
     for (let i = 0; i < winCount; i++) {
       const k = winIndices[i];
       const tk = ticketRows[k];
+      hitTicketNos[i] = tk.ticketNo ?? k + 1;
+      hitTicketIds[i] = tk.id;
       sumUnit += tk.unitPayout;
       sumTotal += tk.totalPayout;
       sumClip += tk.cappedClipped ?? 0;
@@ -1464,6 +1830,11 @@ export function evaluateTicketsOnQuotientSpace(
       cappedClipped,
       netProfit,
       isUnderwater,
+      hitMatchCount,
+      hitTicketNos,
+      hitTicketIds,
+      returnMultiple:
+        totalCost > 0 ? Number((totalPayout / totalCost).toFixed(4)) : 0,
     };
   };
 
@@ -2663,8 +3034,15 @@ export function evaluateTicketsOnQuotientSpace(
         return winIndices;
       });
     } else {
+      const maxCapLines =
+        typeof options?.maxCaptureLines === "number" &&
+        options.maxCaptureLines > 0
+          ? options.maxCaptureLines
+          : 512;
       const wantCapture =
-        Boolean(options?.captureHitMatrix) && !compressedPerMatch && K <= 512;
+        Boolean(options?.captureHitMatrix) &&
+        !compressedPerMatch &&
+        K <= maxCapLines;
       if (wantCapture) {
         capturedBucketProbs = [];
         capturedBucketHits = [];
@@ -2841,8 +3219,15 @@ export function evaluateTicketsOnQuotientSpace(
         return winIndices;
       });
     } else {
+      const maxCapLines =
+        typeof options?.maxCaptureLines === "number" &&
+        options.maxCaptureLines > 0
+          ? options.maxCaptureLines
+          : 512;
       const wantCapture =
-        Boolean(options?.captureHitMatrix) && !compressedPerMatch && K <= 512;
+        Boolean(options?.captureHitMatrix) &&
+        !compressedPerMatch &&
+        K <= maxCapLines;
       if (wantCapture) {
         capturedBucketProbs = [];
         capturedBucketHits = [];
@@ -2886,23 +3271,28 @@ export function evaluateTicketsOnQuotientSpace(
   }
 
   let hitMatrix = null;
-  if (capturedBucketProbs && capturedBucketHits) {
+  if (!hasAnyVoidLeg && capturedBucketProbs && capturedBucketHits) {
     const sigToOrigIdx = new Map();
-    let uniqueSigs = true;
+    const sigToOrigIndices = new Map();
+    let allValidSigs = true;
     for (let k = 0; k < K; k++) {
       const sig = canonicalTicketLegSig(ticketRows[k].legs);
-      if (!sig || sigToOrigIdx.has(sig)) {
-        uniqueSigs = false;
+      if (!sig) {
+        allValidSigs = false;
         break;
       }
-      sigToOrigIdx.set(sig, k);
+      if (!sigToOrigIdx.has(sig)) sigToOrigIdx.set(sig, k);
+      const list = sigToOrigIndices.get(sig);
+      if (list) list.push(k);
+      else sigToOrigIndices.set(sig, [k]);
     }
-    if (uniqueSigs) {
+    if (allValidSigs) {
       hitMatrix = {
         K,
         matchesRef: matches,
         isBaselineAtomic: Boolean(!matchAtomicMap || options?.isBaselineAtomic),
         sigToOrigIdx,
+        sigToOrigIndices,
         origTicketProbs,
         bucketProbs: Float64Array.from(capturedBucketProbs),
         bucketHits: capturedBucketHits,
@@ -2966,8 +3356,17 @@ export function evaluateTicketsOnQuotientSpace(
     rawStrictGainProb: rawJointStrictGain,
     zeroStructurallyImpossible,
   });
+  const zeroPayoutZeroHitProb = Math.min(
+    jointFinalized.zeroPayoutProb,
+    Math.max(0, rawAllMatchZeroHitProb)
+  );
+  const zeroPayoutSubThresholdProb = Math.max(
+    0,
+    jointFinalized.zeroPayoutProb - zeroPayoutZeroHitProb
+  );
   if (hitMatrix) {
     hitMatrix.zeroPayoutProb = jointFinalized.zeroPayoutProb;
+    hitMatrix.zeroPayoutZeroHitProb = zeroPayoutZeroHitProb;
   }
   const underwaterShareOfWins =
     jointFinalized.anyWinProb > 0
@@ -3001,6 +3400,8 @@ export function evaluateTicketsOnQuotientSpace(
     tiers: activeTiers,
     hitMatrix,
     ...jointFinalized,
+    zeroPayoutZeroHitProb,
+    zeroPayoutSubThresholdProb,
     minPayout,
     maxPayout,
     expectedReturn,

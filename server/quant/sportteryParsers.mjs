@@ -9,18 +9,21 @@ import {
   buildPool,
 } from "../sportteryFallbackMatches.mjs";
 
+export function recalibrateMergedMatch(m) {
+  if (!m || typeof m !== "object") return m;
+  const cal = calibrateMatchCoherentModel(m);
+  const calibratedMatch = {
+    ...m,
+    pools: cal.pools,
+  };
+  return {
+    ...calibratedMatch,
+    microQuant: analyzeMatchMicroQuant(calibratedMatch, cal),
+  };
+}
+
 function hydrateCalibratedMatches(matches) {
-  return matches.map((m) => {
-    const cal = calibrateMatchCoherentModel(m);
-    const calibratedMatch = {
-      ...m,
-      pools: cal.pools,
-    };
-    return {
-      ...calibratedMatch,
-      microQuant: analyzeMatchMicroQuant(calibratedMatch, cal),
-    };
-  });
+  return matches.map((m) => recalibrateMergedMatch(m));
 }
 
 export const FALLBACK_MATCHES = hydrateCalibratedMatches(RAW_FALLBACK_MATCHES);
@@ -31,6 +34,28 @@ function parseTrend(v) {
   return 0;
 }
 
+const isAffirmativeSaleFlag = (value) => value === 1 || value === "1";
+
+function confirmedPoolSaleRights(row, statusOk) {
+  const modernSingle = row.bettingSingle;
+  const modernAllUpFlags = [row.bettingAllup, row.bettingAllUp].filter(
+    (value) => value !== undefined
+  );
+  const legacyOpen = isAffirmativeSaleFlag(row.cbtValue);
+  return {
+    single:
+      statusOk &&
+      (modernSingle !== undefined
+        ? isAffirmativeSaleFlag(modernSingle)
+        : legacyOpen && isAffirmativeSaleFlag(row.single)),
+    allUp:
+      statusOk &&
+      (modernAllUpFlags.length > 0
+        ? modernAllUpFlags.every(isAffirmativeSaleFlag)
+        : legacyOpen),
+  };
+}
+
 export function parseSportteryRawJson(json) {
   const groups = json?.value?.matchInfoList ?? [];
   const parsed = [];
@@ -39,6 +64,7 @@ export function parseSportteryRawJson(json) {
       const poolCanSingle = {};
       const poolCanAllUp = {};
       const poolSelling = {};
+      const confirmedRights = new Map();
       const hasPoolList = Array.isArray(m.poolList) && m.poolList.length > 0;
       for (const p of m.poolList ?? []) {
         const statusOk =
@@ -64,6 +90,17 @@ export function parseSportteryRawJson(json) {
             canAllUp = cbtOpen;
           }
         }
+        const rights = confirmedPoolSaleRights(p, statusOk);
+        const previous = confirmedRights.get(p.poolCode);
+        confirmedRights.set(
+          p.poolCode,
+          previous
+            ? {
+                single: previous.single && rights.single,
+                allUp: previous.allUp && rights.allUp,
+              }
+            : rights
+        );
         poolCanSingle[p.poolCode] = canSingle;
         poolCanAllUp[p.poolCode] = canAllUp;
         poolSelling[p.poolCode] = canSingle || canAllUp;
@@ -103,7 +140,7 @@ export function parseSportteryRawJson(json) {
           ? `${String(m.matchDate).trim()} ${String(m.matchTime).trim()}`
           : undefined;
 
-      parsed.push({
+      const match = {
         id: String(m.matchId),
         matchNumStr: m.matchNumStr,
         league: m.leagueAbbName,
@@ -242,7 +279,14 @@ export function parseSportteryRawJson(json) {
             isCanAllUp("CRS")
           ),
         },
-      });
+      };
+      for (const [code, pool] of Object.entries(match.pools)) {
+        pool.confirmedSaleRights = confirmedRights.get(code) ?? {
+          single: false,
+          allUp: false,
+        };
+      }
+      parsed.push(match);
     }
   }
   return hydrateCalibratedMatches(parsed);

@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -922,11 +926,15 @@ describe("Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
         await import("../src/workspace/workbenchController.ts");
       const { formatLedgerStatsSummary } =
         await import("../src/mobile/cabins/cabinViewModels.ts");
+      const officialMatches = withConfirmedSaleRights(FALLBACK_MATCHES);
       let serverMutateCalled = false;
       const wbRollover = createWorkbenchController({
         debounceMs: 0,
         quantPort: {
-          computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+          computeWorkspace: (p, ms) => ({
+            ...evaluateQuantWorkspace(p, ms),
+            boardMeta: freshOfficialBoard,
+          }),
         },
         authPort: {
           bootstrap: async () => ({
@@ -944,12 +952,13 @@ describe("Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
               loginLockedUntil: null,
             },
             authToken: "tok_rollover",
-            matches: FALLBACK_MATCHES as any,
+            matches: officialMatches,
+            boardMeta: freshOfficialBoard,
             syncNote: "ok",
             initialPicks: [],
             workspace: evaluateQuantWorkspace(
               { picks: [], multiple: 5 },
-              FALLBACK_MATCHES
+              officialMatches
             ),
             ledger: {
               dailyLimit: 100,
@@ -1004,8 +1013,8 @@ describe("Spec 0007 Ticket 03 · Slice C: Frontend Encrypted Ledger Client, Per-
       assert.equal(freshStats.netProfitText, "¥0.00");
       assert.equal(freshStats.winRateText, "0.0%");
 
-      wbRollover.betSlip.togglePick(FALLBACK_MATCHES[0] as any, "HAD", "h");
-      wbRollover.betSlip.togglePick(FALLBACK_MATCHES[1] as any, "HAD", "h");
+      wbRollover.betSlip.togglePick(officialMatches[0], "HAD", "h");
+      wbRollover.betSlip.togglePick(officialMatches[1], "HAD", "h");
       await wbRollover.betSlip.flush();
       const postMidnightRes = await wbRollover.recordToLedger("live");
       assert.equal(

@@ -1,13 +1,18 @@
 import {
+  analyzeMatchMicroQuant,
   evaluateQuantWorkspace,
   sanitizeAndDeduplicatePicks,
 } from "./quantEngine.mjs";
 import { hydrateMatchesWithDualAxisMovement } from "./history/dualAxisMovement.mjs";
+import { hasChangedTicketTeam } from "./matchIdentity.mjs";
+import { isFreshTicketBoard } from "./ticketSaleRights.mjs";
 import { buildBoardFreshnessMeta } from "./history/sportteryHistoryNormalizers.mjs";
 import {
   FALLBACK_MATCHES,
+  enrichBoardQuoteMeta,
   fetchOfficialMatchResultsServer,
   fetchOfficialMatchesServer,
+  reconcileMatchesPoolsNonRegressive,
 } from "./sportteryFeed.mjs";
 import {
   buildComboDiagnosisContext,
@@ -115,11 +120,15 @@ export function createAppRoutes(opts = {}) {
   let cachedMatches = FALLBACK_MATCHES;
   let lastValidLiveMatches = null;
   let lastValidBoardAt = null;
-  let cachedBoardMeta = buildBoardFreshnessMeta({
-    source: "fallback",
-    boardState: "builtin-fallback",
-    lastValidBoardAt: null,
-  });
+  let cachedBoardMeta = enrichBoardQuoteMeta(
+    buildBoardFreshnessMeta({
+      source: "fallback",
+      boardState: "builtin-fallback",
+      lastValidBoardAt: null,
+    }),
+    FALLBACK_MATCHES,
+    nowFn()
+  );
   let cachedSyncNote = "已连接体彩实盘快照 · 支持一键刷新官网水位";
   let lastMatchFetchAt = 0;
   let inFlightMatchLoad = null;
@@ -188,20 +197,29 @@ export function createAppRoutes(opts = {}) {
           !fetchFailed &&
           incomingMatches.length > 0 &&
           (explicitMeta
-            ? explicitMeta.boardState === "fresh"
-            : res?.source !== "fallback" && res?.source !== "cached-snapshot");
+            ? isFreshTicketBoard(explicitMeta) &&
+              (!res?.source || res.source === "official-live")
+            : res?.source === "official-live");
 
         if (isFreshLive) {
+          const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
+            lastValidLiveMatches,
+            incomingMatches,
+            analyzeMatchMicroQuant
+          );
           lastValidBoardAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
-          lastValidLiveMatches = incomingMatches;
-          cachedMatches = incomingMatches;
-          cachedBoardMeta =
+          lastValidLiveMatches = mergedLiveMatches;
+          cachedMatches = mergedLiveMatches;
+          cachedBoardMeta = enrichBoardQuoteMeta(
             explicitMeta ||
-            buildBoardFreshnessMeta({
-              source: "official-live",
-              boardState: "fresh",
-              lastValidBoardAt,
-            });
+              buildBoardFreshnessMeta({
+                source: "official-live",
+                boardState: "fresh",
+                lastValidBoardAt,
+              }),
+            cachedMatches,
+            nowAfter
+          );
           cachedSyncNote = res?.syncNote || cachedSyncNote;
           historyCoordinator?.notifyLiveBoardNonBlocking?.({
             matches: cachedMatches,
@@ -211,12 +229,33 @@ export function createAppRoutes(opts = {}) {
             ?.drainPendingOpenQuotes?.({ maxItems: 6 })
             ?.catch?.(() => {});
         } else {
-          const resolvedLastValidAt =
-            explicitMeta?.lastValidBoardAt ?? lastValidBoardAt ?? null;
-          const resolvedMatches =
-            incomingMatches.length > 0 && res?.source !== "fallback"
+          const hasLiveMem =
+            Array.isArray(lastValidLiveMatches) &&
+            lastValidLiveMatches.length > 0;
+          const memValidAt =
+            typeof lastValidBoardAt === "number" &&
+            Number.isFinite(lastValidBoardAt)
+              ? lastValidBoardAt
+              : null;
+          const incValidAt =
+            typeof explicitMeta?.lastValidBoardAt === "number" &&
+            Number.isFinite(explicitMeta.lastValidBoardAt)
+              ? explicitMeta.lastValidBoardAt
+              : null;
+          const preferMemOverIncoming =
+            hasLiveMem &&
+            (incomingMatches.length === 0 ||
+              res?.source === "fallback" ||
+              (memValidAt !== null &&
+                (incValidAt === null || memValidAt >= incValidAt)));
+          const resolvedLastValidAt = preferMemOverIncoming
+            ? memValidAt
+            : (incValidAt ?? memValidAt ?? null);
+          const resolvedMatches = preferMemOverIncoming
+            ? lastValidLiveMatches
+            : incomingMatches.length > 0 && res?.source !== "fallback"
               ? incomingMatches
-              : lastValidLiveMatches && lastValidLiveMatches.length > 0
+              : hasLiveMem
                 ? lastValidLiveMatches
                 : incomingMatches.length > 0
                   ? incomingMatches
@@ -229,18 +268,21 @@ export function createAppRoutes(opts = {}) {
                 : resolvedLastValidAt !== null
                   ? "timeout-fallback"
                   : "builtin-fallback";
-          const resolvedSource =
-            explicitMeta?.source ||
-            (lastValidLiveMatches
-              ? "cached-snapshot"
-              : res?.source || "fallback");
+          const resolvedSource = preferMemOverIncoming
+            ? "cached-snapshot"
+            : explicitMeta?.source ||
+              (hasLiveMem ? "cached-snapshot" : res?.source || "fallback");
 
           cachedMatches = resolvedMatches;
-          cachedBoardMeta = buildBoardFreshnessMeta({
-            source: resolvedSource,
-            boardState: resolvedState,
-            lastValidBoardAt: resolvedLastValidAt,
-          });
+          cachedBoardMeta = enrichBoardQuoteMeta(
+            buildBoardFreshnessMeta({
+              source: resolvedSource,
+              boardState: resolvedState,
+              lastValidBoardAt: resolvedLastValidAt,
+            }),
+            cachedMatches,
+            nowAfter
+          );
           cachedSyncNote =
             res?.syncNote || cachedBoardMeta.bannerText || cachedSyncNote;
           historyCoordinator?.notifyLiveBoardNonBlocking?.({
@@ -765,13 +807,17 @@ export function createAppRoutes(opts = {}) {
             const safeMsg = /[\u4e00-\u9fff]/.test(msg)
               ? msg
               : "账本操作参数无效";
-            sendJson(res, 400, { ok: false, error: safeMsg });
+            sendJson(res, 400, {
+              ok: false,
+              ...(err?.code ? { code: String(err.code) } : {}),
+              error: safeMsg,
+            });
           },
         },
         async ({ sess, data, user }) => {
           const act = String(data?.action || "");
           const nowMs = nowFn();
-          const { matches } = await ensureMatchesLoaded(false);
+          const { matches, boardMeta } = await ensureMatchesLoaded(false);
           const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
 
           if (act === "auto-settle") {
@@ -805,6 +851,7 @@ export function createAppRoutes(opts = {}) {
             safeMutateData,
             {
               authoritativeMatches: sessionMatches,
+              boardMeta,
             }
           );
 
@@ -862,7 +909,127 @@ export function createAppRoutes(opts = {}) {
             workspace,
             coordinator: historyCoordinator,
           });
-          return workspace;
+          const clientOdIdx =
+            typeof safeParams?.quoteInputSig === "string"
+              ? safeParams.quoteInputSig.lastIndexOf("|od=")
+              : -1;
+          const serverOdIdx =
+            typeof workspace?.quoteInputSig === "string"
+              ? workspace.quoteInputSig.lastIndexOf("|od=")
+              : -1;
+          const sessionById = new Map(
+            sessionMatches.map((m) => [String(m?.id ?? ""), m])
+          );
+          const isPoolSingleOpen = (pl) =>
+            Boolean(
+              pl &&
+              pl.selling !== false &&
+              (typeof pl.canSingle === "boolean" &&
+              typeof pl.single === "boolean"
+                ? pl.canSingle && pl.single
+                : typeof pl.canSingle === "boolean"
+                  ? pl.canSingle
+                  : Boolean(pl.single))
+            );
+          const isPoolAllUpOpen = (pl) =>
+            Boolean(pl && pl.selling !== false && pl.canAllUp !== false);
+          const picksQuoteDrifted =
+            Array.isArray(safeParams?.picks) &&
+            safeParams.picks.some((pk) => {
+              const fm = sessionById.get(String(pk?.matchId ?? ""));
+              const pl = fm?.pools?.[pk?.poolCode];
+              const opt = pl?.options?.find((o) => o.key === pk?.optionKey);
+              if (
+                !pl ||
+                pl.selling === false ||
+                !opt ||
+                hasChangedTicketTeam(fm, pk)
+              )
+                return true;
+              if (
+                pk.poolCode === "HHAD" &&
+                pk.goalLine !== undefined &&
+                String(pk.goalLine ?? "") !== String(pl.goalLine ?? "")
+              ) {
+                return true;
+              }
+              if (
+                pk.canSingle !== undefined &&
+                Boolean(pk.canSingle) !== isPoolSingleOpen(pl)
+              ) {
+                return true;
+              }
+              if (
+                pk.canAllUp !== undefined &&
+                Boolean(pk.canAllUp) !== isPoolAllUpOpen(pl)
+              ) {
+                return true;
+              }
+              return (
+                Math.abs((Number(opt.odds) || 0) - (Number(pk.odds) || 0)) >
+                1e-6
+              );
+            });
+          const planSpecLines =
+            safeParams?.planSpec?.kind === "archetype"
+              ? (safeParams.planSpec.snapshotPlan?.lines ??
+                safeParams.planSpec.appliedTicketSnapshot?.lines ??
+                [])
+              : safeParams?.planSpec?.kind === "bonus"
+                ? (safeParams.planSpec.baseLines ?? [])
+                : [];
+          const planSpecDrifted =
+            Array.isArray(planSpecLines) &&
+            planSpecLines.some((ln) => {
+              const legs = Array.isArray(ln?.legs) ? ln.legs : [];
+              const isSingleLine = legs.length === 1;
+              return legs.some((lg) => {
+                const fm = sessionById.get(String(lg?.matchId ?? ""));
+                const pl = fm?.pools?.[lg?.poolCode];
+                const opt = pl?.options?.find((o) => o.key === lg?.optionKey);
+                if (
+                  !pl ||
+                  pl.selling === false ||
+                  !opt ||
+                  hasChangedTicketTeam(fm, lg)
+                )
+                  return true;
+                if (
+                  lg.poolCode === "HHAD" &&
+                  lg.goalLine !== undefined &&
+                  String(lg.goalLine ?? "") !== String(pl.goalLine ?? "")
+                )
+                  return true;
+                if (
+                  isSingleLine ? !isPoolSingleOpen(pl) : !isPoolAllUpOpen(pl)
+                ) {
+                  return true;
+                }
+                return (
+                  Math.abs((Number(opt.odds) || 0) - (Number(lg.odds) || 0)) >
+                  1e-6
+                );
+              });
+            });
+          const clientBoardVersionDrifted = Boolean(
+            boardMeta?.quoteVersion &&
+            safeParams?.clientBoardQuoteVersion !== boardMeta.quoteVersion
+          );
+          const singleGrantPresent = Boolean(
+            safeParams?.singleAuthGrant?.matchId
+          );
+          const oddsDrifted =
+            picksQuoteDrifted ||
+            planSpecDrifted ||
+            clientBoardVersionDrifted ||
+            singleGrantPresent ||
+            (clientOdIdx >= 0 &&
+              serverOdIdx >= 0 &&
+              safeParams.quoteInputSig.slice(clientOdIdx) !==
+                workspace.quoteInputSig.slice(serverOdIdx));
+          return oddsDrifted
+            ? { ...workspace, boardMeta, refreshedMatches: sessionMatches }
+            : { ...workspace, boardMeta };
         }
       );
     }
@@ -880,6 +1047,7 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "同步校验失败",
         },
         async ({ sess, data, user }) => {
+          const startedOwnAcquisition = !inFlightMatchLoad;
           const { matches, syncNote, boardMeta } =
             await ensureMatchesLoaded(true);
           const nowMs = nowFn();
@@ -905,6 +1073,10 @@ export function createAppRoutes(opts = {}) {
           return {
             matches: sessionMatches,
             syncNote,
+            freshBoardForRequest:
+              startedOwnAcquisition &&
+              boardMeta?.boardState === "fresh" &&
+              !boardMeta.isFallbackReadOnly,
             boardMeta,
             workspace,
             ledger: syncedLedger.ledger,

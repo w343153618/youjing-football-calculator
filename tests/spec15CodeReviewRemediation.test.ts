@@ -666,52 +666,56 @@ describe("Spec #15 · Dual-Axis Code Review Remediation", () => {
         nowFn: () => nowMs,
       });
 
-      const addRes = ledgerMgr.mutateUserLedger("u_hist", {
-        action: "add-entry",
-        kind: "live",
-        title: "单关 · 皇马主胜",
-        modeLabel: "单关",
-        betCount: 1,
-        cost: 10,
-        minPayout: 20,
-        maxPayout: 20,
-        snapshot: {
-          matches: [
-            {
-              matchId: "880555",
-              matchNumStr: "周六012",
-              home: "皇马",
-              away: "赫罗纳",
-              kickoff: "21:00",
-              picks: [
-                {
-                  poolCode: "HAD",
-                  optionKey: "h",
-                  optionLabel: "主胜",
-                  odds: 2.0,
-                },
-              ],
-            },
-          ],
-          lines: [
-            {
-              id: "line_1",
-              modeLabel: "单关",
-              multiple: 5,
-              legs: [
-                {
-                  matchId: "880555",
-                  matchNumStr: "周六012",
-                  poolCode: "HAD",
-                  optionKey: "h",
-                  optionLabel: "主胜",
-                  odds: 2.0,
-                },
-              ],
-            },
-          ],
+      const addRes = ledgerMgr.mutateUserLedger(
+        "u_hist",
+        {
+          action: "add-entry",
+          kind: "live",
+          title: "单关 · 皇马主胜",
+          modeLabel: "单关",
+          betCount: 1,
+          cost: 10,
+          minPayout: 20,
+          maxPayout: 20,
+          snapshot: {
+            matches: [
+              {
+                matchId: "880555",
+                matchNumStr: "周六012",
+                home: "皇马",
+                away: "赫罗纳",
+                kickoff: "21:00",
+                picks: [
+                  {
+                    poolCode: "HAD",
+                    optionKey: "h",
+                    optionLabel: "主胜",
+                    odds: 2.0,
+                  },
+                ],
+              },
+            ],
+            lines: [
+              {
+                id: "line_1",
+                modeLabel: "单关",
+                multiple: 5,
+                legs: [
+                  {
+                    matchId: "880555",
+                    matchNumStr: "周六012",
+                    poolCode: "HAD",
+                    optionKey: "h",
+                    optionLabel: "主胜",
+                    odds: 2.0,
+                  },
+                ],
+              },
+            ],
+          },
         },
-      });
+        { allowOfflineTicketOverride: true }
+      ); // Import the historical purchased ticket for settlement.
       assert.equal(addRes.ok, true);
 
       const appRoutes = createAppRoutes({

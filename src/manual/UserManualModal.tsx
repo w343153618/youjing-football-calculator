@@ -4,6 +4,7 @@ import {
   type ManualAskResponse,
 } from "../security/secureClient";
 import { playTactileCue } from "../spring/tactileSymphony";
+import { useModalFocusTrap } from "../spring/widgets";
 import {
   MANUAL_TOPICS,
   QUICK_QA_PILLS,
@@ -40,6 +41,8 @@ export function UserManualModal({
     highlightSec: null,
   });
   const bodyRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(open, dialogRef, onClose);
 
   const [askInput, setAskInput] = useState("");
   const [asking, setAsking] = useState(false);
@@ -125,10 +128,12 @@ export function UserManualModal({
   return (
     <div className="manual-backdrop" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="manual-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         aria-label="优竞体育内部专用 百科级图文精算说明书"
       >
         <div className="manual-head">

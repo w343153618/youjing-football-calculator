@@ -11,10 +11,12 @@ import {
   type AuditedMatchPoolGroup,
   type AuditedSlipLeg,
   type AuditedSlipMatchEntry,
+  type BoardFreshnessMeta,
   type BonusOptMode,
   type BridgeMatchCandidate,
   type BridgeMatchPreview,
   type BudgetMismatchMeta,
+  type CapGuardAlternative,
   type ComboRow,
   type ConvertPlanToManualPreview,
   type EquivalentArbItem,
@@ -22,6 +24,7 @@ import {
   type LivePortfolioQuoteState,
   type MatchItem,
   type PartialCoveragePreview,
+  type PassIntentMode,
   type PassSelectionSpec,
   type PlanLeg,
   type PlanTicketLine,
@@ -30,11 +33,26 @@ import {
   type PortfolioRemediationAction,
   type QuantWorkspaceParams,
   type QuantWorkspaceResponse,
+  type SandboxSimSpec,
   type SelectedPick,
+  type SingleAuthGrant,
   type SyntheticSingleMode,
+  type TerminalPhysicalSlip,
+  type TerminalPhysicalSlipLegGroup,
+  type TruthReport,
   type UserStance,
   type XiaoGaoAlertBinding,
 } from "../prototype/quantTypes.ts";
+import {
+  isFreshTicketBoard,
+  isTicketLineSaleConfirmed,
+} from "../../server/ticketSaleRights.mjs";
+import { getPhysicalTicketBlockReason } from "./ticketExport.ts";
+import {
+  computeOrderedMatchIdentitySig,
+  hashString32Base36,
+  orderedMatchKey,
+} from "../../server/matchIdentity.mjs";
 
 export type MatchMode = "mix" | "spf" | "bf" | "zjq" | "bqc" | "single";
 export type PresetScenarioKind =
@@ -62,18 +80,107 @@ export interface StanceDeltaSummary {
   ticketsChanged: boolean;
 }
 
+export interface ManualDraftState {
+  schemaVersion: 1;
+  revision: number;
+  picks: SelectedPick[];
+  multiple: number;
+  passSpec: PassSelectionSpec;
+  budget: number;
+  stance: UserStance;
+  allowSaveCash: boolean;
+  passRuleBlockReason: string | null;
+}
+
+export interface PortfolioQuoteState extends LivePortfolioQuoteState {
+  plans: ArchetypePlan[];
+  objectivePlans: ArchetypePlan[];
+}
+
+export interface ToggleBankerPreview {
+  ok: boolean;
+  canToggle: boolean;
+  isBanker: boolean;
+  passOrderChanged: boolean;
+  requiresConfirm: boolean;
+  beforeLabel: string;
+  afterLabel: string;
+  beforeBetCount: number;
+  afterBetCount: number;
+  beforeCost: number;
+  afterCost: number;
+  targetPassSpec: PassSelectionSpec;
+  promptText: string;
+  reason?: string;
+}
+
+export interface SwitchMainPoolDiffItem {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  fromPicks: SelectedPick[];
+  toPicks: SelectedPick[];
+  changed: boolean;
+  isDirectionlessFallback: boolean;
+  usedHandicapMapping: boolean;
+  note: string;
+}
+
+export interface SwitchMainPoolPreview {
+  canSwitch: boolean;
+  changedMatchCount: number;
+  hasDirectionlessFallback: boolean;
+  items: SwitchMainPoolDiffItem[];
+  nextPicks: SelectedPick[];
+  beforePassLabel?: string;
+  afterPassLabel?: string;
+  beforeBetCount?: number;
+  afterBetCount?: number;
+  beforeTotalCost?: number;
+  afterTotalCost?: number;
+  summaryText: string;
+}
+
+export interface PortfolioRemediationPreview {
+  kind: PortfolioRemediationAction["kind"];
+  actionLabel: string;
+  summaryText: string;
+  isStrictAllLowerPass: boolean;
+  currentPassLabel: string;
+  targetPassSizes: number[];
+  targetPassLabel: string;
+  currentSlipCost: number;
+  previewCost: number | null;
+  canApplyPreviewPlanAtomically: boolean;
+  switchMainPoolPreview: SwitchMainPoolPreview | null;
+  keepCashHasActiveSlip: boolean;
+}
+
+export interface EquivalentSwapPreview {
+  ok: boolean;
+  blockedReason?: string;
+  nextPicks: SelectedPick[];
+  preservedOtherPicks: SelectedPick[];
+  originalMultiple: number;
+  targetBudgetCost: number;
+}
+
 export interface PlayabilityGates {
+  shopkeeperBlockReason: string | null;
   isSingleNonSingleContext: boolean;
   isSyntheticPlayable: boolean;
   hasSyntheticInherentBlindSpot: boolean;
   canTrimSynthetic2Way: boolean;
   partialCoveragePreview: PartialCoveragePreview | null;
   manualBonusLineCount: number;
+  activeBonusLineCount: number;
   isBonusOver512: boolean;
   isBonusOptDisabled: boolean;
   activeBankerSet: Set<string>;
   canToggleBanker: boolean;
   canToggleBankerMatch: (matchId: string) => boolean;
+  passRuleBlockReason: string | null;
   breakevenTargetCost: number | null;
   budgetMismatchMeta: BudgetMismatchMeta | null;
   appliedPlan: ArchetypePlan | null;
@@ -92,6 +199,88 @@ const CLIENT_STATUTORY_POOL_MAX_PASS: Record<PoolCode, number> = {
   HAFU: 4,
   CRS: 4,
 };
+
+const CLIENT_STATUTORY_COMBO_PASS_SIZES: Record<string, number[]> = {
+  "3x3": [2],
+  "3x4": [2, 3],
+  "4x4": [3],
+  "4x5": [3, 4],
+  "4x6": [2],
+  "4x11": [2, 3, 4],
+  "5x5": [4],
+  "5x6": [4, 5],
+  "5x10": [2],
+  "5x16": [3, 4, 5],
+  "5x20": [2, 3],
+  "5x26": [2, 3, 4, 5],
+  "6x6": [5],
+  "6x7": [5, 6],
+  "6x15": [2],
+  "6x20": [3],
+  "6x22": [4, 5, 6],
+  "6x35": [2, 3],
+  "6x42": [3, 4, 5, 6],
+  "6x50": [2, 3, 4],
+  "6x57": [2, 3, 4, 5, 6],
+  "7x7": [6],
+  "7x8": [6, 7],
+  "7x21": [5],
+  "7x35": [4],
+  "7x120": [2, 3, 4, 5, 6, 7],
+  "8x8": [7],
+  "8x9": [7, 8],
+  "8x28": [6],
+  "8x56": [5],
+  "8x70": [4],
+  "8x247": [2, 3, 4, 5, 6, 7, 8],
+};
+
+function binomInt(n: number, k: number): number {
+  if (k < 0 || k > n) return 0;
+  if (k === 0 || k === n) return 1;
+  let c = 1;
+  const kk = Math.min(k, n - k);
+  for (let i = 1; i <= kk; i++) {
+    c = Math.round((c * (n - kk + i)) / i);
+  }
+  return c;
+}
+
+export function isFollowMaxParlayMode(mode?: PassIntentMode | string): boolean {
+  return !mode || mode === "auto" || mode === "follow-max-parlay";
+}
+
+function resolveComboRequiredMatchCount(
+  comboCode?: string | null
+): number | null {
+  if (!comboCode) return null;
+  const m = String(comboCode).match(/^(\d+)x\d+$/i);
+  return m ? Number(m[1]) : null;
+}
+
+export function dedupeRepeatedDotTokens(raw: string): string {
+  if (!raw) return "";
+  const parts = raw.split(/\s*\u00b7\s*/).filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    if (out.includes(p)) continue;
+    const parenUpgradeIdx = out.findIndex(
+      (prev) => p.startsWith(`${prev}(`) || p.startsWith(`${prev}\uff08`)
+    );
+    if (parenUpgradeIdx >= 0) {
+      out[parenUpgradeIdx] = p;
+      continue;
+    }
+    if (
+      p.length >= 4 &&
+      out.some((prev) => prev.length > p.length && prev.includes(p))
+    ) {
+      continue;
+    }
+    out.push(p);
+  }
+  return out.join(" \u00b7 ");
+}
 
 function computeElementaryBetCount(
   perMatchCounts: number[],
@@ -381,14 +570,60 @@ export function buildMatchIntelDigest(
     : "胜平负暂未开售单关/串关固定奖池";
 
   const goalLine = match.pools.HHAD?.goalLine || "-1";
+  const gNum =
+    typeof mq.handicapGoalLine === "number" &&
+    Number.isFinite(mq.handicapGoalLine)
+      ? mq.handicapGoalLine
+      : Number(goalLine) || -1;
+  const absG = Math.max(1, Math.abs(Math.round(gNum)) || 1);
+  const favCoverLbl = mq.favoriteCoverLabel ?? (gNum < 0 ? "让胜" : "让负");
+  const underdogHoldLbl = mq.underdogHoldLabel ?? (gNum < 0 ? "让负" : "让胜");
   const rawOneGoal = Number.isFinite(Number(mq.oneGoalShareOfWins))
     ? Number(mq.oneGoalShareOfWins)
     : 0;
   const sharePct = Math.round(rawOneGoal <= 1 ? rawOneGoal * 100 : rawOneGoal);
+  const exactPushRaw =
+    typeof mq.favoriteExactPushShareOfWins === "number" &&
+    Number.isFinite(mq.favoriteExactPushShareOfWins)
+      ? mq.favoriteExactPushShareOfWins
+      : absG === 1
+        ? rawOneGoal
+        : null;
+  const exactPushPct =
+    exactPushRaw !== null
+      ? Math.round(exactPushRaw <= 1 ? exactPushRaw * 100 : exactPushRaw)
+      : null;
+  const trueCoverRaw =
+    typeof mq.favoriteTrueCoverShareOfWins === "number" &&
+    Number.isFinite(mq.favoriteTrueCoverShareOfWins)
+      ? mq.favoriteTrueCoverShareOfWins
+      : absG === 1 && exactPushPct !== null
+        ? Math.max(0, 1 - exactPushPct / 100)
+        : null;
+  const trueCoverPct =
+    trueCoverRaw !== null
+      ? Math.round(trueCoverRaw <= 1 ? trueCoverRaw * 100 : trueCoverRaw)
+      : null;
   const hhadImpact =
-    sharePct >= 46
-      ? `让球[${goalLine}]高危预警：强队赢球时卡1球占比达 ${sharePct}%，直搏让胜极易卡盘，宜防让球平或改走胜平负`
-      : `让球[${goalLine}]盘口评估：赢球时卡1球占比 ${sharePct}%，结合受让方赔付水位决定是否补防让球平`;
+    absG >= 2
+      ? trueCoverPct !== null && exactPushPct !== null
+        ? `让球[${goalLine}]深盘评估：热门方赢球条件下真穿盘${favCoverLbl}（净胜>${absG}球）占 ${trueCoverPct}%，恰好净胜${absG}球（让球平）占 ${exactPushPct}%，慎防把让球平混入穿盘`
+        : `让球[${goalLine}]深盘评估：热门方赢球时仅净胜1球占 ${sharePct}%，追${favCoverLbl}须净胜>${absG}球，宜关注${underdogHoldLbl}受让防线`
+      : sharePct >= 46
+        ? `让球[${goalLine}]高危预警：热门方赢球时仅净胜1球（让球平）占比达 ${sharePct}%${
+            trueCoverPct !== null
+              ? `（真穿盘${favCoverLbl}仅 ${trueCoverPct}%）`
+              : ""
+          }，慎追${favCoverLbl}穿盘，宜防让球平或看${underdogHoldLbl}`
+        : `让球[${goalLine}]盘口评估：热门方赢球时卡1球占比 ${sharePct}%${
+            trueCoverPct !== null
+              ? `（真穿盘${favCoverLbl} ${trueCoverPct}%）`
+              : ""
+          }，结合水位决定是否补防让球平`;
+  const normalizedCardPanTip =
+    gNum > 0 && typeof mq.cardPanTip === "string"
+      ? mq.cardPanTip.split("慎追让胜穿盘").join("慎追让负穿盘")
+      : mq.cardPanTip;
 
   const [rawG1, rawG2, rawTop2Sum] = mq.topTwoGoals ?? ["2", "3", 0.45];
   const g1 = String(rawG1).replace(/^s/i, "");
@@ -409,7 +644,7 @@ export function buildMatchIntelDigest(
     cardPanAlert: {
       sharePct,
       level: cardLevel,
-      tip: mq.cardPanTip,
+      tip: normalizedCardPanTip,
     },
     alphaSummary: mq.alphaScanSummary,
     poolImpacts: {
@@ -430,6 +665,10 @@ export interface PoolSwitchUndoSnapshot {
   picks: SelectedPick[];
   passSpec: PassSelectionSpec;
   planSpec: AppliedPlanSpec;
+  planBoard?: MatchItem[];
+  planHoldRev?: number;
+  backgroundEdit?: boolean;
+  multiple?: number;
   matchId: string;
   matchNumStr: string;
   home: string;
@@ -440,10 +679,44 @@ export interface PoolSwitchUndoSnapshot {
   nextOptionLabel: string;
 }
 
+export interface SyntheticChoiceQuote {
+  referenceOnly: boolean;
+  rows: Array<{
+    matchId: string;
+    matchNumStr: string;
+    home: string;
+    away: string;
+    poolName: string;
+    optionLabel: string;
+    odds: number;
+    multiple: number;
+    cost: number;
+  }>;
+  coverageLabel: string;
+  mode: SyntheticSingleMode;
+  signature: string;
+  label: string;
+  cost: number;
+}
+
+interface SyntheticTicketApproval {
+  referenceOnly?: boolean;
+  signature: string;
+  matchId: string;
+  scope: string;
+  mode: SyntheticSingleMode;
+  grant?: SingleAuthGrant;
+  plan?: Extract<NonNullable<AppliedPlanSpec>, { kind: "bonus" }>;
+}
+
 export interface BetSlipState {
   matches: MatchItem[];
   picks: SelectedPick[];
   manualDraftPicks: SelectedPick[];
+  manualDraft: ManualDraftState;
+  portfolioQuote: PortfolioQuoteState;
+  activeSlip: ActiveAuditedSlip;
+  sandboxSim: SandboxSimSpec;
   mode: MatchMode;
   multiple: number;
   passSpec: PassSelectionSpec;
@@ -452,9 +725,14 @@ export interface BetSlipState {
   livePortfolioQuote: LivePortfolioQuoteState;
   activeAuditedSlip: ActiveAuditedSlip;
   syntheticSingleMode: SyntheticSingleMode;
+  singleAuthGrant: SingleAuthGrant | null;
   lastPoolSwitchUndo: PoolSwitchUndoSnapshot | null;
   subjectiveDeltaPct: number;
   simVoidFirstMatch: boolean;
+  voidMatchIds: string[];
+  draftRestoredNotice: string | null;
+  pendingRevokedPlanConfirm?: string | null;
+  pendingSyntheticChoice?: { quote: SyntheticChoiceQuote | null } | null;
   targetIds: string[];
   anchorToRadarPicks: boolean;
   manualPoolOverride: boolean;
@@ -547,6 +825,304 @@ export function isClientMatchAlertBindingValid(
   );
 }
 
+export interface BetSlipStoragePort {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  getBackingTarget?(): object;
+}
+
+interface SharedAccountHoldRecord {
+  holdRev: number;
+  holdClearedRev: number;
+  clearSeq: number;
+  writeSeq: number;
+  holdClearedDraftHash: string | null;
+  lastHoldReason: string | null;
+  pendingRevokedPlanConfirm: string | null;
+}
+
+const SHARED_ACCOUNT_HOLD_BUS = new WeakMap<
+  object,
+  Map<string, SharedAccountHoldRecord>
+>();
+
+function verifySavedPickMatchIdentity(
+  fm: MatchItem | undefined,
+  pk: {
+    matchId: string;
+    home?: string;
+    away?: string;
+    th?: string;
+  }
+): fm is MatchItem {
+  if (!fm || fm.id !== pk.matchId) return false;
+  const hasExplicitNames = Boolean(
+    typeof pk.home === "string" &&
+    pk.home.trim() &&
+    typeof pk.away === "string" &&
+    pk.away.trim()
+  );
+  const savedHash = typeof pk.th === "string" ? pk.th.trim() : "";
+  if (!hasExplicitNames && !savedHash) return false;
+  if (hasExplicitNames) {
+    if (fm.home !== pk.home || fm.away !== pk.away) return false;
+  }
+  if (savedHash) {
+    const useIds = savedHash.startsWith("i");
+    if (savedHash !== computeOrderedMatchIdentitySig(fm, useIds)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function computeManualTicketDraftHash(
+  picks: SelectedPick[],
+  multiple: number,
+  passSpec: PassSelectionSpec,
+  matches: MatchItem[],
+  syntheticSingleMode: SyntheticSingleMode = "full-3way"
+): string {
+  if (picks.length === 0) return "empty";
+  const byId = new Map(matches.map((m) => [m.id, m]));
+  const synSuffix = syntheticSingleMode === "off" ? "|sm=off" : "";
+  const pickTokens = picks
+    .map((pk) => {
+      const fm = byId.get(pk.matchId);
+      const gl =
+        pk.poolCode === "HHAD"
+          ? String(pk.goalLine ?? fm?.pools?.HHAD?.goalLine ?? "").trim()
+          : "";
+      const teamSig = computeOrderedMatchIdentitySig(
+        fm ?? pk,
+        Boolean(fm?.homeTeamId || fm?.awayTeamId)
+      );
+      return `${pk.matchId}:${teamSig}:${pk.poolCode}:${pk.optionKey}:${gl}`;
+    })
+    .sort()
+    .join(",");
+  const normPass = sanitizePassSpecForPicks(passSpec, picks);
+  const passSig =
+    normPass.mode === "combo"
+      ? `c:${normPass.comboCode ?? ""}`
+      : normPass.mode === "free"
+        ? `f:${(normPass.passSizes ?? [])
+            .slice()
+            .sort((a, b) => a - b)
+            .join(
+              "."
+            )}:b=${(normPass.bankerMatchIds ?? []).slice().sort().join(".")}`
+        : normPass.mode;
+  return hashString32Base36(
+    `${pickTokens}|m=${multiple}|ps=${passSig}${synSuffix}`
+  );
+}
+
+const CURRENT_DRAFT_SCHEMA = 4;
+const LEGACY_SINGLE_CONFIRMATION =
+  "检测到升级前保存的非单关单场草稿，请确认按合成单关核对或切换『搭1场过桥凑2串1』后再出票";
+
+function isSupportedDraftSchema(version: number | undefined): boolean {
+  return (
+    version === 1 ||
+    version === 2 ||
+    version === 3 ||
+    version === CURRENT_DRAFT_SCHEMA
+  );
+}
+
+function draftNeedsSyntheticChoice(draft: {
+  schemaVersion?: number;
+  lu?: number | boolean;
+  so?: number | boolean;
+}): boolean {
+  // Older writers could promote a draft after losing its off selection.
+  // A hold acknowledgement, write counter or capture time is not a mode choice.
+  if (draft.so) return false;
+  if (draft.lu) return true;
+  return draft.schemaVersion !== CURRENT_DRAFT_SCHEMA;
+}
+
+function readSyntheticApproval(
+  version: number | undefined,
+  value: unknown
+): SyntheticTicketApproval | null {
+  if (version !== CURRENT_DRAFT_SCHEMA || !value || typeof value !== "object")
+    return null;
+  const record = value as SyntheticTicketApproval;
+  if (
+    typeof record.signature !== "string" ||
+    !record.signature ||
+    typeof record.scope !== "string" ||
+    typeof record.matchId !== "string" ||
+    !["full-3way", "partial-cover", "trim-2way"].includes(record.mode)
+  )
+    return null;
+  // Only an explicitly priced single may restore a quote instruction.
+  if (
+    record.plan &&
+    (record.plan.kind !== "bonus" ||
+      record.plan.baseSourceKind !== "auto-synthetic" ||
+      !record.plan.boundSingleAuthId)
+  )
+    return null;
+  if (
+    record.grant &&
+    (record.grant.matchId !== record.matchId ||
+      record.grant.mode !== record.mode)
+  )
+    return null;
+  return record;
+}
+
+function syntheticApprovalScope(
+  s: BetSlipState,
+  matchId: string
+): string | null {
+  const match = s.matches.find((item) => item.id === matchId);
+  const selections = s.picks.filter((pick) => pick.matchId === matchId);
+  if (!match || !selections.length) return null;
+  const anchors = selections
+    .map((p) => [p.poolCode, p.optionKey, p.goalLine ?? ""])
+    .sort();
+  return JSON.stringify([
+    matchId,
+    match.home,
+    match.away,
+    match.homeTeamId ?? "",
+    match.awayTeamId ?? "",
+    s.multiple,
+    anchors,
+    computeSingleMatchQuoteVersionSig(match),
+  ]);
+}
+
+function singleRequiresSynthetic(picks: SelectedPick[]): boolean {
+  return (
+    picks.length > 0 &&
+    picks.every((p) => p.matchId === picks[0].matchId) &&
+    picks.some((p) => !p.canSingle)
+  );
+}
+
+function computeStoredParsedDraftHash(parsed: {
+  picks?: Array<{
+    matchId?: string;
+    home?: string;
+    away?: string;
+    th?: string;
+    poolCode?: PoolCode;
+    optionKey?: string;
+    savedGoalLine?: string;
+    goalLine?: string;
+  }>;
+  multiple?: number;
+  passSpec?: PassSelectionSpec;
+  so?: number | boolean;
+}): string | null {
+  if (!Array.isArray(parsed.picks)) return null;
+  if (parsed.picks.length === 0) return "empty";
+  const mult = Math.max(
+    1,
+    Math.min(999, Math.round(Number(parsed.multiple) || 5))
+  );
+  const rawPass: PassSelectionSpec = parsed.passSpec ?? {
+    mode: "follow-max-parlay",
+  };
+  const synSuffix = parsed.so ? "|sm=off" : "";
+  const pseudoPicks = parsed.picks.map((p) => ({
+    matchId: String(p.matchId ?? ""),
+    poolCode: (p.poolCode ?? "HAD") as PoolCode,
+    optionKey: String(p.optionKey ?? ""),
+  })) as SelectedPick[];
+  const normPass = sanitizePassSpecForPicks(rawPass, pseudoPicks);
+  const passSig =
+    normPass.mode === "combo"
+      ? `c:${normPass.comboCode ?? ""}`
+      : normPass.mode === "free"
+        ? `f:${(normPass.passSizes ?? [])
+            .slice()
+            .sort((a, b) => a - b)
+            .join(
+              "."
+            )}:b=${(normPass.bankerMatchIds ?? []).slice().sort().join(".")}`
+        : normPass.mode;
+  const pickTokens = parsed.picks
+    .map((pk) => {
+      const gl =
+        pk.poolCode === "HHAD"
+          ? String(pk.savedGoalLine ?? pk.goalLine ?? "").trim()
+          : "";
+      const teamSig =
+        typeof pk.th === "string" && pk.th.trim()
+          ? pk.th.trim()
+          : computeOrderedMatchIdentitySig(pk, false);
+      return `${String(pk.matchId ?? "")}:${teamSig}:${String(pk.poolCode ?? "")}:${String(pk.optionKey ?? "")}:${gl}`;
+    })
+    .sort()
+    .join(",");
+  return hashString32Base36(
+    `${pickTokens}|m=${mult}|ps=${passSig}${synSuffix}`
+  );
+}
+
+function computeLegacyR10AutoDraftHash(parsed: {
+  picks?: Array<{
+    matchId?: string;
+    home?: string;
+    away?: string;
+    th?: string;
+    poolCode?: PoolCode;
+    optionKey?: string;
+    savedGoalLine?: string;
+    goalLine?: string;
+  }>;
+  multiple?: number;
+  passSpec?: PassSelectionSpec;
+}): string | null {
+  if (!Array.isArray(parsed.picks) || parsed.picks.length === 0) return null;
+  const mult = Math.max(
+    1,
+    Math.min(999, Math.round(Number(parsed.multiple) || 5))
+  );
+  const rawPass: PassSelectionSpec = parsed.passSpec ?? {
+    mode: "follow-max-parlay",
+  };
+  const pseudoPicks = parsed.picks.map((p) => ({
+    matchId: String(p.matchId ?? ""),
+    poolCode: (p.poolCode ?? "HAD") as PoolCode,
+    optionKey: String(p.optionKey ?? ""),
+  })) as SelectedPick[];
+  const normPass = sanitizePassSpecForPicks(rawPass, pseudoPicks);
+  const passSig =
+    normPass.mode === "combo"
+      ? `c:${normPass.comboCode ?? ""}`
+      : normPass.mode === "free"
+        ? `f:${(normPass.passSizes ?? [])
+            .slice()
+            .sort((a, b) => a - b)
+            .join(
+              "."
+            )}:b=${(normPass.bankerMatchIds ?? []).slice().sort().join(".")}`
+        : normPass.mode;
+  const pickTokens = parsed.picks
+    .map((pk) => {
+      const gl =
+        pk.poolCode === "HHAD"
+          ? String(pk.savedGoalLine ?? pk.goalLine ?? "").trim()
+          : "";
+      const teamSig =
+        typeof pk.th === "string" && pk.th.trim()
+          ? pk.th.trim()
+          : computeOrderedMatchIdentitySig(pk, false);
+      return `${String(pk.matchId ?? "")}:${teamSig}:${String(pk.poolCode ?? "")}:${String(pk.optionKey ?? "")}:${gl}`;
+    })
+    .sort()
+    .join(",");
+  return hashString32Base36(`${pickTokens}|m=${mult}|ps=${passSig}|sm=auto`);
+}
+
 export interface BetSlipControllerOptions {
   computeWorkspace: (
     params: QuantWorkspaceParams,
@@ -555,8 +1131,11 @@ export interface BetSlipControllerOptions {
   debounceMs?: number;
   autoSyncRadar?: boolean;
   nowFn?: () => number;
+  storagePort?: BetSlipStoragePort;
+  getAccountId?: () => string | null;
+  isOffline?: () => boolean;
   onOfflineNetworkError?: () => void;
-  onComputeSuccess?: () => void;
+  onComputeSuccess?: (ws: QuantWorkspaceResponse) => void;
 }
 
 export function buildRadarSignature(picks: SelectedPick[]): string {
@@ -584,50 +1163,193 @@ function trimToSinglePoolPerMatch(picks: SelectedPick[]): {
   return { cleaned, trimmed };
 }
 
+function resolveOptionalGoalLine(
+  poolCode: PoolCode,
+  pool?: MatchItem["pools"][PoolCode],
+  fallbackGoalLine?: string
+): { goalLine?: string } {
+  if (poolCode !== "HHAD") {
+    return {};
+  }
+  if (pool?.goalLine !== undefined && String(pool.goalLine).trim() !== "") {
+    return { goalLine: String(pool.goalLine).trim() };
+  }
+  if (
+    fallbackGoalLine !== undefined &&
+    String(fallbackGoalLine).trim() !== ""
+  ) {
+    return { goalLine: String(fallbackGoalLine).trim() };
+  }
+  if (pool?.goalLine !== undefined) {
+    return { goalLine: String(pool.goalLine).trim() };
+  }
+  return {};
+}
+
+function enrichPicksWithBoardGoalLine(
+  picks: SelectedPick[],
+  matches: MatchItem[]
+): SelectedPick[] {
+  if (!Array.isArray(picks) || picks.length === 0) return [];
+  const byId = new Map(matches.map((m) => [m.id, m]));
+  return picks.map((pk) => {
+    const fm = byId.get(pk.matchId);
+    const th =
+      typeof pk.th === "string" && pk.th.trim()
+        ? pk.th.trim()
+        : fm
+          ? computeOrderedMatchIdentitySig(
+              fm,
+              Boolean(fm.homeTeamId || fm.awayTeamId)
+            )
+          : undefined;
+    const pool = fm?.pools?.[pk.poolCode];
+    const gl =
+      pk.goalLine !== undefined
+        ? {}
+        : resolveOptionalGoalLine(pk.poolCode, pool);
+    return {
+      ...pk,
+      ...(th ? { th } : {}),
+      ...gl,
+    };
+  });
+}
+
+function isStrictSameMatchIdentity(
+  fm: MatchItem | undefined,
+  pk: { matchId: string; home?: string; away?: string; th?: string },
+  prevBoardMatch?: MatchItem
+): fm is MatchItem {
+  if (!fm || fm.id !== pk.matchId) return false;
+  if (pk.home && fm.home && fm.home !== pk.home) return false;
+  if (pk.away && fm.away && fm.away !== pk.away) return false;
+  const savedHash =
+    (typeof pk.th === "string" && pk.th.trim() ? pk.th.trim() : "") ||
+    (prevBoardMatch
+      ? computeOrderedMatchIdentitySig(
+          prevBoardMatch,
+          Boolean(prevBoardMatch.homeTeamId || prevBoardMatch.awayTeamId)
+        )
+      : "");
+  if (savedHash) {
+    const useIds = savedHash.startsWith("i");
+    if (savedHash !== computeOrderedMatchIdentitySig(fm, useIds)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function sanitizePassSpecForPicks(
   passSpec: PassSelectionSpec,
   nextPicks: SelectedPick[]
 ): PassSelectionSpec {
-  if (!passSpec || passSpec.mode === "combo") {
-    return passSpec?.bankerMatchIds
-      ? { mode: passSpec.mode, comboCode: passSpec.comboCode }
-      : passSpec;
-  }
   const distinctIds = Array.from(new Set(nextPicks.map((p) => p.matchId)));
-  if (distinctIds.length < 3) {
-    if (!passSpec.bankerMatchIds && passSpec.mode === "auto") return passSpec;
-    const validSizes = Array.isArray(passSpec.passSizes)
-      ? passSpec.passSizes.filter((s) => s >= 1 && s <= distinctIds.length)
-      : [];
-    return validSizes.length > 0 && passSpec.mode === "free"
-      ? { mode: "free", passSizes: validSizes }
-      : { mode: "auto" };
+  if (distinctIds.length === 0) {
+    return { mode: "follow-max-parlay" };
   }
-  const curBankers = Array.isArray(passSpec.bankerMatchIds)
-    ? passSpec.bankerMatchIds.filter((id) => distinctIds.includes(id))
-    : [];
-  const validSizes = Array.isArray(passSpec.passSizes)
-    ? passSpec.passSizes.filter((s) => s >= 1 && s <= distinctIds.length)
-    : [];
-  if (passSpec.mode === "free" && validSizes.length > 0) {
-    const minPass = Math.min(...validSizes);
-    const maxBankers =
-      minPass >= 2 ? Math.min(distinctIds.length - 1, minPass - 1) : 0;
-    const trimmedBankers = curBankers.slice(0, maxBankers);
-    return trimmedBankers.length > 0
-      ? { mode: "free", passSizes: validSizes, bankerMatchIds: trimmedBankers }
-      : { mode: "free", passSizes: validSizes };
+  if (!passSpec) {
+    return { mode: "follow-max-parlay" };
   }
-  return curBankers.length > 0
-    ? {
-        mode: "free",
-        passSizes: [Math.max(2, distinctIds.length - 1)],
-        bankerMatchIds: curBankers.slice(
-          0,
-          Math.max(1, distinctIds.length - 2)
-        ),
-      }
-    : { mode: "auto" };
+  if (passSpec.mode === "combo") {
+    return { mode: "combo", comboCode: passSpec.comboCode };
+  }
+  const rawBankers = Array.isArray(passSpec.bankerMatchIds)
+    ? Array.from(
+        new Set(
+          passSpec.bankerMatchIds.filter(
+            (id) => typeof id === "string" && id.length > 0
+          )
+        )
+      )
+    : [];
+  if (isFollowMaxParlayMode(passSpec.mode)) {
+    return rawBankers.length > 0
+      ? {
+          mode: "free",
+          passSizes: [Math.max(2, Math.min(8, distinctIds.length - 1))],
+          bankerMatchIds: rawBankers,
+        }
+      : { mode: "follow-max-parlay" };
+  }
+  const hasNonSinglePick = nextPicks.some(
+    (p) => !(p.canSingle ?? p.singleAllowed)
+  );
+  if (
+    rawBankers.length === 0 &&
+    passSpec.mode === "free" &&
+    Array.isArray(passSpec.passSizes) &&
+    passSpec.passSizes.length === 1 &&
+    passSpec.passSizes[0] === 1 &&
+    distinctIds.length >= 2 &&
+    hasNonSinglePick
+  ) {
+    return { mode: "follow-max-parlay" };
+  }
+  const cleanSizes = Array.from(
+    new Set(
+      (passSpec.passSizes ?? [])
+        .map(Number)
+        .filter((s) => Number.isFinite(s) && s >= 1 && s <= 8)
+    )
+  ).sort((a, b) => a - b);
+  if (cleanSizes.length === 0 && rawBankers.length === 0) {
+    return { mode: "follow-max-parlay" };
+  }
+  return {
+    mode: "free",
+    passSizes:
+      cleanSizes.length > 0
+        ? cleanSizes
+        : [Math.max(2, Math.min(8, distinctIds.length))],
+    ...(rawBankers.length > 0 ? { bankerMatchIds: rawBankers } : {}),
+  };
+}
+
+function computePassRuleBlockReason(
+  passSpec: PassSelectionSpec,
+  picks: SelectedPick[]
+): string | null {
+  const distinctIds = Array.from(new Set(picks.map((p) => p.matchId)));
+  if (distinctIds.length === 0 || !passSpec) return null;
+  if (
+    Array.isArray(passSpec.bankerMatchIds) &&
+    passSpec.bankerMatchIds.length > 0 &&
+    distinctIds.length >= 1
+  ) {
+    const missingBankers = passSpec.bankerMatchIds.filter(
+      (id) => !distinctIds.includes(id)
+    );
+    if (missingBankers.length > 0) {
+      return "已移除设胆场次，原胆拖约束已失效；请确认解除胆码改用普通自由过关或重新设胆";
+    }
+  }
+  if (passSpec.mode === "combo" && passSpec.comboCode) {
+    const reqM = resolveComboRequiredMatchCount(passSpec.comboCode);
+    if (reqM !== null && distinctIds.length !== reqM) {
+      return `显式锁定的【${passSpec.comboCode.replace("x", "串")}】仅适用于 ${reqM} 场对阵，当前已选 ${distinctIds.length} 场（请调整场数或一键切换过关）`;
+    }
+  }
+  if (
+    passSpec.mode === "free" &&
+    Array.isArray(passSpec.passSizes) &&
+    passSpec.passSizes.length > 0
+  ) {
+    let minPoolCap = 8;
+    for (const p of picks) {
+      minPoolCap = Math.min(
+        minPoolCap,
+        CLIENT_STATUTORY_POOL_MAX_PASS[p.poolCode] ?? 8
+      );
+    }
+    const maxCap = Math.min(8, minPoolCap, distinctIds.length);
+    const valid = passSpec.passSizes.filter((s) => s >= 1 && s <= maxCap);
+    if (valid.length === 0) {
+      return `当前显式锁定的过关阶数（${passSpec.passSizes.join("/")}关）超出已选 ${distinctIds.length} 场或玩法最高 ${minPoolCap} 关上限`;
+    }
+  }
+  return null;
 }
 
 export function computeClientPortfolioQuoteMeta(
@@ -662,7 +1384,7 @@ export function computeClientPortfolioQuoteMeta(
   );
   const passSpecSig = (() => {
     const ps = s.passSpec;
-    if (!ps || ps.mode === "auto") return "auto";
+    if (!ps || isFollowMaxParlayMode(ps.mode)) return "auto";
     if (ps.mode === "combo" && ps.comboCode) return `c:${ps.comboCode}`;
     if (
       ps.mode === "free" &&
@@ -681,7 +1403,8 @@ export function computeClientPortfolioQuoteMeta(
     return "auto";
   })();
 
-  const foundTargets = s.matches.filter((m) => s.targetIds.includes(m.id));
+  const targetIdList = Array.isArray(s.targetIds) ? s.targetIds : [];
+  const foundTargets = s.matches.filter((m) => targetIdList.includes(m.id));
   const resolvedTargets =
     foundTargets.length > 0 ? foundTargets : s.matches.slice(0, 2);
   const poolMatchIdsSig = resolvedTargets.map((m) => m.id).join(",");
@@ -739,6 +1462,7 @@ export function computeClientPortfolioQuoteMeta(
         (pl.canSingle === false ? 0 : 2) |
         (pl.canAllUp === false ? 0 : 1);
       mixInt(flags);
+      mixStr(String(pl.goalLine ?? ""));
       for (let k = 0; k < pl.options.length; k++) {
         const o = pl.options[k];
         mixStr(String(o.key ?? ""));
@@ -844,7 +1568,12 @@ function buildAppliedTicketSnapshotForPlan(
         hasManualAnchors,
         freePrimaryByMatch
       );
-      return { ...lg, legSource };
+      const match = matchMap.get(lg.matchId);
+      return {
+        ...lg,
+        ...(match ? { th: computeOrderedMatchIdentitySig(match) } : {}),
+        legSource,
+      };
     }),
   }));
 
@@ -914,8 +1643,321 @@ function buildAppliedTicketSnapshotForPlan(
   };
 }
 
+function stripSubjectiveDeltaFromQuoteSig(sig?: string | null): string {
+  if (!sig) return "";
+  return sig.replace(/\|sd=-?\d+\|/g, "|");
+}
+
+export function consolidateTerminalPhysicalSlips(
+  report: TruthReport,
+  appliedPlan: ArchetypePlan | null | undefined,
+  matches: MatchItem[],
+  defaultMultiple: number,
+  bankerSet: Set<string> = new Set(),
+  options?: { consolidate?: boolean }
+): TerminalPhysicalSlip[] {
+  const shouldConsolidate = options?.consolidate !== false;
+  if (
+    shouldConsolidate &&
+    Array.isArray(report.physicalSlips) &&
+    report.physicalSlips.length > 0
+  ) {
+    return report.physicalSlips;
+  }
+  if (
+    shouldConsolidate &&
+    appliedPlan &&
+    Array.isArray(appliedPlan.physicalSlips) &&
+    appliedPlan.physicalSlips.length > 0
+  ) {
+    return appliedPlan.physicalSlips;
+  }
+  const matchMap = new Map(matches.map((m) => [m.id, m]));
+  const boardIndex = new Map(matches.map((m, idx) => [m.id, idx]));
+
+  interface BasicChunkLine {
+    id: string;
+    modeLabel: string;
+    passSize: number;
+    multiple: number;
+    legs: Array<{
+      matchId: string;
+      matchNumStr: string;
+      home: string;
+      away: string;
+      kickoff: string;
+      poolCode: PoolCode;
+      poolName: string;
+      goalLine?: string;
+      optionKey: string;
+      optionLabel: string;
+      odds: number;
+    }>;
+  }
+
+  const rawLines: Array<{
+    id: string;
+    modeLabel: string;
+    multiple: number;
+    legs: BasicChunkLine["legs"];
+  }> = [];
+
+  if (
+    appliedPlan &&
+    Array.isArray(appliedPlan.lines) &&
+    appliedPlan.lines.length > 0
+  ) {
+    for (let i = 0; i < appliedPlan.lines.length; i++) {
+      const ln = appliedPlan.lines[i];
+      const legs = (ln.legs ?? [])
+        .map((lg) => {
+          const fm = matchMap.get(lg.matchId);
+          return {
+            matchId: lg.matchId,
+            matchNumStr: fm?.matchNumStr || lg.matchNumStr,
+            home: fm?.home || lg.home,
+            away: fm?.away || lg.away,
+            kickoff: fm?.kickoff || lg.kickoff || "",
+            poolCode: lg.poolCode,
+            poolName: fm?.pools?.[lg.poolCode]?.name || lg.poolName,
+            goalLine: lg.poolCode === "HHAD" ? lg.goalLine : undefined,
+            optionKey: lg.optionKey,
+            optionLabel: lg.optionLabel,
+            odds: lg.odds,
+          };
+        })
+        .sort(
+          (a, b) =>
+            (boardIndex.get(a.matchId) ?? 9999) -
+            (boardIndex.get(b.matchId) ?? 9999)
+        );
+      if (legs.length === 0) continue;
+      rawLines.push({
+        id: ln.id || `ln_${i + 1}`,
+        modeLabel:
+          ln.modeLabel || (legs.length === 1 ? "单关" : `${legs.length}串1`),
+        multiple: Math.max(1, Math.round(ln.multiple || 1)),
+        legs,
+      });
+    }
+  } else if (Array.isArray(report.tickets) && report.tickets.length > 0) {
+    const fallbackMult = Math.max(
+      1,
+      Math.round(defaultMultiple || report.multiple || 1)
+    );
+    for (let i = 0; i < report.tickets.length; i++) {
+      const tk = report.tickets[i];
+      const legs: BasicChunkLine["legs"] = (tk.legs ?? [])
+        .map((lg: SelectedPick) => {
+          const fm = matchMap.get(lg.matchId);
+          return {
+            matchId: lg.matchId,
+            matchNumStr: fm?.matchNumStr || lg.matchNumStr,
+            home: fm?.home || lg.home,
+            away: fm?.away || lg.away,
+            kickoff: fm?.kickoff || "",
+            poolCode: lg.poolCode,
+            poolName: fm?.pools?.[lg.poolCode]?.name || lg.poolName,
+            goalLine: lg.poolCode === "HHAD" ? lg.goalLine : undefined,
+            optionKey: lg.optionKey,
+            optionLabel: lg.optionLabel,
+            odds: lg.odds,
+          };
+        })
+        .sort(
+          (a: { matchId: string }, b: { matchId: string }) =>
+            (boardIndex.get(a.matchId) ?? 9999) -
+            (boardIndex.get(b.matchId) ?? 9999)
+        );
+      if (legs.length === 0) continue;
+      rawLines.push({
+        id: tk.id || `tk_${i + 1}`,
+        modeLabel: legs.length === 1 ? "单关" : `${legs.length}串1`,
+        multiple: Math.max(1, Math.round(tk.multiple ?? fallbackMult)),
+        legs,
+      });
+    }
+  }
+
+  const chunked: BasicChunkLine[] = [];
+  for (const rl of rawLines) {
+    let rem = rl.multiple;
+    let part = 1;
+    while (rem > 0) {
+      const m = Math.min(99, rem);
+      chunked.push({
+        id: rl.multiple > 99 ? `${rl.id}#${part}` : rl.id,
+        modeLabel: rl.modeLabel,
+        passSize: rl.legs.length,
+        multiple: m,
+        legs: rl.legs,
+      });
+      rem -= m;
+      part += 1;
+    }
+  }
+
+  // Group by (passSize, multiple, exact match+pool sequence) and merge iff lossless Cartesian product
+  const buckets = new Map<string, BasicChunkLine[]>();
+  for (const cl of chunked) {
+    const distinctMatches = new Set(cl.legs.map((l) => l.matchId));
+    if (distinctMatches.size !== cl.legs.length) {
+      buckets.set(`raw:${cl.id}`, [cl]);
+      continue;
+    }
+    const bucketKey = `${cl.passSize}|${cl.multiple}|${cl.legs
+      .map((l) => `${l.matchId}:${l.poolCode}`)
+      .join(">")}`;
+    const arr = buckets.get(bucketKey) ?? [];
+    arr.push(cl);
+    buckets.set(bucketKey, arr);
+  }
+
+  const physical: TerminalPhysicalSlip[] = [];
+  let slipNo = 0;
+
+  const emitSingleBasicSlip = (cl: BasicChunkLine) => {
+    slipNo += 1;
+    const legsByMatch: TerminalPhysicalSlipLegGroup[] = cl.legs.map((lg) => ({
+      matchId: lg.matchId,
+      matchNumStr: lg.matchNumStr,
+      home: lg.home,
+      away: lg.away,
+      kickoff: lg.kickoff,
+      ...(bankerSet.has(lg.matchId) ? { isBanker: true } : {}),
+      poolCode: lg.poolCode,
+      poolName: lg.poolName,
+      ...(lg.goalLine ? { goalLine: lg.goalLine } : {}),
+      options: [
+        {
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+        },
+      ],
+    }));
+    const lineSignature = `${cl.modeLabel}|${legsByMatch
+      .map(
+        (g) =>
+          `${g.matchId}:${g.poolCode}:${g.options.map((o) => `${o.optionKey}@${o.odds.toFixed(2)}`).join(",")}`
+      )
+      .join("+")}`;
+    physical.push({
+      slipNo,
+      slipId: `ps_${slipNo}`,
+      modeLabel: cl.modeLabel,
+      passSizes: [cl.passSize],
+      multiple: cl.multiple,
+      basicUnitsPerSlip: 1,
+      stakeUnits2Yuan: cl.multiple,
+      costYuan: cl.multiple * 2,
+      matchIds: cl.legs.map((l) => l.matchId),
+      legsByMatch,
+      sourceBasicLineIds: [cl.id],
+      lineSignature,
+      ruleVersion: "sporttery-2026-v1",
+    });
+  };
+
+  if (!shouldConsolidate) {
+    for (const cl of chunked) {
+      emitSingleBasicSlip(cl);
+    }
+    return physical;
+  }
+
+  for (const grp of buckets.values()) {
+    if (grp.length === 1) {
+      emitSingleBasicSlip(grp[0]);
+      continue;
+    }
+    const k = grp[0].legs.length;
+    const optMaps: Array<
+      Map<string, { optionKey: string; optionLabel: string; odds: number }>
+    > = Array.from({ length: k }, () => new Map());
+    const tupleSet = new Set<string>();
+    let duplicateTuple = false;
+    for (const cl of grp) {
+      const tupleSig = cl.legs.map((l) => l.optionKey).join("|");
+      if (tupleSet.has(tupleSig)) {
+        duplicateTuple = true;
+        break;
+      }
+      tupleSet.add(tupleSig);
+      for (let i = 0; i < k; i++) {
+        const lg = cl.legs[i];
+        optMaps[i].set(lg.optionKey, {
+          optionKey: lg.optionKey,
+          optionLabel: lg.optionLabel,
+          odds: lg.odds,
+        });
+      }
+    }
+    const cartesianSize = optMaps.reduce((acc, mp) => acc * mp.size, 1);
+    const mergedCost = cartesianSize * grp[0].multiple * 2;
+    if (
+      !duplicateTuple &&
+      cartesianSize === grp.length &&
+      mergedCost <= 20_000
+    ) {
+      slipNo += 1;
+      const head = grp[0];
+      const legsByMatch: TerminalPhysicalSlipLegGroup[] = head.legs.map(
+        (lg, i) => ({
+          matchId: lg.matchId,
+          matchNumStr: lg.matchNumStr,
+          home: lg.home,
+          away: lg.away,
+          kickoff: lg.kickoff,
+          ...(bankerSet.has(lg.matchId) ? { isBanker: true } : {}),
+          poolCode: lg.poolCode,
+          poolName: lg.poolName,
+          ...(lg.goalLine ? { goalLine: lg.goalLine } : {}),
+          options: Array.from(optMaps[i].values()),
+        })
+      );
+      const lineSignature = `${head.modeLabel}|${legsByMatch
+        .map(
+          (g) =>
+            `${g.matchId}:${g.poolCode}:${g.options
+              .map((o) => `${o.optionKey}@${o.odds.toFixed(2)}`)
+              .sort()
+              .join(",")}`
+        )
+        .join("+")}`;
+      physical.push({
+        slipNo,
+        slipId: `ps_${slipNo}`,
+        modeLabel: head.modeLabel,
+        passSizes: [head.passSize],
+        multiple: head.multiple,
+        basicUnitsPerSlip: cartesianSize,
+        stakeUnits2Yuan: cartesianSize * head.multiple,
+        costYuan: mergedCost,
+        matchIds: head.legs.map((l) => l.matchId),
+        legsByMatch,
+        sourceBasicLineIds: grp.map((x) => x.id),
+        lineSignature,
+        ruleVersion: "sporttery-2026-v1",
+      });
+    } else {
+      for (const cl of grp) emitSingleBasicSlip(cl);
+    }
+  }
+
+  return physical;
+}
+
 function buildActiveAuditedSlip(
-  s: Omit<BetSlipState, "activeAuditedSlip">
+  s: Omit<
+    BetSlipState,
+    | "activeAuditedSlip"
+    | "activeSlip"
+    | "manualDraft"
+    | "portfolioQuote"
+    | "sandboxSim"
+  >,
+  revision = 0
 ): ActiveAuditedSlip {
   const manualDraftPicks = s.picks ?? [];
   const manualByMatch = new Map<string, SelectedPick[]>();
@@ -935,25 +1977,82 @@ function buildActiveAuditedSlip(
       s.appliedTicketSnapshot?.appliedBudgetYuan ??
       s.planSpec.appliedBudgetYuan ??
       s.planSpec.planBudgetYuan;
-    if (typeof rawLocked === "number" && rawLocked > 0) {
-      const appliedBudgetYuan = normalizeBudgetYuan(rawLocked);
-      const currentBudgetYuan = normalizeBudgetYuan(s.budget);
-      if (appliedBudgetYuan !== currentBudgetYuan) {
+    const appliedBudgetYuan =
+      typeof rawLocked === "number" && rawLocked > 0
+        ? normalizeBudgetYuan(rawLocked)
+        : normalizeBudgetYuan(s.budget);
+    const currentBudgetYuan = normalizeBudgetYuan(s.budget);
+    if (appliedBudgetYuan !== currentBudgetYuan) {
+      budgetMismatchMeta = {
+        appliedBudgetYuan,
+        currentBudgetYuan,
+        bannerText: `已套 ¥${appliedBudgetYuan} / 当前新预算 ¥${currentBudgetYuan}（点此重配）`,
+      };
+    } else {
+      const lockedSig = stripSubjectiveDeltaFromQuoteSig(
+        s.planSpec.quoteInputSig ?? s.appliedTicketSnapshot?.quoteInputSig
+      );
+      const curSig = stripSubjectiveDeltaFromQuoteSig(
+        s.livePortfolioQuote?.inputSig
+      );
+      if (lockedSig && curSig && lockedSig !== curSig) {
         budgetMismatchMeta = {
           appliedBudgetYuan,
           currentBudgetYuan,
-          bannerText: `已套 ¥${appliedBudgetYuan} / 当前新预算 ¥${currentBudgetYuan}（点此重配）`,
+          bannerText:
+            "中栏倾向/留现参数已变更，当前核对仍锁定原已套用方案（点此按新参数重配）",
         };
       }
     }
   }
 
-  const effectiveReport = s.workspace.effectiveReport;
-  const manualReport = s.workspace.manualReport;
+  const effectiveReport =
+    s.workspace.baselineReport ?? s.workspace.effectiveReport;
+  const manualReport =
+    s.workspace.baselineManualReport ?? s.workspace.manualReport;
+  const baselinePlan =
+    s.workspace.baselineAppliedPlan !== undefined
+      ? s.workspace.baselineAppliedPlan
+      : s.workspace.appliedPlan;
+  if (
+    !budgetMismatchMeta &&
+    s.planSpec?.kind === "bonus" &&
+    s.planSpec.preserveExactBaseMultiples &&
+    (s.planSpec.baseSourceKind ?? "manual") === "manual" &&
+    Array.isArray(s.planSpec.baseLines) &&
+    s.planSpec.baseLines.length > 0
+  ) {
+    const planLegSig = Array.from(
+      new Set(
+        s.planSpec.baseLines.flatMap((ln) =>
+          (ln.legs ?? []).map(
+            (lg) => `${lg.matchId}:${lg.poolCode}:${lg.optionKey}`
+          )
+        )
+      )
+    )
+      .sort()
+      .join("|");
+    const draftLegSig = Array.from(
+      new Set(
+        manualDraftPicks.map(
+          (pk) => `${pk.matchId}:${pk.poolCode}:${pk.optionKey}`
+        )
+      )
+    )
+      .sort()
+      .join("|");
+    if (planLegSig !== draftLegSig) {
+      budgetMismatchMeta = {
+        appliedBudgetYuan: effectiveReport.totalCost,
+        currentBudgetYuan: manualReport.totalCost,
+        bannerText:
+          "手选草稿已更新，当前核对仍锁定原已审分倍单（点「回到我的手选」切换）",
+      };
+    }
+  }
   const isAutoSynthetic = Boolean(
-    !s.planSpec &&
-    effectiveReport.syntheticAutoMounted &&
-    s.workspace.appliedPlan
+    !s.planSpec && effectiveReport.syntheticAutoMounted && baselinePlan
   );
   const sourceKind: ActiveAuditedSlip["sourceKind"] =
     s.planSpec?.kind === "archetype"
@@ -978,6 +2077,12 @@ function buildActiveAuditedSlip(
       []
   );
 
+  const resolvedPlan =
+    baselinePlan ??
+    (s.planSpec?.kind === "archetype"
+      ? (s.planSpec.snapshotPlan ?? null)
+      : null);
+
   let sourceLines: PlanTicketLine[] = [];
   const distinctLegsMap = new Map<string, AuditedSlipLeg>();
   const freePrimaryByMatch = new Map<string, string>();
@@ -987,16 +2092,13 @@ function buildActiveAuditedSlip(
     sourceKind === "bonus-opt" ||
     sourceKind === "auto-synthetic"
   ) {
-    const resolvedPlan =
-      s.workspace.appliedPlan ??
-      (s.planSpec?.kind === "archetype"
-        ? (s.planSpec.snapshotPlan ?? null)
-        : null);
     sourceLines =
       resolvedPlan?.lines ??
       (sourceKind === "archetype"
         ? (s.appliedTicketSnapshot?.lines ?? [])
-        : []);
+        : sourceKind === "bonus-opt" && s.planSpec?.kind === "bonus"
+          ? (s.planSpec.baseLines ?? [])
+          : []);
 
     for (const ln of sourceLines) {
       for (const lg of ln.legs ?? []) {
@@ -1006,7 +2108,12 @@ function buildActiveAuditedSlip(
         const pool = fm?.pools?.[lg.poolCode];
         const liveOpt = pool?.options?.find((o) => o.key === lg.optionKey);
         const legSource: AuditedLegSource =
-          sourceKind === "bonus-opt"
+          sourceKind === "bonus-opt" &&
+          !(
+            s.planSpec?.kind === "bonus" &&
+            s.planSpec.baseSourceKind &&
+            s.planSpec.baseSourceKind !== "manual"
+          )
             ? "manual-anchor"
             : classifyPlanLegSourceAgainstManual(
                 lg,
@@ -1105,7 +2212,42 @@ function buildActiveAuditedSlip(
       ? `📋 方案涉及 ${matchEntries.length} 场 · 雷达亲选 ${radarPickedMatchCount} 场`
       : `📋 已选对阵与实时水位 (${matchEntries.length} 场)`;
 
+  const manualPassBlocked =
+    !isAppliedPlan &&
+    Boolean(computePassRuleBlockReason(s.passSpec, manualDraftPicks));
+  const preferConsolidated = s.planSpec
+    ? s.planSpec.consolidateTickets !== false
+    : true;
+  const planMatchesConsolidation = Boolean(
+    resolvedPlan &&
+    (resolvedPlan.consolidateTickets !== false) === preferConsolidated
+  );
+  const physicalSlips =
+    !manualPassBlocked &&
+    effectiveReport.canCheckout &&
+    effectiveReport.totalCost > 0
+      ? preferConsolidated &&
+        Array.isArray(effectiveReport.physicalSlips) &&
+        effectiveReport.physicalSlips.length > 0
+        ? effectiveReport.physicalSlips
+        : planMatchesConsolidation &&
+            Array.isArray(resolvedPlan?.physicalSlips) &&
+            resolvedPlan.physicalSlips.length > 0
+          ? resolvedPlan.physicalSlips
+          : consolidateTerminalPhysicalSlips(
+              effectiveReport,
+              sourceKind !== "manual" && sourceKind !== "empty"
+                ? resolvedPlan
+                : null,
+              s.matches,
+              s.multiple,
+              bankerSet,
+              { consolidate: preferConsolidated }
+            )
+      : [];
+
   return {
+    revision,
     sourceKind,
     isAppliedPlan,
     isArchetypePlan,
@@ -1122,6 +2264,7 @@ function buildActiveAuditedSlip(
     matches: matchEntries,
     legs: orderedLegs,
     lines: sourceLines,
+    physicalSlips,
     budgetMismatchMeta,
   };
 }
@@ -1133,13 +2276,16 @@ function buildInitialState(): BetSlipState {
     manualDraftPicks: [] as SelectedPick[],
     mode: "mix" as MatchMode,
     multiple: 5,
-    passSpec: { mode: "auto" } as PassSelectionSpec,
+    passSpec: { mode: "follow-max-parlay" } as PassSelectionSpec,
     planSpec: null as AppliedPlanSpec,
     appliedTicketSnapshot: null as AppliedTicketSnapshot | null,
     syntheticSingleMode: "full-3way" as SyntheticSingleMode,
+    singleAuthGrant: null as SingleAuthGrant | null,
     lastPoolSwitchUndo: null as PoolSwitchUndoSnapshot | null,
     subjectiveDeltaPct: 0,
     simVoidFirstMatch: false,
+    voidMatchIds: [] as string[],
+    draftRestoredNotice: null as string | null,
     targetIds: [] as string[],
     anchorToRadarPicks: false,
     manualPoolOverride: false,
@@ -1152,19 +2298,43 @@ function buildInitialState(): BetSlipState {
     objectivePortfolioPlans: [] as ArchetypePlan[],
   };
   const qMeta = computeClientPortfolioQuoteMeta(base);
+  const livePortfolioQuote: LivePortfolioQuoteState = {
+    quoteVersion: 0,
+    ...qMeta,
+    computedInputSig: qMeta.inputSig,
+    isStale: false,
+    canApplyLiveQuote: true,
+  };
   const withQuote = {
     ...base,
-    livePortfolioQuote: {
-      quoteVersion: 0,
-      ...qMeta,
-      computedInputSig: qMeta.inputSig,
-      isStale: false,
-      canApplyLiveQuote: true,
-    },
+    livePortfolioQuote,
   };
+  const activeSlip = buildActiveAuditedSlip(withQuote, 0);
   return {
     ...withQuote,
-    activeAuditedSlip: buildActiveAuditedSlip(withQuote),
+    manualDraft: {
+      schemaVersion: 1,
+      revision: 0,
+      picks: [],
+      multiple: 5,
+      passSpec: base.passSpec,
+      budget: 100,
+      stance: "objective",
+      allowSaveCash: false,
+      passRuleBlockReason: null,
+    },
+    portfolioQuote: {
+      ...livePortfolioQuote,
+      plans: [],
+      objectivePlans: [],
+    },
+    activeSlip,
+    activeAuditedSlip: activeSlip,
+    sandboxSim: {
+      baseRevision: 0,
+      voidMatchIds: [],
+      subjectiveDeltaPct: 0,
+    },
   };
 }
 
@@ -1270,7 +2440,33 @@ function buildPresetPicks(
   }
 
   const mEarly = matches[0];
+  const earlyDatePrefix = mEarly?.id.includes("-")
+    ? mEarly.id.split("-")[0]
+    : "";
+  const isLateNightKickoff = (ko: string) =>
+    ko.startsWith("01:") ||
+    ko.startsWith("03:") ||
+    ko.startsWith("05:") ||
+    ko.startsWith("07:");
   const mLate =
+    (earlyDatePrefix
+      ? (matches.find(
+          (x) =>
+            x.id !== mEarly?.id &&
+            x.id.split("-")[0] > earlyDatePrefix &&
+            (x.kickoff.startsWith("03:") ||
+              x.kickoff.startsWith("07:") ||
+              x.kickoff.startsWith("05:")) &&
+            (x.pools.HAD.single || x.pools.HHAD.single)
+        ) ??
+        matches.find(
+          (x) =>
+            x.id !== mEarly?.id &&
+            x.id.split("-")[0] > earlyDatePrefix &&
+            isLateNightKickoff(x.kickoff) &&
+            (x.pools.HAD.single || x.pools.HHAD.single)
+        ))
+      : undefined) ??
     matches.find(
       (x) =>
         x.id !== mEarly?.id &&
@@ -1313,6 +2509,7 @@ function buildPresetPicks(
         poolCode: pCode,
         poolName: m.pools[pCode].name,
         singleAllowed: m.pools[pCode].single,
+        ...resolveOptionalGoalLine(pCode, m.pools[pCode]),
         optionKey: o.key,
         optionLabel: o.label,
         odds: o.odds,
@@ -1321,6 +2518,346 @@ function buildPresetPicks(
     })
     .filter((x): x is SelectedPick => x !== null);
   return { multiple: 15, picks };
+}
+
+function serializePlanSpecForExecSig(ps: AppliedPlanSpec): string {
+  if (!ps) return "none";
+  if (ps.kind === "archetype") {
+    return `arch:${ps.key}:${ps.quoteInputSig ?? ""}:${ps.appliedBudgetYuan ?? 0}:${ps.scaleMultiple ?? 1}:${ps.consolidateTickets !== false ? 1 : 0}:${ps.allowBudgetMismatchReadOnly ? 1 : 0}`;
+  }
+  const blSig = (ps.baseLines ?? [])
+    .map(
+      (ln) =>
+        `${(ln.legs ?? [])
+          .map(
+            (g) =>
+              `${g.matchId}:${g.poolCode}:${g.optionKey}@${Number(g.odds).toFixed(4)}`
+          )
+          .sort()
+          .join("+")}*${ln.multiple ?? 1}`
+    )
+    .join(";");
+  return `bonus:${ps.optMode}:${blSig}:${ps.preserveExactBaseMultiples ? 1 : 0}:${ps.boundSingleAuthId ?? ""}:${ps.boundLineAndMultipleSig ?? ""}:${ps.targetBudgetCost ?? ""}:${ps.scaleMultiple ?? 1}:${ps.upgradeToBreakeven ? 1 : 0}:${ps.consolidateTickets !== false ? 1 : 0}:${ps.allowUnbundleCombo ? 1 : 0}:${ps.confirmedCapGuardSig ?? ""}`;
+}
+
+function isSingleAuthBoundBonusPlan(ps: AppliedPlanSpec): boolean {
+  return Boolean(
+    ps &&
+    ps.kind === "bonus" &&
+    (ps.boundSingleAuthId || ps.baseSourceKind === "auto-synthetic")
+  );
+}
+
+function resolvePoolCanSingle(pool?: MatchItem["pools"][PoolCode]): boolean {
+  if (
+    !pool ||
+    pool.selling === false ||
+    !Array.isArray(pool.options) ||
+    pool.options.length === 0
+  ) {
+    return false;
+  }
+  const baseSym = Symbol.for("yj.basePoolSingle");
+  const baseS = (pool as unknown as Record<symbol, unknown>)[baseSym];
+  if (typeof baseS === "boolean") {
+    if (typeof pool.canSingle === "boolean" && pool.canSingle !== baseS) {
+      return pool.canSingle;
+    }
+    if (typeof pool.single === "boolean" && pool.single !== baseS) {
+      return pool.single;
+    }
+    return baseS;
+  }
+  if (typeof pool.canSingle === "boolean" && typeof pool.single === "boolean") {
+    return pool.canSingle && pool.single;
+  }
+  if (typeof pool.canSingle === "boolean") return pool.canSingle;
+  return Boolean(pool.single);
+}
+
+function resolvePoolCanAllUp(pool?: MatchItem["pools"][PoolCode]): boolean {
+  if (
+    !pool ||
+    pool.selling === false ||
+    !Array.isArray(pool.options) ||
+    pool.options.length === 0
+  ) {
+    return false;
+  }
+  const baseSym = Symbol.for("yj.basePoolAllUp");
+  const baseA = (pool as unknown as Record<symbol, unknown>)[baseSym];
+  if (typeof baseA === "boolean") {
+    if (typeof pool.canAllUp === "boolean" && pool.canAllUp !== baseA) {
+      return pool.canAllUp;
+    }
+    return baseA;
+  }
+  if (typeof pool.canAllUp === "boolean") return pool.canAllUp;
+  return true;
+}
+
+function computeWorkspaceExecutionSig(
+  s: Pick<
+    BetSlipState,
+    | "matches"
+    | "picks"
+    | "budget"
+    | "targetIds"
+    | "anchorToRadarPicks"
+    | "stance"
+    | "subjectiveDeltaPct"
+    | "allowSaveCash"
+    | "unlockFullAgg"
+    | "passSpec"
+    | "multiple"
+    | "syntheticSingleMode"
+    | "singleAuthGrant"
+    | "planSpec"
+  >,
+  qInputSig?: string
+): string {
+  const baseSig = qInputSig ?? computeClientPortfolioQuoteMeta(s).inputSig;
+  return `${baseSig}|m=${s.multiple}|syn=${s.syntheticSingleMode}|ga=${s.singleAuthGrant?.authId ?? ""}|pl=${serializePlanSpecForExecSig(s.planSpec)}`;
+}
+
+function computeSingleMatchQuoteVersionSig(
+  match: MatchItem | undefined
+): string {
+  const poolOrder: PoolCode[] = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+  const quoteParts: string[] = [orderedMatchKey(match ?? {})];
+  for (let i = 0; i < poolOrder.length; i++) {
+    const code = poolOrder[i];
+    const pool = match?.pools?.[code];
+    const validOpts =
+      pool && pool.selling !== false && Array.isArray(pool.options)
+        ? pool.options.filter(
+            (o) => Number.isFinite(Number(o.odds)) && Number(o.odds) > 1
+          )
+        : [];
+    if (validOpts.length === 0) {
+      quoteParts.push(`${code}:-`);
+      continue;
+    }
+    const gl = code === "HHAD" ? String(pool?.goalLine ?? "").trim() : "";
+    const sFlag = `${pool?.single ? 1 : 0},${pool?.canSingle === false ? 0 : 1},${pool?.canAllUp === false ? 0 : 1}`;
+    const optsSig = validOpts
+      .map((o) => `${String(o.key)}:${Number(o.odds).toFixed(4)}`)
+      .sort()
+      .join(",");
+    quoteParts.push(`${code}[${gl};${sFlag}](${optsSig})`);
+  }
+  return quoteParts.join("|");
+}
+
+function encodeSyntheticLinesSig(
+  lines: PlanTicketLine[] | undefined,
+  fallbackMultiple: number,
+  fallbackPicks?: SelectedPick[]
+): string {
+  if (Array.isArray(lines) && lines.length > 0) {
+    return lines
+      .map((ln) => {
+        const m = Math.max(1, Math.round(ln.multiple || fallbackMultiple || 1));
+        const legsSig = (ln.legs ?? [])
+          .map(
+            (lg) =>
+              `${String(lg.poolCode).toUpperCase()}:${lg.optionKey}@${Number(lg.odds).toFixed(4)}`
+          )
+          .sort()
+          .join("+");
+        return `${legsSig}\u00d7${m}`;
+      })
+      .sort()
+      .join(";");
+  }
+  if (Array.isArray(fallbackPicks) && fallbackPicks.length > 0) {
+    const m = Math.max(1, Math.round(fallbackMultiple || 1));
+    return fallbackPicks
+      .map(
+        (pk) =>
+          `${String(pk.poolCode).toUpperCase()}:${pk.optionKey}@${Number(pk.odds).toFixed(4)}\u00d7${m}`
+      )
+      .sort()
+      .join(";");
+  }
+  return "";
+}
+
+function buildSinglePreviewLineSig(
+  pv: PartialCoveragePreview | null | undefined,
+  fallbackMultiple = 1
+): string {
+  if (!pv || !Array.isArray(pv.previewLines) || pv.previewLines.length === 0) {
+    return "";
+  }
+  return encodeSyntheticLinesSig(pv.previewLines, fallbackMultiple);
+}
+
+function isGrantLineSigValidAgainstMatch(
+  lineSig: string | undefined,
+  fm: MatchItem | undefined
+): boolean {
+  if (!fm) return false;
+  if (!lineSig || lineSig.startsWith("m=")) return true;
+  const lineParts = lineSig.split(";").filter(Boolean);
+  if (lineParts.length === 0) return true;
+  for (const lp of lineParts) {
+    const xIdx = Math.max(lp.lastIndexOf("\u00d7"), lp.lastIndexOf("x"));
+    const legsPart = xIdx > 0 ? lp.slice(0, xIdx) : lp;
+    for (const legTok of legsPart.split("+").filter(Boolean)) {
+      const colIdx = legTok.indexOf(":");
+      const atIdx = legTok.indexOf("@");
+      if (colIdx <= 0 || atIdx <= colIdx) continue;
+      const poolCode = legTok.slice(0, colIdx).toUpperCase() as PoolCode;
+      const optKey = legTok.slice(colIdx + 1, atIdx);
+      const expectedOdds = Number(legTok.slice(atIdx + 1));
+      const pool = fm.pools?.[poolCode];
+      if (!pool || pool.selling === false || !resolvePoolCanSingle(pool)) {
+        return false;
+      }
+      const opt = pool.options?.find((o) => o.key === optKey);
+      if (
+        !opt ||
+        !Number.isFinite(expectedOdds) ||
+        Math.abs(Number(opt.odds) - expectedOdds) > 1e-6
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function hasPlanSpecBoardInvalidation(
+  planSpec: AppliedPlanSpec,
+  prevMatchMap: Map<string, MatchItem>,
+  nextMatchMap: Map<string, MatchItem>
+): boolean {
+  if (!planSpec) return false;
+  const boundSingleAuth = isSingleAuthBoundBonusPlan(planSpec);
+  const sourceLines =
+    planSpec.kind === "archetype"
+      ? (planSpec.snapshotPlan?.lines ??
+        planSpec.appliedTicketSnapshot?.lines ??
+        [])
+      : (planSpec.baseLines ?? []);
+  if (sourceLines.length === 0) return boundSingleAuth;
+  for (const ln of sourceLines) {
+    const legs = ln.legs ?? [];
+    if (legs.length === 0) return true;
+    const isSingleLine = legs.length === 1;
+    for (const lg of legs) {
+      const nextM = nextMatchMap.get(lg.matchId);
+      if (!isStrictSameMatchIdentity(nextM, lg, prevMatchMap.get(lg.matchId))) {
+        return true;
+      }
+      const nextPool = nextM.pools?.[lg.poolCode];
+      if (!nextPool || nextPool.selling === false) return true;
+      if (
+        isSingleLine
+          ? !resolvePoolCanSingle(nextPool)
+          : !resolvePoolCanAllUp(nextPool)
+      ) {
+        return true;
+      }
+      const nextOpt = nextPool.options?.find((o) => o.key === lg.optionKey);
+      if (!nextOpt || nextOpt.odds < 1.01) return true;
+      if (boundSingleAuth && planSpec.kind === "bonus") {
+        if (!resolvePoolCanSingle(nextPool)) return true;
+        if (Math.abs(Number(nextOpt.odds) - Number(lg.odds)) > 1e-6)
+          return true;
+        if (
+          planSpec.boundQuoteVersionSig &&
+          computeSingleMatchQuoteVersionSig(nextM) !==
+            planSpec.boundQuoteVersionSig
+        ) {
+          return true;
+        }
+      }
+      if (lg.poolCode === "HHAD") {
+        const prevM = prevMatchMap.get(lg.matchId);
+        const prevGl = String(prevM?.pools?.HHAD?.goalLine ?? "").trim();
+        const nextGl = String(nextPool.goalLine ?? "").trim();
+        if (prevGl && nextGl !== prevGl) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isCapGuardBindingValidAgainstBoard(
+  sig: string | undefined,
+  boardMap: Map<string, MatchItem>
+): boolean {
+  if (!sig || !sig.startsWith("cg1|")) return false;
+  const pipeParts = sig.split("|");
+  if (pipeParts.length < 3) return false;
+  const rowsPart = pipeParts.slice(2).join("|");
+  const rowTokens = rowsPart.split(";").filter(Boolean);
+  if (rowTokens.length === 0) return false;
+  for (const rowTok of rowTokens) {
+    const hashIdx = rowTok.lastIndexOf("#");
+    const legsPart = hashIdx > 0 ? rowTok.slice(0, hashIdx) : rowTok;
+    const legTokens = legsPart.split("&").filter(Boolean);
+    if (legTokens.length === 0) return false;
+    const isSingleLine = legTokens.length === 1;
+    for (const lt of legTokens) {
+      const atIdx = lt.indexOf("@");
+      if (atIdx <= 0) return false;
+      const head = lt.slice(0, atIdx);
+      const tail = lt.slice(atIdx + 1);
+      const headCols = head.split(":");
+      if (headCols.length < 3) return false;
+      const matchId = headCols[0];
+      const poolCode = headCols[1] as PoolCode;
+      const optionKey = headCols.slice(2).join(":");
+      const tailSep = tail.indexOf(":");
+      const oddsStr = tailSep >= 0 ? tail.slice(0, tailSep) : tail;
+      const expectedGl = tailSep >= 0 ? tail.slice(tailSep + 1) : "";
+      const expectedOdds = Number(oddsStr);
+      const fm = boardMap.get(matchId);
+      const pool = fm?.pools?.[poolCode];
+      const opt = pool?.options?.find((o) => o.key === optionKey);
+      if (
+        !fm ||
+        !pool ||
+        pool.selling === false ||
+        !opt ||
+        !Number.isFinite(expectedOdds) ||
+        Math.abs(Number(opt.odds) - expectedOdds) > 1e-6 ||
+        (isSingleLine
+          ? !resolvePoolCanSingle(pool)
+          : !resolvePoolCanAllUp(pool)) ||
+        (poolCode === "HHAD" &&
+          String(pool.goalLine ?? "").trim() !== expectedGl.trim())
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function extractBoardCapturedAt(meta?: BoardFreshnessMeta | null): number {
+  if (!meta || typeof meta !== "object") return 0;
+  const t = Number(meta.lastValidBoardAt ?? meta.quotedAt ?? 0);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
+function pickNewerWsBoardMeta(
+  cur?: BoardFreshnessMeta | null,
+  inc?: BoardFreshnessMeta | null
+): BoardFreshnessMeta | undefined {
+  if (!inc) return cur ?? undefined;
+  if (!cur) return inc;
+  const curT = Number(
+    cur.syncedAt ?? cur.quotedAt ?? cur.lastValidBoardAt ?? 0
+  );
+  const incT = Number(
+    inc.syncedAt ?? inc.quotedAt ?? inc.lastValidBoardAt ?? 0
+  );
+  if (curT > 0 && incT > 0 && incT < curT) return cur;
+  return inc;
 }
 
 /**
@@ -1333,20 +2870,2090 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   const listeners = new Set<() => void>();
   let bootstrapped = false;
   let computeSeq = 0;
+  let boardEpoch = 0;
+  let latestBoardCapturedAt = 0;
+  let deferredDraftBoardAt = 0;
+  let lastPoolMergeRetriedInputSig = "";
+  let revokedPlanHold: { reason: string; rev: number } | null = null;
+  let localHoldRev = 0;
+  let clearedHoldRev = 0;
+  let myAckedHoldRev = 0;
+  let localClearSeq = 0;
+  let knownStorageWriteSeq = 0;
+  let lastManualTicketHash = "empty";
+  let confirmedClearDraftHash: string | null = null;
+  let pendingExplicitUserClear = false;
+  let pendingExplicitTicketPersist = false;
+  let pendingPreviewKnobPersist: "budget" | "stance" | "allowSaveCash" | null =
+    null;
+  let hadObservedPersistedDraft = false;
+  let hasUnresolvedSyntheticChoice = false;
+  let syntheticApproval: SyntheticTicketApproval | null = null;
+  let storageListenerRegistered = false;
+  let broadcastChannelRegistered = false;
   let pendingTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingResolvers: Array<() => void> = [];
   let inFlightPromise: Promise<void> | null = null;
 
+  const ALL_POOL_CODES: PoolCode[] = ["HAD", "HHAD", "CRS", "TTG", "HAFU"];
+  function normalizePoolQuoteStamp(
+    pool?: MatchItem["pools"][PoolCode]
+  ): string {
+    const ut = String(pool?.updateTime ?? "").trim();
+    if (!ut) return "";
+    const ud = String(pool?.updateDate ?? "").trim();
+    return ud ? `${ud} ${ut}` : ut;
+  }
+  function isIncomingMatchStrictlyNewer(
+    prev: MatchItem,
+    incoming: MatchItem
+  ): boolean {
+    let anyNewer = false;
+    for (const pc of ALL_POOL_CODES) {
+      const pStamp = normalizePoolQuoteStamp(prev.pools?.[pc]);
+      const nStamp = normalizePoolQuoteStamp(incoming.pools?.[pc]);
+      if (pStamp && nStamp && nStamp < pStamp) return false;
+      if (pStamp && !nStamp) return false;
+      if (nStamp && (!pStamp || nStamp > pStamp)) anyNewer = true;
+    }
+    return anyNewer;
+  }
+  function mergeMatchPoolsNonRegressive(
+    prev: MatchItem | undefined,
+    incoming: MatchItem
+  ): MatchItem {
+    if (!prev || orderedMatchKey(prev) !== orderedMatchKey(incoming))
+      return incoming;
+    let patchedPools: MatchItem["pools"] | null = null;
+    for (const pc of ALL_POOL_CODES) {
+      const prevPool = prev.pools?.[pc];
+      const nextPool = incoming.pools?.[pc];
+      if (!prevPool || !nextPool) continue;
+      const pStamp = normalizePoolQuoteStamp(prevPool);
+      const nStamp = normalizePoolQuoteStamp(nextPool);
+      if (pStamp && (!nStamp || nStamp < pStamp)) {
+        if (!patchedPools) patchedPools = { ...incoming.pools };
+        patchedPools[pc] = {
+          ...prevPool,
+          confirmedSaleRights: nextPool.confirmedSaleRights,
+          selling: nextPool.selling,
+          single: nextPool.single,
+          ...(nextPool.canSingle !== undefined
+            ? { canSingle: nextPool.canSingle }
+            : {}),
+          ...(nextPool.canAllUp !== undefined
+            ? { canAllUp: nextPool.canAllUp }
+            : {}),
+        };
+      }
+    }
+    return patchedPools ? { ...incoming, pools: patchedPools } : incoming;
+  }
+  function stampPlansRemediationSig(
+    plans: ArchetypePlan[] | undefined,
+    wsSig: string
+  ): ArchetypePlan[] {
+    if (!Array.isArray(plans) || plans.length === 0) return plans ?? [];
+    return plans.map((pl) =>
+      Array.isArray(pl.remediationActions) && pl.remediationActions.length > 0
+        ? {
+            ...pl,
+            remediationActions: pl.remediationActions.map((act) => ({
+              ...act,
+              sourceWorkspaceSig: wsSig,
+            })),
+          }
+        : pl
+    );
+  }
+  function stampWorkspaceRemediationMeta(
+    ws: QuantWorkspaceResponse,
+    wsSig: string
+  ): QuantWorkspaceResponse {
+    if (!wsSig) return ws;
+    const stampedActiveTip = ws.insights?.activeSwapTip
+      ? { ...ws.insights.activeSwapTip, sourceWorkspaceSig: wsSig }
+      : null;
+    const stampedSwaps = Array.isArray(ws.insights?.wholeSlipEquivalentSwaps)
+      ? ws.insights.wholeSlipEquivalentSwaps.map((sw) => ({
+          ...sw,
+          sourceWorkspaceSig: wsSig,
+        }))
+      : ws.insights?.wholeSlipEquivalentSwaps;
+    const stampPlanCapAlt = (
+      pl: ArchetypePlan | null | undefined
+    ): ArchetypePlan | null | undefined => {
+      if (!pl || !pl.capGuardAlternative) return pl;
+      return {
+        ...pl,
+        capGuardAlternative: {
+          ...pl.capGuardAlternative,
+          sourceWorkspaceSig: wsSig,
+        },
+      };
+    };
+    return {
+      ...ws,
+      portfolioPlans: stampPlansRemediationSig(ws.portfolioPlans, wsSig),
+      fivePlans: stampPlansRemediationSig(ws.fivePlans, wsSig),
+      appliedPlan: stampPlanCapAlt(ws.appliedPlan) ?? null,
+      ...(ws.baselineAppliedPlan !== undefined
+        ? {
+            baselineAppliedPlan:
+              stampPlanCapAlt(ws.baselineAppliedPlan) ?? null,
+          }
+        : {}),
+      insights: ws.insights
+        ? {
+            ...ws.insights,
+            activeSwapTip: stampedActiveTip,
+            ...(stampedSwaps !== undefined
+              ? { wholeSlipEquivalentSwaps: stampedSwaps }
+              : {}),
+          }
+        : ws.insights,
+    };
+  }
+  function buildCurrentSwapPicksSig(picks: SelectedPick[]): string {
+    return picks
+      .map(
+        (p) =>
+          `${String(p.matchId)}:${String(p.poolCode)}:${String(p.optionKey)}:${Number(p.odds).toFixed(4)}`
+      )
+      .sort()
+      .join("|");
+  }
+  function buildCurrentSwapActualLinesSig(cur: BetSlipState): string {
+    const baseRep =
+      cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+    const baseApplied =
+      cur.workspace.baselineAppliedPlan !== undefined
+        ? cur.workspace.baselineAppliedPlan
+        : cur.workspace.appliedPlan;
+    const rawLines =
+      Array.isArray(baseApplied?.lines) && baseApplied.lines.length > 0
+        ? baseApplied.lines
+        : (baseRep.tickets ?? []);
+    return (
+      "al1|" +
+      rawLines
+        .map((ln) => {
+          const lp = (ln.legs ?? [])
+            .map(
+              (g) =>
+                `${String(g.matchId)}:${String(g.poolCode)}:${String(g.optionKey)}:${Number(g.odds).toFixed(4)}`
+            )
+            .sort()
+            .join("+");
+          const m = Math.max(
+            1,
+            Math.round(
+              Number(
+                (ln as { multiple?: number }).multiple ?? baseRep.multiple
+              ) || 1
+            )
+          );
+          return `${lp}@${m}`;
+        })
+        .sort()
+        .join("||")
+    );
+  }
+  function sameSwapPickRefSet(
+    a: Array<{ poolCode: PoolCode; optionKey: string }>,
+    b: Array<{ poolCode: PoolCode; optionKey: string }>
+  ): boolean {
+    if (a.length !== b.length) return false;
+    const sa = a
+      .map((x) => `${x.poolCode}:${x.optionKey}`)
+      .sort()
+      .join("|");
+    const sb = b
+      .map((x) => `${x.poolCode}:${x.optionKey}`)
+      .sort()
+      .join("|");
+    return sa === sb;
+  }
+  function resolveLiveWholeSlipSwap(
+    cur: BetSlipState,
+    arb: EquivalentArbItem
+  ): EquivalentArbItem | null {
+    const curInputSig = computeClientPortfolioQuoteMeta(cur).inputSig;
+    const curExecSig = computeWorkspaceExecutionSig(cur, curInputSig);
+    if (cur.livePortfolioQuote.isStale || computedWorkspaceSig !== curExecSig) {
+      return null;
+    }
+    const baseRep =
+      cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+    const curPicksSig = buildCurrentSwapPicksSig(cur.picks);
+    const curCost = Number(baseRep.totalCost) || 0;
+    const curPassSig = (baseRep.activePassSizes ?? []).join(",");
+    const curBankerSig = [...(baseRep.bankerMatchIds ?? [])]
+      .map(String)
+      .sort()
+      .join(",");
+    const curComboCode = String(baseRep.activeComboCode ?? "");
+    const curActualLinesSig = buildCurrentSwapActualLinesSig(cur);
+
+    const validateBoundArb = (cand: EquivalentArbItem): boolean => {
+      if (
+        !Array.isArray(cand.executableSwapLines) ||
+        cand.executableSwapLines.length === 0
+      ) {
+        return false;
+      }
+      if (cand.sourceWorkspaceSig && cand.sourceWorkspaceSig !== curExecSig) {
+        return false;
+      }
+      if (cand.sourcePicksSig !== curPicksSig) return false;
+      const execSumCost = cand.executableSwapLines.reduce(
+        (sum, ln) => sum + (Number(ln.cost) || (Number(ln.multiple) || 1) * 2),
+        0
+      );
+      if (curCost > 0 && Math.abs(execSumCost - curCost) > 1e-6) {
+        return false;
+      }
+      if (
+        typeof cand.sourceTotalCost === "number" &&
+        Math.abs(cand.sourceTotalCost - curCost) > 1e-6
+      ) {
+        return false;
+      }
+      if (
+        typeof cand.sourceActivePassSig === "string" &&
+        cand.sourceActivePassSig !== curPassSig
+      ) {
+        return false;
+      }
+      if (
+        typeof cand.sourceBankerSig === "string" &&
+        cand.sourceBankerSig !== curBankerSig
+      ) {
+        return false;
+      }
+      if (
+        typeof cand.sourceComboCode === "string" &&
+        cand.sourceComboCode !== curComboCode
+      ) {
+        return false;
+      }
+      if (
+        typeof cand.sourceActualLinesSig === "string" &&
+        cand.sourceActualLinesSig !== curActualLinesSig
+      ) {
+        return false;
+      }
+      const byId = new Map(cur.matches.map((m) => [m.id, m]));
+      for (const ln of cand.executableSwapLines) {
+        const legs = ln.legs ?? [];
+        if (legs.length === 0) return false;
+        const isSingleLine = legs.length === 1;
+        for (const lg of legs) {
+          const lm = byId.get(lg.matchId);
+          const lp = lm?.pools?.[lg.poolCode];
+          const lo = lp?.options?.find((o) => o.key === lg.optionKey);
+          if (
+            !lm ||
+            !lp ||
+            lp.selling === false ||
+            !lo ||
+            (isSingleLine
+              ? !resolvePoolCanSingle(lp)
+              : !resolvePoolCanAllUp(lp)) ||
+            Math.abs(Number(lo.odds) - Number(lg.odds)) > 1e-6
+          ) {
+            return false;
+          }
+          const legGl = (lg as { goalLine?: string }).goalLine;
+          if (
+            lg.poolCode === "HHAD" &&
+            legGl !== undefined &&
+            String(lp.goalLine ?? "").trim() !== String(legGl).trim()
+          ) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+
+    const list =
+      cur.workspace.insights.wholeSlipEquivalentSwaps ??
+      (cur.workspace.insights.activeSwapTip
+        ? [cur.workspace.insights.activeSwapTip]
+        : []);
+    const isBoundInput =
+      (Array.isArray(arb.executableSwapLines) &&
+        arb.executableSwapLines.length > 0) ||
+      arb.sourcePicksSig !== undefined;
+    if (isBoundInput) {
+      if (!validateBoundArb(arb)) return null;
+      const liveMatched = list.find(
+        (cand) =>
+          cand.matchId === arb.matchId &&
+          sameSwapPickRefSet(cand.worsePicks, arb.worsePicks) &&
+          sameSwapPickRefSet(cand.betterPicks, arb.betterPicks) &&
+          validateBoundArb(cand)
+      );
+      return liveMatched ?? null;
+    }
+
+    const matched = list.find(
+      (cand) =>
+        cand.matchId === arb.matchId &&
+        sameSwapPickRefSet(cand.worsePicks, arb.worsePicks) &&
+        sameSwapPickRefSet(cand.betterPicks, arb.betterPicks) &&
+        validateBoundArb(cand)
+    );
+    return matched ?? null;
+  }
+
   let state: BetSlipState = buildInitialState();
   let quoteVersion = 0;
+  let draftRevision = 0;
+  let activeSlipRevision = 0;
+  let authGrantSeq = 0;
+  let lastDraftSig = "";
+  let lastPersistedDraftJson = "";
+  let lastPersistedSourceJson = "";
+  let lastActiveSlipSig = "";
   let lastKnownInputSig = state.livePortfolioQuote.inputSig;
   let computedInputSig = state.livePortfolioQuote.inputSig;
+  let computedWorkspaceSig = computeWorkspaceExecutionSig(
+    state,
+    computedInputSig
+  );
   let lastReconciledRef: BetSlipState | null = state;
+  let lastReconciledOffline = false;
+  let maskedSyntheticWorkspace: QuantWorkspaceResponse | null = null;
+  let originalSyntheticWorkspace: QuantWorkspaceResponse | null = null;
   let pendingRequote: {
     slotKey: ArchetypeKey;
     expectedInputSig: string;
     allowSlotFallback: boolean;
   } | null = null;
+
+  function resolveStorage(): BetSlipStoragePort | null {
+    if (options.storagePort) return options.storagePort;
+    if (!options.getAccountId) return null;
+    try {
+      if (typeof window !== "undefined" && window.localStorage) {
+        const domStore = window.localStorage;
+        return {
+          getItem: (k) => domStore.getItem(k),
+          setItem: (k, v) => domStore.setItem(k, v),
+          removeItem: (k) => domStore.removeItem(k),
+          getBackingTarget: () => domStore as unknown as object,
+        };
+      }
+    } catch {
+      // ignore sandboxed storage error
+    }
+    return null;
+  }
+
+  function resolveDraftStorageKey(): string | null {
+    const accId =
+      options.getAccountId?.() ?? (options.storagePort ? "default" : null);
+    return accId ? `yj_manual_draft_v1:${accId}` : null;
+  }
+
+  function getSharedBusMap(
+    storage: BetSlipStoragePort | null
+  ): Map<string, SharedAccountHoldRecord> | null {
+    if (!storage) return null;
+    const backing = storage.getBackingTarget?.() ?? (storage as object);
+    let map = SHARED_ACCOUNT_HOLD_BUS.get(backing);
+    if (!map) {
+      map = new Map<string, SharedAccountHoldRecord>();
+      SHARED_ACCOUNT_HOLD_BUS.set(backing, map);
+    }
+    return map;
+  }
+
+  let browserHoldChannel: BroadcastChannel | null = null;
+  function ensureBrowserHoldChannel() {
+    if (broadcastChannelRegistered) return;
+    if (
+      typeof window === "undefined" ||
+      typeof (window as Window & { document?: unknown }).document ===
+        "undefined" ||
+      typeof BroadcastChannel !== "function"
+    ) {
+      return;
+    }
+    broadcastChannelRegistered = true;
+    try {
+      browserHoldChannel = new BroadcastChannel("yj_shared_hold_v1");
+      browserHoldChannel.onmessage = (ev) => {
+        const data = ev?.data as
+          ({ key?: string } & Partial<SharedAccountHoldRecord>) | null;
+        const expectedKey = resolveDraftStorageKey();
+        if (!data || !expectedKey || data.key !== expectedKey) return;
+        const busMap = getSharedBusMap(resolveStorage());
+        if (busMap) {
+          const prev = busMap.get(expectedKey);
+          const incHold = Math.max(0, Math.floor(Number(data.holdRev) || 0));
+          const incClear = Math.max(
+            0,
+            Math.floor(Number(data.holdClearedRev) || 0)
+          );
+          const incClearSeq = Math.max(
+            0,
+            Math.floor(Number(data.clearSeq) || 0)
+          );
+          const incWriteSeq = Math.max(
+            0,
+            Math.floor(Number(data.writeSeq) || 0)
+          );
+          const mergedHold = Math.max(prev?.holdRev ?? 0, incHold);
+          const mergedClear = Math.max(prev?.holdClearedRev ?? 0, incClear);
+          const mergedClearSeq = Math.max(prev?.clearSeq ?? 0, incClearSeq);
+          const useIncomingHash =
+            incClearSeq > (prev?.clearSeq ?? 0) ||
+            (incClearSeq === (prev?.clearSeq ?? 0) &&
+              incClear >= (prev?.holdClearedRev ?? 0));
+          const mergedLastReason =
+            incHold >= (prev?.holdRev ?? 0)
+              ? (data.lastHoldReason ??
+                data.pendingRevokedPlanConfirm ??
+                prev?.lastHoldReason ??
+                null)
+              : (prev?.lastHoldReason ??
+                data.lastHoldReason ??
+                data.pendingRevokedPlanConfirm ??
+                null);
+          busMap.set(expectedKey, {
+            holdRev: mergedHold,
+            holdClearedRev: mergedClear,
+            clearSeq: mergedClearSeq,
+            writeSeq: Math.max(prev?.writeSeq ?? 0, incWriteSeq),
+            holdClearedDraftHash: useIncomingHash
+              ? (data.holdClearedDraftHash ??
+                prev?.holdClearedDraftHash ??
+                null)
+              : (prev?.holdClearedDraftHash ?? null),
+            lastHoldReason: mergedLastReason,
+            pendingRevokedPlanConfirm:
+              mergedHold > mergedClear ? mergedLastReason : null,
+          });
+        }
+        const hadHoldBefore = Boolean(revokedPlanHold);
+        if (syncSharedHoldFromStorage()) {
+          emit();
+          if (hadHoldBefore && !revokedPlanHold) {
+            void scheduleRefresh();
+          }
+        }
+      };
+    } catch {
+      browserHoldChannel = null;
+    }
+  }
+
+  function publishSharedHoldMeta(record: SharedAccountHoldRecord) {
+    const storage = resolveStorage();
+    const key = resolveDraftStorageKey();
+    if (!storage || !key) return;
+    const busMap = getSharedBusMap(storage);
+    if (busMap) {
+      const prev = busMap.get(key);
+      const mergedHold = Math.max(prev?.holdRev ?? 0, record.holdRev);
+      const mergedClear = Math.max(
+        prev?.holdClearedRev ?? 0,
+        record.holdClearedRev
+      );
+      const mergedClearSeq = Math.max(prev?.clearSeq ?? 0, record.clearSeq);
+      const useIncomingHash =
+        record.clearSeq > (prev?.clearSeq ?? 0) ||
+        (record.clearSeq === (prev?.clearSeq ?? 0) &&
+          record.holdClearedRev >= (prev?.holdClearedRev ?? 0));
+      const mergedLastReason =
+        record.holdRev >= (prev?.holdRev ?? 0)
+          ? (record.lastHoldReason ??
+            record.pendingRevokedPlanConfirm ??
+            prev?.lastHoldReason ??
+            null)
+          : (prev?.lastHoldReason ??
+            record.lastHoldReason ??
+            record.pendingRevokedPlanConfirm ??
+            null);
+      busMap.set(key, {
+        holdRev: mergedHold,
+        holdClearedRev: mergedClear,
+        clearSeq: mergedClearSeq,
+        writeSeq: Math.max(prev?.writeSeq ?? 0, record.writeSeq),
+        holdClearedDraftHash: useIncomingHash
+          ? (record.holdClearedDraftHash ?? prev?.holdClearedDraftHash ?? null)
+          : (prev?.holdClearedDraftHash ?? null),
+        lastHoldReason: mergedLastReason,
+        pendingRevokedPlanConfirm:
+          mergedHold > mergedClear ? mergedLastReason : null,
+      });
+    }
+    try {
+      browserHoldChannel?.postMessage({ key, ...record });
+    } catch {
+      // ignore channel post error
+    }
+  }
+
+  function readCurrentDraftBytes(): string | null {
+    const key = resolveDraftStorageKey();
+    try {
+      return key ? (resolveStorage()?.getItem(key) ?? null) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // The smallest on-disk representation abbreviates only its schema key.
+  function parseStoredDraft(raw: string) {
+    const record = JSON.parse(raw);
+    if (record?.v !== undefined && record.schemaVersion === undefined) {
+      record.schemaVersion = record.v;
+    }
+    return record;
+  }
+
+  function readStoredHoldMeta(): SharedAccountHoldRecord & {
+    rawPresent: boolean;
+    diskHoldRev: number;
+    diskHasPendingHold: boolean;
+    boardCapturedAt: number;
+    storedDraftHash: string | null;
+  } {
+    const storage = resolveStorage();
+    const key = resolveDraftStorageKey();
+    if (!storage || !key) {
+      return {
+        holdRev: 0,
+        holdClearedRev: 0,
+        clearSeq: 0,
+        writeSeq: 0,
+        holdClearedDraftHash: null,
+        lastHoldReason: null,
+        pendingRevokedPlanConfirm: null,
+        rawPresent: false,
+        diskHoldRev: 0,
+        diskHasPendingHold: false,
+        boardCapturedAt: 0,
+        storedDraftHash: null,
+      };
+    }
+    const busRec = getSharedBusMap(storage)?.get(key) ?? null;
+    let raw: string | null = null;
+    try {
+      raw = storage.getItem(key);
+    } catch {
+      raw = null;
+    }
+    if (!raw) {
+      return {
+        holdRev: busRec?.holdRev ?? 0,
+        holdClearedRev: busRec?.holdClearedRev ?? 0,
+        clearSeq: busRec?.clearSeq ?? 0,
+        writeSeq: busRec?.writeSeq ?? 0,
+        holdClearedDraftHash: busRec?.holdClearedDraftHash ?? null,
+        lastHoldReason: busRec?.lastHoldReason ?? null,
+        pendingRevokedPlanConfirm: busRec?.pendingRevokedPlanConfirm ?? null,
+        rawPresent: false,
+        diskHoldRev: 0,
+        diskHasPendingHold: false,
+        boardCapturedAt: 0,
+        storedDraftHash: null,
+      };
+    }
+    try {
+      const parsed = parseStoredDraft(raw) as {
+        picks?: Array<{
+          matchId?: string;
+          home?: string;
+          away?: string;
+          th?: string;
+          poolCode?: PoolCode;
+          optionKey?: string;
+          savedGoalLine?: string;
+          goalLine?: string;
+        }>;
+        multiple?: number;
+        passSpec?: PassSelectionSpec;
+        so?: number | boolean;
+        qa?: number;
+        w?: number;
+        holdRev?: number;
+        holdClearedRev?: number;
+        clearSeq?: number;
+        cs?: string | null;
+        hr?: string | null;
+        pendingRevokedPlanConfirm?: string | null;
+      };
+      const reason =
+        typeof parsed?.pendingRevokedPlanConfirm === "string" &&
+        parsed.pendingRevokedPlanConfirm.trim().length > 0
+          ? parsed.pendingRevokedPlanConfirm.trim()
+          : null;
+      const rawHr =
+        typeof parsed?.hr === "string" && parsed.hr.trim().length > 0
+          ? parsed.hr.trim()
+          : null;
+      const rawHoldRev = Math.max(0, Math.floor(Number(parsed?.holdRev) || 0));
+      const rawClearedRev = Math.max(
+        0,
+        Math.floor(Number(parsed?.holdClearedRev) || 0)
+      );
+      const rawClearSeq = Math.max(
+        0,
+        Math.floor(Number(parsed?.clearSeq) || 0)
+      );
+      const rawWriteSeq = Math.max(0, Math.floor(Number(parsed?.w) || 0));
+      const rawCs =
+        typeof parsed?.cs === "string" && parsed.cs.trim().length > 0
+          ? parsed.cs.trim()
+          : null;
+      const storedDraftHash = computeStoredParsedDraftHash(parsed);
+      const storedHoldRev = reason && rawHoldRev === 0 ? 1 : rawHoldRev;
+      const holdRev = Math.max(storedHoldRev, busRec?.holdRev ?? 0);
+      const holdClearedRev = Math.max(
+        rawClearedRev,
+        busRec?.holdClearedRev ?? 0
+      );
+      const clearSeq = Math.max(rawClearSeq, busRec?.clearSeq ?? 0);
+      const writeSeq = Math.max(rawWriteSeq, busRec?.writeSeq ?? 0);
+      const useStoredHash =
+        rawClearSeq > (busRec?.clearSeq ?? 0) ||
+        (rawClearSeq === (busRec?.clearSeq ?? 0) &&
+          rawClearedRev >= (busRec?.holdClearedRev ?? 0));
+      const holdClearedDraftHash = useStoredHash
+        ? (rawCs ?? busRec?.holdClearedDraftHash ?? null)
+        : (busRec?.holdClearedDraftHash ?? rawCs ?? null);
+      const lastHoldReason = reason ?? rawHr ?? busRec?.lastHoldReason ?? null;
+      const pendingRevokedPlanConfirm =
+        holdRev > holdClearedRev
+          ? (reason ??
+            lastHoldReason ??
+            busRec?.pendingRevokedPlanConfirm ??
+            null)
+          : null;
+      return {
+        holdRev,
+        holdClearedRev,
+        clearSeq,
+        writeSeq,
+        holdClearedDraftHash,
+        lastHoldReason,
+        pendingRevokedPlanConfirm,
+        rawPresent: true,
+        diskHoldRev: storedHoldRev,
+        diskHasPendingHold: Boolean(reason),
+        boardCapturedAt: Math.max(0, Number(parsed.qa) || 0),
+        storedDraftHash,
+      };
+    } catch {
+      return {
+        holdRev: busRec?.holdRev ?? 0,
+        holdClearedRev: busRec?.holdClearedRev ?? 0,
+        clearSeq: busRec?.clearSeq ?? 0,
+        writeSeq: busRec?.writeSeq ?? 0,
+        holdClearedDraftHash: busRec?.holdClearedDraftHash ?? null,
+        lastHoldReason: busRec?.lastHoldReason ?? null,
+        pendingRevokedPlanConfirm: busRec?.pendingRevokedPlanConfirm ?? null,
+        rawPresent: true,
+        diskHoldRev: 0,
+        diskHasPendingHold: false,
+        boardCapturedAt: 0,
+        storedDraftHash: null,
+      };
+    }
+  }
+
+  function armRevokedPlanHold(reason: string) {
+    const meta = readStoredHoldMeta();
+    const nextRev =
+      Math.max(
+        localHoldRev,
+        clearedHoldRev,
+        meta.holdRev,
+        meta.holdClearedRev,
+        revokedPlanHold?.rev ?? 0
+      ) + 1;
+    localHoldRev = nextRev;
+    myAckedHoldRev = nextRev;
+    pendingExplicitUserClear = false;
+    revokedPlanHold = { reason, rev: nextRev };
+    publishSharedHoldMeta({
+      holdRev: nextRev,
+      holdClearedRev: Math.max(clearedHoldRev, meta.holdClearedRev),
+      clearSeq: Math.max(localClearSeq, meta.clearSeq),
+      writeSeq: Math.max(knownStorageWriteSeq, meta.writeSeq),
+      holdClearedDraftHash:
+        confirmedClearDraftHash ?? meta.holdClearedDraftHash,
+      lastHoldReason: reason,
+      pendingRevokedPlanConfirm: reason,
+    });
+  }
+
+  function clearRevokedPlanHoldOnUserAction() {
+    revokedPlanHold = null;
+    pendingExplicitUserClear = true;
+    lastReconciledRef = null;
+  }
+
+  function commitPendingExplicitClearIfNeeded() {
+    if (!pendingExplicitUserClear) return;
+    pendingExplicitUserClear = false;
+    if (deferredDraftBoardAt) {
+      if (state.picks.length === 0) return;
+      // A new explicit selection supersedes the waiting disk ticket.
+      deferredDraftBoardAt = 0;
+    }
+    const meta = readStoredHoldMeta();
+    const maxKnownRev = Math.max(
+      localHoldRev,
+      clearedHoldRev,
+      meta.holdRev,
+      meta.holdClearedRev,
+      revokedPlanHold?.rev ?? 0
+    );
+    const curTicketHash = computeManualTicketDraftHash(
+      state.picks,
+      state.multiple,
+      state.passSpec,
+      state.matches,
+      state.syntheticSingleMode
+    );
+    const ticketEdited = curTicketHash !== lastManualTicketHash;
+    lastManualTicketHash = curTicketHash;
+    revokedPlanHold = null;
+    if (state.picks.length === 0 || state.syntheticSingleMode === "off") {
+      hasUnresolvedSyntheticChoice = false;
+    } else if (
+      hasUnresolvedSyntheticChoice &&
+      !state.planSpec &&
+      !state.singleAuthGrant &&
+      singleRequiresSynthetic(state.picks)
+    ) {
+      // An ordinary edit may remove the bridge. It does not authorize replacing
+      // the remaining leg with a synthetic ticket.
+      armRevokedPlanHold(LEGACY_SINGLE_CONFIRMATION);
+      pendingExplicitTicketPersist = true;
+      return;
+    }
+    if (state.planSpec === null && state.singleAuthGrant === null) {
+      clearedHoldRev = maxKnownRev;
+      localHoldRev = Math.max(localHoldRev, clearedHoldRev);
+      myAckedHoldRev = localHoldRev;
+      if (maxKnownRev > 0 || meta.clearSeq > 0) {
+        localClearSeq = Math.max(localClearSeq, meta.clearSeq) + 1;
+        confirmedClearDraftHash = curTicketHash;
+      }
+      pendingExplicitTicketPersist = true;
+      publishSharedHoldMeta({
+        holdRev: localHoldRev,
+        holdClearedRev: clearedHoldRev,
+        clearSeq: localClearSeq,
+        writeSeq: Math.max(knownStorageWriteSeq, meta.writeSeq),
+        holdClearedDraftHash: confirmedClearDraftHash,
+        lastHoldReason: meta.lastHoldReason,
+        pendingRevokedPlanConfirm: null,
+      });
+    } else {
+      localHoldRev = Math.max(localHoldRev, maxKnownRev);
+      if (ticketEdited && maxKnownRev === 0 && meta.clearSeq === 0) {
+        pendingExplicitTicketPersist = true;
+      }
+    }
+    lastReconciledRef = null;
+  }
+
+  function syncSharedHoldFromStorage(): boolean {
+    if (!bootstrapped) return false;
+    const meta = readStoredHoldMeta();
+    let changed = false;
+    const defaultHoldFallbackMsg =
+      "原已套用方案涉及场次盘口或单串开售权限已变动，原方案锁定已失效；请确认改按当前手选草稿核对或重新配单后再出票";
+    if (
+      hadObservedPersistedDraft &&
+      !meta.rawPresent &&
+      state.picks.length > 0 &&
+      state.planSpec === null &&
+      state.singleAuthGrant === null &&
+      !revokedPlanHold
+    ) {
+      hadObservedPersistedDraft = false;
+      const fallbackReason =
+        meta.pendingRevokedPlanConfirm ??
+        meta.lastHoldReason ??
+        defaultHoldFallbackMsg;
+      const nextRev = Math.max(
+        1,
+        meta.holdRev > Math.max(clearedHoldRev, meta.holdClearedRev)
+          ? meta.holdRev
+          : Math.max(localHoldRev, clearedHoldRev, meta.holdClearedRev) + 1
+      );
+      localHoldRev = Math.max(localHoldRev, nextRev);
+      myAckedHoldRev = localHoldRev;
+      revokedPlanHold = { reason: fallbackReason, rev: nextRev };
+      publishSharedHoldMeta({
+        holdRev: localHoldRev,
+        holdClearedRev: Math.max(clearedHoldRev, meta.holdClearedRev),
+        clearSeq: Math.max(localClearSeq, meta.clearSeq),
+        writeSeq: Math.max(knownStorageWriteSeq, meta.writeSeq),
+        holdClearedDraftHash:
+          confirmedClearDraftHash ?? meta.holdClearedDraftHash,
+        lastHoldReason: fallbackReason,
+        pendingRevokedPlanConfirm: fallbackReason,
+      });
+      lastReconciledRef = null;
+      return true;
+    }
+    if (meta.rawPresent) {
+      hadObservedPersistedDraft = true;
+    }
+    const myDraftHash = computeManualTicketDraftHash(
+      state.picks,
+      state.multiple,
+      state.passSpec,
+      state.matches,
+      state.syntheticSingleMode
+    );
+    const clearMatchesMyDraft = Boolean(
+      meta.holdClearedDraftHash && meta.holdClearedDraftHash === myDraftHash
+    );
+
+    // 1. If a shared revocation (meta.holdRev > myAckedHoldRev) occurred that this tab has not yet acked:
+    if (meta.holdRev > myAckedHoldRev) {
+      localHoldRev = Math.max(localHoldRev, meta.holdRev);
+      if (meta.holdClearedRev >= meta.holdRev && clearMatchesMyDraft) {
+        // Another tab ALREADY confirmed the exact same draft at holdClearedRev >= meta.holdRev
+        myAckedHoldRev = meta.holdRev;
+        clearedHoldRev = Math.max(clearedHoldRev, meta.holdClearedRev);
+        localClearSeq = Math.max(localClearSeq, meta.clearSeq);
+        confirmedClearDraftHash = meta.holdClearedDraftHash;
+        if (revokedPlanHold && revokedPlanHold.rev <= clearedHoldRev) {
+          revokedPlanHold = null;
+          computedWorkspaceSig = "";
+          changed = true;
+        }
+      } else if (state.planSpec === null && state.singleAuthGrant === null) {
+        // Either nobody confirmed yet OR another tab confirmed a DIFFERENT draft -> this tab's manual draft MUST enter hold!
+        myAckedHoldRev = meta.holdRev;
+        if (
+          state.picks.length > 0 &&
+          (!revokedPlanHold || revokedPlanHold.rev < meta.holdRev)
+        ) {
+          revokedPlanHold = {
+            reason:
+              meta.pendingRevokedPlanConfirm ??
+              meta.lastHoldReason ??
+              defaultHoldFallbackMsg,
+            rev: meta.holdRev,
+          };
+          changed = true;
+        }
+      }
+      // Note: if state.planSpec !== null || state.singleAuthGrant !== null, keep myAckedHoldRev un-advanced so dropping to manual later would still hold!
+    }
+
+    // 2. Adopt newer clear if it matches this tab's exact manual draft
+    if (
+      (meta.holdClearedRev > clearedHoldRev || meta.clearSeq > localClearSeq) &&
+      clearMatchesMyDraft
+    ) {
+      clearedHoldRev = Math.max(clearedHoldRev, meta.holdClearedRev);
+      localClearSeq = Math.max(localClearSeq, meta.clearSeq);
+      localHoldRev = Math.max(localHoldRev, clearedHoldRev);
+      myAckedHoldRev = Math.max(myAckedHoldRev, clearedHoldRev);
+      confirmedClearDraftHash = meta.holdClearedDraftHash;
+      if (revokedPlanHold && revokedPlanHold.rev <= clearedHoldRev) {
+        revokedPlanHold = null;
+        computedWorkspaceSig = "";
+        changed = true;
+      }
+    }
+
+    // 3. Adopt active shared hold if holdRev > max clearedRev
+    if (
+      meta.pendingRevokedPlanConfirm &&
+      meta.holdRev > Math.max(clearedHoldRev, meta.holdClearedRev)
+    ) {
+      localHoldRev = Math.max(localHoldRev, meta.holdRev);
+      if (
+        (!revokedPlanHold || revokedPlanHold.rev < meta.holdRev) &&
+        state.planSpec === null &&
+        state.singleAuthGrant === null &&
+        state.picks.length > 0
+      ) {
+        myAckedHoldRev = Math.max(myAckedHoldRev, meta.holdRev);
+        revokedPlanHold = {
+          reason: meta.pendingRevokedPlanConfirm,
+          rev: meta.holdRev,
+        };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      lastReconciledRef = null;
+    }
+    return changed;
+  }
+
+  function persistManualDraftIfNeeded(s: BetSlipState) {
+    if (!bootstrapped) return;
+    if (deferredDraftBoardAt) return;
+    const explicitTicketWrite = pendingExplicitTicketPersist;
+    const previewKnobWrite = pendingPreviewKnobPersist;
+    pendingExplicitTicketPersist = false;
+    pendingPreviewKnobPersist = null;
+
+    const storage = resolveStorage();
+    const key = resolveDraftStorageKey();
+    if (!storage || !key) return;
+    const meta = readStoredHoldMeta();
+    const myDraftHash = computeManualTicketDraftHash(
+      s.picks,
+      s.multiple,
+      s.passSpec,
+      s.matches,
+      s.syntheticSingleMode
+    );
+    if (previewKnobWrite && !explicitTicketWrite && meta.rawPresent) {
+      // A preview updates one preference on the current shared record. Reading
+      // from this tab's projection could replace someone else's legs or permit.
+      try {
+        const raw = storage.getItem(key);
+        if (!raw) return;
+        const draft = JSON.parse(raw);
+        if (!isSupportedDraftSchema(draft.schemaVersion ?? draft.v)) return;
+        if (draft[previewKnobWrite] === s[previewKnobWrite]) return;
+        const merged = JSON.stringify({
+          ...draft,
+          [previewKnobWrite]: s[previewKnobWrite],
+          w: Math.max(Number(draft.w) || 0, meta.writeSeq) + 1,
+        });
+        if (storage.getItem(key) === raw) storage.setItem(key, merged);
+      } catch {
+        // A full quota must leave the existing ticket intact.
+      }
+      return;
+    }
+    const effectiveHoldRev = Math.max(localHoldRev, meta.holdRev);
+    const sharedIsUnconfirmedHold = effectiveHoldRev > meta.holdClearedRev;
+    const canAdoptMetaClear = Boolean(
+      meta.holdClearedDraftHash && meta.holdClearedDraftHash === myDraftHash
+    );
+    const effectiveClearedRev = canAdoptMetaClear
+      ? Math.max(clearedHoldRev, meta.holdClearedRev)
+      : clearedHoldRev;
+    const effectiveClearSeq =
+      (explicitTicketWrite &&
+        s.planSpec === null &&
+        s.singleAuthGrant === null) ||
+      canAdoptMetaClear
+        ? Math.max(localClearSeq, meta.clearSeq)
+        : localClearSeq;
+    const effectiveLastHoldReason =
+      revokedPlanHold?.reason ?? meta.lastHoldReason ?? null;
+    const effectiveHoldReason =
+      sharedIsUnconfirmedHold || explicitTicketWrite
+        ? (revokedPlanHold?.reason ??
+          (sharedIsUnconfirmedHold && effectiveHoldRev > effectiveClearedRev
+            ? (meta.pendingRevokedPlanConfirm ?? meta.lastHoldReason ?? null)
+            : null))
+        : null;
+    const isArmingOrRecoveringSharedHold = Boolean(
+      sharedIsUnconfirmedHold &&
+      effectiveHoldReason &&
+      (effectiveHoldRev > meta.diskHoldRev ||
+        !meta.rawPresent ||
+        !meta.diskHasPendingHold)
+    );
+
+    if (revokedPlanHold && !isArmingOrRecoveringSharedHold) {
+      if (
+        !sharedIsUnconfirmedHold ||
+        (meta.rawPresent &&
+          meta.storedDraftHash &&
+          meta.storedDraftHash !== myDraftHash)
+      ) {
+        return;
+      }
+    }
+
+    if (!explicitTicketWrite && !isArmingOrRecoveringSharedHold) {
+      if (previewKnobWrite) {
+        if (
+          (!sharedIsUnconfirmedHold &&
+            (revokedPlanHold || meta.clearSeq > localClearSeq)) ||
+          (meta.rawPresent &&
+            meta.storedDraftHash &&
+            meta.storedDraftHash !== myDraftHash)
+        ) {
+          return;
+        }
+      } else {
+        // Passive path: never overwrite another tab's newer writeSeq, newer clearSeq, or while locally held
+        if (
+          revokedPlanHold ||
+          !meta.rawPresent ||
+          meta.writeSeq !== knownStorageWriteSeq ||
+          meta.boardCapturedAt > latestBoardCapturedAt ||
+          meta.clearSeq > localClearSeq ||
+          (meta.storedDraftHash && meta.storedDraftHash !== myDraftHash)
+        ) {
+          return;
+        }
+      }
+    }
+
+    const effectiveClearedHash =
+      effectiveClearedRev > 0 || effectiveClearSeq > 0
+        ? (confirmedClearDraftHash ??
+          (canAdoptMetaClear ? meta.holdClearedDraftHash : null) ??
+          (s.planSpec === null && s.singleAuthGrant === null
+            ? myDraftHash
+            : null))
+        : null;
+    const matchMap = new Map(s.matches.map((m) => [m.id, m]));
+    const fullPicks = s.picks.map((pk) => {
+      const fm = matchMap.get(pk.matchId);
+      const boardGl = String(
+        pk.goalLine ?? fm?.pools?.[pk.poolCode]?.goalLine ?? ""
+      ).trim();
+      const th = computeOrderedMatchIdentitySig(
+        fm ?? pk,
+        Boolean(fm?.homeTeamId || fm?.awayTeamId)
+      );
+      return {
+        ...pk,
+        th,
+        ...(boardGl ? { goalLine: boardGl } : {}),
+        ...(pk.poolCode === "HHAD" ? { savedGoalLine: boardGl } : {}),
+      };
+    });
+    const cleanBudget = normalizeBudgetYuan(s.budget);
+    const cleanAllowSaveCash = Boolean(s.allowSaveCash);
+    const persistSynOff = s.picks.length > 0 && s.syntheticSingleMode === "off";
+    const persistLegacyUnresolved =
+      hasUnresolvedSyntheticChoice && s.picks.length > 0 && !persistSynOff;
+    const persistBoardQa = Math.max(
+      latestBoardCapturedAt,
+      meta.storedDraftHash === myDraftHash ? meta.boardCapturedAt : 0
+    );
+
+    const nextWriteSeq =
+      explicitTicketWrite || isArmingOrRecoveringSharedHold || previewKnobWrite
+        ? Math.max(knownStorageWriteSeq, meta.writeSeq) + 1
+        : Math.max(1, knownStorageWriteSeq, meta.writeSeq);
+
+    const holdFields =
+      effectiveHoldRev > 0
+        ? {
+            holdRev: effectiveHoldRev,
+            ...(effectiveClearedRev > 0
+              ? { holdClearedRev: effectiveClearedRev }
+              : {}),
+            ...(effectiveClearSeq > 0 ? { clearSeq: effectiveClearSeq } : {}),
+            ...(effectiveClearedHash ? { cs: effectiveClearedHash } : {}),
+            ...(effectiveHoldReason
+              ? { pendingRevokedPlanConfirm: effectiveHoldReason }
+              : effectiveLastHoldReason
+                ? { hr: effectiveLastHoldReason }
+                : {}),
+          }
+        : {};
+    const synField = {
+      ...(persistSynOff ? { so: 1 as const } : {}),
+      ...(persistLegacyUnresolved ? { lu: 1 as const } : {}),
+      ...(!persistSynOff && syntheticApproval ? { sc: syntheticApproval } : {}),
+    };
+    const qaField = persistBoardQa > 0 ? { qa: persistBoardQa } : {};
+    const sourceCompareObj = {
+      picks: fullPicks,
+      multiple: s.multiple,
+      passSpec: s.passSpec,
+      budget: cleanBudget,
+      stance: s.stance,
+      allowSaveCash: cleanAllowSaveCash,
+      ...synField,
+      ...qaField,
+      ...holdFields,
+    };
+    const sourceSigJson = JSON.stringify(sourceCompareObj);
+    if (
+      !explicitTicketWrite &&
+      !isArmingOrRecoveringSharedHold &&
+      sourceSigJson === lastPersistedSourceJson &&
+      lastPersistedDraftJson
+    ) {
+      try {
+        if (storage.getItem(key) === lastPersistedDraftJson) return;
+      } catch {
+        // rewrite below
+      }
+    }
+    const payload = {
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      ...sourceCompareObj,
+      w: nextWriteSeq,
+    };
+    const json = JSON.stringify(payload);
+    const onWriteSuccess = (written: string) => {
+      knownStorageWriteSeq = nextWriteSeq;
+      lastPersistedSourceJson = sourceSigJson;
+      lastPersistedDraftJson = written;
+      publishSharedHoldMeta({
+        holdRev: effectiveHoldRev,
+        holdClearedRev: effectiveClearedRev,
+        clearSeq: effectiveClearSeq,
+        writeSeq: nextWriteSeq,
+        holdClearedDraftHash: effectiveClearedHash,
+        lastHoldReason: effectiveLastHoldReason,
+        pendingRevokedPlanConfirm: effectiveHoldReason,
+      });
+    };
+    const tryWrite = (candidate: string): boolean => {
+      try {
+        storage.setItem(key, candidate);
+        if (storage.getItem(key) === candidate) {
+          hadObservedPersistedDraft = true;
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    };
+    if (tryWrite(json)) {
+      onWriteSuccess(json);
+      return;
+    }
+    const compactPicks = fullPicks.map((pk) => ({
+      matchId: pk.matchId,
+      home: pk.home,
+      away: pk.away,
+      th: pk.th,
+      poolCode: pk.poolCode,
+      optionKey: pk.optionKey,
+      ...(pk.poolCode === "HHAD" && pk.savedGoalLine
+        ? { savedGoalLine: pk.savedGoalLine }
+        : {}),
+    }));
+    const compactJson = JSON.stringify({
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      picks: compactPicks,
+      multiple: s.multiple,
+      passSpec: s.passSpec,
+      ...(cleanBudget !== 100 ? { budget: cleanBudget } : {}),
+      ...(s.stance !== "objective" ? { stance: s.stance } : {}),
+      ...(cleanAllowSaveCash ? { allowSaveCash: true } : {}),
+      ...synField,
+      ...qaField,
+      ...holdFields,
+      w: nextWriteSeq,
+    });
+    if (tryWrite(compactJson)) {
+      onWriteSuccess(compactJson);
+      return;
+    }
+    const isDefaultPass = s.passSpec.mode === "follow-max-parlay";
+    const minimalBase = {
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      picks: compactPicks.map((pk) => ({
+        matchId: pk.matchId,
+        poolCode: pk.poolCode,
+        optionKey: pk.optionKey,
+        th: pk.th,
+        ...(pk.savedGoalLine ? { savedGoalLine: pk.savedGoalLine } : {}),
+      })),
+      ...(s.multiple !== 5 ? { multiple: s.multiple } : {}),
+      ...(!isDefaultPass ? { passSpec: s.passSpec } : {}),
+      ...synField,
+      ...holdFields,
+    };
+    const minimalJson = JSON.stringify({
+      ...minimalBase,
+      ...qaField,
+      w: nextWriteSeq,
+    });
+    if (tryWrite(minimalJson)) {
+      onWriteSuccess(minimalJson);
+      return;
+    }
+    const { schemaVersion, ...minimalFields } = minimalBase;
+    const shortestJson = JSON.stringify({
+      v: schemaVersion,
+      ...minimalFields,
+      ...qaField,
+      w: nextWriteSeq,
+    });
+    if (tryWrite(shortestJson)) {
+      onWriteSuccess(shortestJson);
+      return;
+    }
+    // A quota may fit the selections without their confirmation evidence.
+    // The cold reader will quote the ticket again and require confirmation.
+    if (syntheticApproval) {
+      const withoutApproval = JSON.stringify({
+        v: schemaVersion,
+        ...minimalFields,
+        sc: undefined,
+        ...qaField,
+        w: nextWriteSeq,
+      });
+      if (tryWrite(withoutApproval)) {
+        onWriteSuccess(withoutApproval);
+        return;
+      }
+    }
+    if (!explicitTicketWrite && !isArmingOrRecoveringSharedHold) return;
+    if (effectiveHoldReason || meta.rawPresent) {
+      hadObservedPersistedDraft = false;
+      try {
+        storage.removeItem(key);
+      } catch {
+        // ignore
+      }
+      lastPersistedSourceJson = "";
+      lastPersistedDraftJson = "";
+    }
+  }
+
+  function pruneInvalidatedStoredDraftAgainstBoard(
+    boardMatches: MatchItem[],
+    preDropLocalDraftHash?: string,
+    boardCapturedAt?: number,
+    verifiedDraftRaw?: string
+  ) {
+    const storage = resolveStorage();
+    const key = resolveDraftStorageKey();
+    if (!storage || !key) return;
+    let raw: string | null = null;
+    try {
+      raw = storage.getItem(key);
+    } catch {
+      raw = null;
+    }
+    if (!raw) return;
+    let parsed: {
+      schemaVersion?: number;
+      picks?: Array<SelectedPick & { savedGoalLine?: string; th?: string }>;
+      multiple?: number;
+      passSpec?: PassSelectionSpec;
+      so?: number | boolean;
+      lu?: number | boolean;
+      sc?: unknown;
+      qa?: number;
+      w?: number;
+      budget?: number;
+      stance?: UserStance;
+      allowSaveCash?: boolean;
+      pendingRevokedPlanConfirm?: string | null;
+      hr?: string | null;
+      holdRev?: number;
+      holdClearedRev?: number;
+      clearSeq?: number;
+      cs?: string | null;
+    };
+    try {
+      parsed = parseStoredDraft(raw);
+    } catch {
+      return;
+    }
+    if (
+      !parsed ||
+      !isSupportedDraftSchema(parsed.schemaVersion) ||
+      !Array.isArray(parsed.picks) ||
+      parsed.picks.length === 0
+    ) {
+      return;
+    }
+    const storedQa = Math.max(0, Math.floor(Number(parsed.qa) || 0));
+    const incomingQa = Math.max(0, Math.floor(Number(boardCapturedAt) || 0));
+    // Missing or equal capture times cannot resolve a content conflict. Only a
+    // live acquisition started for this unchanged revision can retire its legs.
+    const coveredByCapture = storedQa > 0 && incomingQa > storedQa;
+    if (
+      incomingQa < storedQa ||
+      (!coveredByCapture && raw !== verifiedDraftRaw)
+    ) {
+      return;
+    }
+    const byId = new Map(boardMatches.map((m) => [m.id, m]));
+    const keptPicks: Array<
+      SelectedPick & { savedGoalLine?: string; th?: string }
+    > = [];
+    for (const pk of parsed.picks) {
+      const fm = byId.get(pk.matchId);
+      if (!verifySavedPickMatchIdentity(fm, pk)) continue;
+      const pool = fm.pools?.[pk.poolCode];
+      const canSingle = resolvePoolCanSingle(pool);
+      const canAllUp = resolvePoolCanAllUp(pool);
+      if (!pool || pool.selling === false || (!canSingle && !canAllUp)) {
+        continue;
+      }
+      const savedGl = String(pk.savedGoalLine ?? pk.goalLine ?? "").trim();
+      const curGl = String(pool.goalLine ?? "").trim();
+      if (pk.poolCode === "HHAD" && savedGl && curGl !== savedGl) {
+        continue;
+      }
+      const opt = pool.options?.find((o) => o.key === pk.optionKey);
+      if (
+        !opt ||
+        !Number.isFinite(Number(opt.odds)) ||
+        Number(opt.odds) < 1.01
+      ) {
+        continue;
+      }
+      const th = computeOrderedMatchIdentitySig(
+        fm,
+        Boolean(fm.homeTeamId || fm.awayTeamId)
+      );
+      keptPicks.push({
+        ...pk,
+        matchId: fm.id,
+        matchNumStr: fm.matchNumStr,
+        home: fm.home,
+        away: fm.away,
+        th,
+        poolName: pool.name,
+        singleAllowed: canSingle,
+        canSingle,
+        canAllUp,
+        ...resolveOptionalGoalLine(pk.poolCode, pool, savedGl),
+        ...(pk.poolCode === "HHAD" && curGl ? { savedGoalLine: curGl } : {}),
+        optionKey: opt.key,
+        optionLabel: opt.label,
+        odds: opt.odds,
+        fairProb: opt.fairProb,
+      });
+    }
+    if (keptPicks.length === parsed.picks.length) return;
+
+    const meta = readStoredHoldMeta();
+    const prePruneHash = computeStoredParsedDraftHash(parsed);
+    const legacyR10PreHash =
+      parsed.schemaVersion === 1 && !parsed.so
+        ? computeLegacyR10AutoDraftHash(parsed)
+        : null;
+    const rawMult = Math.max(
+      1,
+      Math.min(999, Math.round(Number(parsed.multiple) || 5))
+    );
+    const cleanBudget = normalizeBudgetYuan(Number(parsed.budget) || 100);
+    const cleanStance: UserStance =
+      parsed.stance === "home-lean" || parsed.stance === "upset-watch"
+        ? parsed.stance
+        : "objective";
+    const cleanAllowSaveCash = Boolean(parsed.allowSaveCash);
+    const prunedPass = sanitizePassSpecForPicks(
+      parsed.passSpec ?? { mode: "follow-max-parlay" },
+      keptPicks
+    );
+    const keepSynOff = keptPicks.length > 0 && Boolean(parsed.so);
+    const savedApproval = readSyntheticApproval(
+      parsed.schemaVersion,
+      parsed.sc
+    );
+    const keepLegacyUnresolved =
+      keptPicks.length > 0 && !keepSynOff && draftNeedsSyntheticChoice(parsed);
+    const postPruneHash =
+      keptPicks.length === 0
+        ? "empty"
+        : computeStoredParsedDraftHash({
+            picks: keptPicks,
+            multiple: rawMult,
+            passSpec: prunedPass,
+            ...(keepSynOff ? { so: 1 } : {}),
+          });
+
+    const diskHoldRev = Math.max(
+      0,
+      Math.floor(Number(parsed.holdRev) || 0),
+      parsed.pendingRevokedPlanConfirm ? 1 : 0
+    );
+    const diskClearedRev = Math.max(
+      0,
+      Math.floor(Number(parsed.holdClearedRev) || 0)
+    );
+    const diskClearSeq = Math.max(0, Math.floor(Number(parsed.clearSeq) || 0));
+    const diskCs =
+      typeof parsed.cs === "string" && parsed.cs.trim()
+        ? parsed.cs.trim()
+        : null;
+    const effHoldRev = Math.max(localHoldRev, meta.holdRev, diskHoldRev);
+    const diskMatchesPrePrune = Boolean(
+      diskCs &&
+      (diskCs === prePruneHash ||
+        (legacyR10PreHash !== null && diskCs === legacyR10PreHash))
+    );
+    const busMatchesPrePrune = Boolean(
+      meta.holdClearedDraftHash &&
+      (meta.holdClearedDraftHash === prePruneHash ||
+        (legacyR10PreHash !== null &&
+          meta.holdClearedDraftHash === legacyR10PreHash))
+    );
+    const effClearedBefore = Math.max(
+      !parsed.pendingRevokedPlanConfirm && diskMatchesPrePrune
+        ? diskClearedRev
+        : 0,
+      busMatchesPrePrune ? meta.holdClearedRev : 0
+    );
+    const wasConfirmedAtEffRev =
+      !parsed.pendingRevokedPlanConfirm &&
+      effHoldRev > 0 &&
+      effClearedBefore >= effHoldRev;
+
+    const prunedClearedRev = wasConfirmedAtEffRev
+      ? effClearedBefore
+      : diskClearedRev;
+    const prunedClearSeq = wasConfirmedAtEffRev
+      ? Math.max(diskClearSeq, meta.clearSeq)
+      : diskClearSeq;
+    const prunedCs = wasConfirmedAtEffRev ? postPruneHash : diskCs;
+    const prunedLastReason =
+      revokedPlanHold?.reason ??
+      (typeof parsed.pendingRevokedPlanConfirm === "string" &&
+      parsed.pendingRevokedPlanConfirm.trim()
+        ? parsed.pendingRevokedPlanConfirm.trim()
+        : null) ??
+      (typeof parsed.hr === "string" && parsed.hr.trim()
+        ? parsed.hr.trim()
+        : null) ??
+      meta.lastHoldReason ??
+      null;
+    const prunedPendingHold =
+      effHoldRev > prunedClearedRev && keptPicks.length > 0
+        ? prunedLastReason
+        : null;
+    const nextQa = Math.max(storedQa, incomingQa);
+    const nextW =
+      Math.max(
+        knownStorageWriteSeq,
+        Math.floor(Number(parsed.w) || 0),
+        meta.writeSeq
+      ) + 1;
+
+    const holdFields =
+      effHoldRev > 0
+        ? {
+            holdRev: effHoldRev,
+            ...(prunedClearedRev > 0
+              ? { holdClearedRev: prunedClearedRev }
+              : {}),
+            ...(prunedClearSeq > 0 ? { clearSeq: prunedClearSeq } : {}),
+            ...(prunedCs ? { cs: prunedCs } : {}),
+            ...(prunedPendingHold
+              ? { pendingRevokedPlanConfirm: prunedPendingHold }
+              : prunedLastReason
+                ? { hr: prunedLastReason }
+                : {}),
+          }
+        : {};
+    const synField = {
+      ...(keepSynOff ? { so: 1 as const } : {}),
+      ...(keepLegacyUnresolved ? { lu: 1 as const } : {}),
+      ...(!keepSynOff &&
+      savedApproval &&
+      keptPicks.some((pick) => pick.matchId === savedApproval.matchId)
+        ? { sc: savedApproval }
+        : {}),
+    };
+    const qaField = nextQa > 0 ? { qa: nextQa } : {};
+    const tryWrite = (candidate: string): boolean => {
+      try {
+        storage.setItem(key, candidate);
+        if (storage.getItem(key) === candidate) {
+          hadObservedPersistedDraft = true;
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    };
+    const fullCandidate = JSON.stringify({
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      picks: keptPicks,
+      multiple: rawMult,
+      passSpec: prunedPass,
+      budget: cleanBudget,
+      stance: cleanStance,
+      allowSaveCash: cleanAllowSaveCash,
+      ...synField,
+      ...qaField,
+      ...holdFields,
+      w: nextW,
+    });
+    const compactPicks = keptPicks.map((pk) => ({
+      matchId: pk.matchId,
+      home: pk.home,
+      away: pk.away,
+      th: pk.th,
+      poolCode: pk.poolCode,
+      optionKey: pk.optionKey,
+      ...(pk.poolCode === "HHAD" && pk.savedGoalLine
+        ? { savedGoalLine: pk.savedGoalLine }
+        : {}),
+    }));
+    const compactCandidate = JSON.stringify({
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      picks: compactPicks,
+      multiple: rawMult,
+      passSpec: prunedPass,
+      ...(cleanBudget !== 100 ? { budget: cleanBudget } : {}),
+      ...(cleanStance !== "objective" ? { stance: cleanStance } : {}),
+      ...(cleanAllowSaveCash ? { allowSaveCash: true } : {}),
+      ...synField,
+      ...qaField,
+      ...holdFields,
+      w: nextW,
+    });
+    const isDefaultPass = prunedPass.mode === "follow-max-parlay";
+    const minimalBase = {
+      schemaVersion: CURRENT_DRAFT_SCHEMA,
+      picks: compactPicks.map((pk) => ({
+        matchId: pk.matchId,
+        poolCode: pk.poolCode,
+        optionKey: pk.optionKey,
+        th: pk.th,
+        ...(pk.savedGoalLine ? { savedGoalLine: pk.savedGoalLine } : {}),
+      })),
+      ...(rawMult !== 5 ? { multiple: rawMult } : {}),
+      ...(!isDefaultPass ? { passSpec: prunedPass } : {}),
+      ...synField,
+      ...holdFields,
+    };
+    const minimalCandidate = JSON.stringify({
+      ...minimalBase,
+      ...qaField,
+      w: nextW,
+    });
+    const { schemaVersion, ...minimalFields } = minimalBase;
+    const shortestCandidate = JSON.stringify({
+      v: schemaVersion,
+      ...minimalFields,
+      ...qaField,
+      w: nextW,
+    });
+    if (resolveDraftStorageKey() !== key || readCurrentDraftBytes() !== raw)
+      return;
+    let written: string | null = null;
+    if (tryWrite(fullCandidate)) written = fullCandidate;
+    else if (tryWrite(compactCandidate)) written = compactCandidate;
+    else if (tryWrite(minimalCandidate)) written = minimalCandidate;
+    else if (tryWrite(shortestCandidate)) written = shortestCandidate;
+    else if (savedApproval) {
+      const withoutApproval = JSON.stringify({
+        v: schemaVersion,
+        ...minimalFields,
+        sc: undefined,
+        ...qaField,
+        w: nextW,
+      });
+      if (tryWrite(withoutApproval)) written = withoutApproval;
+    }
+    if (!written) {
+      hadObservedPersistedDraft = false;
+      try {
+        storage.removeItem(key);
+      } catch {
+        // ignore
+      }
+      lastPersistedSourceJson = "";
+      lastPersistedDraftJson = "";
+      if (preDropLocalDraftHash && preDropLocalDraftHash === prePruneHash) {
+        knownStorageWriteSeq = nextW;
+        lastManualTicketHash = postPruneHash ?? "empty";
+        if (confirmedClearDraftHash === prePruneHash) {
+          confirmedClearDraftHash = postPruneHash ?? "empty";
+        }
+      }
+      // Another open tab may still display the pre-stop ticket. Notify it even
+      // when this was the first revocation and the quota cannot store a marker.
+      const evictionRev = Math.max(effHoldRev, prunedClearedRev + 1);
+      const evictionReason =
+        prunedPendingHold ?? "草稿所选场次或玩法已停售，请核对后重新选赛";
+      publishSharedHoldMeta({
+        holdRev: evictionRev,
+        holdClearedRev: prunedClearedRev,
+        clearSeq: prunedClearSeq,
+        writeSeq: nextW,
+        holdClearedDraftHash: prunedCs,
+        lastHoldReason: evictionReason,
+        pendingRevokedPlanConfirm: evictionReason,
+      });
+      return;
+    }
+
+    if (preDropLocalDraftHash && preDropLocalDraftHash === prePruneHash) {
+      knownStorageWriteSeq = nextW;
+      lastManualTicketHash = postPruneHash ?? "empty";
+      lastPersistedDraftJson = written;
+      lastPersistedSourceJson = "";
+      if (confirmedClearDraftHash === prePruneHash) {
+        confirmedClearDraftHash = postPruneHash ?? "empty";
+      }
+    }
+    if (effHoldRev > 0) {
+      publishSharedHoldMeta({
+        holdRev: effHoldRev,
+        holdClearedRev: prunedClearedRev,
+        clearSeq: prunedClearSeq,
+        writeSeq: nextW,
+        holdClearedDraftHash: prunedCs,
+        lastHoldReason: prunedLastReason,
+        pendingRevokedPlanConfirm: prunedPendingHold,
+      });
+    }
+  }
+
+  function restoreSavedDraftAgainstMatches(
+    cleanMatches: MatchItem[],
+    boardMeta?: BoardFreshnessMeta | null,
+    verifiedDraftRaw?: string
+  ): {
+    restored: boolean;
+    picks: SelectedPick[];
+    multiple: number;
+    passSpec: PassSelectionSpec;
+    syntheticSingleMode: SyntheticSingleMode;
+    budget: number;
+    stance: UserStance;
+    allowSaveCash: boolean;
+    notice: string | null;
+    pendingRevokedPlanConfirm: string | null;
+    holdRev: number;
+    holdClearedRev: number;
+    clearSeq: number;
+    writeSeq: number;
+    holdClearedDraftHash: string | null;
+    droppedCount: number;
+    legacyNeedsFutureSynGuard: boolean;
+    approval: SyntheticTicketApproval | null;
+    waitForBoardAt: number;
+  } | null {
+    const storage = resolveStorage();
+    const key = resolveDraftStorageKey();
+    if (!storage || !key) return null;
+    let raw: string | null = null;
+    try {
+      raw = storage.getItem(key);
+    } catch {
+      raw = null;
+    }
+    if (!raw) return null;
+    hadObservedPersistedDraft = true;
+    try {
+      const parsed = parseStoredDraft(raw) as {
+        schemaVersion?: number;
+        picks?: Array<SelectedPick & { savedGoalLine?: string; th?: string }>;
+        multiple?: number;
+        passSpec?: PassSelectionSpec;
+        so?: number | boolean;
+        lu?: number | boolean;
+        sc?: unknown;
+        qa?: number;
+        w?: number;
+        budget?: number;
+        stance?: UserStance;
+        allowSaveCash?: boolean;
+        pendingRevokedPlanConfirm?: string | null;
+        hr?: string | null;
+        holdRev?: number;
+        holdClearedRev?: number;
+        clearSeq?: number;
+        cs?: string | null;
+      };
+      if (!parsed || !isSupportedDraftSchema(parsed.schemaVersion)) {
+        return null;
+      }
+      const savedPicks = Array.isArray(parsed.picks) ? parsed.picks : [];
+      const byId = new Map(cleanMatches.map((m) => [m.id, m]));
+      const validPicks: SelectedPick[] = [];
+      let droppedCount = 0;
+      let goalLineShiftedCount = 0;
+      for (const pk of savedPicks) {
+        const fm = byId.get(pk.matchId);
+        if (!verifySavedPickMatchIdentity(fm, pk)) {
+          droppedCount += 1;
+          continue;
+        }
+        const pool = fm.pools?.[pk.poolCode];
+        const canSingle = resolvePoolCanSingle(pool);
+        const canAllUp = resolvePoolCanAllUp(pool);
+        if (!pool || pool.selling === false || (!canSingle && !canAllUp)) {
+          droppedCount += 1;
+          continue;
+        }
+        const savedGl = String(pk.savedGoalLine ?? pk.goalLine ?? "").trim();
+        const curGl = String(pool.goalLine ?? "").trim();
+        if (pk.poolCode === "HHAD" && savedGl && curGl !== savedGl) {
+          droppedCount += 1;
+          goalLineShiftedCount += 1;
+          continue;
+        }
+        const opt = pool.options?.find((o) => o.key === pk.optionKey);
+        if (
+          !opt ||
+          !Number.isFinite(Number(opt.odds)) ||
+          Number(opt.odds) < 1.01
+        ) {
+          droppedCount += 1;
+          continue;
+        }
+        const th = computeOrderedMatchIdentitySig(
+          fm,
+          Boolean(fm.homeTeamId || fm.awayTeamId)
+        );
+        validPicks.push({
+          matchId: fm.id,
+          matchNumStr: fm.matchNumStr,
+          home: fm.home,
+          away: fm.away,
+          th,
+          poolCode: pk.poolCode,
+          poolName: pool.name,
+          singleAllowed: canSingle,
+          canSingle,
+          canAllUp,
+          ...resolveOptionalGoalLine(pk.poolCode, pool, savedGl),
+          optionKey: opt.key,
+          optionLabel: opt.label,
+          odds: opt.odds,
+          fairProb: opt.fairProb,
+        });
+      }
+      const nextMultiple = Math.max(
+        1,
+        Math.min(999, Math.round(Number(parsed.multiple) || 5))
+      );
+      const nextBudget = normalizeBudgetYuan(Number(parsed.budget) || 100);
+      const nextStance: UserStance =
+        parsed.stance === "home-lean" || parsed.stance === "upset-watch"
+          ? parsed.stance
+          : "objective";
+      const nextAllowSaveCash = Boolean(parsed.allowSaveCash);
+      const rawPass: PassSelectionSpec = parsed.passSpec ?? {
+        mode: "follow-max-parlay",
+      };
+      const nextPassSpec = sanitizePassSpecForPicks(rawPass, validPicks);
+      const nextSynMode: SyntheticSingleMode =
+        validPicks.length > 0 && parsed.so ? "off" : "full-3way";
+      const notice =
+        goalLineShiftedCount > 0
+          ? `已校验上次选单草稿，自动剔除 ${droppedCount} 项过期或让球变盘选项，请按最新让球线重新核对`
+          : droppedCount > 0
+            ? `已校验上次选单草稿，自动剔除 ${droppedCount} 项已停售或跨期下架的选项`
+            : null;
+      const meta = readStoredHoldMeta();
+      const preDropStoredHash = computeStoredParsedDraftHash(parsed);
+      const legacyR10AutoHash =
+        parsed.schemaVersion === 1 && !parsed.so
+          ? computeLegacyR10AutoDraftHash(parsed)
+          : null;
+      const restoredDraftHash = computeManualTicketDraftHash(
+        validPicks,
+        nextMultiple,
+        nextPassSpec,
+        cleanMatches,
+        nextSynMode
+      );
+      const diskHoldRev = Math.floor(Number(parsed.holdRev) || 0);
+      const diskClearedRev = Math.floor(Number(parsed.holdClearedRev) || 0);
+      const diskCs =
+        typeof parsed.cs === "string" && parsed.cs.trim().length > 0
+          ? parsed.cs.trim()
+          : null;
+      const diskClearApplies =
+        !parsed.pendingRevokedPlanConfirm &&
+        Boolean(
+          diskCs &&
+          (diskCs === preDropStoredHash ||
+            diskCs === restoredDraftHash ||
+            (legacyR10AutoHash !== null && diskCs === legacyR10AutoHash))
+        );
+      const busClearApplies = Boolean(
+        meta.holdClearedDraftHash &&
+        (meta.holdClearedDraftHash === preDropStoredHash ||
+          meta.holdClearedDraftHash === restoredDraftHash ||
+          (legacyR10AutoHash !== null &&
+            meta.holdClearedDraftHash === legacyR10AutoHash))
+      );
+
+      let effectiveHoldRev = Math.max(
+        meta.holdRev,
+        diskHoldRev,
+        parsed.pendingRevokedPlanConfirm ? 1 : 0
+      );
+      const effectiveClearedRev = Math.max(
+        diskClearApplies ? diskClearedRev : 0,
+        busClearApplies ? meta.holdClearedRev : 0
+      );
+      const rawClearSeq = Math.max(
+        busClearApplies ? meta.clearSeq : 0,
+        diskClearApplies ? Math.floor(Number(parsed.clearSeq) || 0) : 0
+      );
+      const rawWriteSeq = Math.max(
+        meta.writeSeq,
+        Math.floor(Number(parsed.w) || 0)
+      );
+      const rawReason =
+        (typeof parsed.pendingRevokedPlanConfirm === "string" &&
+        parsed.pendingRevokedPlanConfirm.trim().length > 0
+          ? parsed.pendingRevokedPlanConfirm.trim()
+          : null) ??
+        (typeof parsed.hr === "string" && parsed.hr.trim().length > 0
+          ? parsed.hr.trim()
+          : null) ??
+        meta.pendingRevokedPlanConfirm ??
+        meta.lastHoldReason;
+
+      const legacyNeedsFutureSynGuard =
+        validPicks.length > 0 && draftNeedsSyntheticChoice(parsed);
+      const isLegacyAmbiguousSingle =
+        legacyNeedsFutureSynGuard && singleRequiresSynthetic(validPicks);
+
+      if (isLegacyAmbiguousSingle) {
+        effectiveHoldRev = Math.max(
+          1,
+          effectiveHoldRev,
+          effectiveClearedRev + 1
+        );
+      }
+
+      const defaultHoldMsg =
+        "原已套用方案涉及场次盘口或单串开售权限已变动，原方案锁定已失效；请确认改按当前手选草稿核对或重新配单后再出票";
+      const savedHoldReason =
+        validPicks.length > 0 && effectiveHoldRev > effectiveClearedRev
+          ? isLegacyAmbiguousSingle
+            ? (rawReason ?? LEGACY_SINGLE_CONFIRMATION)
+            : (rawReason ?? defaultHoldMsg)
+          : null;
+      const effectiveCs =
+        savedHoldReason === null &&
+        effectiveHoldRev > 0 &&
+        validPicks.length > 0
+          ? restoredDraftHash
+          : ((diskClearApplies ? diskCs : null) ??
+            (busClearApplies ? meta.holdClearedDraftHash : null));
+      const storedAt = Number(parsed.qa) || 0;
+      const boardAt = extractBoardCapturedAt(boardMeta);
+      const fullQuoteMatches = validPicks.every((pick, i) => {
+        const saved = savedPicks[i];
+        return (
+          pick.odds === saved.odds &&
+          pick.canSingle === saved.canSingle &&
+          pick.canAllUp === saved.canAllUp
+        );
+      });
+      const hasKnownConflict =
+        droppedCount > 0 ||
+        validPicks.some((pick, i) => {
+          const saved = savedPicks[i];
+          return (
+            (saved.odds !== undefined && pick.odds !== saved.odds) ||
+            (saved.canSingle !== undefined &&
+              pick.canSingle !== saved.canSingle) ||
+            (saved.canAllUp !== undefined && pick.canAllUp !== saved.canAllUp)
+          );
+        });
+      const sameCapture =
+        storedAt > 0 && boardAt === storedAt && !hasKnownConflict;
+      const newerCapture = storedAt > 0 && boardAt > storedAt;
+      const freshForThisRevision =
+        raw === verifiedDraftRaw && boardAt >= storedAt;
+      const exactTicketOrPendingChoice =
+        !droppedCount &&
+        fullQuoteMatches &&
+        (!singleRequiresSynthetic(validPicks) ||
+          isLegacyAmbiguousSingle ||
+          Boolean(parsed.so));
+      const approval =
+        nextSynMode === "off"
+          ? null
+          : readSyntheticApproval(parsed.schemaVersion, parsed.sc);
+      const sameReferenceDraft =
+        boardMeta?.isFallbackReadOnly &&
+        approval?.referenceOnly === true &&
+        !savedHoldReason &&
+        !droppedCount &&
+        fullQuoteMatches &&
+        (sameCapture || newerCapture);
+      const canRestore =
+        sameReferenceDraft ||
+        (!boardMeta?.isFallbackReadOnly &&
+          (sameCapture ||
+            newerCapture ||
+            freshForThisRevision ||
+            exactTicketOrPendingChoice));
+      // -1 denotes an unknown original capture. A forced live acquisition
+      // after reading the same bytes can resolve that case.
+      const waitForBoardAt =
+        savedPicks.length && !canRestore ? storedAt || -1 : 0;
+      return {
+        restored:
+          validPicks.length > 0 ||
+          droppedCount > 0 ||
+          savedHoldReason !== null ||
+          nextSynMode === "off" ||
+          nextMultiple !== 5 ||
+          nextBudget !== 100 ||
+          nextStance !== "objective" ||
+          nextAllowSaveCash !== false,
+        picks: validPicks,
+        multiple: nextMultiple,
+        passSpec: nextPassSpec,
+        syntheticSingleMode: nextSynMode,
+        budget: nextBudget,
+        stance: nextStance,
+        allowSaveCash: nextAllowSaveCash,
+        notice,
+        pendingRevokedPlanConfirm: savedHoldReason,
+        holdRev: effectiveHoldRev,
+        holdClearedRev: effectiveClearedRev,
+        clearSeq: rawClearSeq,
+        writeSeq: rawWriteSeq,
+        holdClearedDraftHash: effectiveCs,
+        droppedCount,
+        waitForBoardAt,
+        legacyNeedsFutureSynGuard,
+        approval,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function mintSingleAuthGrant(
+    s: BetSlipState,
+    mode: SyntheticSingleMode,
+    explicitPreview?: PartialCoveragePreview | null,
+    approvedBaseLines?: PlanTicketLine[]
+  ): SingleAuthGrant | null {
+    if (mode === "off") return null;
+    const distinctIds = Array.from(new Set(s.picks.map((p) => p.matchId)));
+    if (distinctIds.length !== 1) return null;
+    const matchId = distinctIds[0];
+    if (!matchId) return null;
+    const preview =
+      explicitPreview ??
+      s.workspace.effectiveReport.partialCoveragePreview ??
+      s.workspace.manualReport.partialCoveragePreview ??
+      s.workspace.effectiveReport.trim2WayPreview ??
+      s.workspace.manualReport.trim2WayPreview ??
+      null;
+    if (
+      mode === "full-3way" &&
+      !explicitPreview &&
+      !approvedBaseLines?.length &&
+      !preview?.requiresExplicitConfirm
+    ) {
+      return null;
+    }
+    const picksSig = buildRadarSignature(s.picks);
+    const fm = s.matches.find((m) => m.id === matchId);
+    const pickedHasHhad = s.picks.some((p) => p.poolCode === "HHAD");
+    const hhadPick = s.picks.find((p) => p.poolCode === "HHAD");
+    const goalLine = pickedHasHhad
+      ? String(fm?.pools?.HHAD?.goalLine ?? hhadPick?.goalLine ?? "").trim()
+      : "";
+    const quoteVersionSig = computeSingleMatchQuoteVersionSig(fm);
+    const modeLines =
+      approvedBaseLines ??
+      (mode === "trim-2way" ? preview?.trim2WayLines : preview?.previewLines);
+    const exactCost = approvedBaseLines
+      ? approvedBaseLines.reduce((sum, line) => sum + line.cost, 0)
+      : mode === "trim-2way"
+        ? typeof preview?.trim2WayCost === "number" && preview.trim2WayCost > 0
+          ? preview.trim2WayCost
+          : undefined
+        : typeof preview?.previewCost === "number" && preview.previewCost > 0
+          ? preview.previewCost
+          : undefined;
+    const coveredMaskSig =
+      modeLines && modeLines.length > 0
+        ? modeLines
+            .map((ln) =>
+              ln.legs
+                .map((lg) => `${lg.poolCode}:${lg.optionKey}`)
+                .sort()
+                .join("+")
+            )
+            .sort()
+            .join(";")
+        : (s.workspace.manualReport.syntheticRescuePicks ?? [])
+            .map((pk) => `${pk.poolCode}:${pk.optionKey}`)
+            .sort()
+            .join("|");
+    const extPreview = preview as
+      | (PartialCoveragePreview & {
+          lineAndMultipleSig?: string;
+          trim2WayLineAndMultipleSig?: string;
+        })
+      | null;
+    const precomputedModeLineSig =
+      mode === "trim-2way"
+        ? extPreview?.trim2WayLineAndMultipleSig
+        : extPreview?.lineAndMultipleSig;
+    const lineAndMultipleSig =
+      modeLines && modeLines.length > 0
+        ? encodeSyntheticLinesSig(modeLines, s.multiple)
+        : precomputedModeLineSig && precomputedModeLineSig.length > 0
+          ? precomputedModeLineSig
+          : `m=${s.multiple}|${coveredMaskSig}`;
+    const effRep = s.workspace.baselineReport ?? s.workspace.effectiveReport;
+    const approvedCost =
+      exactCost ??
+      (mode !== "trim-2way"
+        ? (preview?.authorizedCostCap ??
+          (effRep.canCheckout && effRep.totalCost > 0
+            ? effRep.totalCost
+            : Number.MAX_SAFE_INTEGER))
+        : Number.MAX_SAFE_INTEGER);
+    authGrantSeq += 1;
+    return {
+      authId: `sa_${authGrantSeq}_${nowFn()}`,
+      matchId,
+      picksSig,
+      goalLine,
+      targetMaskSig: picksSig,
+      coveredMaskSig,
+      lineAndMultipleSig,
+      draftRevision,
+      quoteVersionSig,
+      ruleVersion: "sporttery-2026-v1",
+      approvedCost,
+      ...(exactCost !== undefined ? { exactCost } : {}),
+      mode,
+    };
+  }
+
+  function freezeArchetypeIfQuoteDrifted(
+    prevPlanSpec: AppliedPlanSpec,
+    nextDraft: Pick<
+      BetSlipState,
+      | "matches"
+      | "picks"
+      | "budget"
+      | "targetIds"
+      | "anchorToRadarPicks"
+      | "stance"
+      | "subjectiveDeltaPct"
+      | "allowSaveCash"
+      | "unlockFullAgg"
+      | "passSpec"
+    >
+  ): AppliedPlanSpec {
+    if (prevPlanSpec?.kind !== "archetype") return prevPlanSpec;
+    const nextSig = computeClientPortfolioQuoteMeta(nextDraft).inputSig;
+    const lockedSig = prevPlanSpec.quoteInputSig ?? "";
+    return {
+      ...prevPlanSpec,
+      allowBudgetMismatchReadOnly: Boolean(lockedSig && nextSig !== lockedSig),
+    };
+  }
 
   function scrubStateInvalidAlerts(
     s: BetSlipState,
@@ -1390,39 +4997,338 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     };
   }
 
+  function syntheticConfirmation(
+    current: BetSlipState,
+    scope: string | null,
+    lines: PlanTicketLine[],
+    cost: number,
+    lineSig: string
+  ) {
+    const board = new Map(current.matches.map((match) => [match.id, match]));
+    const referenceOnly =
+      Boolean(options.isOffline?.()) ||
+      !isFreshTicketBoard(current.workspace.boardMeta) ||
+      !lines.every((line) => isTicketLineSaleConfirmed(line.legs, board));
+    const parts = [scope, current.syntheticSingleMode, cost, lineSig];
+    if (referenceOnly) parts.push("paper");
+    return { referenceOnly, signature: JSON.stringify(parts) };
+  }
+
   function reconcileState(): BetSlipState {
+    commitPendingExplicitClearIfNeeded();
+    syncSharedHoldFromStorage();
     const scrubbed = scrubStateInvalidAlerts(state, nowFn());
     if (scrubbed !== state) {
       state = scrubbed;
       lastReconciledRef = null;
     }
-    if (lastReconciledRef === state) return state;
+    const offline = Boolean(options.isOffline?.());
+    if (lastReconciledRef === state && lastReconciledOffline === offline)
+      return state;
+    lastReconciledOffline = offline;
+    if (syntheticApproval) {
+      if (
+        state.syntheticSingleMode === "off" ||
+        syntheticApprovalScope(state, syntheticApproval.matchId) !==
+          syntheticApproval.scope
+      ) {
+        syntheticApproval = null;
+      } else if (
+        singleRequiresSynthetic(state.picks) &&
+        !state.planSpec &&
+        !state.singleAuthGrant &&
+        syntheticApproval.grant
+      ) {
+        // A bridge temporarily makes this ticket playable as an ordinary parlay.
+        // Restore the approved instruction only on the same single & board.
+        state = {
+          ...state,
+          syntheticSingleMode: syntheticApproval.mode,
+          singleAuthGrant: syntheticApproval.grant,
+          planSpec: syntheticApproval.plan ?? null,
+        };
+      }
+    }
     const qMeta = computeClientPortfolioQuoteMeta(state);
     if (qMeta.inputSig !== lastKnownInputSig) {
       quoteVersion += 1;
       lastKnownInputSig = qMeta.inputSig;
     }
-    const isStale = bootstrapped ? qMeta.inputSig !== computedInputSig : false;
+    const curDraftSig = `${qMeta.picksSig}|m=${state.multiple}|ps=${qMeta.passSpecSig}|b=${qMeta.budget}|st=${qMeta.stance}|sc=${qMeta.allowSaveCash ? 1 : 0}`;
+    if (curDraftSig !== lastDraftSig) {
+      if (lastDraftSig !== "") draftRevision += 1;
+      lastDraftSig = curDraftSig;
+    }
+    const isStale = bootstrapped
+      ? qMeta.inputSig !== computedInputSig ||
+        computeWorkspaceExecutionSig(state, qMeta.inputSig) !==
+          computedWorkspaceSig ||
+        pendingTimer !== null ||
+        inFlightPromise !== null
+      : false;
     const appliedTicketSnapshot =
       state.planSpec?.kind === "archetype"
         ? (state.planSpec.appliedTicketSnapshot ?? null)
         : null;
+    const livePortfolioQuote: LivePortfolioQuoteState = {
+      quoteVersion,
+      ...qMeta,
+      computedInputSig,
+      isStale,
+      canApplyLiveQuote: !isStale && !deferredDraftBoardAt,
+    };
+    if (
+      revokedPlanHold &&
+      (state.planSpec !== null || state.singleAuthGrant !== null)
+    ) {
+      localHoldRev = Math.max(localHoldRev, revokedPlanHold.rev);
+      revokedPlanHold = null;
+    }
+    const passRuleBlockReason = computePassRuleBlockReason(
+      state.passSpec,
+      state.picks
+    );
+    // Keep the proposed server ticket separate from the non-payable view.
+    const rawWorkspace =
+      state.workspace === maskedSyntheticWorkspace && originalSyntheticWorkspace
+        ? originalSyntheticWorkspace
+        : state.workspace;
+    const rawReport =
+      rawWorkspace.baselineReport ?? rawWorkspace.effectiveReport;
+    const proposedPlan =
+      rawWorkspace.baselineAppliedPlan ?? rawWorkspace.appliedPlan;
+    const mayConvertSingle =
+      !deferredDraftBoardAt &&
+      state.syntheticSingleMode !== "off" &&
+      singleRequiresSynthetic(state.picks) &&
+      (!state.planSpec ||
+        (state.planSpec.kind === "bonus" &&
+          state.planSpec.baseSourceKind === "auto-synthetic"));
+    let proposedQuote: SyntheticChoiceQuote | null = null;
+    if (
+      mayConvertSingle &&
+      rawReport.canCheckout &&
+      rawReport.totalCost > 0 &&
+      (rawReport.syntheticAutoMounted ||
+        isSingleAuthBoundBonusPlan(state.planSpec)) &&
+      proposedPlan?.lines?.length
+    ) {
+      const rows = proposedPlan.lines.flatMap((line) =>
+        line.legs.map((leg) => ({
+          matchId: leg.matchId,
+          matchNumStr: leg.matchNumStr,
+          home: leg.home,
+          away: leg.away,
+          poolName: leg.poolName,
+          optionLabel: leg.optionLabel,
+          odds: leg.odds,
+          multiple: line.multiple,
+          cost: line.cost,
+        }))
+      );
+      const scope = syntheticApprovalScope(state, state.picks[0].matchId);
+      if (
+        scope &&
+        rows.length === proposedPlan.lines.length &&
+        rows.every((r) => r.matchId === state.picks[0].matchId)
+      ) {
+        const manual =
+          rawWorkspace.baselineManualReport ?? rawWorkspace.manualReport;
+        const lineSig = encodeSyntheticLinesSig(
+          proposedPlan.lines,
+          state.multiple
+        );
+        const coverage = manual.crossPoolSingleAlternatives?.find(
+          (a) =>
+            encodeSyntheticLinesSig(a.previewLines, state.multiple) ===
+              lineSig ||
+            (a.trim2WayLines?.length &&
+              encodeSyntheticLinesSig(a.trim2WayLines, state.multiple) ===
+                lineSig)
+        );
+        const trimmed = state.syntheticSingleMode === "trim-2way";
+        const exact =
+          !trimmed &&
+          (coverage?.isExactEquivalent ?? rawReport.isExactSyntheticEquivalent);
+        const trimLabel =
+          coverage &&
+          "trim2WayBlindSpotLabel" in coverage &&
+          typeof coverage.trim2WayBlindSpotLabel === "string"
+            ? coverage.trim2WayBlindSpotLabel
+            : null;
+        const blindSpot =
+          (trimmed ? trimLabel : coverage?.blindSpotLabel) ??
+          rawReport.syntheticBlindSpotLabel;
+        const poolNames = [...new Set(rows.map((row) => row.poolName))].join(
+          "＋"
+        );
+        proposedQuote = {
+          rows,
+          mode: state.syntheticSingleMode,
+          coverageLabel: exact
+            ? "与原方向完全等价"
+            : `部分覆盖${blindSpot ? " · 漏网：" + blindSpot : " · 部分原方向赛果不返奖"}`,
+          ...syntheticConfirmation(
+            state,
+            scope,
+            proposedPlan.lines,
+            rawReport.totalCost,
+            lineSig
+          ),
+          label: `${poolNames}合成单关（${rows.map((row) => row.optionLabel).join("＋")}）`,
+          cost: rawReport.totalCost,
+        };
+      }
+    }
+    const isProposedConversion =
+      Boolean(proposedQuote) ||
+      Boolean(mayConvertSingle && (isStale || rawReport.syntheticAutoMounted));
+    const needsSyntheticConfirmation =
+      isProposedConversion &&
+      (isStale ||
+        !proposedQuote ||
+        proposedQuote.signature !== syntheticApproval?.signature);
+    const pendingSyntheticChoice = needsSyntheticConfirmation
+      ? { quote: isStale ? null : proposedQuote }
+      : null;
+    // Pending partial/over-budget offers already prohibit payment. Keep their
+    // itemized choices accessible when migrating an old manual draft.
+    const showPendingSingleOptions =
+      mayConvertSingle &&
+      !needsSyntheticConfirmation &&
+      !rawReport.canCheckout &&
+      rawReport.selectionStatus === "pending-single-auth" &&
+      revokedPlanHold?.reason === LEGACY_SINGLE_CONFIRMATION;
+    const activeRevokedHoldReason = deferredDraftBoardAt
+      ? "正在核对完整选单。可同步水位重试，或清空后重新选赛"
+      : needsSyntheticConfirmation
+        ? "合成单关改变了实际票行，请核对票行及金额后确认"
+        : state.picks.length > 0 && !showPendingSingleOptions
+          ? (revokedPlanHold?.reason ?? null)
+          : null;
+    const effectiveBlockReason =
+      activeRevokedHoldReason ?? (!state.planSpec ? passRuleBlockReason : null);
+    const shouldEnforceManualPassBlock = Boolean(effectiveBlockReason);
+    const effectiveWorkspace: QuantWorkspaceResponse =
+      shouldEnforceManualPassBlock &&
+      (Boolean(activeRevokedHoldReason) ||
+        rawWorkspace.effectiveReport.canCheckout ||
+        rawWorkspace.baselineReport?.canCheckout)
+        ? {
+            ...rawWorkspace,
+            ...(activeRevokedHoldReason
+              ? { appliedPlan: null, baselineAppliedPlan: null }
+              : {}),
+            effectiveReport: {
+              ...rawWorkspace.effectiveReport,
+              canCheckout: false,
+              ...(activeRevokedHoldReason
+                ? {
+                    totalCost: 0,
+                    betCount: 0,
+                    stakeUnitsCount: 0,
+                    logicalLineCount: 0,
+                    physicalSlipCount: 0,
+                    syntheticAutoMounted: false,
+                    tickets: [],
+                    physicalSlips: [],
+                  }
+                : {}),
+              selectionStatus: "rule-blocked",
+              ruleBlockReason: effectiveBlockReason!,
+            },
+            ...(rawWorkspace.baselineReport
+              ? {
+                  baselineReport: {
+                    ...rawWorkspace.baselineReport,
+                    canCheckout: false,
+                    ...(activeRevokedHoldReason
+                      ? {
+                          totalCost: 0,
+                          betCount: 0,
+                          stakeUnitsCount: 0,
+                          logicalLineCount: 0,
+                          physicalSlipCount: 0,
+                          syntheticAutoMounted: false,
+                          tickets: [],
+                          physicalSlips: [],
+                        }
+                      : {}),
+                    selectionStatus: "rule-blocked",
+                    ruleBlockReason: effectiveBlockReason!,
+                  },
+                }
+              : {}),
+          }
+        : rawWorkspace;
+    maskedSyntheticWorkspace = needsSyntheticConfirmation
+      ? effectiveWorkspace
+      : null;
+    originalSyntheticWorkspace = needsSyntheticConfirmation
+      ? rawWorkspace
+      : null;
     const nextCore = {
       ...state,
+      pendingSyntheticChoice,
+      pendingRevokedPlanConfirm: activeRevokedHoldReason,
+      workspace: effectiveWorkspace,
       manualDraftPicks: state.picks,
       appliedTicketSnapshot,
-      livePortfolioQuote: {
-        quoteVersion,
-        ...qMeta,
-        computedInputSig,
-        isStale,
-        canApplyLiveQuote: !isStale,
-      },
+      livePortfolioQuote,
     };
+    const provisionalSlip = buildActiveAuditedSlip(
+      nextCore,
+      activeSlipRevision
+    );
+    const baseRep =
+      effectiveWorkspace.baselineReport ?? effectiveWorkspace.effectiveReport;
+    const curSlipSig = `${provisionalSlip.sourceKind}|${baseRep.modeLabel}|${baseRep.totalCost}|${provisionalSlip.legs
+      .map((l) => `${l.matchId}:${l.poolCode}:${l.optionKey}@${l.odds}`)
+      .join(",")}|${provisionalSlip.lines
+      .map((ln) => `${ln.id}:${ln.multiple}:${ln.cost}`)
+      .join(",")}`;
+    if (curSlipSig !== lastActiveSlipSig) {
+      if (lastActiveSlipSig !== "") activeSlipRevision += 1;
+      lastActiveSlipSig = curSlipSig;
+    }
+    const activeSlip =
+      provisionalSlip.revision === activeSlipRevision
+        ? provisionalSlip
+        : { ...provisionalSlip, revision: activeSlipRevision };
+    const resolvedVoidIds =
+      state.voidMatchIds.length > 0
+        ? state.voidMatchIds.filter((id) => activeSlip.matchIds.includes(id))
+        : state.simVoidFirstMatch && activeSlip.matchIds[0]
+          ? [activeSlip.matchIds[0]]
+          : [];
+
     state = {
       ...nextCore,
-      activeAuditedSlip: buildActiveAuditedSlip(nextCore),
+      manualDraft: {
+        schemaVersion: 1,
+        revision: draftRevision,
+        picks: state.picks,
+        multiple: state.multiple,
+        passSpec: state.passSpec,
+        budget: qMeta.budget,
+        stance: qMeta.stance,
+        allowSaveCash: qMeta.allowSaveCash,
+        passRuleBlockReason,
+      },
+      portfolioQuote: {
+        ...livePortfolioQuote,
+        plans: state.workspace.portfolioPlans ?? [],
+        objectivePlans: state.objectivePortfolioPlans,
+      },
+      activeSlip,
+      activeAuditedSlip: activeSlip,
+      sandboxSim: {
+        baseRevision: activeSlipRevision,
+        voidMatchIds: resolvedVoidIds,
+        subjectiveDeltaPct: state.subjectiveDeltaPct,
+      },
     };
+    persistManualDraftIfNeeded(state);
     lastReconciledRef = state;
     return state;
   }
@@ -1430,6 +5336,32 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   function emit() {
     reconcileState();
     for (const fn of listeners) fn();
+  }
+
+  function applyMultiple(next: number): number {
+    if (next === state.multiple) {
+      void scheduleRefresh();
+      return next;
+    }
+    clearRevokedPlanHoldOnUserAction();
+    state = {
+      ...state,
+      planSpec: null,
+      ...(state.singleAuthGrant
+        ? {
+            singleAuthGrant: null,
+            syntheticSingleMode:
+              state.syntheticSingleMode === "partial-cover" ||
+              state.syntheticSingleMode === "trim-2way"
+                ? "full-3way"
+                : state.syntheticSingleMode,
+          }
+        : {}),
+      multiple: next,
+    };
+    emit();
+    void scheduleRefresh();
+    return next;
   }
 
   function resolveObjectivePortfolioPlans(
@@ -1483,6 +5415,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
   }
 
   function cancelPendingTimer() {
+    computeSeq += 1;
+    lastReconciledRef = null;
     if (pendingTimer !== null) {
       clearTimeout(pendingTimer);
       pendingTimer = null;
@@ -1504,8 +5438,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       multiple: s.multiple,
       passSpec: s.passSpec,
       syntheticSingleMode: s.syntheticSingleMode,
+      ...(s.singleAuthGrant ? { singleAuthGrant: s.singleAuthGrant } : {}),
       subjectiveDeltaPct: s.subjectiveDeltaPct,
       simVoidFirstMatch: s.simVoidFirstMatch,
+      ...(s.voidMatchIds.length > 0 ? { voidMatchIds: s.voidMatchIds } : {}),
       planSpec: s.planSpec,
       targetIds: s.targetIds,
       anchorToRadarPicks: s.anchorToRadarPicks,
@@ -1514,6 +5450,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       unlockFullAgg: s.unlockFullAgg,
       allowSaveCash: s.allowSaveCash,
       quoteInputSig: qMeta.inputSig,
+      ...(s.workspace?.boardMeta?.quoteVersion
+        ? { clientBoardQuoteVersion: s.workspace.boardMeta.quoteVersion }
+        : {}),
       ...(s.planSpec?.kind === "archetype" &&
       !s.planSpec.allowBudgetMismatchReadOnly &&
       s.planSpec.expectedQuoteInputSig
@@ -1584,8 +5523,120 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       },
       appliedTicketSnapshot: snapshot,
       simVoidFirstMatch: false,
+      voidMatchIds: [],
     };
     return true;
+  }
+
+  function verifyOrTightenSingleAuthGrantOnWs(
+    ws: QuantWorkspaceResponse
+  ): boolean {
+    const authRevokedMsg =
+      "原已确认单关授权涉及场次盘口或单关开售权限已变动，原实票已失效；请重新选择单关方案或按手选核对后再出票";
+    const armSingleAuthRevokedHold = () => {
+      if (state.picks.length > 0 && !revokedPlanHold) {
+        armRevokedPlanHold(authRevokedMsg);
+      }
+    };
+    const grant = state.singleAuthGrant;
+    const boundBonus =
+      state.planSpec?.kind === "bonus" &&
+      isSingleAuthBoundBonusPlan(state.planSpec)
+        ? state.planSpec
+        : null;
+    if (!grant) {
+      if (boundBonus) {
+        armSingleAuthRevokedHold();
+        state = {
+          ...state,
+          planSpec: null,
+          appliedTicketSnapshot: null,
+          syntheticSingleMode: "full-3way",
+        };
+        return true;
+      }
+      return false;
+    }
+    const distinctIds = Array.from(new Set(state.picks.map((p) => p.matchId)));
+    const curPicksSig = buildRadarSignature(state.picks);
+    const fm = state.matches.find((m) => m.id === grant.matchId);
+    const pickedHasHhad = state.picks.some((p) => p.poolCode === "HHAD");
+    const hhadPick = state.picks.find((p) => p.poolCode === "HHAD");
+    const curGoalLine = pickedHasHhad
+      ? String(fm?.pools?.HHAD?.goalLine ?? hhadPick?.goalLine ?? "").trim()
+      : "";
+    const curMatchQuoteSig = computeSingleMatchQuoteVersionSig(fm);
+    const boundMismatch = Boolean(
+      boundBonus &&
+      ((boundBonus.boundSingleAuthId &&
+        boundBonus.boundSingleAuthId !== grant.authId) ||
+        (boundBonus.boundQuoteVersionSig &&
+          boundBonus.boundQuoteVersionSig !== curMatchQuoteSig) ||
+        (boundBonus.boundLineAndMultipleSig &&
+          boundBonus.boundLineAndMultipleSig !== grant.lineAndMultipleSig))
+    );
+    if (
+      distinctIds.length !== 1 ||
+      distinctIds[0] !== grant.matchId ||
+      curPicksSig !== grant.picksSig ||
+      (grant.goalLine !== undefined && curGoalLine !== grant.goalLine) ||
+      (grant.quoteVersionSig !== undefined &&
+        grant.quoteVersionSig.length > 0 &&
+        curMatchQuoteSig !== grant.quoteVersionSig) ||
+      !isGrantLineSigValidAgainstMatch(grant.lineAndMultipleSig, fm) ||
+      boundMismatch
+    ) {
+      armSingleAuthRevokedHold();
+      state = {
+        ...state,
+        ...(boundBonus ? { planSpec: null, appliedTicketSnapshot: null } : {}),
+        singleAuthGrant: null,
+        syntheticSingleMode: "full-3way",
+      };
+      return true;
+    }
+    const baseRep = ws.baselineReport ?? ws.effectiveReport;
+    const basePlan =
+      ws.baselineAppliedPlan !== undefined
+        ? ws.baselineAppliedPlan
+        : ws.appliedPlan;
+    if (
+      (grant.approvedCost === Number.MAX_SAFE_INTEGER ||
+        grant.exactCost === undefined) &&
+      baseRep.canCheckout &&
+      baseRep.totalCost > 0
+    ) {
+      const tightenedLineSig =
+        basePlan?.lines && basePlan.lines.length > 0
+          ? encodeSyntheticLinesSig(basePlan.lines, state.multiple)
+          : grant.lineAndMultipleSig;
+      state = {
+        ...state,
+        singleAuthGrant: {
+          ...grant,
+          approvedCost: baseRep.totalCost,
+          exactCost: baseRep.totalCost,
+          lineAndMultipleSig: tightenedLineSig,
+          quoteVersionSig: curMatchQuoteSig,
+        },
+      };
+      return false;
+    }
+    if (
+      baseRep.totalCost > grant.approvedCost + 1e-6 ||
+      (grant.exactCost !== undefined &&
+        Math.abs(baseRep.totalCost - grant.exactCost) > 1e-6)
+    ) {
+      armSingleAuthRevokedHold();
+      state = {
+        ...state,
+        ...(boundBonus ? { planSpec: null, appliedTicketSnapshot: null } : {}),
+        singleAuthGrant: null,
+        syntheticSingleMode: "full-3way",
+      };
+      return true;
+    }
+    return false;
   }
 
   function executeComputeNow(): Promise<void> {
@@ -1611,22 +5662,317 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         const p = Promise.resolve(maybeMain)
           .then(async (ws) => {
             if (seq === computeSeq) {
-              const resolvedSig = ws.quoteInputSig || requestInputSig;
-              computedInputSig = resolvedSig;
+              if (
+                deferredDraftBoardAt &&
+                ws.refreshedMatches &&
+                !ws.boardMeta?.isFallbackReadOnly &&
+                extractBoardCapturedAt(ws.boardMeta) >= deferredDraftBoardAt
+              ) {
+                applyAuthenticatedBundle({
+                  matches: ws.refreshedMatches,
+                  initialPicks: [],
+                  workspace: ws,
+                  boardMeta: ws.boardMeta,
+                });
+                return;
+              }
+              const prevMatchMap = new Map(state.matches.map((m) => [m.id, m]));
+              let nextMatches = state.matches;
+              let nextPicks = state.picks;
+              let nextPassSpec = state.passSpec;
+              let nextPlanSpec = state.planSpec;
+              let nextAppliedSnap = state.appliedTicketSnapshot;
+              let nextNotice = state.draftRestoredNotice;
+              let boardInvalidated = false;
+              let capBindingStripped = false;
+              const wsCapturedAt = extractBoardCapturedAt(ws.boardMeta);
+              const isOutOfOrderComputeBoard = Boolean(
+                latestBoardCapturedAt > 0 &&
+                wsCapturedAt > 0 &&
+                wsCapturedAt < latestBoardCapturedAt
+              );
+              const isOlderFallbackRoster = Boolean(
+                ws.boardMeta?.isFallbackReadOnly &&
+                latestBoardCapturedAt > 0 &&
+                (wsCapturedAt === 0 || wsCapturedAt < latestBoardCapturedAt)
+              );
+              if (
+                Array.isArray(ws.refreshedMatches) &&
+                ws.refreshedMatches.length > 0 &&
+                !isOlderFallbackRoster &&
+                !isOutOfOrderComputeBoard
+              ) {
+                const preDropComputeHash = computeManualTicketDraftHash(
+                  state.picks,
+                  state.multiple,
+                  state.passSpec,
+                  state.matches,
+                  state.syntheticSingleMode
+                );
+                boardEpoch += 1;
+                if (wsCapturedAt > latestBoardCapturedAt) {
+                  latestBoardCapturedAt = wsCapturedAt;
+                }
+                nextMatches = ws.refreshedMatches.map((nm) =>
+                  mergeMatchPoolsNonRegressive(prevMatchMap.get(nm.id), nm)
+                );
+                const byId = new Map(nextMatches.map((m) => [m.id, m]));
+                let droppedCount = 0;
+                let goalLineShifted = 0;
+                nextPicks = state.picks
+                  .map((pk): SelectedPick | null => {
+                    const fm = byId.get(pk.matchId);
+                    if (
+                      !isStrictSameMatchIdentity(
+                        fm,
+                        pk,
+                        prevMatchMap.get(pk.matchId)
+                      )
+                    ) {
+                      droppedCount += 1;
+                      return null;
+                    }
+                    const uPool = fm.pools?.[pk.poolCode];
+                    const nextSingle = resolvePoolCanSingle(uPool);
+                    const nextAllUp = resolvePoolCanAllUp(uPool);
+                    const opt = uPool?.options?.find(
+                      (o) => o.key === pk.optionKey
+                    );
+                    if (
+                      !uPool ||
+                      uPool.selling === false ||
+                      (!nextSingle && !nextAllUp) ||
+                      !opt ||
+                      opt.odds < 1.01
+                    ) {
+                      droppedCount += 1;
+                      return null;
+                    }
+                    const prevGl = String(
+                      pk.goalLine ??
+                        prevMatchMap.get(pk.matchId)?.pools?.HHAD?.goalLine ??
+                        ""
+                    ).trim();
+                    const nextGl = String(uPool.goalLine ?? "").trim();
+                    if (pk.poolCode === "HHAD" && prevGl && nextGl !== prevGl) {
+                      droppedCount += 1;
+                      goalLineShifted += 1;
+                      return null;
+                    }
+                    return {
+                      ...pk,
+                      th: computeOrderedMatchIdentitySig(
+                        fm,
+                        Boolean(fm.homeTeamId || fm.awayTeamId)
+                      ),
+                      odds: opt.odds,
+                      fairProb: opt.fairProb,
+                      singleAllowed: nextSingle,
+                      canSingle: nextSingle,
+                      canAllUp: nextAllUp,
+                      ...resolveOptionalGoalLine(pk.poolCode, uPool, prevGl),
+                    };
+                  })
+                  .filter((x): x is SelectedPick => x !== null);
+                if (droppedCount > 0) {
+                  boardInvalidated = true;
+                  nextPassSpec = sanitizePassSpecForPicks(
+                    state.passSpec,
+                    nextPicks
+                  );
+                  nextNotice =
+                    goalLineShifted > 0
+                      ? "官方让球线已发生变盘，已自动剔除失效旧让球选项，请按最新盘口重新核对选择"
+                      : `部分已选场次已停售或跨期下架，已自动剔除 ${droppedCount} 项失效选项`;
+                  if (
+                    state.singleAuthGrant &&
+                    nextPicks.length > 0 &&
+                    !revokedPlanHold
+                  ) {
+                    armRevokedPlanHold(
+                      "原已确认单关授权涉及场次盘口或单关开售权限已变动，原实票已失效；请重新选择单关方案或按手选核对后再出票"
+                    );
+                  }
+                }
+                if (
+                  nextPlanSpec?.kind === "bonus" &&
+                  (nextPlanSpec.confirmedCapGuardSig ||
+                    nextPlanSpec.allowCapEvTradeoff) &&
+                  (droppedCount > 0 ||
+                    !isCapGuardBindingValidAgainstBoard(
+                      nextPlanSpec.confirmedCapGuardSig,
+                      byId
+                    ))
+                ) {
+                  nextPlanSpec = {
+                    ...nextPlanSpec,
+                    confirmedCapGuardSig: undefined,
+                    allowCapEvTradeoff: false,
+                  };
+                  capBindingStripped = true;
+                }
+                if (
+                  nextPlanSpec &&
+                  (hasPlanSpecBoardInvalidation(
+                    nextPlanSpec,
+                    prevMatchMap,
+                    byId
+                  ) ||
+                    (droppedCount > 0 &&
+                      nextPlanSpec.kind === "bonus" &&
+                      !nextPlanSpec.baseLines?.length))
+                ) {
+                  const holdMsg =
+                    "原已套用方案涉及场次盘口或单串开售权限已变动，原方案锁定已失效；请确认改按当前手选草稿核对或重新配单后再出票";
+                  nextPlanSpec = null;
+                  nextAppliedSnap = null;
+                  boardInvalidated = true;
+                  if (nextPicks.length > 0) {
+                    armRevokedPlanHold(holdMsg);
+                  }
+                  if (!nextNotice) {
+                    nextNotice = holdMsg;
+                  }
+                }
+                if (hasUnresolvedSyntheticChoice) {
+                  const effCompSynMode =
+                    nextPicks.length === 0 ||
+                    state.syntheticSingleMode === "partial-cover" ||
+                    state.syntheticSingleMode === "trim-2way"
+                      ? "full-3way"
+                      : state.syntheticSingleMode;
+                  if (nextPicks.length === 0) {
+                    hasUnresolvedSyntheticChoice = false;
+                  } else if (
+                    singleRequiresSynthetic(nextPicks) &&
+                    effCompSynMode !== "off" &&
+                    !nextPlanSpec &&
+                    !(boardInvalidated ? null : state.singleAuthGrant) &&
+                    !revokedPlanHold
+                  ) {
+                    armRevokedPlanHold(LEGACY_SINGLE_CONFIRMATION);
+                    boardInvalidated = true;
+                    if (!nextNotice) nextNotice = LEGACY_SINGLE_CONFIRMATION;
+                  }
+                }
+                if (!ws.boardMeta?.isFallbackReadOnly) {
+                  pruneInvalidatedStoredDraftAgainstBoard(
+                    nextMatches,
+                    preDropComputeHash,
+                    wsCapturedAt
+                  );
+                }
+              }
+              const computedBoardMeta = ws.boardMeta
+                ? pickNewerWsBoardMeta(state.workspace.boardMeta, ws.boardMeta)
+                : undefined;
+              const effectiveWsForState: QuantWorkspaceResponse =
+                isOlderFallbackRoster &&
+                Array.isArray(ws.refreshedMatches) &&
+                ws.refreshedMatches.length > 0
+                  ? {
+                      ...state.workspace,
+                      boardMeta: computedBoardMeta,
+                    }
+                  : { ...ws, boardMeta: computedBoardMeta };
+              const resolvedAppliedForCap =
+                effectiveWsForState.baselineAppliedPlan !== undefined
+                  ? effectiveWsForState.baselineAppliedPlan
+                  : effectiveWsForState.appliedPlan;
+              if (
+                nextPlanSpec?.kind === "bonus" &&
+                (nextPlanSpec.confirmedCapGuardSig ||
+                  nextPlanSpec.allowCapEvTradeoff) &&
+                resolvedAppliedForCap?.capGuardAlternative
+              ) {
+                nextPlanSpec = {
+                  ...nextPlanSpec,
+                  confirmedCapGuardSig: undefined,
+                  allowCapEvTradeoff: false,
+                };
+              }
               state = {
                 ...state,
-                workspace: ws,
+                matches: nextMatches,
+                picks: nextPicks,
+                manualDraftPicks: nextPicks,
+                passSpec: nextPassSpec,
+                planSpec: nextPlanSpec,
+                appliedTicketSnapshot: nextAppliedSnap,
+                draftRestoredNotice: nextNotice,
+                ...(boardInvalidated || nextPicks.length === 0
+                  ? {
+                      ...(boardInvalidated ? { singleAuthGrant: null } : {}),
+                      syntheticSingleMode: (nextPicks.length === 0 ||
+                      state.syntheticSingleMode === "partial-cover" ||
+                      state.syntheticSingleMode === "trim-2way"
+                        ? "full-3way"
+                        : state.syntheticSingleMode) as SyntheticSingleMode,
+                    }
+                  : {}),
+                workspace: effectiveWsForState,
                 objectivePortfolioPlans: resolveObjectivePortfolioPlans(
                   paramsSnapshot.stance,
-                  ws,
+                  effectiveWsForState,
                   state.objectivePortfolioPlans
                 ),
               };
-              const reapplied = maybeConsumePendingRequote(ws, resolvedSig);
-              options.onComputeSuccess?.();
-              emit();
-              if (reapplied) {
+              const authInvalidated =
+                verifyOrTightenSingleAuthGrantOnWs(effectiveWsForState);
+              const curActualSig =
+                computeClientPortfolioQuoteMeta(state).inputSig;
+              const mergedQuoteMismatch = Boolean(
+                ws.quoteInputSig && ws.quoteInputSig !== curActualSig
+              );
+              const resolvedSig = ws.quoteInputSig || curActualSig;
+              const reapplied = !mergedQuoteMismatch
+                ? maybeConsumePendingRequote(ws, resolvedSig)
+                : false;
+              computedInputSig = mergedQuoteMismatch
+                ? ws.quoteInputSig || ""
+                : curActualSig;
+              computedWorkspaceSig = mergedQuoteMismatch
+                ? ""
+                : computeWorkspaceExecutionSig(state, computedInputSig);
+              const stampedAsyncWs = computedWorkspaceSig
+                ? stampWorkspaceRemediationMeta(
+                    state.workspace,
+                    computedWorkspaceSig
+                  )
+                : state.workspace;
+              state = {
+                ...state,
+                workspace: stampedAsyncWs,
+                objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+                  paramsSnapshot.stance,
+                  stampedAsyncWs,
+                  state.objectivePortfolioPlans
+                ),
+              };
+              options.onComputeSuccess?.(stampedAsyncWs);
+              const shouldRetryMergedPools =
+                mergedQuoteMismatch &&
+                lastPoolMergeRetriedInputSig !== curActualSig;
+              if (shouldRetryMergedPools) {
+                lastPoolMergeRetriedInputSig = curActualSig;
+              } else if (!mergedQuoteMismatch) {
+                lastPoolMergeRetriedInputSig = "";
+              }
+              if (
+                reapplied ||
+                authInvalidated ||
+                boardInvalidated ||
+                capBindingStripped ||
+                shouldRetryMergedPools
+              ) {
+                emit();
                 await executeComputeNow();
+              } else {
+                if (inFlightPromise === p) {
+                  inFlightPromise = null;
+                }
+                lastReconciledRef = null;
+                emit();
               }
             }
           })
@@ -1636,18 +5982,47 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             }
           })
           .finally(() => {
-            if (inFlightPromise === p) inFlightPromise = null;
+            if (inFlightPromise === p) {
+              inFlightPromise = null;
+              lastReconciledRef = null;
+              emit();
+            }
           });
         inFlightPromise = p;
+        lastReconciledRef = null;
         return p;
       }
 
       if (seq === computeSeq) {
-        const ws = maybeMain as QuantWorkspaceResponse;
+        const computed = maybeMain as QuantWorkspaceResponse;
+        const ws = computed.boardMeta
+          ? {
+              ...computed,
+              boardMeta: pickNewerWsBoardMeta(
+                state.workspace.boardMeta,
+                computed.boardMeta
+              ),
+            }
+          : computed;
         const resolvedSig = ws.quoteInputSig || requestInputSig;
-        computedInputSig = resolvedSig;
+        const syncAppliedForCap =
+          ws.baselineAppliedPlan !== undefined
+            ? ws.baselineAppliedPlan
+            : ws.appliedPlan;
+        const nextSyncPlanSpec =
+          state.planSpec?.kind === "bonus" &&
+          (state.planSpec.confirmedCapGuardSig ||
+            state.planSpec.allowCapEvTradeoff) &&
+          syncAppliedForCap?.capGuardAlternative
+            ? {
+                ...state.planSpec,
+                confirmedCapGuardSig: undefined,
+                allowCapEvTradeoff: false,
+              }
+            : state.planSpec;
         state = {
           ...state,
+          planSpec: nextSyncPlanSpec,
           workspace: ws,
           objectivePortfolioPlans: resolveObjectivePortfolioPlans(
             paramsSnapshot.stance,
@@ -1655,10 +6030,29 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             state.objectivePortfolioPlans
           ),
         };
+        const authInvalidated = verifyOrTightenSingleAuthGrantOnWs(ws);
         const reapplied = maybeConsumePendingRequote(ws, resolvedSig);
-        options.onComputeSuccess?.();
+        computedInputSig = computeClientPortfolioQuoteMeta(state).inputSig;
+        computedWorkspaceSig = computeWorkspaceExecutionSig(
+          state,
+          computedInputSig
+        );
+        const stampedSyncWs = stampWorkspaceRemediationMeta(
+          state.workspace,
+          computedWorkspaceSig
+        );
+        state = {
+          ...state,
+          workspace: stampedSyncWs,
+          objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+            paramsSnapshot.stance,
+            stampedSyncWs,
+            state.objectivePortfolioPlans
+          ),
+        };
+        options.onComputeSuccess?.(stampedSyncWs);
         emit();
-        if (reapplied) {
+        if (reapplied || authInvalidated) {
           return executeComputeNow();
         }
       }
@@ -1685,58 +6079,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           settlePendingResolvers();
         });
       }, debounceMs);
+      lastReconciledRef = null;
     });
-  }
-
-  function resolvePoolCanSingle(pool?: MatchItem["pools"][PoolCode]): boolean {
-    if (
-      !pool ||
-      pool.selling === false ||
-      !Array.isArray(pool.options) ||
-      pool.options.length === 0
-    ) {
-      return false;
-    }
-    const baseSym = Symbol.for("yj.basePoolSingle");
-    const baseS = (pool as unknown as Record<symbol, unknown>)[baseSym];
-    if (typeof baseS === "boolean") {
-      if (typeof pool.canSingle === "boolean" && pool.canSingle !== baseS) {
-        return pool.canSingle;
-      }
-      if (typeof pool.single === "boolean" && pool.single !== baseS) {
-        return pool.single;
-      }
-      return baseS;
-    }
-    if (
-      typeof pool.canSingle === "boolean" &&
-      typeof pool.single === "boolean"
-    ) {
-      return pool.canSingle && pool.single;
-    }
-    if (typeof pool.canSingle === "boolean") return pool.canSingle;
-    return Boolean(pool.single);
-  }
-
-  function resolvePoolCanAllUp(pool?: MatchItem["pools"][PoolCode]): boolean {
-    if (
-      !pool ||
-      pool.selling === false ||
-      !Array.isArray(pool.options) ||
-      pool.options.length === 0
-    ) {
-      return false;
-    }
-    const baseSym = Symbol.for("yj.basePoolAllUp");
-    const baseA = (pool as unknown as Record<symbol, unknown>)[baseSym];
-    if (typeof baseA === "boolean") {
-      if (typeof pool.canAllUp === "boolean" && pool.canAllUp !== baseA) {
-        return pool.canAllUp;
-      }
-      return baseA;
-    }
-    if (typeof pool.canAllUp === "boolean") return pool.canAllUp;
-    return true;
   }
 
   function isAuthoritativePickSingle(pk: SelectedPick): boolean {
@@ -1760,14 +6104,61 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     );
   }
 
-  function applyAuthenticatedBundle(bundle: {
-    matches: MatchItem[];
-    initialPicks: SelectedPick[];
-    workspace: QuantWorkspaceResponse;
-  }) {
+  function applyAuthenticatedBundle(
+    bundle: {
+      matches: MatchItem[];
+      initialPicks: SelectedPick[];
+      workspace: QuantWorkspaceResponse;
+      boardMeta?: BoardFreshnessMeta | null;
+    },
+    verifiedDraftRaw?: string
+  ) {
     cancelPendingTimer();
     bootstrapped = true;
     computeSeq += 1;
+    boardEpoch += 1;
+    revokedPlanHold = null;
+    localHoldRev = 0;
+    clearedHoldRev = 0;
+    myAckedHoldRev = 0;
+    localClearSeq = 0;
+    knownStorageWriteSeq = 0;
+    lastManualTicketHash = "empty";
+    confirmedClearDraftHash = null;
+    pendingExplicitUserClear = false;
+    pendingExplicitTicketPersist = false;
+    pendingPreviewKnobPersist = null;
+    hadObservedPersistedDraft = false;
+    hasUnresolvedSyntheticChoice = false;
+    syntheticApproval = null;
+    maskedSyntheticWorkspace = null;
+    originalSyntheticWorkspace = null;
+    lastPoolMergeRetriedInputSig = "";
+    const bundleBoardMeta =
+      bundle.boardMeta ?? bundle.workspace?.boardMeta ?? null;
+    latestBoardCapturedAt = extractBoardCapturedAt(bundleBoardMeta);
+    deferredDraftBoardAt = 0;
+    lastPersistedDraftJson = "";
+    lastPersistedSourceJson = "";
+    ensureBrowserHoldChannel();
+    if (
+      !storageListenerRegistered &&
+      typeof window !== "undefined" &&
+      typeof window.addEventListener === "function"
+    ) {
+      storageListenerRegistered = true;
+      window.addEventListener("storage", (ev) => {
+        const expectedKey = resolveDraftStorageKey();
+        if (!expectedKey || (ev.key !== null && ev.key !== expectedKey)) return;
+        const hadHoldBefore = Boolean(revokedPlanHold);
+        if (syncSharedHoldFromStorage()) {
+          emit();
+          if (hadHoldBefore && !revokedPlanHold) {
+            void scheduleRefresh();
+          }
+        }
+      });
+    }
     const nowMs = nowFn();
     const cleanMatches = bundle.matches.map((m) =>
       m.aiAlert && !isClientMatchAlertBindingValid(m.aiAlert, m, nowMs)
@@ -1775,24 +6166,129 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         : m
     );
     const baseState = buildInitialState();
-    const radarSync = syncAutoRadarFields(bundle.initialPicks, cleanMatches, {
+    const savedDraft =
+      bundle.initialPicks.length === 0
+        ? restoreSavedDraftAgainstMatches(
+            cleanMatches,
+            bundleBoardMeta,
+            verifiedDraftRaw
+          )
+        : null;
+    deferredDraftBoardAt = savedDraft?.waitForBoardAt ?? 0;
+    const restoredDraft = deferredDraftBoardAt ? null : savedDraft;
+    if (bundle.initialPicks.length > 0) {
+      clearRevokedPlanHoldOnUserAction();
+    } else if (restoredDraft?.restored) {
+      localHoldRev = restoredDraft.holdRev;
+      clearedHoldRev = restoredDraft.holdClearedRev;
+      myAckedHoldRev = restoredDraft.holdRev;
+      localClearSeq = restoredDraft.clearSeq;
+      knownStorageWriteSeq = restoredDraft.writeSeq;
+      confirmedClearDraftHash = restoredDraft.holdClearedDraftHash;
+      hasUnresolvedSyntheticChoice = restoredDraft.legacyNeedsFutureSynGuard;
+      syntheticApproval = restoredDraft.approval;
+    } else {
+      const initMeta = readStoredHoldMeta();
+      localHoldRev = initMeta.holdRev;
+      clearedHoldRev = initMeta.holdClearedRev;
+      myAckedHoldRev = initMeta.holdRev;
+      localClearSeq = initMeta.clearSeq;
+      knownStorageWriteSeq = initMeta.writeSeq;
+      confirmedClearDraftHash = initMeta.holdClearedDraftHash;
+    }
+    const effectiveInitialPicks = enrichPicksWithBoardGoalLine(
+      restoredDraft && restoredDraft.restored
+        ? restoredDraft.picks
+        : bundle.initialPicks,
+      cleanMatches
+    );
+    revokedPlanHold =
+      restoredDraft?.restored &&
+      restoredDraft.pendingRevokedPlanConfirm &&
+      effectiveInitialPicks.length > 0
+        ? {
+            reason: restoredDraft.pendingRevokedPlanConfirm,
+            rev: Math.max(1, restoredDraft.holdRev),
+          }
+        : null;
+    const radarSync = syncAutoRadarFields(effectiveInitialPicks, cleanMatches, {
       ...baseState,
       targetIds: cleanMatches.slice(0, 2).map((m) => m.id),
     });
     const nextState: BetSlipState = {
       ...baseState,
       matches: cleanMatches,
-      picks: bundle.initialPicks,
-      manualDraftPicks: bundle.initialPicks,
+      picks: effectiveInitialPicks,
+      manualDraftPicks: effectiveInitialPicks,
+      ...(restoredDraft && restoredDraft.restored
+        ? {
+            multiple: restoredDraft.multiple,
+            passSpec: restoredDraft.passSpec,
+            syntheticSingleMode: restoredDraft.syntheticSingleMode,
+            budget: restoredDraft.budget,
+            stance: restoredDraft.stance,
+            allowSaveCash: restoredDraft.allowSaveCash,
+            draftRestoredNotice: restoredDraft.notice,
+          }
+        : {}),
+      singleAuthGrant: null,
       ...radarSync,
-      workspace: bundle.workspace,
+      workspace: bundleBoardMeta
+        ? { ...bundle.workspace, boardMeta: bundleBoardMeta }
+        : bundle.workspace,
       objectivePortfolioPlans: bundle.workspace.portfolioPlans ?? [],
     };
+    lastManualTicketHash = computeManualTicketDraftHash(
+      nextState.picks,
+      nextState.multiple,
+      nextState.passSpec,
+      cleanMatches,
+      nextState.syntheticSingleMode
+    );
+    if (
+      restoredDraft &&
+      restoredDraft.droppedCount > 0 &&
+      !bundleBoardMeta?.isFallbackReadOnly
+    ) {
+      pruneInvalidatedStoredDraftAgainstBoard(
+        cleanMatches,
+        undefined,
+        latestBoardCapturedAt,
+        verifiedDraftRaw
+      );
+      knownStorageWriteSeq = Math.max(
+        knownStorageWriteSeq,
+        readStoredHoldMeta().writeSeq
+      );
+    }
     const initSig = computeClientPortfolioQuoteMeta(nextState).inputSig;
     lastKnownInputSig = initSig;
-    computedInputSig = initSig;
-    state = nextState;
+    const needsPostRestoreCompute = Boolean(
+      restoredDraft &&
+      restoredDraft.restored &&
+      (restoredDraft.picks.length > 0 ||
+        restoredDraft.syntheticSingleMode === "off" ||
+        restoredDraft.pendingRevokedPlanConfirm !== null ||
+        restoredDraft.budget !== 100 ||
+        restoredDraft.stance !== "objective" ||
+        restoredDraft.allowSaveCash !== false)
+    );
+    computedInputSig = needsPostRestoreCompute ? "" : initSig;
+    computedWorkspaceSig = needsPostRestoreCompute
+      ? ""
+      : computeWorkspaceExecutionSig(nextState, initSig);
+    const stampedInitWs = computedWorkspaceSig
+      ? stampWorkspaceRemediationMeta(nextState.workspace, computedWorkspaceSig)
+      : nextState.workspace;
+    state = {
+      ...nextState,
+      workspace: stampedInitWs,
+      objectivePortfolioPlans: stampedInitWs.portfolioPlans ?? [],
+    };
     emit();
+    if (needsPostRestoreCompute) {
+      void executeComputeNow();
+    }
   }
 
   function getStanceDeltaSummary(slotKey: PortfolioKey): StanceDeltaSummary {
@@ -1905,21 +6401,70 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     return { nextPassSizes, minPass, maxBankers };
   }
 
+  function getShopkeeperBlockReason(
+    current = reconcileState(),
+    slips = current.activeAuditedSlip.physicalSlips ?? []
+  ): string | null {
+    const report =
+      current.workspace.baselineReport ?? current.workspace.effectiveReport;
+    if (options.isOffline?.()) {
+      return "当前为参考盘口，需同步官方在售数据后才能出票";
+    }
+    if (
+      current.livePortfolioQuote.isStale ||
+      !report.canCheckout ||
+      report.totalCost <= 0
+    ) {
+      return "当前选单尚未形成可出票的最新报价";
+    }
+    return getPhysicalTicketBlockReason(
+      current.matches,
+      current.workspace.boardMeta,
+      report,
+      slips
+    );
+  }
+
   function getPlayabilityGates(
     archKey: PortfolioKey = "max-ev-utility"
   ): PlayabilityGates {
-    const manualReport = state.workspace.manualReport;
-    const effectiveReport = state.workspace.effectiveReport;
+    const reconciled = reconcileState();
+    const curSlip = reconciled.activeAuditedSlip;
+    const manualReport =
+      reconciled.workspace.baselineManualReport ??
+      reconciled.workspace.manualReport;
+    const effectiveReport =
+      reconciled.workspace.baselineReport ??
+      reconciled.workspace.effectiveReport;
     const manualBonusLineCount = Math.max(
       manualReport.tickets?.length ?? 0,
       manualReport.betCount
     );
-    const isBonusOver512 = manualBonusLineCount > 512;
-    const isBonusOptDisabled = !manualReport.canCheckout || isBonusOver512;
-    const appliedPlan = state.planSpec ? state.workspace.appliedPlan : null;
+    const activeBonusLineCount =
+      curSlip.lines.length > 0
+        ? curSlip.lines.length
+        : Math.max(
+            effectiveReport.tickets?.length ?? 0,
+            effectiveReport.betCount
+          );
+    const passRuleBlockReason = reconciled.manualDraft.passRuleBlockReason;
+    const canCheckoutForBonus =
+      curSlip.sourceKind !== "manual" && curSlip.sourceKind !== "empty"
+        ? effectiveReport.canCheckout
+        : manualReport.canCheckout && !passRuleBlockReason;
+    const isBonusOver512 =
+      (curSlip.sourceKind !== "manual" && curSlip.sourceKind !== "empty"
+        ? activeBonusLineCount
+        : manualBonusLineCount) > 512;
+    const isBonusOptDisabled = !canCheckoutForBonus || isBonusOver512;
+    const baseAppliedPlan =
+      reconciled.workspace.baselineAppliedPlan !== undefined
+        ? reconciled.workspace.baselineAppliedPlan
+        : reconciled.workspace.appliedPlan;
+    const appliedPlan = state.planSpec ? baseAppliedPlan : null;
     const effectiveAppliedPlan =
       state.planSpec || effectiveReport.syntheticAutoMounted
-        ? state.workspace.appliedPlan
+        ? baseAppliedPlan
         : null;
     const isSingleNonSingleContext =
       !state.planSpec &&
@@ -1942,6 +6487,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     const partialCoveragePreview =
       effectiveReport.partialCoveragePreview ??
       manualReport.partialCoveragePreview ??
+      effectiveReport.trim2WayPreview ??
+      manualReport.trim2WayPreview ??
       null;
 
     const distinctIds = Array.from(new Set(state.picks.map((p) => p.matchId)));
@@ -1979,8 +6526,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       effectiveReport.breakevenUpgradeCost ??
       manualReport.breakevenUpgradeCost ??
       null;
-    const budgetMismatchMeta =
-      reconcileState().activeAuditedSlip.budgetMismatchMeta;
+    const budgetMismatchMeta = curSlip.budgetMismatchMeta;
 
     const portfolioPlans = state.workspace.portfolioPlans?.length
       ? state.workspace.portfolioPlans
@@ -2021,17 +6567,20 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           fallbackStrictGain >= manualStrictGain - 1e-6));
 
     return {
+      shopkeeperBlockReason: getShopkeeperBlockReason(reconciled),
       isSingleNonSingleContext,
       isSyntheticPlayable,
       hasSyntheticInherentBlindSpot,
       canTrimSynthetic2Way,
       partialCoveragePreview,
       manualBonusLineCount,
+      activeBonusLineCount,
       isBonusOver512,
       isBonusOptDisabled,
       activeBankerSet,
       canToggleBanker,
       canToggleBankerMatch,
+      passRuleBlockReason,
       breakevenTargetCost,
       budgetMismatchMeta,
       appliedPlan,
@@ -2044,12 +6593,55 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     };
   }
 
+  function preserveAppliedPlanAcrossDraftEdit(curState: BetSlipState): {
+    planSpec: AppliedPlanSpec;
+    appliedTicketSnapshot: AppliedTicketSnapshot | null;
+  } {
+    if (!curState.planSpec) {
+      return { planSpec: null, appliedTicketSnapshot: null };
+    }
+    if (curState.planSpec.kind === "bonus") {
+      if (isSingleAuthBoundBonusPlan(curState.planSpec)) {
+        return { planSpec: null, appliedTicketSnapshot: null };
+      }
+      const basePlan =
+        curState.workspace.baselineAppliedPlan !== undefined
+          ? curState.workspace.baselineAppliedPlan
+          : curState.workspace.appliedPlan;
+      const baseLines = basePlan?.lines ?? curState.planSpec.baseLines ?? [];
+      if (!Array.isArray(baseLines) || baseLines.length === 0) {
+        return { planSpec: null, appliedTicketSnapshot: null };
+      }
+      const baseRep =
+        curState.workspace.baselineReport ?? curState.workspace.effectiveReport;
+      return {
+        planSpec: {
+          ...curState.planSpec,
+          baseLines,
+          preserveExactBaseMultiples: true,
+          baseSourceKind: curState.planSpec.baseSourceKind ?? "manual",
+          targetBudgetCost:
+            curState.planSpec.targetBudgetCost ?? baseRep.totalCost,
+        },
+        appliedTicketSnapshot: curState.appliedTicketSnapshot,
+      };
+    }
+    return {
+      planSpec: {
+        ...curState.planSpec,
+        allowBudgetMismatchReadOnly: true,
+      },
+      appliedTicketSnapshot: curState.appliedTicketSnapshot,
+    };
+  }
+
   return {
     getState: () => reconcileState(),
     getActiveAuditedSlip: () => reconcileState().activeAuditedSlip,
     getAuditedMatchIds: () => reconcileState().activeAuditedSlip.matchIds,
     getStanceDeltaSummary,
     getPlayabilityGates,
+    getShopkeeperBlockReason: () => getShopkeeperBlockReason(),
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -2082,6 +6674,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       );
     },
 
+    isDraftWaitingForBoard: () => Boolean(deferredDraftBoardAt),
     applyAuthenticatedBundle,
     initializeMatches(
       matches: MatchItem[],
@@ -2099,13 +6692,147 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
     },
 
-    applyMatchesSync(res: {
-      matches: MatchItem[];
-      workspace: QuantWorkspaceResponse;
-    }) {
-      cancelPendingTimer();
+    dismissDraftRestoredNotice() {
+      if (!state.draftRestoredNotice) return;
+      state = { ...state, draftRestoredNotice: null };
+      emit();
+    },
+
+    captureSyncRequestContext(): {
+      requestInputSig: string;
+      requestWorkspaceSig: string;
+      requestBoardEpoch: number;
+      requestDraftRaw: string | null;
+      requestDraftKey: string | null;
+    } {
+      const requestInputSig = computeClientPortfolioQuoteMeta(state).inputSig;
+      return {
+        requestInputSig,
+        requestWorkspaceSig: computeWorkspaceExecutionSig(
+          state,
+          requestInputSig
+        ),
+        requestBoardEpoch: boardEpoch,
+        requestDraftRaw: readCurrentDraftBytes(),
+        requestDraftKey: resolveDraftStorageKey(),
+      };
+    },
+
+    applyMatchesSync(
+      res: {
+        freshBoardForRequest?: boolean;
+        matches: MatchItem[];
+        workspace: QuantWorkspaceResponse;
+        boardMeta?: BoardFreshnessMeta | null;
+      },
+      syncReqCtx?: {
+        requestInputSig: string;
+        requestWorkspaceSig: string;
+        requestBoardEpoch?: number;
+        requestDraftRaw?: string | null;
+        requestDraftKey?: string | null;
+      }
+    ): boolean {
+      const prevBoardById = new Map(state.matches.map((m) => [m.id, m]));
+      const incomingById = new Map(res.matches.map((m) => [m.id, m]));
+      const incBoardMeta = res.boardMeta ?? res.workspace?.boardMeta ?? null;
+      const incCapturedAt = extractBoardCapturedAt(incBoardMeta);
+      if (
+        syncReqCtx?.requestDraftKey !== undefined &&
+        syncReqCtx.requestDraftKey !== resolveDraftStorageKey()
+      )
+        return false;
+      const verifiedDraftRaw =
+        res.freshBoardForRequest &&
+        incBoardMeta?.boardState === "fresh" &&
+        !incBoardMeta.isFallbackReadOnly
+          ? (syncReqCtx?.requestDraftRaw ?? undefined)
+          : undefined;
+      if (
+        deferredDraftBoardAt &&
+        incCapturedAt > 0 &&
+        !incBoardMeta?.isFallbackReadOnly &&
+        incCapturedAt >= deferredDraftBoardAt
+      ) {
+        applyAuthenticatedBundle(
+          { ...res, initialPicks: [], boardMeta: incBoardMeta },
+          verifiedDraftRaw
+        );
+        return !deferredDraftBoardAt;
+      }
+      const epochBehind = Boolean(
+        syncReqCtx &&
+        typeof syncReqCtx.requestBoardEpoch === "number" &&
+        syncReqCtx.requestBoardEpoch < boardEpoch
+      );
+      const isOutOfOrderEpoch =
+        incCapturedAt > 0 && latestBoardCapturedAt > 0
+          ? incCapturedAt < latestBoardCapturedAt ||
+            (incCapturedAt === latestBoardCapturedAt && epochBehind)
+          : epochBehind;
+      const isOlderFallbackSync = Boolean(
+        incBoardMeta?.isFallbackReadOnly &&
+        latestBoardCapturedAt > 0 &&
+        (incCapturedAt === 0 || incCapturedAt < latestBoardCapturedAt)
+      );
+      if (isOlderFallbackSync) {
+        const nextWsMeta = pickNewerWsBoardMeta(
+          state.workspace.boardMeta,
+          incBoardMeta
+        );
+        if (nextWsMeta !== state.workspace.boardMeta) {
+          state = {
+            ...state,
+            workspace: { ...state.workspace, boardMeta: nextWsMeta },
+          };
+          emit();
+        }
+        return false;
+      }
+      if (isOutOfOrderEpoch) {
+        let anySurvivingPoolAdvanced = false;
+        for (const curM of state.matches) {
+          const incM = incomingById.get(curM.id);
+          if (!incM) continue;
+          for (const pc of ALL_POOL_CODES) {
+            const pStamp = normalizePoolQuoteStamp(curM.pools?.[pc]);
+            const nStamp = normalizePoolQuoteStamp(incM.pools?.[pc]);
+            if (nStamp && (!pStamp || nStamp > pStamp)) {
+              anySurvivingPoolAdvanced = true;
+              break;
+            }
+          }
+          if (anySurvivingPoolAdvanced) break;
+        }
+        if (!anySurvivingPoolAdvanced) {
+          const nextWsMeta = pickNewerWsBoardMeta(
+            state.workspace.boardMeta,
+            incBoardMeta
+          );
+          if (nextWsMeta !== state.workspace.boardMeta) {
+            state = {
+              ...state,
+              workspace: { ...state.workspace, boardMeta: nextWsMeta },
+            };
+            emit();
+          }
+          return false;
+        }
+      } else if (incCapturedAt > latestBoardCapturedAt) {
+        latestBoardCapturedAt = incCapturedAt;
+      }
+      const hadPendingTimer = pendingTimer !== null;
+      const curInputSigBeforeMerge =
+        computeClientPortfolioQuoteMeta(state).inputSig;
+      const curWsSigBeforeMerge = computeWorkspaceExecutionSig(
+        state,
+        curInputSigBeforeMerge
+      );
+      const draftEditedDuringSync = Boolean(
+        syncReqCtx && syncReqCtx.requestWorkspaceSig !== curWsSigBeforeMerge
+      );
       bootstrapped = true;
-      computeSeq += 1;
+      boardEpoch += 1;
 
       const nowMs = nowFn();
       const isLiveXiaoGaoAlert = (a?: MatchItem["aiAlert"]) => {
@@ -2118,13 +6845,40 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           a.source.includes("协同会诊")
         );
       };
-      const mergedMatches = res.matches.map((nm) => {
+      const baseRosterSource = isOutOfOrderEpoch ? state.matches : res.matches;
+      const mergedMatches = baseRosterSource.map((rosterItem) => {
+        const prev = prevBoardById.get(rosterItem.id);
+        const rawNm = isOutOfOrderEpoch
+          ? (incomingById.get(rosterItem.id) ?? rosterItem)
+          : rosterItem;
+        let nm: MatchItem;
+        if (isOutOfOrderEpoch && prev) {
+          if (orderedMatchKey(prev) !== orderedMatchKey(rawNm)) return prev;
+          let patchedPools: MatchItem["pools"] | null = null;
+          for (const pc of ALL_POOL_CODES) {
+            const prevPool = prev.pools?.[pc];
+            const incPool = rawNm.pools?.[pc];
+            if (!incPool) continue;
+            const pStamp = normalizePoolQuoteStamp(prevPool);
+            const nStamp = normalizePoolQuoteStamp(incPool);
+            if (nStamp && (!pStamp || nStamp > pStamp)) {
+              if (!patchedPools) patchedPools = { ...prev.pools };
+              // An older board may advance an individual price, never revive a withdrawn permission.
+              patchedPools[pc] = {
+                ...incPool,
+                confirmedSaleRights: prevPool?.confirmedSaleRights,
+              };
+            }
+          }
+          nm = patchedPools ? { ...prev, pools: patchedPools } : prev;
+        } else {
+          nm = mergeMatchPoolsNonRegressive(prev, rawNm);
+        }
         if (isLiveXiaoGaoAlert(nm.aiAlert)) {
           return isClientMatchAlertBindingValid(nm.aiAlert, nm, nowMs)
             ? nm
             : { ...nm, aiAlert: undefined };
         }
-        const prev = state.matches.find((em) => em.id === nm.id);
         if (isLiveXiaoGaoAlert(prev?.aiAlert)) {
           return isClientMatchAlertBindingValid(prev!.aiAlert, nm, nowMs)
             ? { ...nm, aiAlert: prev!.aiAlert }
@@ -2149,22 +6903,55 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           ? validTargets
           : mergedMatches.slice(0, 2).map((m) => m.id);
 
+      const prevMatchMap = new Map(state.matches.map((m) => [m.id, m]));
+      const mergedMap = new Map(mergedMatches.map((m) => [m.id, m]));
+      const preDropLocalDraftHash = computeManualTicketDraftHash(
+        state.picks,
+        state.multiple,
+        state.passSpec,
+        state.matches,
+        state.syntheticSingleMode
+      );
       let picksRemapped = false;
-      const syncedPicks = state.picks
-        .map((pk) => {
-          const um = mergedMatches.find(
-            (m) =>
-              m.id === pk.matchId ||
-              (Boolean(m.matchNumStr) && m.matchNumStr === pk.matchNumStr)
-          );
-          const uo = um?.pools[pk.poolCode]?.options.find(
-            (o) => o.key === pk.optionKey
-          );
-          if (!um || !uo) {
+      let droppedCount = 0;
+      let goalLineShiftedCount = 0;
+      const syncedPicks: SelectedPick[] = state.picks
+        .map((pk): SelectedPick | null => {
+          const um = mergedMap.get(pk.matchId);
+          if (
+            !isStrictSameMatchIdentity(um, pk, prevMatchMap.get(pk.matchId))
+          ) {
             picksRemapped = true;
+            droppedCount += 1;
             return null;
           }
-          const nextSingle = um.pools[pk.poolCode].single;
+          const uPool = um.pools[pk.poolCode];
+          const nextSingle = resolvePoolCanSingle(uPool);
+          const nextAllUp = resolvePoolCanAllUp(uPool);
+          const uo = uPool?.options.find((o) => o.key === pk.optionKey);
+          if (
+            !uPool ||
+            uPool.selling === false ||
+            (!nextSingle && !nextAllUp) ||
+            !uo ||
+            uo.odds < 1.01
+          ) {
+            picksRemapped = true;
+            droppedCount += 1;
+            return null;
+          }
+          const prevGl = String(
+            pk.goalLine ??
+              prevMatchMap.get(pk.matchId)?.pools?.HHAD?.goalLine ??
+              ""
+          ).trim();
+          const nextGl = String(uPool.goalLine ?? "").trim();
+          if (pk.poolCode === "HHAD" && prevGl && nextGl !== prevGl) {
+            picksRemapped = true;
+            droppedCount += 1;
+            goalLineShiftedCount += 1;
+            return null;
+          }
           if (
             um.id !== pk.matchId ||
             uo.odds !== pk.odds ||
@@ -2175,34 +6962,224 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           return {
             ...pk,
             matchId: um.id,
+            th: computeOrderedMatchIdentitySig(
+              um,
+              Boolean(um.homeTeamId || um.awayTeamId)
+            ),
             odds: uo.odds,
             fairProb: uo.fairProb,
             singleAllowed: nextSingle,
+            canSingle: nextSingle,
+            canAllUp: nextAllUp,
+            ...resolveOptionalGoalLine(pk.poolCode, uPool, prevGl),
           };
         })
         .filter((x): x is SelectedPick => x !== null);
+
+      const nextPassSpec =
+        droppedCount > 0
+          ? sanitizePassSpecForPicks(state.passSpec, syncedPicks)
+          : state.passSpec;
+      let nextPlanSpec = state.planSpec;
+      let nextAppliedSnap = state.appliedTicketSnapshot;
+      let nextNotice = state.draftRestoredNotice;
+      if (droppedCount > 0) {
+        nextNotice =
+          goalLineShiftedCount > 0
+            ? "官方让球线已发生变盘，已自动剔除失效旧让球选项，请按最新盘口重新核对选择"
+            : `部分已选场次已停售或跨期下架，已自动剔除 ${droppedCount} 项失效选项`;
+      }
+      const incAppliedForCap =
+        res.workspace?.baselineAppliedPlan !== undefined
+          ? res.workspace.baselineAppliedPlan
+          : res.workspace?.appliedPlan;
+      if (
+        nextPlanSpec?.kind === "bonus" &&
+        (nextPlanSpec.confirmedCapGuardSig ||
+          nextPlanSpec.allowCapEvTradeoff) &&
+        (droppedCount > 0 ||
+          !isCapGuardBindingValidAgainstBoard(
+            nextPlanSpec.confirmedCapGuardSig,
+            mergedMap
+          ) ||
+          Boolean(
+            incAppliedForCap?.capGuardAlternative &&
+            incAppliedForCap.capGuardAlternative.bindingSig !==
+              nextPlanSpec.confirmedCapGuardSig
+          ))
+      ) {
+        nextPlanSpec = {
+          ...nextPlanSpec,
+          confirmedCapGuardSig: undefined,
+          allowCapEvTradeoff: false,
+        };
+        picksRemapped = true;
+      }
+      if (
+        nextPlanSpec &&
+        (hasPlanSpecBoardInvalidation(nextPlanSpec, prevMatchMap, mergedMap) ||
+          (droppedCount > 0 &&
+            nextPlanSpec.kind === "bonus" &&
+            !nextPlanSpec.baseLines?.length))
+      ) {
+        const holdMsg =
+          "原已套用方案涉及场次盘口或单串开售权限已变动，原方案锁定已失效；请确认改按当前手选草稿核对或重新配单后再出票";
+        nextPlanSpec = null;
+        nextAppliedSnap = null;
+        picksRemapped = true;
+        if (syncedPicks.length > 0) {
+          armRevokedPlanHold(holdMsg);
+        }
+        if (!nextNotice) {
+          nextNotice = holdMsg;
+        }
+      }
 
       const targetsChanged =
         nextTargets.length !== state.targetIds.length ||
         nextTargets.some((id, idx) => id !== state.targetIds[idx]);
 
-      const nextSyncedState: BetSlipState = {
+      let authGrantInvalidated = false;
+      let nextGrant = state.singleAuthGrant;
+      let nextSynMode = state.syntheticSingleMode;
+      if (nextGrant) {
+        const syncedPicksSig = buildRadarSignature(syncedPicks);
+        const effCost =
+          (res.workspace.baselineReport ?? res.workspace.effectiveReport)
+            .totalCost ?? 0;
+        const grantMatch = mergedMap.get(nextGrant.matchId);
+        const pickedHasHhad = syncedPicks.some((p) => p.poolCode === "HHAD");
+        const hhadPick = syncedPicks.find((p) => p.poolCode === "HHAD");
+        const curGl = pickedHasHhad
+          ? String(
+              grantMatch?.pools?.HHAD?.goalLine ?? hhadPick?.goalLine ?? ""
+            ).trim()
+          : "";
+        const curMatchQuoteSig = computeSingleMatchQuoteVersionSig(grantMatch);
+        if (
+          droppedCount > 0 ||
+          syncedPicks.length === 0 ||
+          new Set(syncedPicks.map((p) => p.matchId)).size !== 1 ||
+          syncedPicks[0].matchId !== nextGrant.matchId ||
+          syncedPicksSig !== nextGrant.picksSig ||
+          (nextGrant.goalLine !== undefined && curGl !== nextGrant.goalLine) ||
+          (nextGrant.quoteVersionSig !== undefined &&
+            nextGrant.quoteVersionSig.length > 0 &&
+            curMatchQuoteSig !== nextGrant.quoteVersionSig) ||
+          !isGrantLineSigValidAgainstMatch(
+            nextGrant.lineAndMultipleSig,
+            grantMatch
+          ) ||
+          (!draftEditedDuringSync &&
+            (effCost > nextGrant.approvedCost + 1e-6 ||
+              (nextGrant.exactCost !== undefined &&
+                effCost > 0 &&
+                Math.abs(effCost - nextGrant.exactCost) > 1e-6)))
+        ) {
+          nextGrant = null;
+          nextSynMode = "full-3way";
+          authGrantInvalidated = true;
+        }
+      }
+      if (
+        nextPlanSpec?.kind === "bonus" &&
+        isSingleAuthBoundBonusPlan(nextPlanSpec) &&
+        (authGrantInvalidated ||
+          !nextGrant ||
+          (nextPlanSpec.boundSingleAuthId &&
+            nextPlanSpec.boundSingleAuthId !== nextGrant.authId) ||
+          (nextPlanSpec.boundLineAndMultipleSig &&
+            nextPlanSpec.boundLineAndMultipleSig !==
+              nextGrant.lineAndMultipleSig))
+      ) {
+        nextPlanSpec = null;
+        nextAppliedSnap = null;
+        authGrantInvalidated = true;
+      }
+
+      if (syncedPicks.length === 0 && nextSynMode !== "full-3way") {
+        nextSynMode = "full-3way";
+        picksRemapped = true;
+      }
+
+      if (hasUnresolvedSyntheticChoice) {
+        if (syncedPicks.length === 0) {
+          hasUnresolvedSyntheticChoice = false;
+        } else if (
+          singleRequiresSynthetic(syncedPicks) &&
+          nextSynMode !== "off" &&
+          !nextPlanSpec &&
+          !nextGrant &&
+          !revokedPlanHold
+        ) {
+          armRevokedPlanHold(LEGACY_SINGLE_CONFIRMATION);
+          picksRemapped = true;
+          if (!nextNotice) nextNotice = LEGACY_SINGLE_CONFIRMATION;
+        }
+      }
+
+      if (!incBoardMeta?.isFallbackReadOnly && !isOutOfOrderEpoch) {
+        pruneInvalidatedStoredDraftAgainstBoard(
+          mergedMatches,
+          preDropLocalDraftHash,
+          incCapturedAt,
+          verifiedDraftRaw
+        );
+      }
+
+      const postMergeBaseState: BetSlipState = {
         ...state,
         matches: mergedMatches,
         targetIds: nextTargets,
         picks: syncedPicks,
         manualDraftPicks: syncedPicks,
-        workspace: res.workspace,
-        objectivePortfolioPlans: resolveObjectivePortfolioPlans(
-          state.stance,
-          res.workspace,
-          state.objectivePortfolioPlans
-        ),
+        passSpec: nextPassSpec,
+        planSpec: nextPlanSpec,
+        appliedTicketSnapshot: nextAppliedSnap,
+        draftRestoredNotice: nextNotice,
+        singleAuthGrant: nextGrant,
+        syntheticSingleMode: nextSynMode,
       };
-      if (!picksRemapped && !targetsChanged) {
-        computedInputSig =
-          res.workspace.quoteInputSig ||
-          computeClientPortfolioQuoteMeta(nextSyncedState).inputSig;
+      const postMergeInputSig =
+        computeClientPortfolioQuoteMeta(postMergeBaseState).inputSig;
+      const postMergeWsSig = computeWorkspaceExecutionSig(
+        postMergeBaseState,
+        postMergeInputSig
+      );
+      const canAcceptSyncedWorkspace =
+        !isOutOfOrderEpoch &&
+        !draftEditedDuringSync &&
+        !hadPendingTimer &&
+        inFlightPromise === null &&
+        !picksRemapped &&
+        !targetsChanged &&
+        !authGrantInvalidated &&
+        (!res.workspace.quoteInputSig ||
+          res.workspace.quoteInputSig === postMergeInputSig);
+
+      const reconciledWsBoardMeta = isOutOfOrderEpoch
+        ? state.workspace.boardMeta
+        : incBoardMeta
+          ? pickNewerWsBoardMeta(state.workspace.boardMeta, incBoardMeta)
+          : undefined;
+
+      if (canAcceptSyncedWorkspace) {
+        cancelPendingTimer();
+        computeSeq += 1;
+        const syncedWorkspaceWithMeta = {
+          ...res.workspace,
+          boardMeta: reconciledWsBoardMeta,
+        };
+        const nextSyncedState: BetSlipState = {
+          ...postMergeBaseState,
+          workspace: syncedWorkspaceWithMeta,
+          objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+            state.stance,
+            syncedWorkspaceWithMeta,
+            state.objectivePortfolioPlans
+          ),
+        };
+        computedInputSig = postMergeInputSig;
         if (
           nextSyncedState.planSpec?.kind === "archetype" &&
           !nextSyncedState.planSpec.allowBudgetMismatchReadOnly
@@ -2221,13 +7198,92 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
               : {}),
           };
         }
+        computedWorkspaceSig = computeWorkspaceExecutionSig(
+          nextSyncedState,
+          computedInputSig
+        );
+        const stampedSyncedWs = stampWorkspaceRemediationMeta(
+          nextSyncedState.workspace,
+          computedWorkspaceSig
+        );
+        state = {
+          ...nextSyncedState,
+          workspace: stampedSyncedWs,
+          objectivePortfolioPlans: resolveObjectivePortfolioPlans(
+            state.stance,
+            stampedSyncedWs,
+            state.objectivePortfolioPlans
+          ),
+        };
+        emit();
+        return true;
       }
-      state = nextSyncedState;
-      emit();
 
-      if (picksRemapped || targetsChanged) {
-        void scheduleRefresh();
+      const planWasRevoked = Boolean(
+        authGrantInvalidated || (state.planSpec && !nextPlanSpec)
+      );
+      if (planWasRevoked && syncedPicks.length > 0 && !revokedPlanHold) {
+        armRevokedPlanHold(
+          authGrantInvalidated
+            ? "原已确认单关授权涉及场次盘口或单关开售权限已变动，原实票已失效；请重新选择单关方案或按手选核对后再出票"
+            : "原已套用方案涉及场次盘口或单串开售权限已变动，原方案锁定已失效；请确认改按当前手选草稿核对或重新配单后再出票"
+        );
       }
+      const baseRetainedWs: QuantWorkspaceResponse =
+        reconciledWsBoardMeta !== state.workspace.boardMeta
+          ? { ...state.workspace, boardMeta: reconciledWsBoardMeta }
+          : state.workspace;
+      const safeRetainedWorkspace: QuantWorkspaceResponse = planWasRevoked
+        ? {
+            ...baseRetainedWs,
+            appliedPlan: null,
+            baselineAppliedPlan: null,
+            effectiveReport: {
+              ...baseRetainedWs.effectiveReport,
+              canCheckout: false,
+              totalCost: 0,
+              selectionStatus:
+                syncedPicks.length === 1
+                  ? "pending-single-auth"
+                  : "rule-blocked",
+            },
+            ...(baseRetainedWs.baselineReport
+              ? {
+                  baselineReport: {
+                    ...baseRetainedWs.baselineReport,
+                    canCheckout: false,
+                    totalCost: 0,
+                    selectionStatus:
+                      syncedPicks.length === 1
+                        ? "pending-single-auth"
+                        : "rule-blocked",
+                  },
+                }
+              : {}),
+          }
+        : baseRetainedWs;
+      const currentWsAlreadyFresh =
+        !hadPendingTimer &&
+        inFlightPromise === null &&
+        !picksRemapped &&
+        !targetsChanged &&
+        !authGrantInvalidated &&
+        !planWasRevoked &&
+        postMergeInputSig === computedInputSig &&
+        postMergeWsSig === computedWorkspaceSig;
+
+      state = {
+        ...postMergeBaseState,
+        workspace: safeRetainedWorkspace,
+      };
+      if (currentWsAlreadyFresh && !isOutOfOrderEpoch) {
+        emit();
+        return !isOutOfOrderEpoch;
+      }
+      computedWorkspaceSig = "";
+      emit();
+      void scheduleRefresh();
+      return !isOutOfOrderEpoch;
     },
 
     async applyMatchAiAlert(
@@ -2299,6 +7355,11 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       poolCode: PoolCode,
       optKey: string
     ): TogglePickVerdict {
+      const resetSynMode: SyntheticSingleMode =
+        state.syntheticSingleMode === "partial-cover" ||
+        state.syntheticSingleMode === "trim-2way"
+          ? "full-3way"
+          : state.syntheticSingleMode;
       const currentlyOn = isPicked(m.id, poolCode, optKey);
       if (currentlyOn) {
         const prevPick = state.picks.find(
@@ -2315,13 +7376,13 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
               p.optionKey === optKey
             )
         );
+        clearRevokedPlanHoldOnUserAction();
         state = {
           ...state,
-          planSpec: null,
+          ...preserveAppliedPlanAcrossDraftEdit(state),
+          singleAuthGrant: null,
           syntheticSingleMode:
-            state.syntheticSingleMode === "partial-cover"
-              ? "full-3way"
-              : state.syntheticSingleMode,
+            nextPicks.length === 0 ? "full-3way" : resetSynMode,
           lastPoolSwitchUndo: null,
           passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
           picks: nextPicks,
@@ -2350,6 +7411,13 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         opt.odds <= 0
       ) {
         return { ok: false, blockedReason: "该玩法或选项当前暂未开售" };
+      }
+
+      if (state.mode === "single" && !poolSingleOk) {
+        return {
+          ok: false,
+          blockedReason: "当前处于【单关】筛选，该玩法仅支持串关（未开单关）",
+        };
       }
 
       const byMatchPools = new Map<string, Set<PoolCode>>();
@@ -2409,6 +7477,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             picks: [...state.picks],
             passSpec: state.passSpec,
             planSpec: state.planSpec,
+            backgroundEdit: Boolean(state.planSpec || revokedPlanHold),
             matchId: m.id,
             matchNumStr: m.matchNumStr,
             home: m.home,
@@ -2423,11 +7492,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             matchNumStr: m.matchNumStr,
             home: m.home,
             away: m.away,
+            th: computeOrderedMatchIdentitySig(
+              m,
+              Boolean(m.homeTeamId || m.awayTeamId)
+            ),
             poolCode,
             poolName: pool.name,
             singleAllowed: poolSingleOk,
             canSingle: poolSingleOk,
             canAllUp: poolAllUpOk,
+            ...resolveOptionalGoalLine(poolCode, pool),
             optionKey: opt.key,
             optionLabel: opt.label,
             odds: opt.odds,
@@ -2448,15 +7522,14 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             state.passSpec.passSizes?.length === 1 &&
             state.passSpec.passSizes[0] === 1;
           const switchedPassSpec = wasOnlyMatchCrossPool
-            ? { mode: "auto" as const }
+            ? { mode: "follow-max-parlay" as const }
             : state.passSpec;
+          clearRevokedPlanHoldOnUserAction();
           state = {
             ...state,
-            planSpec: null,
-            syntheticSingleMode:
-              state.syntheticSingleMode === "partial-cover"
-                ? "full-3way"
-                : state.syntheticSingleMode,
+            ...preserveAppliedPlanAcrossDraftEdit(state),
+            singleAuthGrant: null,
+            syntheticSingleMode: resetSynMode,
             lastPoolSwitchUndo: undoSnapshot,
             passSpec: sanitizePassSpecForPicks(switchedPassSpec, nextPicks),
             picks: nextPicks,
@@ -2486,24 +7559,28 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             matchNumStr: m.matchNumStr,
             home: m.home,
             away: m.away,
+            th: computeOrderedMatchIdentitySig(
+              m,
+              Boolean(m.homeTeamId || m.awayTeamId)
+            ),
             poolCode,
             poolName: pool.name,
             singleAllowed: poolSingleOk,
             canSingle: poolSingleOk,
             canAllUp: poolAllUpOk,
+            ...resolveOptionalGoalLine(poolCode, pool),
             optionKey: opt.key,
             optionLabel: opt.label,
             odds: opt.odds,
             fairProb: opt.fairProb,
           },
         ];
+        clearRevokedPlanHoldOnUserAction();
         state = {
           ...state,
-          planSpec: null,
-          syntheticSingleMode:
-            state.syntheticSingleMode === "partial-cover"
-              ? "full-3way"
-              : state.syntheticSingleMode,
+          ...preserveAppliedPlanAcrossDraftEdit(state),
+          singleAuthGrant: null,
+          syntheticSingleMode: resetSynMode,
           lastPoolSwitchUndo: null,
           passSpec: sanitizePassSpecForPicks(nextPassSpec, nextPicks),
           picks: nextPicks,
@@ -2531,6 +7608,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
 
       let nextPassSpec = state.passSpec;
+      if (
+        state.mode === "single" &&
+        poolSingleOk &&
+        (state.picks.length === 0 ||
+          (state.passSpec.mode === "free" &&
+            state.passSpec.passSizes?.length === 1 &&
+            state.passSpec.passSizes[0] === 1))
+      ) {
+        nextPassSpec = { mode: "free", passSizes: [1] };
+      }
       let autoLockedSingleReason: TogglePickVerdict["autoLockedSingleReason"];
 
       if (!byMatchPools.has(m.id) && existingDistinctCount >= 15) {
@@ -2553,24 +7640,28 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           matchNumStr: m.matchNumStr,
           home: m.home,
           away: m.away,
+          th: computeOrderedMatchIdentitySig(
+            m,
+            Boolean(m.homeTeamId || m.awayTeamId)
+          ),
           poolCode,
           poolName: pool.name,
           singleAllowed: poolSingleOk,
           canSingle: poolSingleOk,
           canAllUp: poolAllUpOk,
+          ...resolveOptionalGoalLine(poolCode, pool),
           optionKey: opt.key,
           optionLabel: opt.label,
           odds: opt.odds,
           fairProb: opt.fairProb,
         },
       ];
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
-        planSpec: null,
-        syntheticSingleMode:
-          state.syntheticSingleMode === "partial-cover"
-            ? "full-3way"
-            : state.syntheticSingleMode,
+        ...preserveAppliedPlanAcrossDraftEdit(state),
+        singleAuthGrant: null,
+        syntheticSingleMode: resetSynMode,
         lastPoolSwitchUndo: null,
         passSpec: sanitizePassSpecForPicks(nextPassSpec, nextPicks),
         picks: nextPicks,
@@ -2588,15 +7679,97 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     undoLastPoolSwitch(): boolean {
+      syncSharedHoldFromStorage();
       const snap = state.lastPoolSwitchUndo;
       if (!snap) return false;
+      const curById = new Map(state.matches.map((m) => [m.id, m]));
+      const changedIndex = state.picks.findIndex(
+        (p) => p.matchId === snap.matchId
+      );
+      if (changedIndex < 0) {
+        state = { ...state, lastPoolSwitchUndo: null };
+        emit();
+        return false;
+      }
+      const match = curById.get(snap.matchId);
+      const restored = snap.picks.flatMap((pk) => {
+        if (
+          pk.matchId !== snap.matchId ||
+          !isStrictSameMatchIdentity(match, pk)
+        )
+          return [];
+        const pool = match.pools?.[pk.poolCode];
+        const option = pool?.options?.find((o) => o.key === pk.optionKey);
+        if (
+          !option ||
+          pool.selling === false ||
+          (pk.poolCode === "HHAD" &&
+            String(pk.goalLine ?? "") !== String(pool.goalLine ?? ""))
+        )
+          return [];
+        return [
+          {
+            ...pk,
+            odds: option.odds,
+            fairProb: option.fairProb,
+            canSingle: resolvePoolCanSingle(pool),
+            canAllUp: resolvePoolCanAllUp(pool),
+            singleAllowed: resolvePoolCanSingle(pool),
+          },
+        ];
+      });
+      const validUndoPicks = state.picks.filter(
+        (p) => p.matchId !== snap.matchId
+      );
+      const originalIndex = snap.picks.findIndex(
+        (p) => p.matchId === snap.matchId
+      );
+      const followingMatches = new Set(
+        snap.picks.slice(originalIndex + 1).map((p) => p.matchId)
+      );
+      const nextIndex = validUndoPicks.findIndex((p) =>
+        followingMatches.has(p.matchId)
+      );
+      validUndoPicks.splice(
+        nextIndex < 0 ? validUndoPicks.length : nextIndex,
+        0,
+        ...restored
+      );
+      const preserveCurrentTicket = Boolean(
+        snap.backgroundEdit || state.planSpec || revokedPlanHold
+      );
+      const invalidPlan =
+        !preserveCurrentTicket &&
+        snap.planSpec &&
+        (snap.planHoldRev !== localHoldRev ||
+          hasPlanSpecBoardInvalidation(
+            snap.planSpec,
+            new Map(snap.planBoard?.map((m) => [m.id, m])),
+            curById
+          ));
+      if (invalidPlan && !revokedPlanHold) {
+        armRevokedPlanHold(
+          "原方案的比赛身份或开售资格已变动，请重新核对后再出票"
+        );
+      }
       state = {
         ...state,
-        picks: snap.picks,
-        passSpec: sanitizePassSpecForPicks(snap.passSpec, snap.picks),
-        planSpec: snap.planSpec,
+        picks: validUndoPicks,
+        ...(state.planSpec && !isSingleAuthBoundBonusPlan(state.planSpec)
+          ? preserveAppliedPlanAcrossDraftEdit(state)
+          : {}),
+        ...(!preserveCurrentTicket
+          ? {
+              ...(typeof snap.multiple === "number"
+                ? { multiple: snap.multiple }
+                : {}),
+              passSpec: sanitizePassSpecForPicks(snap.passSpec, validUndoPicks),
+              planSpec: invalidPlan ? null : snap.planSpec,
+              ...(invalidPlan ? { appliedTicketSnapshot: null } : {}),
+            }
+          : {}),
         lastPoolSwitchUndo: null,
-        ...syncAutoRadarFields(snap.picks, state.matches, state),
+        ...syncAutoRadarFields(validUndoPicks, state.matches, state),
       };
       emit();
       void scheduleRefresh();
@@ -2604,6 +7777,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     setMode(nextMode: MatchMode): { trimmed: boolean } {
+      syncSharedHoldFromStorage();
       let nextPicks = state.picks;
       let nextPassSpec = state.passSpec;
       let trimmed = false;
@@ -2613,10 +7787,22 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         nextPicks = res.cleaned;
         trimmed = res.trimmed;
         if (trimmed) {
-          nextPassSpec = { mode: "auto" };
+          nextPassSpec = { mode: "follow-max-parlay" };
         }
       }
 
+      if (trimmed) {
+        const meta = readStoredHoldMeta();
+        if (
+          !revokedPlanHold &&
+          state.planSpec === null &&
+          state.singleAuthGrant === null &&
+          meta.clearSeq <= localClearSeq &&
+          meta.holdRev <= clearedHoldRev
+        ) {
+          clearRevokedPlanHoldOnUserAction();
+        }
+      }
       state = {
         ...state,
         mode: nextMode,
@@ -2624,6 +7810,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         passSpec: nextPassSpec,
         ...(trimmed
           ? {
+              singleAuthGrant: null,
+              ...(nextPicks.length === 0
+                ? { syntheticSingleMode: "full-3way" as SyntheticSingleMode }
+                : {}),
               lastPoolSwitchUndo: null,
               ...syncAutoRadarFields(nextPicks, state.matches, state),
             }
@@ -2635,14 +7825,20 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     clearPicks() {
+      deferredDraftBoardAt = 0;
+      clearRevokedPlanHoldOnUserAction();
       const resetOverrideState = { ...state, manualPoolOverride: false };
       state = {
         ...resetOverrideState,
         picks: [],
         planSpec: null,
+        appliedTicketSnapshot: null,
+        singleAuthGrant: null,
         syntheticSingleMode: "full-3way",
         lastPoolSwitchUndo: null,
-        passSpec: { mode: "auto" },
+        simVoidFirstMatch: false,
+        voidMatchIds: [],
+        passSpec: { mode: "follow-max-parlay" },
         ...(autoSyncRadar
           ? syncAutoRadarFields([], state.matches, resetOverrideState)
           : {}),
@@ -2658,22 +7854,119 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         nextMode === "off"
           ? nextMode
           : "full-3way";
-      if (state.syntheticSingleMode === normalized) return;
+      if (normalized !== state.syntheticSingleMode) syntheticApproval = null;
+      const nextGrant = mintSingleAuthGrant(state, normalized);
+      if (
+        state.syntheticSingleMode === normalized &&
+        state.singleAuthGrant?.mode === nextGrant?.mode &&
+        state.singleAuthGrant?.exactCost === nextGrant?.exactCost &&
+        state.singleAuthGrant?.lineAndMultipleSig ===
+          nextGrant?.lineAndMultipleSig &&
+        Boolean(state.singleAuthGrant) === Boolean(nextGrant) &&
+        !revokedPlanHold &&
+        !hasUnresolvedSyntheticChoice
+      ) {
+        return;
+      }
+      hasUnresolvedSyntheticChoice = false;
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
+        planSpec: null,
         syntheticSingleMode: normalized,
+        singleAuthGrant: nextGrant,
       };
       emit();
       void scheduleRefresh();
     },
 
+    confirmPartialCoverageSingle(
+      explicitPreview?: PartialCoveragePreview | null
+    ): { ok: boolean; grant: SingleAuthGrant | null } {
+      const defaultPreview =
+        state.workspace.effectiveReport.partialCoveragePreview ??
+        state.workspace.manualReport.partialCoveragePreview ??
+        null;
+      const targetPreview = explicitPreview ?? defaultPreview;
+      if (!targetPreview || state.picks.length === 0) {
+        return { ok: false, grant: null };
+      }
+      const candidates = [
+        defaultPreview,
+        ...(state.workspace.manualReport.crossPoolSingleAlternatives ?? []),
+      ].filter((candidate) => candidate != null);
+      const displayedSig = buildSinglePreviewLineSig(
+        targetPreview,
+        state.multiple
+      );
+      if (
+        state.livePortfolioQuote.isStale ||
+        !candidates.some(
+          (candidate) =>
+            candidate.previewCost === targetPreview.previewCost &&
+            buildSinglePreviewLineSig(candidate, state.multiple) ===
+              displayedSig
+        )
+      ) {
+        return { ok: false, grant: null };
+      }
+      syntheticApproval = null;
+      const grant = mintSingleAuthGrant(state, "partial-cover", targetPreview);
+      if (!grant) {
+        return { ok: false, grant: null };
+      }
+      hasUnresolvedSyntheticChoice = false;
+      clearRevokedPlanHoldOnUserAction();
+      const targetSig = buildSinglePreviewLineSig(
+        targetPreview,
+        state.multiple
+      );
+      const defaultSig = buildSinglePreviewLineSig(
+        defaultPreview,
+        state.multiple
+      );
+      const isSecondaryCrossPoolAlt =
+        Boolean(explicitPreview) &&
+        Array.isArray(targetPreview.previewLines) &&
+        targetPreview.previewLines.length > 0 &&
+        targetSig !== defaultSig;
+      state = {
+        ...state,
+        syntheticSingleMode: "partial-cover",
+        singleAuthGrant: grant,
+        planSpec: isSecondaryCrossPoolAlt
+          ? {
+              kind: "bonus",
+              optMode: "equal",
+              baseLines: targetPreview.previewLines,
+              preserveExactBaseMultiples: true,
+              baseSourceKind: "auto-synthetic",
+              baseTitle: targetPreview.poolName,
+              targetBudgetCost: targetPreview.previewCost,
+              boundSingleAuthId: grant.authId,
+              boundQuoteVersionSig: grant.quoteVersionSig,
+              boundLineAndMultipleSig: grant.lineAndMultipleSig,
+              scaleMultiple: 1,
+              consolidateTickets: true,
+            }
+          : null,
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true, grant };
+    },
+
     removeMatchFromSlip(matchId: string) {
+      clearRevokedPlanHoldOnUserAction();
       const nextPicks = state.picks.filter((p) => p.matchId !== matchId);
       state = {
         ...state,
-        planSpec: null,
+        ...preserveAppliedPlanAcrossDraftEdit(state),
+        singleAuthGrant: null,
         syntheticSingleMode:
-          state.syntheticSingleMode === "partial-cover"
+          nextPicks.length === 0 ||
+          state.syntheticSingleMode === "partial-cover" ||
+          state.syntheticSingleMode === "trim-2way"
             ? "full-3way"
             : state.syntheticSingleMode,
         lastPoolSwitchUndo: null,
@@ -2686,43 +7979,96 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     replacePicks(nextPicks: SelectedPick[]) {
+      const retainsOldSelection = nextPicks.some((next) =>
+        state.picks.some(
+          (p) =>
+            p.matchId === next.matchId &&
+            p.poolCode === next.poolCode &&
+            p.optionKey === next.optionKey
+        )
+      );
+      if (!retainsOldSelection) hasUnresolvedSyntheticChoice = false;
+      clearRevokedPlanHoldOnUserAction();
+      const enriched = enrichPicksWithBoardGoalLine(nextPicks, state.matches);
       state = {
         ...state,
         planSpec: null,
+        singleAuthGrant: null,
         syntheticSingleMode: "full-3way",
         lastPoolSwitchUndo: null,
-        passSpec: { mode: "auto" },
-        picks: nextPicks,
-        ...syncAutoRadarFields(nextPicks, state.matches, state),
+        passSpec: { mode: "follow-max-parlay" },
+        picks: enriched,
+        ...syncAutoRadarFields(enriched, state.matches, state),
       };
       emit();
       void scheduleRefresh();
     },
 
-    resetPassAuto() {
+    clearOrphanedBankers(): { ok: boolean } {
+      const distinctIds = Array.from(
+        new Set(state.picks.map((p) => p.matchId))
+      );
+      const remainingBankers = (state.passSpec.bankerMatchIds ?? []).filter(
+        (id) => distinctIds.includes(id)
+      );
+      const rawSizes = Array.isArray(state.passSpec.passSizes)
+        ? Array.from(
+            new Set(state.passSpec.passSizes.filter((s) => s >= 1 && s <= 8))
+          ).sort((a, b) => a - b)
+        : [];
+      const hasCurrentlyPlayableSize = rawSizes.some(
+        (s) => s >= 1 && s <= distinctIds.length
+      );
+      const nextPassSpec: PassSelectionSpec =
+        distinctIds.length <= 1 &&
+        remainingBankers.length === 0 &&
+        !hasCurrentlyPlayableSize
+          ? { mode: "follow-max-parlay" }
+          : rawSizes.length > 0 && hasCurrentlyPlayableSize
+            ? {
+                mode: "free",
+                passSizes: rawSizes,
+                ...(remainingBankers.length > 0
+                  ? { bankerMatchIds: remainingBankers }
+                  : {}),
+              }
+            : remainingBankers.length > 0
+              ? {
+                  mode: "free",
+                  passSizes: [Math.max(2, Math.min(8, distinctIds.length - 1))],
+                  bankerMatchIds: remainingBankers,
+                }
+              : { mode: "follow-max-parlay" };
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
         planSpec: null,
-        passSpec: { mode: "auto" },
+        passSpec: sanitizePassSpecForPicks(nextPassSpec, state.picks),
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true };
+    },
+
+    resetPassAuto() {
+      clearRevokedPlanHoldOnUserAction();
+      state = {
+        ...state,
+        planSpec: null,
+        passSpec: { mode: "follow-max-parlay" },
       };
       emit();
       void scheduleRefresh();
     },
 
     setDirectMultiple(nextRaw: number): number {
-      const clamped = Math.max(1, Math.min(999, Math.round(nextRaw) || 1));
-      state = { ...state, planSpec: null, multiple: clamped };
-      emit();
-      void scheduleRefresh();
-      return clamped;
+      return applyMultiple(
+        Math.max(1, Math.min(999, Math.round(nextRaw) || 1))
+      );
     },
 
     stepMultiple(delta: number): number {
-      const next = Math.max(1, Math.min(999, state.multiple + delta));
-      state = { ...state, planSpec: null, multiple: next };
-      emit();
-      void scheduleRefresh();
-      return next;
+      return applyMultiple(Math.max(1, Math.min(999, state.multiple + delta)));
     },
 
     toggleFreePassSize(size: number): { ok: boolean; reason?: string } {
@@ -2734,11 +8080,21 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           reason: opt?.disabledReason || "当前选单不满足该过关条件",
         };
       }
-      const currentActive = manualReport.activeComboCode
-        ? []
-        : manualReport.availableFreePasses
-            .filter((f) => f.active)
-            .map((f) => f.size);
+      const currentActive =
+        !state.planSpec &&
+        state.passSpec.mode === "free" &&
+        Array.isArray(state.passSpec.passSizes) &&
+        state.passSpec.passSizes.length > 0
+          ? state.passSpec.passSizes.filter((sz) =>
+              manualReport.availableFreePasses.some(
+                (f) => f.size === sz && f.enabled
+              )
+            )
+          : manualReport.activeComboCode
+            ? []
+            : manualReport.availableFreePasses
+                .filter((f) => f.active)
+                .map((f) => f.size);
       const exists = currentActive.includes(size);
       if (exists && currentActive.length <= 1) {
         return { ok: false, reason: "至少需保留一种过关方式" };
@@ -2746,6 +8102,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       const nextSizes = exists
         ? currentActive.filter((s) => s !== size)
         : [...currentActive, size].sort((a, b) => a - b);
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
         planSpec: null,
@@ -2776,8 +8133,9 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       }
       const nextSpec: PassSelectionSpec =
         manualReport.activeComboCode === code
-          ? { mode: "auto" }
+          ? { mode: "follow-max-parlay" }
           : { mode: "combo", comboCode: code };
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
         planSpec: null,
@@ -2788,19 +8146,85 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       return { ok: true };
     },
 
-    applyBonusOptimization(optMode: BonusOptMode): {
+    applyBonusOptimization(
+      optMode: BonusOptMode,
+      opts?: {
+        allowUnbundleCombo?: boolean;
+        requireComboConfirm?: boolean;
+        allowCapEvTradeoff?: boolean;
+      }
+    ): {
       ok: boolean;
       modeTitle?: string;
+      awaitingSyntheticQuote?: boolean;
       blockedReason?: string;
+      noOpReason?: string | null;
+      unchanged?: boolean;
+      requiresComboUnbundleConfirm?: boolean;
+      comboCode?: string;
+      comboLabel?: string;
+      capGuardAlternative?: CapGuardAlternative | null;
     } {
-      const manualRep = state.workspace.manualReport;
-      if (manualRep.combos.length === 0 && manualRep.betCount === 0) {
+      const cur = reconcileState();
+      if (cur.pendingSyntheticChoice) {
+        return {
+          ok: false,
+          blockedReason: "请先确认合成单关的实际票行及金额，再进行分倍",
+        };
+      }
+      const curSlip = cur.activeAuditedSlip;
+      const effRep =
+        cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+      const manualRep =
+        cur.workspace.baselineManualReport ?? cur.workspace.manualReport;
+      const useActiveBase =
+        curSlip.sourceKind === "archetype" ||
+        curSlip.sourceKind === "auto-synthetic" ||
+        curSlip.sourceKind === "bonus-opt";
+      const originalBaseLines =
+        useActiveBase &&
+        cur.planSpec?.kind === "bonus" &&
+        Array.isArray(cur.planSpec.baseLines) &&
+        cur.planSpec.baseLines.length > 0
+          ? cur.planSpec.baseLines
+          : useActiveBase && curSlip.lines.length > 0
+            ? curSlip.lines
+            : undefined;
+      const baseSourceKind:
+        "manual" | "auto-synthetic" | "bonus-opt" | "archetype" | undefined =
+        useActiveBase &&
+        cur.planSpec?.kind === "bonus" &&
+        cur.planSpec.baseSourceKind
+          ? cur.planSpec.baseSourceKind
+          : useActiveBase && curSlip.sourceKind !== "empty"
+            ? curSlip.sourceKind
+            : undefined;
+      const isSyntheticBase = baseSourceKind === "auto-synthetic";
+      const baseLines = isSyntheticBase ? curSlip.lines : originalBaseLines;
+      const curBasePlan =
+        cur.workspace.baselineAppliedPlan !== undefined
+          ? cur.workspace.baselineAppliedPlan
+          : cur.workspace.appliedPlan;
+      const baseTitle =
+        useActiveBase &&
+        cur.planSpec?.kind === "bonus" &&
+        cur.planSpec.baseTitle
+          ? cur.planSpec.baseTitle
+          : useActiveBase
+            ? curBasePlan?.shortTab || curBasePlan?.title
+            : undefined;
+
+      const targetRep = useActiveBase ? effRep : manualRep;
+      if (
+        !baseLines?.length &&
+        targetRep.combos.length === 0 &&
+        targetRep.betCount === 0
+      ) {
         return { ok: false };
       }
-      const lineCount = Math.max(
-        manualRep.tickets?.length ?? 0,
-        manualRep.betCount
-      );
+      const lineCount = baseLines?.length
+        ? baseLines.length
+        : Math.max(targetRep.tickets?.length ?? 0, targetRep.betCount);
       if (lineCount > 512) {
         return {
           ok: false,
@@ -2808,31 +8232,263 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             "当前复式超出 512 注线下逐票分倍上限，请精简包号或改用【3+1 精算配单】",
         };
       }
-      if (!manualRep.canCheckout) {
+      const passRuleErr = !useActiveBase
+        ? cur.manualDraft.passRuleBlockReason
+        : null;
+      if (!targetRep.canCheckout || passRuleErr) {
         return {
           ok: false,
           blockedReason:
-            manualRep.ruleBlockReason || "当前选单暂不满足合法出票条件",
+            passRuleErr ||
+            targetRep.ruleBlockReason ||
+            "当前选单暂不满足合法出票条件",
         };
       }
+      if (
+        !useActiveBase &&
+        manualRep.activeComboCode &&
+        !opts?.allowUnbundleCombo &&
+        opts?.requireComboConfirm
+      ) {
+        return {
+          ok: false,
+          requiresComboUnbundleConfirm: true,
+          comboCode: manualRep.activeComboCode,
+          comboLabel: manualRep.modeLabel,
+          blockedReason: `当前固定多串【${manualRep.modeLabel}】需先确认将固定多串解绑为独立自由串关以启用不等倍分倍`,
+        };
+      }
+
+      const priorLinesSig = curSlip.lines.length
+        ? curSlip.lines
+            .map(
+              (ln) =>
+                `${ln.legs
+                  .map((g) => `${g.matchId}:${g.poolCode}:${g.optionKey}`)
+                  .sort()
+                  .join("+")}@${ln.multiple}`
+            )
+            .sort()
+            .join(";")
+        : (manualRep.tickets ?? [])
+            .map(
+              (tk) =>
+                `${(tk.legs ?? [])
+                  .map((g) => `${g.matchId}:${g.poolCode}:${g.optionKey}`)
+                  .sort()
+                  .join("+")}@${tk.multiple ?? cur.multiple}`
+            )
+            .sort()
+            .join(";");
+
+      const zeroSpareUnits = baseLines?.length
+        ? baseLines.every((ln) => (ln.multiple ?? 1) <= 1) &&
+          targetRep.totalCost <= baseLines.length * 2 + 1e-6
+        : cur.multiple <= 1 && lineCount >= 1;
+
+      let syntheticGrant: SingleAuthGrant | null = null;
+      if (isSyntheticBase) {
+        const scope = syntheticApprovalScope(cur, cur.picks[0]?.matchId);
+        const baseQuote = syntheticConfirmation(
+          cur,
+          scope,
+          baseLines ?? [],
+          targetRep.totalCost,
+          encodeSyntheticLinesSig(baseLines, cur.multiple)
+        );
+        if (
+          cur.livePortfolioQuote.isStale ||
+          !baseLines?.length ||
+          syntheticApproval?.signature !== baseQuote.signature
+        ) {
+          return {
+            ok: false,
+            blockedReason: "请先核对当前合成单关的票行及金额",
+          };
+        }
+        syntheticGrant = mintSingleAuthGrant(
+          cur,
+          cur.syntheticSingleMode,
+          null,
+          baseLines
+        );
+        if (!syntheticGrant) {
+          return {
+            ok: false,
+            blockedReason: "原合成单关的报价已变，请重新核对",
+          };
+        }
+      }
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
+        ...(syntheticGrant ? { singleAuthGrant: syntheticGrant } : {}),
         planSpec: {
           kind: "bonus",
           optMode,
+          ...(syntheticGrant
+            ? {
+                boundSingleAuthId: syntheticGrant.authId,
+                boundQuoteVersionSig: syntheticGrant.quoteVersionSig,
+                boundLineAndMultipleSig: syntheticGrant.lineAndMultipleSig,
+              }
+            : {}),
+          ...(opts?.allowUnbundleCombo ? { allowUnbundleCombo: true } : {}),
+          ...(opts?.allowCapEvTradeoff ? { allowCapEvTradeoff: true } : {}),
+          ...(baseLines
+            ? {
+                baseLines,
+                baseSourceKind,
+                baseTitle,
+                targetBudgetCost: targetRep.totalCost,
+              }
+            : {}),
           scaleMultiple: 1,
           consolidateTickets: true,
         },
       };
       emit();
       void scheduleRefresh();
+
+      const afterSlip = reconcileState().activeAuditedSlip;
+      const afterLinesSig = afterSlip.lines.length
+        ? afterSlip.lines
+            .map(
+              (ln) =>
+                `${ln.legs
+                  .map((g) => `${g.matchId}:${g.poolCode}:${g.optionKey}`)
+                  .sort()
+                  .join("+")}@${ln.multiple}`
+            )
+            .sort()
+            .join(";")
+        : "";
+      const afterPlan =
+        state.workspace.baselineAppliedPlan !== undefined
+          ? state.workspace.baselineAppliedPlan
+          : state.workspace.appliedPlan;
+      const serverNoOp = afterPlan?.bonusNoOpReason ?? null;
+      const isIdenticalSync =
+        debounceMs <= 0 &&
+        !inFlightPromise &&
+        priorLinesSig.length > 0 &&
+        afterLinesSig === priorLinesSig;
+      const noOpReason =
+        serverNoOp ||
+        (zeroSpareUnits
+          ? "当前每票均为 1 倍无机动余量，需增加预算或倍数后方可重分配"
+          : isIdenticalSync
+            ? "当前赔率结构下分倍结果与原方案每票倍数完全一致，未产生注数变动"
+            : null);
+
       const modeTitle =
         optMode === "equal"
           ? "平均优化"
           : optMode === "hot-first"
             ? "博热保本"
             : "博冷高弹";
-      return { ok: true, modeTitle };
+      const awaitingSyntheticQuote =
+        isSyntheticBase &&
+        Boolean(
+          pendingTimer || inFlightPromise || state.pendingSyntheticChoice
+        );
+      return {
+        ok: !awaitingSyntheticQuote,
+        modeTitle,
+        awaitingSyntheticQuote,
+        noOpReason,
+        unchanged: Boolean(noOpReason),
+        capGuardAlternative: afterPlan?.capGuardAlternative ?? null,
+        ...(afterPlan?.requiresComboUnbundleConfirm
+          ? {
+              requiresComboUnbundleConfirm: true,
+              comboCode: manualRep.activeComboCode || undefined,
+              comboLabel: manualRep.modeLabel,
+            }
+          : {}),
+      };
+    },
+
+    confirmBonusCapGuardAlternative(alt?: CapGuardAlternative | null): {
+      ok: boolean;
+      blockedReason?: string;
+    } {
+      const cur = reconcileState();
+      if (cur.livePortfolioQuote.isStale) {
+        return {
+          ok: false,
+          blockedReason: "当前选单重算未完成，请稍候核对最新报价",
+        };
+      }
+      if (!cur.planSpec || cur.planSpec.kind !== "bonus") {
+        return {
+          ok: false,
+          blockedReason: "当前未处于奖金分倍模式，无法应用封顶减倍备选",
+        };
+      }
+      const curExecSig = computeWorkspaceExecutionSig(
+        cur,
+        cur.livePortfolioQuote.inputSig
+      );
+      const curApplied =
+        cur.workspace.baselineAppliedPlan !== undefined
+          ? cur.workspace.baselineAppliedPlan
+          : cur.workspace.appliedPlan;
+      const liveAlt = curApplied?.capGuardAlternative ?? null;
+      if (
+        !liveAlt ||
+        !Array.isArray(liveAlt.multiples) ||
+        !liveAlt.multiples.length ||
+        typeof liveAlt.bindingSig !== "string" ||
+        !liveAlt.bindingSig.startsWith("cg1|")
+      ) {
+        return {
+          ok: false,
+          blockedReason: "当前报价下不存在待确认的封顶减倍备选方案",
+        };
+      }
+      if (alt?.sourceWorkspaceSig && alt.sourceWorkspaceSig !== curExecSig) {
+        return {
+          ok: false,
+          blockedReason: "原封顶减倍备选对应的选单或报价已变更，请重新核对",
+        };
+      }
+      if (alt?.bindingSig && alt.bindingSig !== liveAlt.bindingSig) {
+        return {
+          ok: false,
+          blockedReason: "原封顶减倍备选绑定的逐腿赔率或分倍已变更，请重新核对",
+        };
+      }
+      if (
+        liveAlt.sourceWorkspaceSig &&
+        liveAlt.sourceWorkspaceSig !== curExecSig
+      ) {
+        return {
+          ok: false,
+          blockedReason: "原封顶减倍备选对应的选单或报价已变更，请重新核对",
+        };
+      }
+      if (
+        alt &&
+        Array.isArray(alt.multiples) &&
+        alt.multiples.join(",") !== liveAlt.multiples.join(",")
+      ) {
+        return {
+          ok: false,
+          blockedReason: "备选分倍结构已发生变更，请重新确认最新方案",
+        };
+      }
+      state = {
+        ...cur,
+        planSpec: {
+          ...cur.planSpec,
+          allowCapEvTradeoff: true,
+          confirmedCapGuardSig: liveAlt.bindingSig,
+        },
+      };
+      emit();
+      void scheduleRefresh();
+      return { ok: true };
     },
 
     applyArchetype(plan: ArchetypePlan): boolean {
@@ -2878,6 +8534,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         activeQuoteSig
       );
 
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...cur,
         planSpec: {
@@ -2896,18 +8553,54 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         },
         appliedTicketSnapshot: snapshot,
         simVoidFirstMatch: false,
+        voidMatchIds: [],
       };
       emit();
       void scheduleRefresh();
       return true;
     },
 
-    restoreEqualMultiple() {
-      this.revertToManualDraft();
+    confirmSyntheticChoiceQuote(signature: string) {
+      const current = reconcileState();
+      if (
+        !signature ||
+        current.livePortfolioQuote.isStale ||
+        current.pendingSyntheticChoice?.quote?.signature !== signature
+      ) {
+        return false;
+      }
+      const matchId = current.picks[0]?.matchId;
+      const scope = matchId && syntheticApprovalScope(current, matchId);
+      if (!scope) return false;
+      syntheticApproval = {
+        signature,
+        matchId,
+        scope,
+        mode: current.syntheticSingleMode,
+        ...(current.pendingSyntheticChoice.quote.referenceOnly
+          ? { referenceOnly: true }
+          : {}),
+        ...(current.singleAuthGrant ? { grant: current.singleAuthGrant } : {}),
+        ...(current.planSpec?.kind === "bonus" &&
+        isSingleAuthBoundBonusPlan(current.planSpec)
+          ? { plan: current.planSpec }
+          : {}),
+      };
+      hasUnresolvedSyntheticChoice = false;
+      clearRevokedPlanHoldOnUserAction();
+      pendingExplicitTicketPersist = true;
+      emit();
+      return true;
     },
 
-    revertToManualDraft() {
+    restoreEqualMultiple() {
+      this.revertToManualDraft(false);
+    },
+
+    revertToManualDraft(_confirmSyntheticChoice?: boolean) {
       pendingRequote = null;
+      if (syntheticApproval?.mode !== "full-3way") syntheticApproval = null;
+      clearRevokedPlanHoldOnUserAction();
       const nextPicks =
         state.mode !== "spf" && state.mode !== "single"
           ? trimToSinglePoolPerMatch(state.picks).cleaned
@@ -2918,7 +8611,10 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         ...state,
         planSpec: null,
         appliedTicketSnapshot: null,
+        singleAuthGrant: null,
         syntheticSingleMode: safeSynMode,
+        simVoidFirstMatch: false,
+        voidMatchIds: [],
         passSpec: sanitizePassSpecForPicks(state.passSpec, nextPicks),
         picks: nextPicks,
       };
@@ -3043,23 +8739,118 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       void scheduleRefresh();
     },
 
-    applyEquivalentSwap(arb: EquivalentArbItem): boolean {
-      const fm = state.matches.find((x) => x.id === arb.matchId);
-      if (!fm) return false;
-      const targetPools = new Set(arb.betterPicks.map((bp) => bp.poolCode));
-      const cleaned = state.picks.filter(
+    previewEquivalentSwap(arb: EquivalentArbItem): EquivalentSwapPreview {
+      const cur = reconcileState();
+      const fm = cur.matches.find((x) => x.id === arb?.matchId);
+      const baseRep =
+        cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+      const manRep =
+        cur.workspace.baselineManualReport ?? cur.workspace.manualReport;
+      const prevTotalCost =
+        baseRep.totalCost > 0
+          ? baseRep.totalCost
+          : manRep.totalCost > 0
+            ? manRep.totalCost
+            : Math.max(1, cur.picks.length) * cur.multiple * 2;
+      if (cur.livePortfolioQuote.isStale) {
+        return {
+          ok: false,
+          blockedReason: "当前选单重算未完成，请稍候核对最新报价",
+          nextPicks: cur.picks,
+          preservedOtherPicks: [],
+          originalMultiple: cur.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
+      }
+      if (!fm) {
+        return {
+          ok: false,
+          blockedReason: "未找到对应赛事盘口",
+          nextPicks: cur.picks,
+          preservedOtherPicks: [],
+          originalMultiple: cur.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
+      }
+      const matchPicks = cur.picks.filter((p) => p.matchId === fm.id);
+      const hasAllWorsePicks =
+        arb.worsePicks.length > 0 &&
+        arb.worsePicks.every((wp) => {
+          const picked = matchPicks.find(
+            (p) => p.poolCode === wp.poolCode && p.optionKey === wp.optionKey
+          );
+          if (!picked) return false;
+          const livePool = fm.pools[wp.poolCode];
+          const liveOpt = livePool?.options.find((o) => o.key === wp.optionKey);
+          if (!livePool || livePool.selling === false || !liveOpt) return false;
+          if (Math.abs(Number(picked.odds) - Number(liveOpt.odds)) > 1e-6) {
+            return false;
+          }
+          if (
+            typeof wp.odds === "number" &&
+            Math.abs(Number(picked.odds) - Number(wp.odds)) > 1e-6
+          ) {
+            return false;
+          }
+          if (wp.poolCode === "HHAD") {
+            const liveGl = String(livePool.goalLine ?? "").trim();
+            const pickedGl = String(picked.goalLine ?? "").trim();
+            if (pickedGl && pickedGl !== liveGl) return false;
+            if (
+              wp.goalLine !== undefined &&
+              String(wp.goalLine).trim() !== liveGl
+            ) {
+              return false;
+            }
+          }
+          return true;
+        });
+      if (!hasAllWorsePicks) {
+        return {
+          ok: false,
+          blockedReason: "当前选单不包含待置换的原选项集合或赔率已变更",
+          nextPicks: cur.picks,
+          preservedOtherPicks: [],
+          originalMultiple: cur.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
+      }
+      const preservedOtherPicks = matchPicks.filter(
+        (p) =>
+          !arb.worsePicks.some(
+            (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
+          )
+      );
+      const cleaned = cur.picks.filter(
         (p) =>
           !(
             p.matchId === fm.id &&
-            (!targetPools.has(p.poolCode) ||
-              arb.worsePicks.some(
-                (wp) =>
-                  wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
-              ))
+            arb.worsePicks.some(
+              (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
+            )
           )
       );
       const additions: SelectedPick[] = [];
       for (const bp of arb.betterPicks) {
+        const pool = fm.pools[bp.poolCode];
+        const opt = pool?.options.find((o) => o.key === bp.optionKey);
+        if (
+          !pool ||
+          pool.selling === false ||
+          !opt ||
+          opt.odds < 1.01 ||
+          (typeof bp.odds === "number" &&
+            Math.abs(Number(opt.odds) - Number(bp.odds)) > 1e-6)
+        ) {
+          return {
+            ok: false,
+            blockedReason: "目标等价玩法当前暂未开售或赔率已更新",
+            nextPicks: cur.picks,
+            preservedOtherPicks,
+            originalMultiple: cur.multiple,
+            targetBudgetCost: prevTotalCost,
+          };
+        }
         const already = cleaned.some(
           (p) =>
             p.matchId === fm.id &&
@@ -3067,9 +8858,8 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             p.optionKey === bp.optionKey
         );
         if (already) continue;
-        const pool = fm.pools[bp.poolCode];
-        const opt = pool?.options.find((o) => o.key === bp.optionKey);
-        if (!pool || !opt) continue;
+        const canSingle = resolvePoolCanSingle(pool);
+        const canAllUp = resolvePoolCanAllUp(pool);
         additions.push({
           matchId: fm.id,
           matchNumStr: fm.matchNumStr,
@@ -3077,12 +8867,44 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           away: fm.away,
           poolCode: bp.poolCode,
           poolName: pool.name,
-          singleAllowed: pool.single,
+          singleAllowed: canSingle,
+          canSingle,
+          canAllUp,
+          ...resolveOptionalGoalLine(bp.poolCode, pool),
           optionKey: opt.key,
           optionLabel: opt.label,
           odds: opt.odds,
           fairProb: opt.fairProb,
         });
+      }
+      if (
+        Array.isArray(arb.executableSwapLines) &&
+        arb.executableSwapLines.length > 0
+      ) {
+        const byId = new Map(cur.matches.map((m) => [m.id, m]));
+        for (const ln of arb.executableSwapLines) {
+          for (const lg of ln.legs ?? []) {
+            const lm = byId.get(lg.matchId);
+            const lp = lm?.pools?.[lg.poolCode];
+            const lo = lp?.options?.find((o) => o.key === lg.optionKey);
+            if (
+              !lm ||
+              !lp ||
+              lp.selling === false ||
+              !lo ||
+              Math.abs(Number(lo.odds) - Number(lg.odds)) > 1e-6
+            ) {
+              return {
+                ok: false,
+                blockedReason: "替换报价所涉盘口赔率已更新，请重新核对最新提示",
+                nextPicks: cur.picks,
+                preservedOtherPicks,
+                originalMultiple: cur.multiple,
+                targetBudgetCost: prevTotalCost,
+              };
+            }
+          }
+        }
       }
       const nextPicks = [...cleaned, ...additions];
       const prevMatchSet = new Set(state.picks.map((p) => p.matchId));
@@ -3090,72 +8912,301 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       if (
         prevMatchSet.size === 1 &&
         nextMatchSet.size === 1 &&
+        preservedOtherPicks.length === 0 &&
+        arb.betterPicks.length === 1 &&
+        arb.worsePicks.length >= 2 &&
+        nextPicks.every(isAuthoritativePickSingle)
+      ) {
+        const scaledMult = state.multiple * arb.worsePicks.length;
+        if (scaledMult > 999) {
+          return {
+            ok: false,
+            blockedReason: "等本金替换后倍数超出单单 999 倍上限",
+            nextPicks: state.picks,
+            preservedOtherPicks,
+            originalMultiple: state.multiple,
+            targetBudgetCost: prevTotalCost,
+          };
+        }
+        const sameWorsePool =
+          new Set(arb.worsePicks.map((wp) => wp.poolCode)).size === 1;
+        if (sameWorsePool) {
+          const worseMatched = matchPicks.filter((p) =>
+            arb.worsePicks.some(
+              (wp) => wp.poolCode === p.poolCode && wp.optionKey === p.optionKey
+            )
+          );
+          const maxWorseOdds = worseMatched.reduce(
+            (mx, p) => Math.max(mx, p.odds),
+            0
+          );
+          const targetOptOdds = nextPicks[0]?.odds ?? 0;
+          if (targetOptOdds * arb.worsePicks.length + 1e-6 < maxWorseOdds) {
+            return {
+              ok: false,
+              blockedReason:
+                "等本金替换后返奖低于原选项峰值返奖，已拦截非逐态占优替换",
+              nextPicks: state.picks,
+              preservedOtherPicks,
+              originalMultiple: state.multiple,
+              targetBudgetCost: prevTotalCost,
+            };
+          }
+        }
+      }
+      const isBoundWholeSlipArb =
+        (Array.isArray(arb.executableSwapLines) &&
+          arb.executableSwapLines.length > 0) ||
+        arb.sourcePicksSig !== undefined;
+      const resolvedLiveSwap = resolveLiveWholeSlipSwap(cur, arb);
+      const liveExecLines = resolvedLiveSwap?.executableSwapLines;
+      const isPureSingleSlipAfter =
+        Array.isArray(liveExecLines) && liveExecLines.length > 0
+          ? liveExecLines.every((ln) => (ln.legs?.length ?? 0) === 1)
+          : cur.mode === "single" ||
+            (cur.passSpec.mode === "free" &&
+              Array.isArray(cur.passSpec.passSizes) &&
+              cur.passSpec.passSizes.length > 0 &&
+              cur.passSpec.passSizes.every((s) => s === 1));
+      const sameMatchPoolsAfter = new Set(
+        nextPicks.filter((p) => p.matchId === fm.id).map((p) => p.poolCode)
+      );
+      if (sameMatchPoolsAfter.size > 1) {
+        if (!isPureSingleSlipAfter && nextMatchSet.size >= 2) {
+          return {
+            ok: false,
+            blockedReason:
+              "保留本场其余已选项将形成同场跨玩法串关冲突，系统拒绝静默删改您的其余方向",
+            nextPicks: state.picks,
+            preservedOtherPicks,
+            originalMultiple: state.multiple,
+            targetBudgetCost: prevTotalCost,
+          };
+        }
+        if (nextPicks.some((p) => !isAuthoritativePickSingle(p))) {
+          return {
+            ok: false,
+            blockedReason:
+              "同场混合多玩法要求涉及奖池均支持单关，当前无法在不删改其余选项下置换",
+            nextPicks: state.picks,
+            preservedOtherPicks,
+            originalMultiple: state.multiple,
+            targetBudgetCost: prevTotalCost,
+          };
+        }
+      }
+      if (
+        prevMatchSet.size === 1 &&
+        nextMatchSet.size === 1 &&
         state.picks.length > 0 &&
         state.picks.every(isAuthoritativePickSingle) &&
         nextPicks.some((p) => !isAuthoritativePickSingle(p))
       ) {
-        return false;
+        return {
+          ok: false,
+          blockedReason: "纯单关选单不可降级置换为未开单关玩法",
+          nextPicks: state.picks,
+          preservedOtherPicks,
+          originalMultiple: state.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
       }
-      const perMatchCounts = new Map<string, number>();
-      for (const pk of nextPicks) {
-        perMatchCounts.set(
-          pk.matchId,
-          (perMatchCounts.get(pk.matchId) ?? 0) + 1
-        );
+      const isSingleMatchWithNonSinglePick =
+        prevMatchSet.size === 1 &&
+        nextMatchSet.size === 1 &&
+        nextPicks.some((p) => !isAuthoritativePickSingle(p));
+      if (isBoundWholeSlipArb && !resolvedLiveSwap) {
+        return {
+          ok: false,
+          blockedReason:
+            "原同义替换建议对应的选单、串关或盘口已变更，请按最新选单重新核对",
+          nextPicks: state.picks,
+          preservedOtherPicks,
+          originalMultiple: state.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
       }
-      const countArr = Array.from(perMatchCounts.values());
-      const activeSizes =
-        state.workspace.manualReport.activePassSizes.length > 0
-          ? state.workspace.manualReport.activePassSizes
-          : [Math.min(8, countArr.length)];
-      const maxPassSize = Math.min(
-        countArr.length,
-        Math.max(0, ...activeSizes)
-      );
-      const elemDp = new Float64Array(maxPassSize + 1);
-      elemDp[0] = 1;
-      for (const c of countArr) {
-        for (let s = maxPassSize; s >= 1; s--) {
-          elemDp[s] += elemDp[s - 1] * c;
-        }
+      const hasActivePlayableOrLockedTicket =
+        baseRep.canCheckout ||
+        baseRep.totalCost > 0 ||
+        cur.planSpec !== null ||
+        cur.singleAuthGrant !== null;
+      const canEditUnplayableSingleDraft =
+        !hasActivePlayableOrLockedTicket && isSingleMatchWithNonSinglePick;
+      if (!resolvedLiveSwap && !canEditUnplayableSingleDraft) {
+        return {
+          ok: false,
+          blockedReason:
+            "当前在审实票下该跨盘替换无等本金逐态不降可执行票行（仅作单场参考）",
+          nextPicks: state.picks,
+          preservedOtherPicks,
+          originalMultiple: state.multiple,
+          targetBudgetCost: prevTotalCost,
+        };
       }
-      const estBetCount = activeSizes.reduce(
-        (sum, s) => sum + (s <= maxPassSize ? elemDp[s] : 0),
-        0
-      );
-      const prevTotalCost =
-        state.workspace.effectiveReport.totalCost > 0
-          ? state.workspace.effectiveReport.totalCost
-          : state.workspace.manualReport.totalCost > 0
-            ? state.workspace.manualReport.totalCost
-            : Math.max(1, Math.floor(estBetCount / 2)) * state.multiple * 2;
-      const isOneToTwoSplit =
-        arb.betterPicks.length >= 2 && arb.worsePicks.length === 1;
-      const nextMultiple =
-        isOneToTwoSplit && state.multiple >= 2
-          ? Math.max(1, Math.ceil(state.multiple / 2))
-          : state.multiple;
+      const effectiveCost =
+        resolvedLiveSwap?.equalStakeCostYuan ?? prevTotalCost;
+      return {
+        ok: true,
+        nextPicks,
+        preservedOtherPicks,
+        originalMultiple: state.multiple,
+        targetBudgetCost: effectiveCost,
+      };
+    },
+
+    applyEquivalentSwap(arb: EquivalentArbItem): boolean {
+      const preview = this.previewEquivalentSwap(arb);
+      if (!preview.ok) return false;
+      const cur = reconcileState();
+      const resolvedSwap = resolveLiveWholeSlipSwap(cur, arb);
+      const nextPicks = preview.nextPicks;
+      const nextMatchSet = new Set(nextPicks.map((p) => p.matchId));
       const isSingleMatchWithNonSinglePick =
         nextMatchSet.size === 1 &&
         nextPicks.some((p) => !isAuthoritativePickSingle(p));
-      const nextPlanSpec: AppliedPlanSpec =
-        arb.betterPicks.length >= 2 &&
-        estBetCount > 0 &&
-        estBetCount <= 512 &&
-        !isSingleMatchWithNonSinglePick
-          ? {
-              kind: "bonus",
-              optMode: "equal",
-              scaleMultiple: 1,
-              consolidateTickets: true,
-              ...(isOneToTwoSplit ? { targetBudgetCost: prevTotalCost } : {}),
-            }
-          : null;
+      const sameMatchPoolsOnTarget = new Set(
+        nextPicks
+          .filter((p) => p.matchId === arb.matchId)
+          .map((p) => p.poolCode)
+      );
+      const execLines = resolvedSwap?.executableSwapLines;
+      const hasExecLines = Array.isArray(execLines) && execLines.length > 0;
+      const execIsPureSingle =
+        hasExecLines && execLines!.every((ln) => (ln.legs?.length ?? 0) === 1);
+      const nextPassSpec: PassSelectionSpec =
+        sameMatchPoolsOnTarget.size > 1 &&
+        !isSingleMatchWithNonSinglePick &&
+        (execIsPureSingle ||
+          (nextMatchSet.size === 1 &&
+            isFollowMaxParlayMode(state.passSpec.mode)))
+          ? { mode: "free", passSizes: [1] }
+          : state.passSpec;
+      let nextMultiple = state.multiple;
+      let nextPlanSpec: AppliedPlanSpec = null;
+      let swapUndo: PoolSwitchUndoSnapshot | null = null;
+
+      const execMatchSet = new Set(
+        hasExecLines
+          ? execLines!.flatMap((ln) => (ln.legs ?? []).map((lg) => lg.matchId))
+          : []
+      );
+      const execMatchesExactNextMatchSet =
+        hasExecLines &&
+        execMatchSet.size === nextMatchSet.size &&
+        Array.from(execMatchSet).every((id) => nextMatchSet.has(id));
+      const execHasNonSingleSingleLeg =
+        hasExecLines &&
+        execLines!.some((ln) => {
+          if ((ln.legs?.length ?? 0) !== 1) return false;
+          const lg = ln.legs[0];
+          const lm = state.matches.find((m) => m.id === lg.matchId);
+          return !resolvePoolCanSingle(lm?.pools?.[lg.poolCode]);
+        });
+
+      if (
+        hasExecLines &&
+        execMatchesExactNextMatchSet &&
+        !execHasNonSingleSingleLeg
+      ) {
+        const rawExecCost = execLines!.reduce(
+          (sum, ln) => sum + (ln.cost || (ln.multiple || 1) * 2),
+          0
+        );
+        if (!(
+          rawExecCost > 0 &&
+          preview.targetBudgetCost >= rawExecCost &&
+          preview.targetBudgetCost % rawExecCost === 0
+        )) {
+          return false;
+        }
+        const scaleFactor = Math.round(preview.targetBudgetCost / rawExecCost);
+        if (
+          !execLines!.every(
+            (ln) => Math.round((ln.multiple || 1) * scaleFactor) <= 999
+          )
+        ) {
+          return false;
+        }
+        const scaledLines: PlanTicketLine[] = execLines!.map((ln) => {
+          const m = Math.max(1, Math.round((ln.multiple || 1) * scaleFactor));
+          const baseM = Math.max(1, Math.round(ln.multiple || 1));
+          const unitPay =
+            typeof ln.unitPayout === "number" && ln.unitPayout > 0
+              ? ln.unitPayout
+              : typeof ln.returnPayout === "number" && ln.returnPayout > 0
+                ? ln.returnPayout / baseM
+                : 0;
+          const retPay = Number((unitPay * m).toFixed(2));
+          return {
+            ...ln,
+            multiple: m,
+            cost: m * 2,
+            returnPayout: retPay,
+            netProfit: Number((retPay - m * 2).toFixed(2)),
+          };
+        });
+        if (
+          scaledLines.length === 1 &&
+          nextMatchSet.size === 1 &&
+          nextPicks.length === 1 &&
+          !isSingleMatchWithNonSinglePick
+        ) {
+          nextMultiple = Math.max(1, Math.min(999, scaledLines[0].multiple));
+          nextPlanSpec = null;
+          const fm = state.matches.find((m) => m.id === arb.matchId);
+          if (fm && nextMultiple !== state.multiple) {
+            swapUndo = {
+              picks: [...state.picks],
+              passSpec: state.passSpec,
+              planSpec: state.planSpec,
+              ...(state.planSpec
+                ? { planBoard: state.matches, planHoldRev: localHoldRev }
+                : {}),
+              multiple: state.multiple,
+              matchId: fm.id,
+              matchNumStr: fm.matchNumStr,
+              home: fm.home,
+              away: fm.away,
+              replacedPoolName: arb.worseChoice,
+              replacedCount: arb.worsePicks.length,
+              nextPoolName: nextPicks[0].poolName,
+              nextOptionLabel: nextPicks[0].optionLabel,
+            };
+          }
+        } else {
+          nextPlanSpec = {
+            kind: "bonus",
+            optMode: "equal",
+            baseLines: scaledLines,
+            preserveExactBaseMultiples: true,
+            baseSourceKind: "manual",
+            targetBudgetCost: preview.targetBudgetCost,
+            scaleMultiple: 1,
+            consolidateTickets: true,
+          };
+        }
+      } else if (isSingleMatchWithNonSinglePick) {
+        nextPlanSpec = null;
+      } else {
+        return false;
+      }
+
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
         multiple: nextMultiple,
+        passSpec: nextPassSpec,
         planSpec: nextPlanSpec,
-        lastPoolSwitchUndo: null,
+        appliedTicketSnapshot: null,
+        singleAuthGrant: null,
+        syntheticSingleMode:
+          nextPicks.length === 0 ||
+          state.syntheticSingleMode === "partial-cover" ||
+          state.syntheticSingleMode === "trim-2way"
+            ? "full-3way"
+            : state.syntheticSingleMode,
+        lastPoolSwitchUndo: swapUndo,
         picks: nextPicks,
         ...syncAutoRadarFields(nextPicks, state.matches, state),
       };
@@ -3164,36 +9215,73 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       return true;
     },
 
-    toggleBankerMatch(matchId: string): {
-      ok: boolean;
-      isBanker?: boolean;
-      reason?: string;
-    } {
+    previewToggleBankerMatch(matchId: string): ToggleBankerPreview {
+      const manualRep =
+        state.workspace.baselineManualReport ?? state.workspace.manualReport;
+      const mult = Math.max(1, Math.round(state.multiple) || 1);
+      const fail = (reason: string): ToggleBankerPreview => ({
+        ok: false,
+        canToggle: false,
+        isBanker: false,
+        passOrderChanged: false,
+        requiresConfirm: false,
+        beforeLabel: manualRep.modeLabel,
+        afterLabel: manualRep.modeLabel,
+        beforeBetCount: manualRep.betCount,
+        afterBetCount: manualRep.betCount,
+        beforeCost: manualRep.totalCost,
+        afterCost: manualRep.totalCost,
+        targetPassSpec: state.passSpec,
+        promptText: reason,
+        reason,
+      });
+
       if (state.planSpec) {
-        return {
-          ok: false,
-          reason:
-            "已套用智能配单方案中不支持直接改胆，请先回到手选或排除场次重配",
-        };
+        return fail(
+          "已套用智能配单方案中不支持直接改胆，请先回到手选或排除场次重配"
+        );
       }
-      const distinctIds = Array.from(
-        new Set(state.picks.map((p) => p.matchId))
-      );
+      const distinctIds: string[] = [];
+      const countsByMatch = new Map<string, number>();
+      for (const p of state.picks) {
+        if (!countsByMatch.has(p.matchId)) distinctIds.push(p.matchId);
+        countsByMatch.set(p.matchId, (countsByMatch.get(p.matchId) ?? 0) + 1);
+      }
       if (!distinctIds.includes(matchId)) {
-        return { ok: false, reason: "该场次不在当前选单中" };
+        return fail("该场次不在当前选单中");
       }
       if (distinctIds.length < 3) {
-        return { ok: false, reason: "至少选择 3 场比赛才可设胆" };
+        return fail("至少选择 3 场比赛才可设胆");
       }
-      const manualRep = state.workspace.manualReport;
       if (manualRep.hasSameMatchCrossPoolConflict || distinctIds.length > 8) {
-        return { ok: false, reason: "纯单关模式不支持设胆" };
+        return fail("纯单关模式不支持设胆");
       }
       const curBankers = (
         state.passSpec.bankerMatchIds ??
         manualRep.bankerMatchIds ??
         []
       ).filter((id) => distinctIds.includes(id));
+      const countArr = distinctIds.map((id) => countsByMatch.get(id) ?? 1);
+      const curActiveSizes =
+        manualRep.activePassSizes.length > 0
+          ? manualRep.activePassSizes
+          : [Math.min(8, distinctIds.length)];
+      const beforeBetCount = Math.max(
+        1,
+        manualRep.betCount ||
+          computeElementaryBetCount(
+            countArr,
+            curActiveSizes,
+            curBankers
+              .map((id) => distinctIds.indexOf(id))
+              .filter((i) => i >= 0)
+          )
+      );
+      const beforeCost =
+        manualRep.totalCost > 0
+          ? manualRep.totalCost
+          : beforeBetCount * mult * 2;
+      const beforeLabel = manualRep.modeLabel;
 
       if (curBankers.includes(matchId)) {
         const nextBankers = curBankers.filter((id) => id !== matchId);
@@ -3201,53 +9289,141 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           state.passSpec.mode === "free" &&
           Array.isArray(state.passSpec.passSizes)
             ? state.passSpec.passSizes.filter((s) => s >= 2)
-            : manualRep.activePassSizes.filter((s) => s >= 2);
-        state = {
-          ...state,
-          planSpec: null,
-          passSpec:
-            curFreeSizes.length > 0
-              ? {
-                  mode: "free",
-                  passSizes: curFreeSizes,
-                  ...(nextBankers.length > 0
-                    ? { bankerMatchIds: nextBankers }
-                    : {}),
-                }
-              : { mode: "auto" },
+            : curActiveSizes.filter((s) => s >= 2);
+        const targetPassSpec: PassSelectionSpec =
+          curFreeSizes.length > 0
+            ? {
+                mode: "free",
+                passSizes: curFreeSizes,
+                ...(nextBankers.length > 0
+                  ? { bankerMatchIds: nextBankers }
+                  : {}),
+              }
+            : { mode: "follow-max-parlay" };
+        const nextSizes =
+          curFreeSizes.length > 0
+            ? curFreeSizes
+            : [Math.min(8, distinctIds.length)];
+        const afterBetCount = Math.max(
+          1,
+          computeElementaryBetCount(
+            countArr,
+            nextSizes,
+            nextBankers
+              .map((id) => distinctIds.indexOf(id))
+              .filter((i) => i >= 0)
+          )
+        );
+        const afterCost = afterBetCount * mult * 2;
+        const afterBaseLbl = nextSizes.map((s) => `${s}串1`).join("+");
+        const afterLabel =
+          nextBankers.length > 0
+            ? `${afterBaseLbl}(${nextBankers.length}胆)`
+            : afterBaseLbl;
+        const passOrderChanged =
+          nextSizes.join(",") !== curActiveSizes.join(",");
+        return {
+          ok: true,
+          canToggle: true,
+          isBanker: false,
+          passOrderChanged,
+          requiresConfirm: false,
+          beforeLabel,
+          afterLabel,
+          beforeBetCount,
+          afterBetCount,
+          beforeCost,
+          afterCost,
+          targetPassSpec,
+          promptText: `取消胆码后过关为【${afterLabel} · ¥${afterCost}】`,
         };
-        emit();
-        void scheduleRefresh();
-        return { ok: true, isBanker: false };
       }
 
       const bankerWindow = resolveBankerPassWindow(distinctIds);
       if (!bankerWindow || bankerWindow.maxBankers <= 0) {
-        return {
-          ok: false,
-          reason: "当前最小过关数不支持设胆（2串1最多设1胆，3串1最多设2胆）",
-        };
+        return fail("当前最小过关数不支持设胆（2串1最多设1胆，3串1最多设2胆）");
       }
       if (curBankers.length >= bankerWindow.maxBankers) {
-        return {
-          ok: false,
-          reason: `当前最低 ${bankerWindow.minPass}串1 最多可设 ${bankerWindow.maxBankers} 场胆码`,
-        };
+        return fail(
+          `当前最低 ${bankerWindow.minPass}串1 最多可设 ${bankerWindow.maxBankers} 场胆码`
+        );
       }
 
       const nextBankers = [...curBankers, matchId];
+      const nextSizes = bankerWindow.nextPassSizes;
+      const targetPassSpec: PassSelectionSpec = {
+        mode: "free",
+        passSizes: nextSizes,
+        bankerMatchIds: nextBankers,
+      };
+      const afterBetCount = Math.max(
+        1,
+        computeElementaryBetCount(
+          countArr,
+          nextSizes,
+          nextBankers.map((id) => distinctIds.indexOf(id)).filter((i) => i >= 0)
+        )
+      );
+      const afterCost = afterBetCount * mult * 2;
+      const afterBaseLbl = nextSizes.map((s) => `${s}串1`).join("+");
+      const afterLabel = `${afterBaseLbl}(${nextBankers.length}胆)`;
+      const passOrderChanged =
+        Boolean(manualRep.activeComboCode) ||
+        isFollowMaxParlayMode(state.passSpec.mode) ||
+        nextSizes.join(",") !== curActiveSizes.join(",");
+      const requiresConfirm = passOrderChanged || afterCost > beforeCost;
+      return {
+        ok: true,
+        canToggle: true,
+        isBanker: true,
+        passOrderChanged,
+        requiresConfirm,
+        beforeLabel,
+        afterLabel,
+        beforeBetCount,
+        afterBetCount,
+        beforeCost,
+        afterCost,
+        targetPassSpec,
+        promptText: `设胆需将过关从【${beforeLabel} · ¥${beforeCost}】改为【${afterLabel} · ¥${afterCost}】，是否确认切换？`,
+      };
+    },
+
+    toggleBankerMatch(
+      matchId: string,
+      opts?: { confirmed?: boolean; requireConfirmOnPassChange?: boolean }
+    ): {
+      ok: boolean;
+      isBanker?: boolean;
+      requiresConfirm?: boolean;
+      preview?: ToggleBankerPreview;
+      reason?: string;
+    } {
+      const preview = this.previewToggleBankerMatch(matchId);
+      if (!preview.ok) {
+        return { ok: false, reason: preview.reason };
+      }
+      if (
+        opts?.requireConfirmOnPassChange &&
+        preview.requiresConfirm &&
+        !opts?.confirmed
+      ) {
+        return {
+          ok: false,
+          requiresConfirm: true,
+          preview,
+          reason: preview.promptText,
+        };
+      }
+      clearRevokedPlanHoldOnUserAction();
       state = {
         ...state,
         planSpec: null,
-        passSpec: {
-          mode: "free",
-          passSizes: bankerWindow.nextPassSizes,
-          bankerMatchIds: nextBankers,
-        },
+        passSpec: preview.targetPassSpec,
       };
       emit();
       void scheduleRefresh();
-      return { ok: true, isBanker: true };
+      return { ok: true, isBanker: preview.isBanker };
     },
 
     previewBridgeCandidate(
@@ -3276,6 +9452,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         singleAllowed: resolvePoolCanSingle(pool),
         canSingle: resolvePoolCanSingle(pool),
         canAllUp: resolvePoolCanAllUp(pool),
+        ...resolveOptionalGoalLine(cand.poolCode, pool),
         optionKey: opt.key,
         optionLabel: opt.label,
         odds: opt.odds,
@@ -3364,19 +9541,29 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           odds: cand.odds,
         };
       }
-      if (
-        state.syntheticSingleMode === "off" ||
-        state.syntheticSingleMode === "partial-cover"
-      ) {
-        state = { ...state, syntheticSingleMode: "full-3way" };
-      }
+      const nextMode: MatchMode = state.mode === "single" ? "mix" : state.mode;
+      const nextPass: PassSelectionSpec =
+        state.passSpec.mode === "free" &&
+        state.passSpec.passSizes?.length === 1 &&
+        state.passSpec.passSizes[0] === 1
+          ? { mode: "follow-max-parlay" }
+          : state.passSpec;
+      state = {
+        ...state,
+        mode: nextMode,
+        passSpec: nextPass,
+        singleAuthGrant: null,
+        syntheticSingleMode: "full-3way",
+      };
       return this.togglePick(m, cand.poolCode, cand.optionKey);
     },
 
     previewConvertAppliedPlanToManual(): ConvertPlanToManualPreview {
       const cur = reconcileState();
       const audited = cur.activeAuditedSlip;
-      const currentAppliedCost = cur.workspace.effectiveReport.totalCost;
+      const currentAppliedCost = (
+        cur.workspace.baselineReport ?? cur.workspace.effectiveReport
+      ).totalCost;
       const mult = Math.max(1, Math.round(cur.multiple) || 1);
 
       if (!cur.planSpec || audited.legs.length === 0) {
@@ -3395,7 +9582,6 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         };
       }
 
-      // Prefer parlay-line pool per match when a match has multiple pools across lines
       const parlayPoolByMatch = new Map<string, PoolCode>();
       for (const ln of audited.lines) {
         if ((ln.legs?.length ?? 0) >= 2) {
@@ -3553,6 +9739,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         };
       }
       pendingRequote = null;
+      clearRevokedPlanHoldOnUserAction();
       const matchCount = new Set(preview.previewPicks.map((p) => p.matchId))
         .size;
       const passSizes = preview.previewPassLabel
@@ -3564,12 +9751,13 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           ? { mode: "free", passSizes }
           : matchCount === 1
             ? { mode: "free", passSizes: [1] }
-            : { mode: "auto" };
+            : { mode: "follow-max-parlay" };
       state = {
         ...state,
         mode: "mix",
         planSpec: null,
         appliedTicketSnapshot: null,
+        singleAuthGrant: null,
         syntheticSingleMode: "full-3way",
         lastPoolSwitchUndo: null,
         passSpec: sanitizePassSpecForPicks(nextPassSpec, preview.previewPicks),
@@ -3586,12 +9774,18 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       upgradedCost?: number;
       reason?: string;
     } {
-      const manualRep = state.workspace.manualReport;
+      const cur = reconcileState();
+      const curSlip = cur.activeAuditedSlip;
+      const effRep =
+        cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+      const manualRep =
+        cur.workspace.baselineManualReport ?? cur.workspace.manualReport;
       const breakevenCost =
-        state.workspace.appliedPlan?.breakevenUpgradeCost ??
+        cur.workspace.appliedPlan?.breakevenUpgradeCost ??
+        effRep.breakevenUpgradeCost ??
         manualRep.breakevenUpgradeCost;
       if (
-        !manualRep.canCheckout ||
+        (!manualRep.canCheckout && !effRep.canCheckout) ||
         typeof breakevenCost !== "number" ||
         breakevenCost <= 0
       ) {
@@ -3603,11 +9797,29 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         state.planSpec?.kind === "bonus"
           ? state.planSpec.consolidateTickets
           : undefined;
+      const keepBaseLines =
+        curSlip.sourceKind === "archetype" ||
+        curSlip.sourceKind === "auto-synthetic"
+          ? curSlip.lines
+          : state.planSpec?.kind === "bonus"
+            ? state.planSpec.baseLines
+            : undefined;
       state = {
         ...state,
         planSpec: {
           kind: "bonus",
           optMode,
+          ...(keepBaseLines?.length
+            ? {
+                baseLines: keepBaseLines,
+                baseSourceKind:
+                  state.planSpec?.kind === "bonus"
+                    ? state.planSpec.baseSourceKind
+                    : curSlip.sourceKind !== "empty"
+                      ? curSlip.sourceKind
+                      : undefined,
+              }
+            : {}),
           scaleMultiple: 1,
           upgradeToBreakeven: true,
           consolidateTickets: prevConsolidate ?? true,
@@ -3645,12 +9857,16 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       const pickedIds = Array.from(new Set(state.picks.map((p) => p.matchId)));
       if (pickedIds.length === 0) return { ok: false, syncedCount: 0 };
       const syncedIds = pickedIds.slice(0, 8);
-      state = {
+      const nextDraft = {
         ...state,
         targetIds: syncedIds,
         anchorToRadarPicks: true,
         manualPoolOverride: false,
         syncedRadarSig: buildRadarSignature(state.picks),
+      };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
       };
       emit();
       void scheduleRefresh();
@@ -3673,11 +9889,15 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             ? [...valid.slice(1), matchId]
             : [...valid, matchId];
       }
-      state = {
+      const nextDraft = {
         ...state,
         anchorToRadarPicks: false,
         manualPoolOverride: true,
         targetIds: nextTargets,
+      };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
       };
       emit();
       void scheduleRefresh();
@@ -3685,13 +9905,17 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     selectTargetSlice(count: number) {
-      state = {
+      const nextDraft = {
         ...state,
         anchorToRadarPicks: false,
         manualPoolOverride: true,
         targetIds: state.matches
           .slice(0, Math.max(1, Math.min(8, count)))
           .map((x) => x.id),
+      };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
       };
       emit();
       void scheduleRefresh();
@@ -3701,7 +9925,7 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
       const pickedIds = Array.from(
         new Set(state.picks.map((p) => p.matchId))
       ).slice(0, 8);
-      state = {
+      const nextDraft = {
         ...state,
         anchorToRadarPicks: val,
         manualPoolOverride: !val,
@@ -3712,39 +9936,44 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
             }
           : {}),
       };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
     },
 
     setBudget(nextBudget: number): number {
       const normalized = normalizeBudgetYuan(nextBudget);
-      const nextPlanSpec: AppliedPlanSpec =
-        state.planSpec?.kind === "archetype"
-          ? {
-              ...state.planSpec,
-              allowBudgetMismatchReadOnly:
-                normalized !==
-                normalizeBudgetYuan(
-                  state.planSpec.appliedBudgetYuan ??
-                    state.planSpec.planBudgetYuan ??
-                    normalized
-                ),
-            }
-          : state.planSpec;
-      state = { ...state, budget: normalized, planSpec: nextPlanSpec };
+      pendingPreviewKnobPersist = "budget";
+      const nextDraft = { ...state, budget: normalized };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
       return normalized;
     },
 
     setStance(nextStance: UserStance) {
-      state = { ...state, stance: nextStance };
+      pendingPreviewKnobPersist = "stance";
+      const nextDraft = { ...state, stance: nextStance };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
     },
 
     setUnlockFullAgg(val: boolean) {
-      state = { ...state, unlockFullAgg: val };
+      const nextDraft = { ...state, unlockFullAgg: val };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
     },
@@ -3752,26 +9981,586 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     setAllowSaveCash(val: boolean) {
       const next = Boolean(val);
       if (state.allowSaveCash === next) return;
-      state = { ...state, allowSaveCash: next };
+      pendingPreviewKnobPersist = "allowSaveCash";
+      const nextDraft = { ...state, allowSaveCash: next };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
     },
 
-    applyPortfolioRemediationAction(action: PortfolioRemediationAction): {
+    previewSwitchMainPool(): SwitchMainPoolPreview {
+      const matchMap = new Map(state.matches.map((m) => [m.id, m]));
+      const orderedMatchIds: string[] = [];
+      for (const p of state.picks) {
+        if (!orderedMatchIds.includes(p.matchId)) {
+          orderedMatchIds.push(p.matchId);
+        }
+      }
+      const items: SwitchMainPoolDiffItem[] = [];
+      const nextPicks: SelectedPick[] = [];
+      let changedMatchCount = 0;
+      let hasDirectionlessFallback = false;
+
+      for (const mid of orderedMatchIds) {
+        const matchPicks = state.picks.filter((p) => p.matchId === mid);
+        const existingMain = matchPicks.filter(
+          (p) => p.poolCode === "HAD" || p.poolCode === "HHAD"
+        );
+        const fm = matchMap.get(mid);
+        if (existingMain.length > 0 || !fm) {
+          nextPicks.push(...existingMain);
+          if (fm && existingMain.length > 0) {
+            items.push({
+              matchId: fm.id,
+              matchNumStr: fm.matchNumStr,
+              home: fm.home,
+              away: fm.away,
+              fromPicks: matchPicks,
+              toPicks: existingMain,
+              changed: false,
+              isDirectionlessFallback: false,
+              usedHandicapMapping: false,
+              note: "已为主玩法，保持原选不变",
+            });
+          }
+          continue;
+        }
+
+        const hadOpen =
+          fm.pools.HAD?.selling !== false &&
+          (fm.pools.HAD?.options?.length ?? 0) > 0;
+        const hhadOpen =
+          fm.pools.HHAD?.selling !== false &&
+          (fm.pools.HHAD?.options?.length ?? 0) > 0;
+        const targetPoolCode: PoolCode | null = hadOpen
+          ? "HAD"
+          : hhadOpen
+            ? "HHAD"
+            : null;
+        if (!targetPoolCode) continue;
+        const pool = fm.pools[targetPoolCode];
+        const gLine = Number(fm.pools.HHAD?.goalLine) || -1;
+
+        const targetKeys = new Set<string>();
+        let hasDirectionalSource = false;
+        let usedHandicapMapping = targetPoolCode === "HHAD";
+
+        for (const pk of matchPicks) {
+          if (pk.poolCode === "CRS") {
+            hasDirectionalSource = true;
+            if (pk.optionKey === "wins_other") {
+              targetKeys.add(targetPoolCode === "HAD" ? "h" : "hh");
+            } else if (pk.optionKey === "draws_other") {
+              targetKeys.add(
+                targetPoolCode === "HAD" ? "d" : gLine > 0 ? "hh" : "ha"
+              );
+            } else if (pk.optionKey === "losses_other") {
+              targetKeys.add(targetPoolCode === "HAD" ? "a" : "ha");
+            } else {
+              const parts = pk.optionKey.split(":");
+              if (parts.length === 2) {
+                const hG = Number(parts[0]);
+                const aG = Number(parts[1]);
+                if (Number.isFinite(hG) && Number.isFinite(aG)) {
+                  const diff = hG - aG;
+                  if (targetPoolCode === "HAD") {
+                    targetKeys.add(diff > 0 ? "h" : diff === 0 ? "d" : "a");
+                  } else {
+                    const hDiff = diff + gLine;
+                    targetKeys.add(
+                      hDiff > 0 ? "hh" : hDiff === 0 ? "hd" : "ha"
+                    );
+                  }
+                }
+              }
+            }
+          } else if (pk.poolCode === "HAFU") {
+            hasDirectionalSource = true;
+            const ft = pk.optionKey.slice(-1);
+            if (ft === "h") {
+              targetKeys.add(targetPoolCode === "HAD" ? "h" : "hh");
+            } else if (ft === "d") {
+              targetKeys.add(
+                targetPoolCode === "HAD" ? "d" : gLine > 0 ? "hh" : "ha"
+              );
+            } else if (ft === "a") {
+              targetKeys.add(targetPoolCode === "HAD" ? "a" : "ha");
+            }
+          }
+        }
+
+        let isDirectionless = false;
+        const resolvedOpts: typeof pool.options = [];
+        if (hasDirectionalSource && targetKeys.size > 0) {
+          for (const o of pool.options) {
+            if (targetKeys.has(o.key)) resolvedOpts.push(o);
+          }
+        }
+        if (resolvedOpts.length === 0) {
+          isDirectionless = true;
+          hasDirectionlessFallback = true;
+          usedHandicapMapping = false;
+          const topOpt = [...pool.options].sort(
+            (a, b) => b.fairProb - a.fairProb || a.odds - b.odds
+          )[0];
+          if (topOpt) resolvedOpts.push(topOpt);
+        }
+
+        const mappedPicks: SelectedPick[] = resolvedOpts.map((opt) => ({
+          matchId: fm.id,
+          matchNumStr: fm.matchNumStr,
+          home: fm.home,
+          away: fm.away,
+          poolCode: targetPoolCode,
+          poolName: pool.name,
+          singleAllowed: resolvePoolCanSingle(pool),
+          canSingle: resolvePoolCanSingle(pool),
+          canAllUp: resolvePoolCanAllUp(pool),
+          ...resolveOptionalGoalLine(targetPoolCode, pool),
+          optionKey: opt.key,
+          optionLabel: opt.label,
+          odds: opt.odds,
+          fairProb: opt.fairProb,
+        }));
+        if (mappedPicks.length > 0) {
+          changedMatchCount += 1;
+          nextPicks.push(...mappedPicks);
+          items.push({
+            matchId: fm.id,
+            matchNumStr: fm.matchNumStr,
+            home: fm.home,
+            away: fm.away,
+            fromPicks: matchPicks,
+            toPicks: mappedPicks,
+            changed: true,
+            isDirectionlessFallback: isDirectionless,
+            usedHandicapMapping,
+            note: isDirectionless
+              ? "总进球无主客胜负方向，暂按主玩法最高真率项预填（请确认）"
+              : usedHandicapMapping
+                ? `按让球[${fm.pools.HHAD?.goalLine || "-1"}]同向映射`
+                : "严格保留原胜平负方向",
+          });
+        }
+      }
+
+      const manRep =
+        state.workspace.baselineManualReport ?? state.workspace.manualReport;
+      const mult = Math.max(1, Math.round(state.multiple) || 1);
+      const beforePassLabel = manRep.modeLabel;
+      const beforeBetCount = manRep.betCount;
+      const beforeTotalCost = manRep.totalCost;
+
+      const preservedPass = sanitizePassSpecForPicks(state.passSpec, nextPicks);
+      const afterOrder: string[] = [];
+      const afterCounts = new Map<string, number>();
+      let afterMinPoolCap = 8;
+      for (const pk of nextPicks) {
+        if (!afterCounts.has(pk.matchId)) afterOrder.push(pk.matchId);
+        afterCounts.set(pk.matchId, (afterCounts.get(pk.matchId) ?? 0) + 1);
+        afterMinPoolCap = Math.min(
+          afterMinPoolCap,
+          CLIENT_STATUTORY_POOL_MAX_PASS[pk.poolCode] ?? 8
+        );
+      }
+      const afterMaxCap = Math.max(
+        1,
+        Math.min(8, afterMinPoolCap, afterOrder.length || 1)
+      );
+      const comboReqM =
+        preservedPass.mode === "combo" && preservedPass.comboCode
+          ? resolveComboRequiredMatchCount(preservedPass.comboCode)
+          : null;
+      const comboSubSizes =
+        preservedPass.mode === "combo" && preservedPass.comboCode
+          ? CLIENT_STATUTORY_COMBO_PASS_SIZES[preservedPass.comboCode]
+          : undefined;
+      const isValidFixedComboAfter = Boolean(
+        comboReqM !== null &&
+        comboSubSizes &&
+        afterOrder.length === comboReqM &&
+        comboSubSizes.every((k) => k <= afterMaxCap)
+      );
+      const afterSizes =
+        preservedPass.mode === "free" &&
+        Array.isArray(preservedPass.passSizes) &&
+        preservedPass.passSizes.length > 0
+          ? preservedPass.passSizes.filter((s) => s >= 1 && s <= afterMaxCap)
+          : [afterMaxCap];
+      const effAfterSizes = afterSizes.length > 0 ? afterSizes : [afterMaxCap];
+      const afterBankerIdx =
+        !isValidFixedComboAfter && afterOrder.length >= 3
+          ? (preservedPass.bankerMatchIds ?? [])
+              .map((id) => afterOrder.indexOf(id))
+              .filter((i) => i >= 0)
+              .slice(
+                0,
+                Math.max(
+                  0,
+                  Math.min(
+                    afterOrder.length - 1,
+                    Math.min(...effAfterSizes) - 1
+                  )
+                )
+              )
+          : [];
+      const exactMTupleCount = afterOrder.reduce(
+        (prod, id) => prod * (afterCounts.get(id) ?? 1),
+        1
+      );
+      const afterBetCount =
+        nextPicks.length > 0
+          ? isValidFixedComboAfter && comboReqM !== null && comboSubSizes
+            ? Math.max(
+                1,
+                exactMTupleCount *
+                  comboSubSizes.reduce((s, k) => s + binomInt(comboReqM, k), 0)
+              )
+            : Math.max(
+                1,
+                computeElementaryBetCount(
+                  afterOrder.map((id) => afterCounts.get(id) ?? 1),
+                  effAfterSizes,
+                  afterBankerIdx
+                )
+              )
+          : 0;
+      const afterTotalCost = afterBetCount * mult * 2;
+      const afterBaseLbl = effAfterSizes
+        .map((s) => (s === 1 ? "单关" : `${s}串1`))
+        .join("+");
+      const afterPassLabel =
+        isValidFixedComboAfter && preservedPass.comboCode
+          ? preservedPass.comboCode.replace("x", "串")
+          : afterBankerIdx.length > 0
+            ? `${afterBaseLbl}(${afterBankerIdx.length}胆)`
+            : afterBaseLbl;
+
+      return {
+        canSwitch: changedMatchCount > 0 && nextPicks.length > 0,
+        changedMatchCount,
+        hasDirectionlessFallback,
+        items,
+        nextPicks,
+        beforePassLabel,
+        afterPassLabel,
+        beforeBetCount,
+        afterBetCount,
+        beforeTotalCost,
+        afterTotalCost,
+        summaryText:
+          changedMatchCount > 0
+            ? `共转换 ${changedMatchCount} 场高水子玩法至低抽水主盘 · 保持【${afterPassLabel} · ${mult}倍 · 应付 ¥${afterTotalCost}】${
+                hasDirectionlessFallback
+                  ? "（含无方向总进球兜底项，请核对）"
+                  : "（100% 保留原胜负方向与过关）"
+              }`
+            : "当前选单均已为主玩法，无需切换",
+      };
+    },
+
+    previewPortfolioRemediationAction(
+      action: PortfolioRemediationAction
+    ): PortfolioRemediationPreview {
+      const cur = reconcileState();
+      const baseRep =
+        cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+      const manRep =
+        cur.workspace.baselineManualReport ?? cur.workspace.manualReport;
+      const distinctCount = new Set(cur.picks.map((p) => p.matchId)).size;
+      let minPoolCap = 8;
+      for (const p of cur.picks) {
+        minPoolCap = Math.min(
+          minPoolCap,
+          CLIENT_STATUTORY_POOL_MAX_PASS[p.poolCode] ?? 8
+        );
+      }
+      const maxCap = Math.max(1, Math.min(8, minPoolCap, distinctCount || 1));
+
+      let resolvedTargetSizes: number[] = [];
+      if (action.kind === "lower-pass-preview") {
+        const fromAction = Array.isArray(action.targetPassSizes)
+          ? action.targetPassSizes.filter((s) => s >= 1 && s <= maxCap)
+          : [];
+        const fromLines = Array.isArray(action.previewLines)
+          ? Array.from(
+              new Set(
+                action.previewLines
+                  .map((ln) => ln.legs?.length ?? 0)
+                  .filter((s) => s >= 1 && s <= maxCap)
+              )
+            ).sort((a, b) => a - b)
+          : [];
+        if (fromAction.length > 0) {
+          resolvedTargetSizes = fromAction;
+        } else if (fromLines.length > 0) {
+          resolvedTargetSizes = fromLines;
+        } else {
+          const curSizes =
+            manRep.activePassSizes.length > 0
+              ? manRep.activePassSizes
+              : [maxCap];
+          const minCur = Math.min(...curSizes);
+          if (minCur > 2) {
+            resolvedTargetSizes = [minCur - 1];
+          } else if (minCur === 2 && manRep.canSingle) {
+            resolvedTargetSizes = [1];
+          } else {
+            resolvedTargetSizes = [Math.min(2, maxCap)];
+          }
+        }
+      }
+
+      const curSizes =
+        manRep.activePassSizes.length > 0 ? manRep.activePassSizes : [maxCap];
+      const isStrictLower =
+        action.isStrictAllLowerPass ??
+        (resolvedTargetSizes.length > 0 &&
+          Math.max(...resolvedTargetSizes) < Math.max(...curSizes));
+      const targetPassLabel =
+        resolvedTargetSizes.length > 0
+          ? resolvedTargetSizes
+              .map((s) => (s === 1 ? "单关" : `${s}串1`))
+              .join("+")
+          : manRep.modeLabel;
+      const switchPreview =
+        action.kind === "switch-main-pool"
+          ? this.previewSwitchMainPool()
+          : null;
+      const currentSlipCost = baseRep.canCheckout ? baseRep.totalCost : 0;
+
+      const summaryText =
+        action.kind === "lower-pass-preview"
+          ? `${isStrictLower ? "严格降阶" : "同向分块"}至【${targetPassLabel}】${
+              typeof action.previewCost === "number"
+                ? ` · 预览实投 ¥${action.previewCost}`
+                : ""
+            }`
+          : action.kind === "min-feasible-budget"
+            ? `将配单预算上调至下一可行门槛 ¥${action.minFeasibleBudgetYuan ?? cur.budget}`
+            : action.kind === "save-cash-preview"
+              ? action.detail ||
+                `确认省钱留现：实投 ¥${action.previewCost ?? 0} · 留存 ¥${action.savedCash ?? 0}`
+              : action.kind === "keep-cash"
+                ? currentSlipCost > 0
+                  ? `当前核对台仍有 ¥${currentSlipCost} 待出票方案，请选择「暂不套用推荐」或「清空核对单护本（¥0）」`
+                  : "当前核对台为空（¥0），保持空仓观察"
+                : action.kind === "switch-main-pool"
+                  ? (switchPreview?.summaryText ?? action.detail)
+                  : "解除智能配单锁定，切换至审单台手选微调";
+
+      return {
+        kind: action.kind,
+        actionLabel: action.label,
+        summaryText,
+        isStrictAllLowerPass: Boolean(isStrictLower),
+        currentPassLabel: manRep.modeLabel,
+        targetPassSizes: resolvedTargetSizes,
+        targetPassLabel,
+        currentSlipCost,
+        previewCost:
+          typeof action.previewCost === "number" ? action.previewCost : null,
+        canApplyPreviewPlanAtomically: Boolean(
+          action.previewLines && action.previewLines.length > 0
+        ),
+        switchMainPoolPreview: switchPreview,
+        keepCashHasActiveSlip:
+          Boolean(cur.planSpec) || cur.picks.length > 0 || currentSlipCost > 0,
+      };
+    },
+
+    applyPortfolioRemediationAction(
+      action: PortfolioRemediationAction,
+      opts?: {
+        applyPreviewPlan?: boolean;
+        clearManualPicks?: boolean;
+        onNavigateToAudit?: () => void;
+      }
+    ): {
       ok: boolean;
       kind?: PortfolioRemediationAction["kind"];
       nextBudget?: number;
+      clearedToZero?: boolean;
+      remainingSlipCost?: number;
+      targetPassLabel?: string;
     } {
       if (!action || !action.kind) return { ok: false };
       if (action.kind === "lower-pass-preview") {
+        const cur = reconcileState();
+        if (
+          cur.livePortfolioQuote.isStale ||
+          !cur.livePortfolioQuote.canApplyLiveQuote
+        ) {
+          return { ok: false };
+        }
+        const cleanBudget = normalizeBudgetYuan(cur.budget);
+        const activeQuoteSig = cur.livePortfolioQuote.inputSig;
+        const curExecSig = computeWorkspaceExecutionSig(cur, activeQuoteSig);
+        if (
+          action.sourceQuoteInputSig &&
+          action.sourceQuoteInputSig !== activeQuoteSig
+        ) {
+          return { ok: false };
+        }
+        if (
+          action.sourceWorkspaceSig &&
+          action.sourceWorkspaceSig !== curExecSig
+        ) {
+          return { ok: false };
+        }
+        if (
+          typeof action.sourceBudgetYuan === "number" &&
+          action.sourceBudgetYuan > 0 &&
+          normalizeBudgetYuan(action.sourceBudgetYuan) !== cleanBudget
+        ) {
+          return { ok: false };
+        }
+        if (
+          Array.isArray(action.previewLines) &&
+          action.previewLines.length > 0
+        ) {
+          const byId = new Map(cur.matches.map((m) => [m.id, m]));
+          const pickedMatchSet = new Set(cur.picks.map((p) => p.matchId));
+          for (const ln of action.previewLines) {
+            for (const lg of ln.legs ?? []) {
+              const fm = byId.get(lg.matchId);
+              if (!isStrictSameMatchIdentity(fm, lg)) return { ok: false };
+              const pool = fm.pools?.[lg.poolCode];
+              if (!pool || pool.selling === false) return { ok: false };
+              const opt = pool.options?.find((o) => o.key === lg.optionKey);
+              if (!opt || Math.abs(Number(opt.odds) - Number(lg.odds)) > 1e-6) {
+                return { ok: false };
+              }
+              const legGl = (lg as { goalLine?: string }).goalLine;
+              if (
+                lg.poolCode === "HHAD" &&
+                legGl !== undefined &&
+                String(pool.goalLine ?? "").trim() !== String(legGl).trim()
+              ) {
+                return { ok: false };
+              }
+              if (
+                cur.anchorToRadarPicks &&
+                cur.picks.length > 0 &&
+                !action.isExpandedShieldPreview &&
+                pickedMatchSet.has(lg.matchId) &&
+                !cur.picks.some(
+                  (p) =>
+                    p.matchId === lg.matchId &&
+                    p.poolCode === lg.poolCode &&
+                    p.optionKey === lg.optionKey
+                )
+              ) {
+                return { ok: false };
+              }
+            }
+          }
+        }
+        const preview = this.previewPortfolioRemediationAction(action);
+        if (opts?.applyPreviewPlan) {
+          if (
+            !Array.isArray(action.previewLines) ||
+            action.previewLines.length === 0
+          ) {
+            return { ok: false };
+          }
+          const lineCostSum = action.previewLines.reduce(
+            (sum, ln) => sum + (ln.cost || (ln.multiple || 1) * 2),
+            0
+          );
+          const planTotalCost =
+            typeof action.previewCost === "number" && action.previewCost > 0
+              ? action.previewCost
+              : lineCostSum;
+          const previewPlan: ArchetypePlan = {
+            key: "max-ev-utility",
+            available: true,
+            shortTab: preview.targetPassLabel || "低阶分块",
+            badge: preview.targetPassLabel || "低阶分块",
+            title:
+              action.structureLabel || `${preview.targetPassLabel}低阶分块方案`,
+            tagline: action.detail || preview.summaryText,
+            totalCost: planTotalCost,
+            savedCash:
+              action.savedCash ?? Math.max(0, cleanBudget - planTotalCost),
+            minReturn: 0,
+            maxReturn: 0,
+            winProb: action.strictNetGainProb ?? 0,
+            profitProb: action.strictNetGainProb ?? 0,
+            strictNetGainProb: action.strictNetGainProb ?? 0,
+            expectedValueRate: action.previewEvRate ?? 0,
+            underwaterCount: 0,
+            zeroPayoutProb: action.zeroPayoutProb ?? null,
+            missOneReturn: null,
+            vigPct: action.vigPct ?? 0,
+            reasons: action.detail ? [action.detail] : [],
+            lines: action.previewLines,
+            quoteInputSig: activeQuoteSig,
+            quoteBudgetYuan: cleanBudget,
+          };
+          const { taggedPlan, snapshot } = buildAppliedTicketSnapshotForPlan(
+            previewPlan,
+            cur.picks,
+            cur.matches,
+            cleanBudget,
+            activeQuoteSig
+          );
+          clearRevokedPlanHoldOnUserAction();
+          state = {
+            ...cur,
+            planSpec: {
+              kind: "archetype",
+              key: "max-ev-utility",
+              snapshotPlan: taggedPlan,
+              appliedBudgetYuan: cleanBudget,
+              planBudgetYuan: cleanBudget,
+              quoteInputSig: activeQuoteSig,
+              expectedQuoteInputSig: activeQuoteSig,
+              appliedSubjectiveDeltaPct:
+                cur.livePortfolioQuote.subjectiveDeltaPct,
+              allowBudgetMismatchReadOnly: false,
+              appliedTicketSnapshot: snapshot,
+              scaleMultiple: 1,
+              consolidateTickets: true,
+            },
+            appliedTicketSnapshot: snapshot,
+            simVoidFirstMatch: false,
+            voidMatchIds: [],
+          };
+          emit();
+          void scheduleRefresh();
+          return {
+            ok: true,
+            kind: action.kind,
+            targetPassLabel: preview.targetPassLabel,
+          };
+        }
+        const nextPassSpec = sanitizePassSpecForPicks(
+          {
+            mode: "free",
+            passSizes: preview.targetPassSizes,
+            bankerMatchIds: cur.passSpec.bankerMatchIds,
+          },
+          cur.picks
+        );
+        const preserved = preserveAppliedPlanAcrossDraftEdit(cur);
+        clearRevokedPlanHoldOnUserAction();
         state = {
-          ...state,
-          planSpec: null,
-          passSpec: { mode: "auto" },
+          ...cur,
+          planSpec: preserved.planSpec,
+          appliedTicketSnapshot: preserved.appliedTicketSnapshot,
+          passSpec: nextPassSpec,
         };
         emit();
         void scheduleRefresh();
-        return { ok: true, kind: action.kind };
+        return {
+          ok: true,
+          kind: action.kind,
+          targetPassLabel: preview.targetPassLabel,
+        };
       }
       if (
         action.kind === "min-feasible-budget" &&
@@ -3779,100 +10568,220 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         action.minFeasibleBudgetYuan > 0
       ) {
         const nextBudget = normalizeBudgetYuan(action.minFeasibleBudgetYuan);
-        const nextPlanSpec: AppliedPlanSpec =
-          state.planSpec?.kind === "archetype"
-            ? {
-                ...state.planSpec,
-                allowBudgetMismatchReadOnly:
-                  nextBudget !==
-                  normalizeBudgetYuan(
-                    state.planSpec.appliedBudgetYuan ??
-                      state.planSpec.planBudgetYuan ??
-                      nextBudget
-                  ),
-              }
-            : state.planSpec;
+        const nextDraft = { ...state, budget: nextBudget };
         state = {
-          ...state,
-          budget: nextBudget,
-          planSpec: nextPlanSpec,
+          ...nextDraft,
+          planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
         };
         emit();
         void scheduleRefresh();
         return { ok: true, kind: action.kind, nextBudget };
       }
-      if (action.kind === "keep-cash") {
-        if (state.planSpec) {
-          state = { ...state, planSpec: null };
+      if (action.kind === "save-cash-preview") {
+        const cur = reconcileState();
+        if (
+          cur.livePortfolioQuote.isStale ||
+          !cur.livePortfolioQuote.canApplyLiveQuote
+        ) {
+          return { ok: false };
+        }
+        const cleanBudget = normalizeBudgetYuan(cur.budget);
+        const activeQuoteSig = cur.livePortfolioQuote.inputSig;
+        const curExecSig = computeWorkspaceExecutionSig(cur, activeQuoteSig);
+        if (
+          action.sourceQuoteInputSig &&
+          action.sourceQuoteInputSig !== activeQuoteSig
+        ) {
+          return { ok: false };
+        }
+        if (
+          action.sourceWorkspaceSig &&
+          action.sourceWorkspaceSig !== curExecSig
+        ) {
+          return { ok: false };
+        }
+        if (
+          typeof action.sourceBudgetYuan === "number" &&
+          action.sourceBudgetYuan > 0 &&
+          normalizeBudgetYuan(action.sourceBudgetYuan) !== cleanBudget
+        ) {
+          return { ok: false };
+        }
+        if (opts?.applyPreviewPlan) {
+          if (
+            !Array.isArray(action.previewLines) ||
+            action.previewLines.length === 0
+          ) {
+            return { ok: false };
+          }
+          const byId = new Map(cur.matches.map((m) => [m.id, m]));
+          const pickedMatchSet = new Set(cur.picks.map((p) => p.matchId));
+          for (const ln of action.previewLines) {
+            for (const lg of ln.legs ?? []) {
+              const fm = byId.get(lg.matchId);
+              if (!isStrictSameMatchIdentity(fm, lg)) return { ok: false };
+              const pool = fm.pools?.[lg.poolCode];
+              if (!pool || pool.selling === false) return { ok: false };
+              const opt = pool.options?.find((o) => o.key === lg.optionKey);
+              if (!opt || Math.abs(Number(opt.odds) - Number(lg.odds)) > 1e-6) {
+                return { ok: false };
+              }
+              const legGl = (lg as { goalLine?: string }).goalLine;
+              if (
+                lg.poolCode === "HHAD" &&
+                legGl !== undefined &&
+                String(pool.goalLine ?? "").trim() !== String(legGl).trim()
+              ) {
+                return { ok: false };
+              }
+              if (
+                cur.anchorToRadarPicks &&
+                cur.picks.length > 0 &&
+                !action.isExpandedShieldPreview &&
+                pickedMatchSet.has(lg.matchId) &&
+                !cur.picks.some(
+                  (p) =>
+                    p.matchId === lg.matchId &&
+                    p.poolCode === lg.poolCode &&
+                    p.optionKey === lg.optionKey
+                )
+              ) {
+                return { ok: false };
+              }
+            }
+          }
+          const nextDraft = { ...cur, allowSaveCash: true };
+          const nextActiveQuoteSig =
+            computeClientPortfolioQuoteMeta(nextDraft).inputSig;
+          const lineCostSum = action.previewLines.reduce(
+            (sum, ln) => sum + (ln.cost || (ln.multiple || 1) * 2),
+            0
+          );
+          const planTotalCost =
+            typeof action.previewCost === "number" && action.previewCost > 0
+              ? action.previewCost
+              : lineCostSum;
+          const targetSlotKey: ArchetypeKey =
+            action.slotKey ?? "max-ev-utility";
+          const previewPlan: ArchetypePlan = {
+            key: targetSlotKey,
+            available: true,
+            shortTab: action.structureLabel || "省本方案",
+            badge: action.structureLabel || "省本方案",
+            title: action.structureLabel || `实投 ¥${planTotalCost} 省本方案`,
+            tagline: action.detail || action.label,
+            totalCost: planTotalCost,
+            savedCash:
+              action.savedCash ?? Math.max(0, cleanBudget - planTotalCost),
+            minReturn: 0,
+            maxReturn: 0,
+            winProb: action.strictNetGainProb ?? 0,
+            profitProb: action.strictNetGainProb ?? 0,
+            strictNetGainProb: action.strictNetGainProb ?? 0,
+            expectedValueRate: action.previewEvRate ?? 0,
+            underwaterCount: 0,
+            zeroPayoutProb: action.zeroPayoutProb ?? null,
+            missOneReturn: null,
+            vigPct: action.vigPct ?? 0,
+            reasons: action.detail ? [action.detail] : [],
+            lines: action.previewLines,
+            quoteInputSig: nextActiveQuoteSig,
+            quoteBudgetYuan: cleanBudget,
+          };
+          const { taggedPlan, snapshot } = buildAppliedTicketSnapshotForPlan(
+            previewPlan,
+            cur.picks,
+            cur.matches,
+            cleanBudget,
+            nextActiveQuoteSig
+          );
+          clearRevokedPlanHoldOnUserAction();
+          state = {
+            ...nextDraft,
+            planSpec: {
+              kind: "archetype",
+              key: targetSlotKey,
+              snapshotPlan: taggedPlan,
+              appliedBudgetYuan: cleanBudget,
+              planBudgetYuan: cleanBudget,
+              quoteInputSig: nextActiveQuoteSig,
+              expectedQuoteInputSig: nextActiveQuoteSig,
+              appliedSubjectiveDeltaPct:
+                cur.livePortfolioQuote.subjectiveDeltaPct,
+              allowBudgetMismatchReadOnly: false,
+              appliedTicketSnapshot: snapshot,
+              scaleMultiple: 1,
+              consolidateTickets: true,
+            },
+            appliedTicketSnapshot: snapshot,
+            simVoidFirstMatch: false,
+            voidMatchIds: [],
+          };
           emit();
           void scheduleRefresh();
+          return { ok: true, kind: action.kind };
         }
-        return { ok: true, kind: action.kind };
-      }
-      if (action.kind === "go-manual") {
-        state = { ...state, planSpec: null };
+        const nextDraft = { ...state, allowSaveCash: true };
+        state = {
+          ...nextDraft,
+          planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+        };
         emit();
         void scheduleRefresh();
         return { ok: true, kind: action.kind };
       }
+      if (action.kind === "keep-cash") {
+        if (opts?.clearManualPicks) {
+          this.clearPicks();
+          return {
+            ok: true,
+            kind: action.kind,
+            clearedToZero: true,
+            remainingSlipCost: 0,
+          };
+        }
+        const cur = reconcileState();
+        const baseRep =
+          cur.workspace.baselineReport ?? cur.workspace.effectiveReport;
+        const remainingSlipCost = baseRep.canCheckout ? baseRep.totalCost : 0;
+        return {
+          ok: true,
+          kind: action.kind,
+          clearedToZero: remainingSlipCost === 0,
+          remainingSlipCost,
+        };
+      }
+      if (action.kind === "go-manual") {
+        clearRevokedPlanHoldOnUserAction();
+        state = {
+          ...state,
+          planSpec: null,
+          appliedTicketSnapshot: null,
+        };
+        emit();
+        void scheduleRefresh();
+        opts?.onNavigateToAudit?.();
+        return { ok: true, kind: action.kind };
+      }
       if (action.kind === "switch-main-pool") {
-        const matchMap = new Map(state.matches.map((m) => [m.id, m]));
-        const orderedMatchIds: string[] = [];
-        for (const p of state.picks) {
-          if (!orderedMatchIds.includes(p.matchId)) {
-            orderedMatchIds.push(p.matchId);
-          }
+        const swPreview = this.previewSwitchMainPool();
+        if (!swPreview.canSwitch) {
+          return { ok: false, kind: action.kind };
         }
-        const nextPicks: SelectedPick[] = [];
-        for (const mid of orderedMatchIds) {
-          const existingMain = state.picks.filter(
-            (p) =>
-              p.matchId === mid &&
-              (p.poolCode === "HAD" || p.poolCode === "HHAD")
-          );
-          if (existingMain.length > 0) {
-            nextPicks.push(...existingMain);
-            continue;
-          }
-          const fm = matchMap.get(mid);
-          if (!fm) continue;
-          const targetPoolCode: PoolCode | null =
-            fm.pools.HAD?.selling !== false &&
-            (fm.pools.HAD?.options?.length ?? 0) > 0
-              ? "HAD"
-              : fm.pools.HHAD?.selling !== false &&
-                  (fm.pools.HHAD?.options?.length ?? 0) > 0
-                ? "HHAD"
-                : null;
-          if (!targetPoolCode) continue;
-          const pool = fm.pools[targetPoolCode];
-          const topOpt = [...pool.options].sort(
-            (a, b) => b.fairProb - a.fairProb || a.odds - b.odds
-          )[0];
-          if (!topOpt) continue;
-          nextPicks.push({
-            matchId: fm.id,
-            matchNumStr: fm.matchNumStr,
-            home: fm.home,
-            away: fm.away,
-            poolCode: targetPoolCode,
-            poolName: pool.name,
-            singleAllowed: resolvePoolCanSingle(pool),
-            canSingle: resolvePoolCanSingle(pool),
-            canAllUp: resolvePoolCanAllUp(pool),
-            optionKey: topOpt.key,
-            optionLabel: topOpt.label,
-            odds: topOpt.odds,
-            fairProb: topOpt.fairProb,
-          });
-        }
+        clearRevokedPlanHoldOnUserAction();
         state = {
           ...state,
           mode: "mix",
           planSpec: null,
-          passSpec: { mode: "auto" },
-          picks: nextPicks,
-          ...syncAutoRadarFields(nextPicks, state.matches, state),
+          appliedTicketSnapshot: null,
+          singleAuthGrant: null,
+          syntheticSingleMode: "full-3way",
+          passSpec: sanitizePassSpecForPicks(
+            state.passSpec,
+            swPreview.nextPicks
+          ),
+          picks: swPreview.nextPicks,
+          ...syncAutoRadarFields(swPreview.nextPicks, state.matches, state),
         };
         emit();
         void scheduleRefresh();
@@ -3886,26 +10795,78 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
         SUBJECTIVE_DELTA_MIN,
         Math.min(SUBJECTIVE_DELTA_MAX, Math.round(Number(val) || 0))
       );
-      state = { ...state, subjectiveDeltaPct: clamped };
+      const nextDraft = { ...state, subjectiveDeltaPct: clamped };
+      state = {
+        ...nextDraft,
+        planSpec: freezeArchetypeIfQuoteDrifted(state.planSpec, nextDraft),
+      };
       emit();
       void scheduleRefresh();
     },
 
     setSimVoidFirstMatch(val: boolean) {
-      state = { ...state, simVoidFirstMatch: val };
+      const flag = Boolean(val);
+      const curSlip = reconcileState().activeAuditedSlip;
+      const firstMatchId = curSlip.matchIds[0] ?? state.picks[0]?.matchId ?? "";
+      const nextVoidIds = flag && firstMatchId ? [firstMatchId] : [];
+      state = {
+        ...state,
+        simVoidFirstMatch: flag,
+        voidMatchIds: nextVoidIds,
+      };
+      emit();
+      void scheduleRefresh();
+    },
+
+    toggleVoidMatchId(matchId: string) {
+      const curSlip = reconcileState().activeAuditedSlip;
+      if (!curSlip.matchIds.includes(matchId)) return;
+      const curIds =
+        state.voidMatchIds.length > 0
+          ? state.voidMatchIds.filter((id) => curSlip.matchIds.includes(id))
+          : state.simVoidFirstMatch && curSlip.matchIds[0]
+            ? [curSlip.matchIds[0]]
+            : [];
+      const nextIds = curIds.includes(matchId)
+        ? curIds.filter((id) => id !== matchId)
+        : [...curIds, matchId];
+      const firstId = curSlip.matchIds[0] ?? "";
+      state = {
+        ...state,
+        voidMatchIds: nextIds,
+        simVoidFirstMatch: nextIds.length > 0 && nextIds[0] === firstId,
+      };
+      emit();
+      void scheduleRefresh();
+    },
+
+    setVoidMatchIds(ids: string[]) {
+      const curSlip = reconcileState().activeAuditedSlip;
+      const validSet = new Set(curSlip.matchIds);
+      const nextIds = Array.from(new Set(ids)).filter((id) => validSet.has(id));
+      const firstId = curSlip.matchIds[0] ?? "";
+      state = {
+        ...state,
+        voidMatchIds: nextIds,
+        simVoidFirstMatch: nextIds.length > 0 && nextIds[0] === firstId,
+      };
       emit();
       void scheduleRefresh();
     },
 
     loadPresetScenario(kind: PresetScenarioKind) {
+      clearRevokedPlanHoldOnUserAction();
       const built = buildPresetPicks(state.matches, kind);
       state = {
         ...state,
         planSpec: null,
+        appliedTicketSnapshot: null,
+        singleAuthGrant: null,
         syntheticSingleMode: "full-3way",
         lastPoolSwitchUndo: null,
-        passSpec: { mode: "auto" },
+        passSpec: { mode: "follow-max-parlay" },
         simVoidFirstMatch: false,
+        voidMatchIds: [],
         subjectiveDeltaPct: 0,
         multiple: built.multiple,
         picks: built.picks,
@@ -3916,46 +10877,111 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
     },
 
     buildSealedLedgerDraft(): SealedLedgerDraft | null {
-      const { effectiveReport } = state.workspace;
+      const reconciled = reconcileState();
+      if (reconciled.livePortfolioQuote.isStale) {
+        return null;
+      }
+      const effectiveReport =
+        reconciled.workspace.baselineReport ??
+        reconciled.workspace.effectiveReport;
+      const baseAppliedPlan =
+        reconciled.workspace.baselineAppliedPlan !== undefined
+          ? reconciled.workspace.baselineAppliedPlan
+          : reconciled.workspace.appliedPlan;
       const appliedPlan =
-        state.planSpec || effectiveReport.syntheticAutoMounted
-          ? state.workspace.appliedPlan
+        reconciled.planSpec || effectiveReport.syntheticAutoMounted
+          ? baseAppliedPlan
           : null;
+      const passRuleErr = !reconciled.planSpec
+        ? reconciled.manualDraft.passRuleBlockReason
+        : null;
       if (
         effectiveReport.matchCount === 0 ||
         !effectiveReport.canCheckout ||
-        effectiveReport.totalCost <= 0
+        effectiveReport.totalCost <= 0 ||
+        passRuleErr
       ) {
         return null;
       }
 
-      const title = appliedPlan
-        ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${appliedPlan.lines.length}张)`
-        : `${effectiveReport.modeLabel} · ${effectiveReport.betCount}注方案`;
+      const logicalLineCount = appliedPlan
+        ? Math.max(1, appliedPlan.lines.length)
+        : Math.max(
+            1,
+            effectiveReport.logicalLineCount ??
+              Math.max(
+                effectiveReport.tickets?.length ?? 0,
+                effectiveReport.betCount
+              )
+          );
+      const stakeUnitsCount = Math.max(
+        1,
+        effectiveReport.stakeUnitsCount ??
+          Math.round(effectiveReport.totalCost / 2)
+      );
+      const audSlips = reconciled.activeAuditedSlip.physicalSlips;
+      const physicalSlipCount =
+        audSlips && audSlips.length > 0 ? audSlips.length : logicalLineCount;
+      const manualMult = Math.max(1, Math.round(reconciled.multiple || 1));
+
+      const rawTitle = appliedPlan
+        ? `${effectiveReport.modeLabel} · ${appliedPlan.shortTab}(${logicalLineCount}种·共${stakeUnitsCount}注)`
+        : manualMult > 1
+          ? `${effectiveReport.modeLabel} · ${logicalLineCount}种×${manualMult}倍（共${stakeUnitsCount}注）`
+          : `${effectiveReport.modeLabel} · ${stakeUnitsCount}注方案`;
+      const title = dedupeRepeatedDotTokens(rawTitle);
+      const baseWsParams = buildWorkspaceParams(state);
+      const expectedSlipLineSig = reconciled.workspace.baselineSlipLineSig;
+      if (!expectedSlipLineSig) return null;
 
       return {
         title,
         passLabel: effectiveReport.modeLabel,
         modeLabel: effectiveReport.modeLabel,
         betCount: Math.max(1, effectiveReport.betCount),
+        betCountUnit: appliedPlan ? "stake-units" : "logical-lines",
+        logicalLineCount,
+        stakeUnitsCount,
+        physicalSlipCount,
         cost: effectiveReport.totalCost,
         paperRefCost: effectiveReport.totalCost,
         minPayout: effectiveReport.minPayout,
         maxPayout: effectiveReport.maxPayout,
-        workspaceParams: buildWorkspaceParams(state),
+        workspaceParams: {
+          ...baseWsParams,
+          quoteInputSig: computedInputSig,
+          expectedQuoteInputSig: computedInputSig,
+          expectedTotalCost: effectiveReport.totalCost,
+          expectedSlipLineSig,
+          enforceFreshQuoteSignature: true,
+        },
       };
     },
 
+    async exportWechatText(opts?: {
+      useConsolidated?: boolean;
+    }): Promise<string> {
+      await this.flush();
+      return this.formatShopkeeperWeChatSlip(opts);
+    },
+
     formatShopkeeperWeChatSlip(opts?: { useConsolidated?: boolean }): string {
-      const effectiveReport = state.workspace.effectiveReport;
-      const manualReport = state.workspace.manualReport;
+      const reconciled = reconcileState();
+      if (getShopkeeperBlockReason(reconciled)) return "";
+      const effectiveReport =
+        reconciled.workspace.baselineReport ??
+        reconciled.workspace.effectiveReport;
+      const manualReport =
+        reconciled.workspace.baselineManualReport ??
+        reconciled.workspace.manualReport;
+      const basePlan =
+        reconciled.workspace.baselineAppliedPlan !== undefined
+          ? reconciled.workspace.baselineAppliedPlan
+          : reconciled.workspace.appliedPlan;
       const appliedPlan =
-        state.planSpec || effectiveReport.syntheticAutoMounted
-          ? state.workspace.appliedPlan
+        reconciled.planSpec || effectiveReport.syntheticAutoMounted
+          ? basePlan
           : null;
-      if (!effectiveReport.canCheckout || effectiveReport.totalCost <= 0) {
-        return "";
-      }
 
       const bankerSet = new Set(
         effectiveReport.bankerMatchIds ??
@@ -3963,80 +10989,42 @@ export function createBetSlipController(options: BetSlipControllerOptions) {
           state.passSpec.bankerMatchIds ??
           []
       );
-      const useConsolidated =
-        opts?.useConsolidated ?? Boolean(state.planSpec?.consolidateTickets);
+      const preferConsolidated = state.planSpec
+        ? state.planSpec.consolidateTickets !== false
+        : true;
+      const useConsolidated = opts?.useConsolidated ?? preferConsolidated;
 
-      const slipRows: string[] = [];
-      let physicalSlipSeq = 0;
-
-      const pushSplitSlips = (
-        legsDesc: string,
-        modeLabel: string,
-        totalMult: number,
-        totalLineCost?: number
-      ) => {
-        for (const sl of splitTerminalPosterSlips(
-          "wc",
-          legsDesc,
-          modeLabel,
-          totalMult,
-          totalLineCost,
-          true
-        )) {
-          physicalSlipSeq += 1;
-          slipRows.push(
-            `票${physicalSlipSeq}${sl.partTag}：${legsDesc} ｜ ${sl.right}`
-          );
-        }
-      };
-
-      if (appliedPlan) {
-        const sourceLines =
-          useConsolidated &&
-          Array.isArray(appliedPlan.consolidatedLines) &&
-          appliedPlan.consolidatedLines.length > 0
-            ? appliedPlan.consolidatedLines
-            : appliedPlan.lines;
-        for (const ln of sourceLines) {
-          const legsDesc = ln.legs
-            .map(
-              (g) =>
-                `${bankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr}${g.home}(${g.poolName}·${g.optionLabel})`
-            )
-            .join(" + ");
-          pushSplitSlips(legsDesc, ln.modeLabel, ln.multiple, ln.cost);
-        }
-      } else if (
-        Array.isArray(effectiveReport.tickets) &&
-        effectiveReport.tickets.length > 0
-      ) {
-        for (const tk of effectiveReport.tickets) {
-          const legs = tk.legs ?? [];
-          const legsDesc = legs
-            .map(
-              (g) =>
-                `${bankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr}${g.home}(${g.poolName}·${g.optionLabel})`
-            )
-            .join(" + ");
-          const passTxt =
-            legs.length === 1
-              ? "单关"
-              : `${legs.length}串1${
-                  bankerSet.size > 0 ? `(${bankerSet.size}胆)` : ""
-                }`;
-          const lineMult = Math.max(
-            1,
-            Math.round(
-              (tk as ComboRow & { multiple?: number }).multiple ??
-                state.multiple ??
-                1
-            )
-          );
-          pushSplitSlips(legsDesc, passTxt, lineMult);
-        }
-      }
-
-      const header = `【竞彩出票单 · 共${physicalSlipSeq}张实票 · 合计 ¥${effectiveReport.totalCost}】`;
+      const auditedPhysicalSlips =
+        reconciled.activeAuditedSlip.physicalSlips ?? [];
+      const resolvedPhysicalSlips =
+        opts?.useConsolidated === undefined ||
+        opts.useConsolidated === preferConsolidated
+          ? auditedPhysicalSlips
+          : consolidateTerminalPhysicalSlips(
+              effectiveReport,
+              appliedPlan,
+              reconciled.matches,
+              reconciled.multiple,
+              bankerSet,
+              { consolidate: useConsolidated }
+            );
+      if (
+        resolvedPhysicalSlips !== auditedPhysicalSlips &&
+        getShopkeeperBlockReason(reconciled, resolvedPhysicalSlips)
+      )
+        return "";
+      const slipRows = resolvedPhysicalSlips.map((ps, index) => {
+        const legsDesc = ps.legsByMatch
+          .map((g) => {
+            const optsTxt = g.options.map((o) => o.optionLabel).join("/");
+            return `${g.isBanker || bankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr}${g.home}(${g.poolName}·${optsTxt})`;
+          })
+          .join(" + ");
+        const unitsSuffix =
+          ps.basicUnitsPerSlip > 1 ? `(${ps.basicUnitsPerSlip}注)` : "";
+        return `票${index + 1}：${legsDesc} ｜ ${ps.modeLabel}${unitsSuffix} × ${ps.multiple}倍 = ¥${ps.costYuan}`;
+      });
+      const header = `【竞彩出票单 · 共${slipRows.length}张实票 · 合计 ¥${effectiveReport.totalCost}】`;
       const footer = "请核对票面固定赔率后出票拍照，谢谢！";
       return [header, ...slipRows, footer].join("\n");
     },
@@ -4048,6 +11036,10 @@ export interface SealedLedgerDraft {
   passLabel?: string;
   modeLabel: string;
   betCount: number;
+  betCountUnit?: "logical-lines" | "stake-units";
+  logicalLineCount?: number;
+  stakeUnitsCount?: number;
+  physicalSlipCount?: number;
   cost: number;
   paperRefCost: number;
   minPayout: number;
@@ -4113,6 +11105,26 @@ export function splitTerminalPosterSlips(
     idx += 1;
   }
   return slips;
+}
+
+export function isMatchAnyPoolSingleEligible(m: MatchItem): boolean {
+  if (!m?.pools) return false;
+  const codes: PoolCode[] = ["HAD", "HHAD", "CRS", "TTG", "HAFU"];
+  for (const code of codes) {
+    const p = m.pools[code];
+    if (
+      p &&
+      p.selling !== false &&
+      Boolean(p.canSingle ?? p.single) &&
+      Array.isArray(p.options) &&
+      p.options.some(
+        (o) => Number.isFinite(Number(o.odds)) && Number(o.odds) >= 1.01
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -4195,8 +11207,7 @@ export function filterAndGroupRadarMatches(
     list = list.filter((m) => activeLeagues.includes(m.league));
   }
   if (opts.mode === "single" || opts.qFilter === "single") {
-    const sub = list.filter((m) => m.pools.HAD.single || m.pools.HHAD.single);
-    if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
+    list = list.filter((m) => isMatchAnyPoolSingleEligible(m));
   } else if (opts.qFilter === "low-vig") {
     const sub = list.filter((m) => m.pools.HAD.vig < 0.1228);
     if (sub.length > 0 || opts.searchQuery?.trim()) list = sub;
@@ -4223,10 +11234,16 @@ export function filterAndGroupRadarMatches(
     });
   }
 
-  const weekdayRe = new RegExp("^(周[一二三四五六日])");
+  const weekdayChars = "一二三四五六日";
   const groupMap = new Map<string, RadarMatchDayGroup>();
   for (const m of list) {
-    const weekdayPrefix = m.matchNumStr?.match(weekdayRe)?.[1] || "当期";
+    const numStr = String(m.matchNumStr || "");
+    const weekdayPrefix =
+      numStr.length >= 2 &&
+      numStr.startsWith("周") &&
+      weekdayChars.includes(numStr[1])
+        ? numStr.slice(0, 2)
+        : "当期";
     const datePart = m.businessDate || m.matchDate || "";
     const dayKey = datePart ? `${datePart}_${weekdayPrefix}` : weekdayPrefix;
     const dayLabel = datePart

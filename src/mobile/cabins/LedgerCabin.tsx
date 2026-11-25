@@ -10,6 +10,7 @@ import type {
 import { SessionStatusCard } from "./IntelCabin.tsx";
 import {
   buildLedgerEntryPresentation,
+  dedupePlanTitle,
   formatLedgerStatsSummary,
 } from "./cabinViewModels.ts";
 
@@ -364,15 +365,27 @@ export function LedgerCabin({
                       <span className="qpill num">手工校准</span>
                     )}
                   </div>
-                  <b style={{ fontSize: 13, display: "block" }}>{it.title}</b>
+                  <b style={{ fontSize: 13, display: "block" }}>
+                    {dedupePlanTitle(it.title)}
+                  </b>
                   <div className="small num">
                     {isLive
                       ? `本金 ¥${it.cost.toFixed(2)}${
+                          typeof it.logicalLineCount === "number" &&
+                          typeof it.stakeUnitsCount === "number"
+                            ? ` · ${it.logicalLineCount}种/共${it.stakeUnitsCount}注`
+                            : ""
+                        }${
                           it.minPayout > 0
                             ? ` · 预计保底 ¥${it.minPayout.toFixed(2)}`
                             : ""
                         }${it.settledReturn > 0 ? ` · 实派 ¥${it.settledReturn.toFixed(2)}` : ""}`
                       : `0成本模拟观察 · 拟投 ¥${it.paperRefCost.toFixed(2)}${
+                          typeof it.logicalLineCount === "number" &&
+                          typeof it.stakeUnitsCount === "number"
+                            ? ` · ${it.logicalLineCount}种/共${it.stakeUnitsCount}注`
+                            : ""
+                        }${
                           it.settledReturn > 0
                             ? ` · 拟派 ¥${it.settledReturn.toFixed(2)}`
                             : ""

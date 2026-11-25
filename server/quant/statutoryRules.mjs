@@ -102,24 +102,62 @@ export function statutorySingleBetCap(matchCount) {
   return 1_000_000;
 }
 
-export function effectiveNonVoidLegCount(legOdds) {
-  if (!Array.isArray(legOdds) || legOdds.length === 0) return 1;
+export function countActiveNonVoidLegs(legOdds, voidMatchSet = null) {
+  if (!Array.isArray(legOdds) || legOdds.length === 0) return 0;
   let valid = 0;
   for (let i = 0; i < legOdds.length; i++) {
     const item = legOdds[i];
-    const oddVal =
-      typeof item === "object" && item !== null
-        ? Number(item.odds)
-        : Number(item);
-    if (Math.abs(oddVal - 1.0) > 1e-9) valid += 1;
+    if (typeof item === "object" && item !== null) {
+      if (item.isVoid === true) continue;
+      if (
+        voidMatchSet &&
+        item.matchId &&
+        voidMatchSet.has(String(item.matchId))
+      ) {
+        continue;
+      }
+      const oddVal = Number(item.odds);
+      if (Math.abs(oddVal - 1.0) > 1e-9) valid += 1;
+    } else {
+      const oddVal = Number(item);
+      if (Math.abs(oddVal - 1.0) > 1e-9) valid += 1;
+    }
   }
-  return Math.max(1, valid);
+  return valid;
 }
 
-export function computeLineStatutoryPayout(legOdds, multiple) {
+export function effectiveNonVoidLegCount(legOdds, voidMatchSet = null) {
+  return Math.max(1, countActiveNonVoidLegs(legOdds, voidMatchSet));
+}
+
+export function computeLineStatutoryPayout(
+  legOdds,
+  multiple,
+  voidMatchSet = null
+) {
   const mult = Math.max(1, Math.min(999, Math.round(Number(multiple) || 1)));
-  const unitBeforeCap = bankerRoundParlayUnitPayout(legOdds);
-  const cap = statutorySingleBetCap(effectiveNonVoidLegCount(legOdds));
+  const normalizedOdds = Array.isArray(legOdds)
+    ? legOdds.map((item) => {
+        if (typeof item === "object" && item !== null) {
+          if (
+            item.isVoid === true ||
+            (voidMatchSet &&
+              item.matchId &&
+              voidMatchSet.has(String(item.matchId)))
+          ) {
+            return 1.0;
+          }
+          return Number(item.odds);
+        }
+        return Number(item);
+      })
+    : [];
+  const activeCount = countActiveNonVoidLegs(legOdds, voidMatchSet);
+  const unitBeforeCap =
+    activeCount === 0 && normalizedOdds.length > 0
+      ? 2.0
+      : bankerRoundParlayUnitPayout(normalizedOdds);
+  const cap = statutorySingleBetCap(Math.max(1, activeCount));
   const unitPayout = Math.min(cap, unitBeforeCap);
   const cappedClipped = Math.max(
     0,
@@ -129,6 +167,8 @@ export function computeLineStatutoryPayout(legOdds, multiple) {
   return {
     mult,
     cost: mult * 2,
+    activeLegCount: activeCount,
+    isAllVoidRefund: activeCount === 0 && normalizedOdds.length > 0,
     unitBeforeCap,
     cap,
     unitPayout,
@@ -944,4 +984,1704 @@ export function isPoolAllUpEligible(pool) {
   }
   if (typeof pool.canAllUp === "boolean") return pool.canAllUp;
   return true;
+}
+
+// ==================== ADR-0019 · Lossless Multiset Slip Consolidator & Joint Breakeven Solver ====================
+
+const CANONICAL_POOL_OPTION_ORDER = {
+  HAD: ["h", "d", "a"],
+  HHAD: ["hh", "hd", "ha", "h", "d", "a"],
+  TTG: ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"],
+  HAFU: ["hh", "hd", "ha", "dh", "dd", "da", "ah", "ad", "aa"],
+  CRS: [
+    ...OFFICIAL_CRS_PAIRS.map(([k]) => k),
+    ...OFFICIAL_CRS_PAIRS.map(([, lbl]) => lbl),
+  ],
+};
+
+function comparePoolOptionKeys(poolCode, keyA, keyB) {
+  const order = CANONICAL_POOL_OPTION_ORDER[poolCode];
+  if (order) {
+    const ia = order.indexOf(keyA);
+    const ib = order.indexOf(keyB);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+  }
+  return String(keyA).localeCompare(String(keyB));
+}
+
+function resolveSlipPassSizes(line, matchCount) {
+  if (Array.isArray(line?.passSizes) && line.passSizes.length > 0) {
+    const cleaned = [
+      ...new Set(
+        line.passSizes
+          .map((n) => Math.round(Number(n) || 0))
+          .filter((n) => n >= 1)
+      ),
+    ].sort((a, b) => a - b);
+    if (cleaned.length > 0) return cleaned;
+  }
+  const rawMode = String(line?.modeLabel || "").trim();
+  if (
+    matchCount === 1 ||
+    rawMode === "单关" ||
+    rawMode === "1串1" ||
+    rawMode.startsWith("单关")
+  ) {
+    return [1];
+  }
+  const freeMatch = /^(\d+)串1(?!\d)/.exec(rawMode);
+  if (freeMatch) {
+    return [Math.max(1, parseInt(freeMatch[1], 10))];
+  }
+  const comboMatch = /^(\d+)串(\d+)/.exec(rawMode);
+  if (comboMatch) {
+    const m = parseInt(comboMatch[1], 10);
+    const b = parseInt(comboMatch[2], 10);
+    const table = OFFICIAL_COMBO_PASS_TABLE[m] || [];
+    const entry = table.find((it) => it.code === `${m}x${b}`);
+    if (entry && Array.isArray(entry.sizes) && entry.sizes.length > 0) {
+      return [...entry.sizes];
+    }
+    return [m];
+  }
+  const freeMulti = [...rawMode.matchAll(/(\d+)串1/g)].map((x) =>
+    parseInt(x[1], 10)
+  );
+  if (freeMulti.length > 0) {
+    return [...new Set(freeMulti)].sort((a, b) => a - b);
+  }
+  return [Math.max(1, matchCount)];
+}
+
+/**
+ * Expand a single `TerminalPhysicalSlip` back into its elementary `¥2` bet multiset
+ * (map from canonical basic-bet signature -> integer multiplicity) to machine-verify
+ * 100% lossless bijection on every call to `consolidateTerminalPhysicalSlips`.
+ */
+export function expandTerminalPhysicalSlipMultiset(slip) {
+  const counts = new Map();
+  if (
+    !slip ||
+    !Array.isArray(slip.legsByMatch) ||
+    slip.legsByMatch.length === 0
+  ) {
+    return counts;
+  }
+  const mult = Math.max(1, Math.round(Number(slip.multiple) || 1));
+  const groups = slip.legsByMatch;
+  const k = groups.length;
+  const comboCode = slip.comboCode ? String(slip.comboCode).trim() : "";
+  const comboMeta = comboCode
+    ? (OFFICIAL_COMBO_PASS_TABLE[k] || []).find((x) => x.code === comboCode)
+    : null;
+
+  const tuples = [];
+  const walkOpts = (depth, acc) => {
+    if (depth === k) {
+      tuples.push([...acc]);
+      return;
+    }
+    const g = groups[depth];
+    const opts = Array.isArray(g.options) ? g.options : [];
+    for (let i = 0; i < opts.length; i++) {
+      acc.push({
+        matchId: g.matchId,
+        poolCode: g.poolCode,
+        goalLine: g.goalLine ?? "",
+        isBanker: Boolean(g.isBanker),
+        optionKey: String(opts[i].optionKey),
+      });
+      walkOpts(depth + 1, acc);
+      acc.pop();
+    }
+  };
+  walkOpts(0, []);
+
+  if (comboMeta) {
+    const sizes = comboMeta.sizes;
+    for (let t = 0; t < tuples.length; t++) {
+      const tup = tuples[t];
+      for (let sIdx = 0; sIdx < sizes.length; sIdx++) {
+        const subK = sizes[sIdx];
+        const chooseSub = (start, chosen) => {
+          if (chosen.length === subK) {
+            const sig = chosen
+              .map(
+                (c) => `${c.matchId}:${c.poolCode}:${c.goalLine}:${c.optionKey}`
+              )
+              .join("|");
+            counts.set(sig, (counts.get(sig) || 0) + mult);
+            return;
+          }
+          for (
+            let idx = start;
+            idx <= tup.length - (subK - chosen.length);
+            idx++
+          ) {
+            chosen.push(tup[idx]);
+            chooseSub(idx + 1, chosen);
+            chosen.pop();
+          }
+        };
+        chooseSub(0, []);
+      }
+    }
+  } else {
+    for (let t = 0; t < tuples.length; t++) {
+      const tup = tuples[t];
+      const sig = tup
+        .map(
+          (c) =>
+            `${c.matchId}:${c.poolCode}:${c.goalLine}:${c.isBanker ? 1 : 0}:${c.optionKey}`
+        )
+        .join("|");
+      counts.set(sig, (counts.get(sig) || 0) + mult);
+    }
+  }
+  return counts;
+}
+
+/**
+ * Lossless Multiset Bijection Terminal Physical Slip Consolidator (`ADR-0019` Deliverable 1):
+ * - Official unsplit fixed-combo inputs (`line.comboCode` in `OFFICIAL_COMBO_PASS_TABLE[k]`) emit
+ *   authentic Sporttery `M串N` physical slips (`comboCode`, `modeLabel: comboMeta.label`,
+ *   `passSizes: comboMeta.sizes`, `basicUnitsPerSlip = comboMeta.baseBets`).
+ * - Independent/expanded basic lines (`!line.comboCode`) strictly normalize to `comboCode: null`,
+ *   `passSizes: [k]` (`k = legsByMatch.length`), and `modeLabel: k === 1 ? "单关" : "${k}串1"`,
+ *   merging ONLY tuples with complete Cartesian closure `∏ |O_r|`.
+ * - Splits `multiple > 99` into physical slips of `99, ..., rem` (`1 <= multiple <= 99`).
+ * - Machine-verifies exact elementary-bet multiset bijection and `costYuan === 2 * basicUnitsPerSlip * multiple`.
+ */
+export function consolidateTerminalPhysicalSlips(
+  lines,
+  optionsOrRuleVersion = "sporttery-2026-v1",
+  maybeOptions = null
+) {
+  if (!Array.isArray(lines) || lines.length === 0) return [];
+  const opts =
+    typeof optionsOrRuleVersion === "object" && optionsOrRuleVersion !== null
+      ? optionsOrRuleVersion
+      : maybeOptions && typeof maybeOptions === "object"
+        ? maybeOptions
+        : {};
+  const ruleVersion =
+    typeof optionsOrRuleVersion === "string" && optionsOrRuleVersion
+      ? optionsOrRuleVersion
+      : typeof opts.ruleVersion === "string" && opts.ruleVersion
+        ? opts.ruleVersion
+        : "sporttery-2026-v1";
+  const consolidate = opts.consolidate !== false;
+
+  const matchOrderMap = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const legs = lines[i]?.legs;
+    if (!Array.isArray(legs)) continue;
+    for (let j = 0; j < legs.length; j++) {
+      const mid = String(legs[j]?.matchId || "");
+      if (mid && !matchOrderMap.has(mid)) {
+        matchOrderMap.set(mid, matchOrderMap.size);
+      }
+    }
+  }
+
+  let expectedTotalStakeUnits = 0;
+  const expectedMultiset = new Map();
+  const subBuckets = new Map();
+  const seenTupleLayers = new Map();
+  const bucketOrder = [];
+  const comboTuplesBySig = new Map();
+  const comboTupleOrder = [];
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    const rawLegs = Array.isArray(line?.legs) ? line.legs : [];
+    if (rawLegs.length === 0) continue;
+
+    const mult = Math.max(1, Math.round(Number(line?.multiple) || 1));
+    const lineId = String(line?.id || `line-${lineIdx + 1}`);
+    const extraSourceIds = Array.isArray(line?.sourceBasicLineIds)
+      ? line.sourceBasicLineIds.map((x) => String(x))
+      : [lineId];
+
+    const byMatch = new Map();
+    for (let j = 0; j < rawLegs.length; j++) {
+      const g = rawLegs[j];
+      const matchId = String(g?.matchId || `match-${j}`);
+      const poolCode = String(g?.poolCode || "HAD");
+      const goalLine =
+        g?.goalLine !== undefined && g?.goalLine !== null && g?.goalLine !== ""
+          ? String(g.goalLine)
+          : undefined;
+      const isBanker = Boolean(g?.isBanker);
+      const groupKey = `${matchId}@@${poolCode}@@${goalLine ?? ""}@@${isBanker ? 1 : 0}`;
+      let grp = byMatch.get(groupKey);
+      if (!grp) {
+        grp = {
+          matchId,
+          matchNumStr: String(g?.matchNumStr || matchId),
+          home: String(g?.home || ""),
+          away: String(g?.away || ""),
+          kickoff: String(g?.kickoff || ""),
+          isBanker,
+          poolCode,
+          poolName: String(g?.poolName || poolCode),
+          goalLine,
+          optionsMap: new Map(),
+        };
+        byMatch.set(groupKey, grp);
+      }
+      const optKey = String(g?.optionKey || g?.optionLabel || "opt");
+      if (!grp.optionsMap.has(optKey)) {
+        grp.optionsMap.set(optKey, {
+          optionKey: optKey,
+          optionLabel: String(g?.optionLabel || optKey),
+          odds: Number(g?.odds) || 1,
+        });
+      }
+    }
+
+    const orderedGroups = [...byMatch.values()].sort((a, b) => {
+      const oa = matchOrderMap.get(a.matchId) ?? 999999;
+      const ob = matchOrderMap.get(b.matchId) ?? 999999;
+      if (oa !== ob) return oa - ob;
+      return a.poolCode.localeCompare(b.poolCode);
+    });
+    const k = orderedGroups.length;
+    if (k === 0) continue;
+
+    const rawComboCode = line?.comboCode ? String(line.comboCode).trim() : "";
+    const hasAnyBanker = orderedGroups.some((g) => g.isBanker);
+    const comboMeta =
+      rawComboCode && !hasAnyBanker
+        ? (OFFICIAL_COMBO_PASS_TABLE[k] || []).find(
+            (x) => x.code === rawComboCode
+          ) || null
+        : null;
+
+    // Expand if an input line carried >1 option on any match
+    const optionArrays = orderedGroups.map((g) =>
+      [...g.optionsMap.values()].sort((a, b) =>
+        comparePoolOptionKeys(g.poolCode, a.optionKey, b.optionKey)
+      )
+    );
+    const tuples = [];
+    const buildTuples = (depth, acc) => {
+      if (depth === k) {
+        tuples.push([...acc]);
+        return;
+      }
+      const opts = optionArrays[depth];
+      for (let u = 0; u < opts.length; u++) {
+        acc.push(opts[u]);
+        buildTuples(depth + 1, acc);
+        acc.pop();
+      }
+    };
+    buildTuples(0, []);
+
+    if (comboMeta) {
+      expectedTotalStakeUnits += tuples.length * comboMeta.baseBets * mult;
+      for (let t = 0; t < tuples.length; t++) {
+        const tuple = tuples[t];
+        const legsByMatch = orderedGroups.map((meta, idx) => {
+          const grpOut = {
+            matchId: meta.matchId,
+            matchNumStr: meta.matchNumStr,
+            home: meta.home,
+            away: meta.away,
+            kickoff: meta.kickoff,
+            poolCode: meta.poolCode,
+            poolName: meta.poolName,
+            options: [{ ...tuple[idx] }],
+          };
+          if (meta.goalLine !== undefined) grpOut.goalLine = meta.goalLine;
+          return grpOut;
+        });
+        for (let sIdx = 0; sIdx < comboMeta.sizes.length; sIdx++) {
+          const subK = comboMeta.sizes[sIdx];
+          const chooseExp = (start, chosen) => {
+            if (chosen.length === subK) {
+              const sig = chosen
+                .map(
+                  (c) =>
+                    `${c.matchId}:${c.poolCode}:${c.goalLine ?? ""}:${c.options[0].optionKey}`
+                )
+                .join("|");
+              expectedMultiset.set(
+                sig,
+                (expectedMultiset.get(sig) || 0) + mult
+              );
+              return;
+            }
+            for (
+              let idx = start;
+              idx <= legsByMatch.length - (subK - chosen.length);
+              idx++
+            ) {
+              chosen.push(legsByMatch[idx]);
+              chooseExp(idx + 1, chosen);
+              chosen.pop();
+            }
+          };
+          chooseExp(0, []);
+        }
+        const passKey = comboMeta.sizes.join(",");
+        const lineSignature = `${comboMeta.code}|${comboMeta.label}|${passKey}|${legsByMatch
+          .map(
+            (g) =>
+              `${g.matchId}:${g.poolCode}${g.goalLine ? `(${g.goalLine})` : ""}=${g.options[0].optionKey}`
+          )
+          .join("/")}`;
+        const comboMergeKey = consolidate
+          ? lineSignature
+          : `${lineSignature}@@raw#${lineIdx}#${t}`;
+        let existing = comboTuplesBySig.get(comboMergeKey);
+        if (!existing) {
+          existing = {
+            comboCode: comboMeta.code,
+            modeLabel: comboMeta.label,
+            passSizes: [...comboMeta.sizes],
+            basicUnitsPerTuple: comboMeta.baseBets,
+            multiple: mult,
+            legsByMatch,
+            sourceIds: [...extraSourceIds],
+            lineSignature,
+          };
+          comboTuplesBySig.set(comboMergeKey, existing);
+          comboTupleOrder.push(comboMergeKey);
+        } else {
+          existing.multiple += mult;
+          for (let s = 0; s < extraSourceIds.length; s++) {
+            existing.sourceIds.push(extraSourceIds[s]);
+          }
+        }
+      }
+      continue;
+    }
+
+    // Independent elementary line: strictly k-leg free pass (`单关` or `k串1`) with comboCode: null
+    const bankerCount = orderedGroups.filter((g) => g.isBanker).length;
+    const passSizes = [k];
+    const modeLabel =
+      k === 1
+        ? "单关"
+        : `${k}串1${bankerCount > 0 ? `(${bankerCount}胆)` : ""}`;
+    const passKey = String(k);
+    const matchSig = orderedGroups
+      .map(
+        (g) =>
+          `${g.matchId}:${g.poolCode}:${g.goalLine ?? ""}:${g.isBanker ? 1 : 0}`
+      )
+      .join("|");
+    const baseBucketKey = `${modeLabel}@@${passKey}@@${mult}@@${matchSig}`;
+
+    expectedTotalStakeUnits += tuples.length * mult;
+
+    let tupleCounter = seenTupleLayers.get(baseBucketKey);
+    if (!tupleCounter) {
+      tupleCounter = new Map();
+      seenTupleLayers.set(baseBucketKey, tupleCounter);
+    }
+
+    for (let t = 0; t < tuples.length; t++) {
+      const tuple = tuples[t];
+      const elemSig = tuple
+        .map(
+          (o, idx) =>
+            `${orderedGroups[idx].matchId}:${orderedGroups[idx].poolCode}:${orderedGroups[idx].goalLine ?? ""}:${orderedGroups[idx].isBanker ? 1 : 0}:${o.optionKey}`
+        )
+        .join("|");
+      expectedMultiset.set(
+        elemSig,
+        (expectedMultiset.get(elemSig) || 0) + mult
+      );
+
+      const tupleSig = tuple.map((o) => o.optionKey).join("|");
+      const layerIdx = tupleCounter.get(tupleSig) || 0;
+      tupleCounter.set(tupleSig, layerIdx + 1);
+      const subKey = `${baseBucketKey}##${layerIdx}`;
+      let bucket = subBuckets.get(subKey);
+      if (!bucket) {
+        bucket = {
+          modeLabel,
+          passSizes,
+          passKey,
+          mult,
+          matchSig,
+          metaGroups: orderedGroups.map((g) => ({
+            matchId: g.matchId,
+            matchNumStr: g.matchNumStr,
+            home: g.home,
+            away: g.away,
+            kickoff: g.kickoff,
+            isBanker: g.isBanker,
+            poolCode: g.poolCode,
+            poolName: g.poolName,
+            goalLine: g.goalLine,
+          })),
+          boxes: [],
+        };
+        subBuckets.set(subKey, bucket);
+        bucketOrder.push(subKey);
+      }
+      bucket.boxes.push({
+        optionMaps: tuple.map((o) => new Map([[o.optionKey, o]])),
+        sourceIds: [...extraSourceIds],
+      });
+    }
+  }
+
+  // Factor each elementary sub-bucket one match dimension at a time (100% exact Cartesian closure)
+  const mergedIdenticalBoxes = new Map();
+  const mergedBoxOrder = [];
+
+  for (let cIdx = 0; cIdx < comboTupleOrder.length; cIdx++) {
+    const cSig = comboTupleOrder[cIdx];
+    mergedIdenticalBoxes.set(cSig, comboTuplesBySig.get(cSig));
+    mergedBoxOrder.push(cSig);
+  }
+
+  for (let bIdx = 0; bIdx < bucketOrder.length; bIdx++) {
+    const bucket = subBuckets.get(bucketOrder[bIdx]);
+    const k = bucket.metaGroups.length;
+    let boxes = bucket.boxes;
+
+    if (consolidate) {
+      for (let dim = 0; dim < k; dim++) {
+        if (boxes.length <= 1) break;
+        const grouped = new Map();
+        const groupKeys = [];
+        for (let i = 0; i < boxes.length; i++) {
+          const bx = boxes[i];
+          const otherParts = [];
+          for (let j = 0; j < k; j++) {
+            if (j === dim) continue;
+            const sortedKeys = [...bx.optionMaps[j].keys()].sort((a, b) =>
+              comparePoolOptionKeys(bucket.metaGroups[j].poolCode, a, b)
+            );
+            otherParts.push(`${j}:${sortedKeys.join("+")}`);
+          }
+          const otherSig = otherParts.join("|");
+          let list = grouped.get(otherSig);
+          if (!list) {
+            list = [];
+            grouped.set(otherSig, list);
+            groupKeys.push(otherSig);
+          }
+          list.push(bx);
+        }
+
+        const nextBoxes = [];
+        for (let gIdx = 0; gIdx < groupKeys.length; gIdx++) {
+          const list = grouped.get(groupKeys[gIdx]);
+          if (list.length === 1) {
+            nextBoxes.push(list[0]);
+            continue;
+          }
+          const unionDimMap = new Map();
+          const combinedSourceIds = [];
+          for (let u = 0; u < list.length; u++) {
+            for (const [ok, ov] of list[u].optionMaps[dim].entries()) {
+              unionDimMap.set(ok, ov);
+            }
+            for (let s = 0; s < list[u].sourceIds.length; s++) {
+              combinedSourceIds.push(list[u].sourceIds[s]);
+            }
+          }
+          const nextMaps = list[0].optionMaps.map((mp, idx) =>
+            idx === dim ? unionDimMap : mp
+          );
+          nextBoxes.push({
+            optionMaps: nextMaps,
+            sourceIds: combinedSourceIds,
+          });
+        }
+        boxes = nextBoxes;
+      }
+    }
+
+    for (let i = 0; i < boxes.length; i++) {
+      const bx = boxes[i];
+      const legsByMatch = bucket.metaGroups.map((meta, idx) => {
+        const options = [...bx.optionMaps[idx].values()].sort((a, b) =>
+          comparePoolOptionKeys(meta.poolCode, a.optionKey, b.optionKey)
+        );
+        const grpOut = {
+          matchId: meta.matchId,
+          matchNumStr: meta.matchNumStr,
+          home: meta.home,
+          away: meta.away,
+          kickoff: meta.kickoff,
+          poolCode: meta.poolCode,
+          poolName: meta.poolName,
+          options,
+        };
+        if (meta.isBanker) grpOut.isBanker = true;
+        if (meta.goalLine !== undefined) grpOut.goalLine = meta.goalLine;
+        return grpOut;
+      });
+      const lineSignature = `free|${bucket.modeLabel}|${bucket.passKey}|${legsByMatch
+        .map(
+          (g) =>
+            `${g.matchId}:${g.poolCode}${g.goalLine ? `(${g.goalLine})` : ""}${
+              g.isBanker ? "[B]" : ""
+            }=${g.options.map((o) => o.optionKey).join("+")}`
+        )
+        .join("/")}`;
+      const mergeKey = consolidate
+        ? lineSignature
+        : `${lineSignature}@@raw#${bIdx}#${i}`;
+
+      let existing = mergedIdenticalBoxes.get(mergeKey);
+      if (!existing) {
+        existing = {
+          comboCode: null,
+          modeLabel: bucket.modeLabel,
+          passSizes: bucket.passSizes,
+          basicUnitsPerTuple: null,
+          multiple: bucket.mult,
+          legsByMatch,
+          sourceIds: [...bx.sourceIds],
+          lineSignature,
+        };
+        mergedIdenticalBoxes.set(mergeKey, existing);
+        mergedBoxOrder.push(mergeKey);
+      } else {
+        existing.multiple += bucket.mult;
+        for (let s = 0; s < bx.sourceIds.length; s++) {
+          existing.sourceIds.push(bx.sourceIds[s]);
+        }
+      }
+    }
+  }
+
+  // Split >99x multiples into terminal-legal physical slips (1 <= multiple <= 99)
+  const physicalSlips = [];
+  let actualTotalStakeUnits = 0;
+  const actualMultiset = new Map();
+
+  for (let i = 0; i < mergedBoxOrder.length; i++) {
+    const item = mergedIdenticalBoxes.get(mergedBoxOrder[i]);
+    const optionProd = item.legsByMatch.reduce(
+      (acc, g) => acc * g.options.length,
+      1
+    );
+    const basicUnitsPerSlip = item.comboCode
+      ? optionProd * item.basicUnitsPerTuple
+      : optionProd;
+    const matchIds = item.legsByMatch.map((g) => g.matchId);
+    const dedupSourceIds = [...new Set(item.sourceIds)];
+    let remMult = item.multiple;
+    while (remMult > 0) {
+      const chunkMult = Math.min(99, remMult);
+      remMult -= chunkMult;
+      const slipNo = physicalSlips.length + 1;
+      const stakeUnits2Yuan = basicUnitsPerSlip * chunkMult;
+      actualTotalStakeUnits += stakeUnits2Yuan;
+      const slipObj = {
+        slipNo,
+        slipId: `slip-${slipNo}`,
+        comboCode: item.comboCode ?? null,
+        modeLabel: item.modeLabel,
+        passSizes: [...item.passSizes],
+        multiple: chunkMult,
+        basicUnitsPerSlip,
+        stakeUnits2Yuan,
+        costYuan: stakeUnits2Yuan * 2,
+        matchIds: [...matchIds],
+        legsByMatch: item.legsByMatch.map((g) => ({
+          ...g,
+          options: g.options.map((o) => ({ ...o })),
+        })),
+        sourceBasicLineIds: [...dedupSourceIds],
+        lineSignature: item.lineSignature,
+        ruleVersion,
+      };
+      physicalSlips.push(slipObj);
+      const subCounts = expandTerminalPhysicalSlipMultiset(slipObj);
+      for (const [sig, cnt] of subCounts.entries()) {
+        actualMultiset.set(sig, (actualMultiset.get(sig) || 0) + cnt);
+      }
+    }
+  }
+
+  if (
+    actualTotalStakeUnits !== expectedTotalStakeUnits ||
+    actualMultiset.size !== expectedMultiset.size
+  ) {
+    throw new Error(
+      `Slip consolidation multiset invariant violated: actual=${actualTotalStakeUnits} (${actualMultiset.size}), expected=${expectedTotalStakeUnits} (${expectedMultiset.size})`
+    );
+  }
+  for (const [sig, expCnt] of expectedMultiset.entries()) {
+    if (actualMultiset.get(sig) !== expCnt) {
+      throw new Error(
+        `Slip consolidation multiset mismatch on ${sig}: actual=${actualMultiset.get(sig)}, expected=${expCnt}`
+      );
+    }
+  }
+
+  return physicalSlips;
+}
+
+function pruneDominatedBreakevenBuckets(rawBuckets, K) {
+  const uniqueMap = new Map();
+  for (let s = 0; s < rawBuckets.length; s++) {
+    const row = rawBuckets[s];
+    if (!row || row.length < K) continue;
+    let maxVal = 0;
+    let sumVal = 0;
+    const arr = new Float64Array(K);
+    for (let i = 0; i < K; i++) {
+      const v = Math.max(0, Math.round(Number(row[i]) || 0));
+      arr[i] = v;
+      if (v > maxVal) maxVal = v;
+      sumVal += v;
+    }
+    if (maxVal <= 0) continue;
+    const sig = Array.from(arr).join(",");
+    if (!uniqueMap.has(sig)) {
+      uniqueMap.set(sig, { arr, maxVal, sumVal });
+    }
+  }
+
+  const candidates = [...uniqueMap.values()].sort(
+    (a, b) => a.sumVal - b.sumVal
+  );
+  const minimal = [];
+  for (let i = 0; i < candidates.length; i++) {
+    const cand = candidates[i];
+    let dominated = false;
+    for (let j = 0; j < minimal.length; j++) {
+      const m = minimal[j].arr;
+      let leAll = true;
+      for (let col = 0; col < K; col++) {
+        if (m[col] > cand.arr[col]) {
+          leAll = false;
+          break;
+        }
+      }
+      if (leAll) {
+        dominated = true;
+        break;
+      }
+    }
+    if (!dominated) minimal.push(cand);
+  }
+
+  const minSingleCents = new Float64Array(K);
+  minSingleCents.fill(Infinity);
+  let allSingleWinner = minimal.length > 0;
+
+  for (let s = 0; s < minimal.length; s++) {
+    const arr = minimal[s].arr;
+    let nzCount = 0;
+    let nzIdx = -1;
+    for (let i = 0; i < K; i++) {
+      if (arr[i] > 0) {
+        nzCount += 1;
+        nzIdx = i;
+        if (nzCount > 1) break;
+      }
+    }
+    if (nzCount === 1) {
+      if (arr[nzIdx] < minSingleCents[nzIdx]) {
+        minSingleCents[nzIdx] = arr[nzIdx];
+      }
+    } else {
+      allSingleWinner = false;
+    }
+  }
+
+  return {
+    buckets: minimal.map((x) => x.arr),
+    minSingleCents,
+    allSingleWinner,
+  };
+}
+
+/**
+ * Independent $O(B \cdot K)$ machine verifier for integer breakeven witness `mults`:
+ * checks `length === K`, every `m_i` integer in `1..999`, `sum(m_i) === targetN`,
+ * and `(H m)_b >= 200 * targetN` across all valid rows.
+ */
+export function verifyBreakevenWitness(
+  bucketsCents,
+  K,
+  targetN,
+  mults,
+  maxNotesCap = 10_000
+) {
+  if (
+    !Number.isInteger(K) ||
+    K <= 0 ||
+    !Number.isInteger(targetN) ||
+    targetN < K ||
+    targetN > 999 * K ||
+    targetN > maxNotesCap
+  ) {
+    return false;
+  }
+  if (!Array.isArray(mults) || mults.length !== K) return false;
+  let sumM = 0;
+  for (let i = 0; i < K; i++) {
+    const m = mults[i];
+    if (!Number.isInteger(m) || m < 1 || m > 999) return false;
+    sumM += m;
+  }
+  if (sumM !== targetN) return false;
+  if (!Array.isArray(bucketsCents) || bucketsCents.length === 0) return false;
+
+  const targetCents = 200 * targetN;
+  let checkedRows = 0;
+  for (let s = 0; s < bucketsCents.length; s++) {
+    const row = bucketsCents[s];
+    if (!row || row.length < K) continue;
+    let hasPositive = false;
+    let pay = 0;
+    for (let i = 0; i < K; i++) {
+      const v = Math.max(0, Math.round(Number(row[i]) || 0));
+      if (v > 0) hasPositive = true;
+      pay += v * mults[i];
+    }
+    if (!hasPositive) continue;
+    checkedRows += 1;
+    if (pay < targetCents) return false;
+  }
+  return checkedRows > 0;
+}
+
+function checkGlobalDualInfeasibility(buckets, K) {
+  const B = buckets.length;
+  if (B === 0) return false;
+  for (let s = 0; s < B; s++) {
+    let rowMax = 0;
+    let nzCount = 0;
+    for (let i = 0; i < K; i++) {
+      if (buckets[s][i] > 0) nzCount += 1;
+      if (buckets[s][i] > rowMax) rowMax = buckets[s][i];
+    }
+    if (rowMax < 200) return true;
+    if (K > 1 && nzCount === 1 && rowMax <= 200) return true;
+  }
+  if (B === 1) return false;
+
+  const y = new Float64Array(B);
+  y.fill(1 / B);
+  const colSums = new Float64Array(K);
+
+  for (let iter = 0; iter < 56; iter++) {
+    colSums.fill(0);
+    for (let s = 0; s < B; s++) {
+      const ys = y[s];
+      const row = buckets[s];
+      for (let i = 0; i < K; i++) {
+        colSums[i] += ys * row[i];
+      }
+    }
+    let bestCol = 0;
+    let maxColVal = colSums[0];
+    for (let i = 1; i < K; i++) {
+      if (colSums[i] > maxColVal) {
+        maxColVal = colSums[i];
+        bestCol = i;
+      }
+    }
+    if (maxColVal < 200 - 1e-7) {
+      let sumW = 0;
+      const wInt = new Int32Array(B);
+      for (let s = 0; s < B; s++) {
+        const w = Math.max(0, Math.round(y[s] * 65536));
+        wInt[s] = w;
+        sumW += w;
+      }
+      if (sumW > 0) {
+        let maxIntCol = 0;
+        for (let i = 0; i < K; i++) {
+          let acc = 0;
+          for (let s = 0; s < B; s++) acc += wInt[s] * buckets[s][i];
+          if (acc > maxIntCol) maxIntCol = acc;
+        }
+        if (maxIntCol < 200 * sumW) return true;
+      }
+    }
+    const eta = 0.45 / Math.sqrt(1 + iter * 0.35);
+    let z = 0;
+    for (let s = 0; s < B; s++) {
+      const scaled = buckets[s][bestCol] / Math.max(200, maxColVal);
+      y[s] *= Math.exp(-eta * scaled);
+      z += y[s];
+    }
+    if (z <= 0) break;
+    for (let s = 0; s < B; s++) y[s] /= z;
+  }
+  return false;
+}
+
+/**
+ * Exact lossless bound propagation on `m in [lo, hi]^K` with `sum(m) === N` and `H m >= 200 N`:
+ * - Sum coupling: `lo_i >= N - sum_{j != i} hi_j` and `hi_i <= N - sum_{j != i} lo_j`.
+ * - Row box upper-bound propagation: `H_{b,i} m_i + sum_{j != i} H_{b,j} hi_j >= 200 N`.
+ * - Row cardinality-aware top-2 tightening over `d_j = m_j - lo_j >= 0, sum d_j = N - sumLo`.
+ * Returns `false` ONLY when `[lo, hi]` contains ZERO valid solutions.
+ */
+function propagateBreakevenBounds(buckets, B, K, N, lo, hi) {
+  const T = 200 * N;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    let sumLo = 0;
+    let sumHi = 0;
+    for (let i = 0; i < K; i++) {
+      if (lo[i] > hi[i]) return false;
+      sumLo += lo[i];
+      sumHi += hi[i];
+    }
+    if (sumLo > N || sumHi < N) return false;
+
+    for (let i = 0; i < K; i++) {
+      const maxAllowed = N - (sumLo - lo[i]);
+      if (maxAllowed < hi[i]) {
+        hi[i] = maxAllowed;
+        if (lo[i] > hi[i]) return false;
+        sumHi -= hi[i] < maxAllowed ? 0 : 0;
+        changed = true;
+      }
+      const minRequired = N - (sumHi - hi[i]);
+      if (minRequired > lo[i]) {
+        sumLo += minRequired - lo[i];
+        lo[i] = minRequired;
+        if (lo[i] > hi[i] || sumLo > N) return false;
+        changed = true;
+      }
+    }
+    if (changed) continue;
+
+    const rem = N - sumLo;
+    for (let s = 0; s < B; s++) {
+      const row = buckets[s];
+      let sumRowLo = 0;
+      let sumRowHi = 0;
+      let max1 = 0;
+      let max1Idx = -1;
+      let max2 = 0;
+      for (let i = 0; i < K; i++) {
+        const v = row[i];
+        if (v <= 0) continue;
+        sumRowLo += v * lo[i];
+        sumRowHi += v * hi[i];
+        if (hi[i] > lo[i]) {
+          if (v > max1) {
+            max2 = max1;
+            max1 = v;
+            max1Idx = i;
+          } else if (v > max2) {
+            max2 = v;
+          }
+        }
+      }
+      if (sumRowHi < T) return false;
+      if (sumRowLo + rem * max1 < T) return false;
+
+      // Exact row box lower-bound propagation on every positive column
+      for (let i = 0; i < K; i++) {
+        const v = row[i];
+        if (v <= 0 || hi[i] <= lo[i]) continue;
+        const otherMax = sumRowHi - v * hi[i];
+        if (otherMax < T) {
+          const reqLo = Math.ceil((T - otherMax - 1e-9) / v);
+          if (reqLo > hi[i]) return false;
+          if (reqLo > lo[i]) {
+            sumLo += reqLo - lo[i];
+            lo[i] = reqLo;
+            if (sumLo > N) return false;
+            changed = true;
+          }
+        }
+      }
+      if (changed) break;
+
+      // Exact cardinality-coupled top-2 lower-bound propagation
+      if (max1Idx >= 0 && max1 > max2 && sumRowLo + rem * max2 < T) {
+        const reqDelta = Math.ceil(
+          (T - sumRowLo - rem * max2 - 1e-9) / (max1 - max2)
+        );
+        if (reqDelta > 0) {
+          const nextLo = lo[max1Idx] + reqDelta;
+          if (nextLo > hi[max1Idx] || sumLo + reqDelta > N) return false;
+          lo[max1Idx] = nextLo;
+          sumLo += reqDelta;
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Dual convex-combination Farkas test over boxed simplex `{ m in [lo, hi]^K : sum(m) === N }`:
+ * - Evaluates exact greedy maximization of `sum_i c_i(lambda) m_i` on `[lo, hi]^K, sum m_i = N`.
+ * - If primal extreme point `m*(lambda)` satisfies `H m*(lambda) >= 200 N`, returns `{ witness }`!
+ * - If integer-rounded dual weights `W_s >= 0` certify `max_{m in box} (W^T H m) < 200 N * sum(W)`,
+ *   returns `{ infeasible: true }` (100% machine-verifiable integer Farkas certificate!).
+ */
+function runBoxedFarkasDualCheck(buckets, B, K, N, lo, hi, maxIters = 48) {
+  const T = 200 * N;
+  let sumLo = 0;
+  for (let i = 0; i < K; i++) sumLo += lo[i];
+  const rem = N - sumLo;
+  if (rem < 0) return { infeasible: true, witness: null };
+
+  const y = new Float64Array(B);
+  y.fill(1 / B);
+  const c = new Float64Array(K);
+  const order = Array.from({ length: K }, (_, idx) => idx);
+  const candM = new Int32Array(K);
+  const rowPay = new Float64Array(B);
+
+  for (let iter = 0; iter < maxIters; iter++) {
+    c.fill(0);
+    for (let s = 0; s < B; s++) {
+      const ys = y[s];
+      if (ys <= 0) continue;
+      const row = buckets[s];
+      for (let i = 0; i < K; i++) c[i] += ys * row[i];
+    }
+
+    order.sort((a, b) => c[b] - c[a] || a - b);
+    let rLeft = rem;
+    let dualUpper = 0;
+    for (let idx = 0; idx < K; idx++) {
+      const col = order[idx];
+      const cap = hi[col] - lo[col];
+      const add = rLeft > 0 && cap > 0 ? Math.min(rLeft, cap) : 0;
+      const val = lo[col] + add;
+      candM[col] = val;
+      rLeft -= add;
+      dualUpper += c[col] * val;
+    }
+    if (rLeft > 0) return { infeasible: true, witness: null };
+
+    if (dualUpper < T - 1e-7) {
+      let sumW = 0;
+      const wInt = new Int32Array(B);
+      for (let s = 0; s < B; s++) {
+        const w = Math.max(0, Math.round(y[s] * 65536));
+        wInt[s] = w;
+        sumW += w;
+      }
+      if (sumW > 0) {
+        const cInt = new Float64Array(K);
+        for (let i = 0; i < K; i++) {
+          let acc = 0;
+          for (let s = 0; s < B; s++) acc += wInt[s] * buckets[s][i];
+          cInt[i] = acc;
+        }
+        order.sort((a, b) => cInt[b] - cInt[a] || a - b);
+        let rInt = rem;
+        let maxIntObj = 0;
+        for (let idx = 0; idx < K; idx++) {
+          const col = order[idx];
+          const add =
+            rInt > 0 && hi[col] > lo[col]
+              ? Math.min(rInt, hi[col] - lo[col])
+              : 0;
+          maxIntObj += cInt[col] * (lo[col] + add);
+          rInt -= add;
+        }
+        if (rInt === 0 && maxIntObj < T * sumW) {
+          return { infeasible: true, witness: null };
+        }
+      }
+    }
+
+    let minRow = Infinity;
+    for (let s = 0; s < B; s++) {
+      let p = 0;
+      const row = buckets[s];
+      for (let i = 0; i < K; i++) p += row[i] * candM[i];
+      rowPay[s] = p;
+      if (p < minRow) minRow = p;
+    }
+    if (minRow >= T) {
+      return { infeasible: false, witness: Array.from(candM) };
+    }
+
+    const eta = 0.55 / Math.sqrt(1 + iter * 0.35);
+    let z = 0;
+    for (let s = 0; s < B; s++) {
+      const scaledSlack = (rowPay[s] - T) / Math.max(200, T);
+      y[s] *= Math.exp(-eta * Math.max(-4, Math.min(4, scaledSlack)));
+      z += y[s];
+    }
+    if (z <= 0 || !Number.isFinite(z)) break;
+    for (let s = 0; s < B; s++) y[s] /= z;
+  }
+
+  return { infeasible: false, witness: null };
+}
+
+/**
+ * Solve integer breakeven feasibility `F(N)` at a single exact total stake-units count `N`:
+ * `m_i in [1, 999]`, `sum(m_i) === N`, `min_s (a_s · m) >= 200 * N`.
+ * Completeness guarantee: NEVER uses lossy column skipping; only returns `"certified-infeasible"`
+ * via lossless bound propagation, exact integer Farkas certificate, or exhaustive B&B tree search.
+ */
+export function solveJointBreakevenAtNotes(
+  prunedInfo,
+  K,
+  targetN,
+  deadlineMs = Infinity,
+  {
+    candidateMults = null,
+    rawBuckets = null,
+    nodeBudget = 40_000,
+    maxNotesCap = 10_000,
+  } = {}
+) {
+  if (
+    !Number.isInteger(K) ||
+    K <= 0 ||
+    !Number.isInteger(targetN) ||
+    targetN < K ||
+    targetN > 999 * K ||
+    targetN > maxNotesCap
+  ) {
+    return {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  }
+  const N = targetN;
+  const { buckets, minSingleCents, allSingleWinner } = prunedInfo;
+  const verifyTarget = Array.isArray(rawBuckets) ? rawBuckets : buckets;
+  const B = buckets.length;
+  if (B === 0) {
+    return {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  }
+
+  if (
+    Array.isArray(candidateMults) &&
+    verifyBreakevenWitness(verifyTarget, K, N, candidateMults, maxNotesCap)
+  ) {
+    return {
+      status: "certified-feasible",
+      proofStatus: "certified",
+      mults: Array.from(candidateMults),
+    };
+  }
+
+  const T = 200 * N;
+  const lo = new Int32Array(K);
+  const hi = new Int32Array(K);
+  let sumLb = 0;
+  for (let i = 0; i < K; i++) {
+    const sc = minSingleCents[i];
+    const req = sc < Infinity ? Math.max(1, Math.ceil((T - 1e-9) / sc)) : 1;
+    if (req > 999) {
+      return {
+        status: "certified-infeasible",
+        proofStatus: "certified",
+        mults: null,
+      };
+    }
+    lo[i] = req;
+    hi[i] = 999;
+    sumLb += req;
+    if (sumLb > N) {
+      return {
+        status: "certified-infeasible",
+        proofStatus: "certified",
+        mults: null,
+      };
+    }
+  }
+
+  if (allSingleWinner) {
+    const mults = Array.from(lo);
+    let rem = N - sumLb;
+    for (let i = 0; i < K && rem > 0; i++) {
+      const add = Math.min(rem, 999 - mults[i]);
+      mults[i] += add;
+      rem -= add;
+    }
+    if (
+      rem === 0 &&
+      verifyBreakevenWitness(verifyTarget, K, N, mults, maxNotesCap)
+    ) {
+      return { status: "certified-feasible", proofStatus: "certified", mults };
+    }
+    return {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  }
+
+  if (!propagateBreakevenBounds(buckets, B, K, N, lo, hi)) {
+    return {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  }
+
+  let sumLoAfterProp = 0;
+  for (let i = 0; i < K; i++) sumLoAfterProp += lo[i];
+  const remAfterLb = N - sumLoAfterProp;
+
+  if (remAfterLb === 0) {
+    const fixedMults = Array.from(lo);
+    if (verifyBreakevenWitness(verifyTarget, K, N, fixedMults, maxNotesCap)) {
+      return {
+        status: "certified-feasible",
+        proofStatus: "certified",
+        mults: fixedMults,
+      };
+    }
+    return {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  }
+
+  const dualRes = runBoxedFarkasDualCheck(buckets, B, K, N, lo, hi, 56);
+  if (dualRes.infeasible) {
+    return {
+      status: "certified-infeasible",
+      proofStatus: "lp-infeasible",
+      mults: null,
+    };
+  }
+  if (
+    dualRes.witness &&
+    verifyBreakevenWitness(verifyTarget, K, N, dualRes.witness, maxNotesCap)
+  ) {
+    return {
+      status: "certified-feasible",
+      proofStatus: "certified",
+      mults: dualRes.witness,
+    };
+  }
+
+  // Constructive minimax greedy + 2-opt swap + violated-row repair within [lo, hi]
+  const mults = Array.from(lo);
+  const curPay = new Float64Array(B);
+  for (let s = 0; s < B; s++) {
+    let p = 0;
+    for (let i = 0; i < K; i++) p += buckets[s][i] * mults[i];
+    curPay[s] = p;
+  }
+  let rem = remAfterLb;
+
+  while (rem > 0) {
+    let minP = Infinity;
+    for (let s = 0; s < B; s++) {
+      if (curPay[s] < minP) minP = curPay[s];
+    }
+    const critThreshold = minP + 200;
+    let bestCol = -1;
+    let bestMinLift = -1;
+    let bestSoftSum = -1;
+    for (let i = 0; i < K; i++) {
+      if (mults[i] >= hi[i]) continue;
+      let nextMin = Infinity;
+      let softSum = 0;
+      for (let s = 0; s < B; s++) {
+        const np = curPay[s] + buckets[s][i];
+        if (np < nextMin) nextMin = np;
+        if (curPay[s] <= critThreshold) softSum += buckets[s][i];
+      }
+      if (
+        nextMin > bestMinLift ||
+        (nextMin === bestMinLift && softSum > bestSoftSum)
+      ) {
+        bestMinLift = nextMin;
+        bestSoftSum = softSum;
+        bestCol = i;
+      }
+    }
+    if (bestCol === -1) break;
+    mults[bestCol] += 1;
+    for (let s = 0; s < B; s++) curPay[s] += buckets[s][bestCol];
+    rem -= 1;
+  }
+
+  const evalMinAndTies = (arrPay) => {
+    let mn = Infinity;
+    let ties = 0;
+    for (let s = 0; s < B; s++) {
+      const v = arrPay[s];
+      if (v < mn) {
+        mn = v;
+        ties = 1;
+      } else if (v === mn) {
+        ties += 1;
+      }
+    }
+    return { mn, ties };
+  };
+
+  let curStat = evalMinAndTies(curPay);
+  if (
+    curStat.mn >= T &&
+    verifyBreakevenWitness(verifyTarget, K, N, mults, maxNotesCap)
+  ) {
+    return { status: "certified-feasible", proofStatus: "certified", mults };
+  }
+
+  for (let pass = 0; pass < 40 && curStat.mn < T; pass++) {
+    let improved = false;
+    for (let addIdx = 0; addIdx < K && !improved; addIdx++) {
+      if (mults[addIdx] >= hi[addIdx]) continue;
+      for (let subIdx = 0; subIdx < K; subIdx++) {
+        if (addIdx === subIdx || mults[subIdx] <= lo[subIdx]) continue;
+        let nextMn = Infinity;
+        let nextTies = 0;
+        for (let s = 0; s < B; s++) {
+          const np = curPay[s] + buckets[s][addIdx] - buckets[s][subIdx];
+          if (np < nextMn) {
+            nextMn = np;
+            nextTies = 1;
+          } else if (np === nextMn) {
+            nextTies += 1;
+          }
+        }
+        if (
+          nextMn > curStat.mn ||
+          (nextMn === curStat.mn && nextTies < curStat.ties)
+        ) {
+          mults[addIdx] += 1;
+          mults[subIdx] -= 1;
+          for (let s = 0; s < B; s++) {
+            curPay[s] += buckets[s][addIdx] - buckets[s][subIdx];
+          }
+          curStat = { mn: nextMn, ties: nextTies };
+          improved = true;
+          break;
+        }
+      }
+    }
+    if (!improved) break;
+  }
+
+  if (
+    curStat.mn >= T &&
+    verifyBreakevenWitness(verifyTarget, K, N, mults, maxNotesCap)
+  ) {
+    return { status: "certified-feasible", proofStatus: "certified", mults };
+  }
+
+  if (Date.now() > deadlineMs) {
+    return {
+      status: "unknown",
+      proofStatus: "time-budget-unproved",
+      mults: null,
+    };
+  }
+
+  // Exact complete fixed-variable-order Branch-and-Bound (`idx = 0..K-1`, binary domain splitting + full propagation)
+  const varOrder = Array.from({ length: K }, (_, i) => i).sort((a, b) => {
+    const spanA = hi[a] - lo[a];
+    const spanB = hi[b] - lo[b];
+    if (spanA !== spanB) return spanA - spanB;
+    return a - b;
+  });
+
+  let nodes = 0;
+  let abortedByBudget = false;
+  let foundWitness = null;
+  const maxNodes = Math.max(256, Math.floor(Number(nodeBudget) || 40_000));
+
+  const bnb = (curLo, curHi) => {
+    nodes += 1;
+    if (nodes > maxNodes || ((nodes & 31) === 0 && Date.now() > deadlineMs)) {
+      abortedByBudget = true;
+      return false;
+    }
+
+    if (!propagateBreakevenBounds(buckets, B, K, N, curLo, curHi)) {
+      return false;
+    }
+
+    // Pick first unfixed variable in fixed order `varOrder`
+    let branchVar = -1;
+    for (let p = 0; p < K; p++) {
+      const idx = varOrder[p];
+      if (curLo[idx] < curHi[idx]) {
+        branchVar = idx;
+        break;
+      }
+    }
+
+    if (branchVar === -1) {
+      const leaf = Array.from(curLo);
+      if (verifyBreakevenWitness(verifyTarget, K, N, leaf, maxNotesCap)) {
+        foundWitness = leaf;
+        return true;
+      }
+      return false;
+    }
+
+    if (nodes > 4 && (nodes & 7) === 1 && B >= 3) {
+      const subDual = runBoxedFarkasDualCheck(
+        buckets,
+        B,
+        K,
+        N,
+        curLo,
+        curHi,
+        12
+      );
+      if (subDual.infeasible) return false;
+      if (
+        subDual.witness &&
+        verifyBreakevenWitness(verifyTarget, K, N, subDual.witness, maxNotesCap)
+      ) {
+        foundWitness = subDual.witness;
+        return true;
+      }
+    }
+
+    const vLo = curLo[branchVar];
+    const vHi = curHi[branchVar];
+    const mid = Math.floor((vLo + vHi) / 2);
+    const preferUpper = mults[branchVar] > mid;
+
+    const tryHalf = (halfLo, halfHi) => {
+      const nextLo = Int32Array.from(curLo);
+      const nextHi = Int32Array.from(curHi);
+      nextLo[branchVar] = halfLo;
+      nextHi[branchVar] = halfHi;
+      return bnb(nextLo, nextHi);
+    };
+
+    if (preferUpper) {
+      if (tryHalf(mid + 1, vHi)) return true;
+      if (abortedByBudget) return false;
+      return tryHalf(vLo, mid);
+    }
+    if (tryHalf(vLo, mid)) return true;
+    if (abortedByBudget) return false;
+    return tryHalf(mid + 1, vHi);
+  };
+
+  if (bnb(Int32Array.from(lo), Int32Array.from(hi)) && foundWitness) {
+    return {
+      status: "certified-feasible",
+      proofStatus: "certified",
+      mults: foundWitness,
+    };
+  }
+  if (abortedByBudget) {
+    return {
+      status: "unknown",
+      proofStatus: "time-budget-unproved",
+      mults: null,
+    };
+  }
+  return {
+    status: "certified-infeasible",
+    proofStatus: "certified",
+    mults: null,
+  };
+}
+
+/**
+ * Certify joint breakeven (`minFeasibleBudget`, `isCurrentFeasible`, `nextFeasibleBudget`)
+ * WITHOUT assuming monotonicity of `F(N)` (`ADR-0019` Deliverable 6).
+ */
+export function certifyAndSolveJointBreakeven(
+  bucketsCents,
+  ticketCount,
+  currentNotes,
+  {
+    timeBudgetMs = 15,
+    maxScanNotes = 10_000,
+    zeroPayoutProb = 0,
+    baseMultiples = null,
+    candidateMults = null,
+    nodeBudget = 40_000,
+  } = {}
+) {
+  const K = Number.isInteger(ticketCount)
+    ? ticketCount
+    : Math.floor(Number(ticketCount) || 0);
+  const rawCurrentNotes = Number(currentNotes);
+  const maxNotesCap = Math.min(
+    10_000,
+    Math.max(0, Math.floor(Number(maxScanNotes) || 10_000))
+  );
+
+  if (K <= 0 || !Array.isArray(bucketsCents) || bucketsCents.length === 0) {
+    return {
+      cert: {
+        minFeasibleBudget: null,
+        isCurrentFeasible: "certified-infeasible",
+        nextFeasibleBudget: null,
+        proofStatus: "certified",
+        conditionalFloorAtCurrent: 0,
+        zeroPayoutProb,
+      },
+      feasibleMultsAtCurrent: null,
+      minFeasibleMults: null,
+      nextFeasibleMults: null,
+      prunedInfo: null,
+    };
+  }
+
+  const isCurrentInLegalDomain =
+    Number.isInteger(rawCurrentNotes) &&
+    rawCurrentNotes >= K &&
+    rawCurrentNotes <= 999 * K &&
+    rawCurrentNotes <= 10_000;
+
+  let conditionalFloorAtCurrent = null;
+  if (Array.isArray(baseMultiples) && baseMultiples.length === K) {
+    let minCents = Infinity;
+    for (let s = 0; s < bucketsCents.length; s++) {
+      const row = bucketsCents[s];
+      if (!row || row.length < K) continue;
+      let pay = 0;
+      for (let i = 0; i < K; i++)
+        pay += (Number(row[i]) || 0) * baseMultiples[i];
+      if (pay < minCents) minCents = pay;
+    }
+    if (minCents < Infinity) {
+      conditionalFloorAtCurrent = Number((minCents / 100).toFixed(2));
+    }
+  }
+
+  const fastSingletonMin = new Float64Array(K);
+  fastSingletonMin.fill(Infinity);
+  let hasSub200Row = false;
+  let validRowCount = 0;
+  for (let s = 0; s < bucketsCents.length; s++) {
+    const row = bucketsCents[s];
+    if (!row || row.length < K) continue;
+    let nzCount = 0;
+    let nzIdx = -1;
+    let rowMax = 0;
+    for (let i = 0; i < K; i++) {
+      const v = Math.max(0, Math.round(Number(row[i]) || 0));
+      if (v > 0) {
+        nzCount += 1;
+        nzIdx = i;
+        if (v > rowMax) rowMax = v;
+      }
+    }
+    if (rowMax <= 0) continue;
+    validRowCount += 1;
+    if (rowMax < 200 || (K > 1 && nzCount === 1 && rowMax <= 200)) {
+      hasSub200Row = true;
+      break;
+    }
+    if (nzCount === 1 && rowMax < fastSingletonMin[nzIdx]) {
+      fastSingletonMin[nzIdx] = rowMax;
+    }
+  }
+  let invSingletonSum = 0;
+  if (!hasSub200Row && validRowCount > 0) {
+    for (let i = 0; i < K; i++) {
+      if (fastSingletonMin[i] < Infinity) {
+        invSingletonSum += 200 / fastSingletonMin[i];
+      }
+    }
+  }
+  if (validRowCount === 0 || hasSub200Row || invSingletonSum > 1 + 1e-11) {
+    return {
+      cert: {
+        minFeasibleBudget: null,
+        isCurrentFeasible: "certified-infeasible",
+        nextFeasibleBudget: null,
+        proofStatus: "lp-infeasible",
+        conditionalFloorAtCurrent,
+        zeroPayoutProb,
+      },
+      feasibleMultsAtCurrent: null,
+      minFeasibleMults: null,
+      nextFeasibleMults: null,
+      prunedInfo: null,
+    };
+  }
+
+  const totalBudgetMs = Math.max(2, Number(timeBudgetMs) || 15);
+  const nowStart = Date.now();
+  const curDeadlineMs = nowStart + Math.max(2, Math.ceil(totalBudgetMs * 0.65));
+  const scanDeadlineMs = nowStart + totalBudgetMs;
+  const prunedInfo = pruneDominatedBreakevenBuckets(bucketsCents, K);
+
+  if (
+    prunedInfo.buckets.length === 0 ||
+    checkGlobalDualInfeasibility(prunedInfo.buckets, K)
+  ) {
+    return {
+      cert: {
+        minFeasibleBudget: null,
+        isCurrentFeasible: "certified-infeasible",
+        nextFeasibleBudget: null,
+        proofStatus: "lp-infeasible",
+        conditionalFloorAtCurrent,
+        zeroPayoutProb,
+      },
+      feasibleMultsAtCurrent: null,
+      minFeasibleMults: null,
+      nextFeasibleMults: null,
+      prunedInfo,
+    };
+  }
+
+  let curSolve;
+  if (!isCurrentInLegalDomain) {
+    curSolve = {
+      status: "certified-infeasible",
+      proofStatus: "certified",
+      mults: null,
+    };
+  } else if (
+    Array.isArray(candidateMults) &&
+    verifyBreakevenWitness(
+      bucketsCents,
+      K,
+      rawCurrentNotes,
+      candidateMults,
+      10_000
+    )
+  ) {
+    curSolve = {
+      status: "certified-feasible",
+      proofStatus: "certified",
+      mults: Array.from(candidateMults),
+    };
+  } else if (
+    Array.isArray(baseMultiples) &&
+    verifyBreakevenWitness(
+      bucketsCents,
+      K,
+      rawCurrentNotes,
+      baseMultiples,
+      10_000
+    )
+  ) {
+    curSolve = {
+      status: "certified-feasible",
+      proofStatus: "certified",
+      mults: Array.from(baseMultiples),
+    };
+  } else {
+    curSolve = solveJointBreakevenAtNotes(
+      prunedInfo,
+      K,
+      rawCurrentNotes,
+      curDeadlineMs,
+      {
+        candidateMults,
+        rawBuckets: bucketsCents,
+        nodeBudget,
+        maxNotesCap: 10_000,
+      }
+    );
+  }
+  const isCurrentFeasible = curSolve.status;
+
+  let minFeasibleN = null;
+  let minFeasibleMults = null;
+  let nextFeasibleN = null;
+  let nextFeasibleMults = null;
+  let scanProofStatus = curSolve.proofStatus;
+
+  const upperN = Math.min(maxNotesCap, 999 * K);
+  const nextThresholdN = Number.isFinite(rawCurrentNotes)
+    ? Math.max(K - 1, Math.floor(rawCurrentNotes))
+    : K - 1;
+  let candN = K;
+
+  while (candN <= upperN) {
+    let sumMonoLb = 0;
+    let exceeds999 = false;
+    const T = 200 * candN;
+    for (let i = 0; i < K; i++) {
+      const sc = prunedInfo.minSingleCents[i];
+      const req = sc < Infinity ? Math.max(1, Math.ceil((T - 1e-9) / sc)) : 1;
+      if (req > 999) {
+        exceeds999 = true;
+        break;
+      }
+      sumMonoLb += req;
+    }
+    if (exceeds999) break;
+    if (sumMonoLb > candN) {
+      candN = sumMonoLb;
+      continue;
+    }
+
+    if (!prunedInfo.allSingleWinner && Date.now() > scanDeadlineMs) {
+      if (scanProofStatus === "certified") {
+        scanProofStatus = "time-budget-unproved";
+      }
+      break;
+    }
+
+    const res =
+      isCurrentInLegalDomain && candN === rawCurrentNotes
+        ? curSolve
+        : solveJointBreakevenAtNotes(prunedInfo, K, candN, scanDeadlineMs, {
+            rawBuckets: bucketsCents,
+            nodeBudget: Math.min(nodeBudget, 12_000),
+            maxNotesCap,
+          });
+
+    if (res.status === "certified-feasible") {
+      if (minFeasibleN === null) {
+        minFeasibleN = candN;
+        minFeasibleMults = res.mults;
+      }
+      if (isCurrentFeasible === "certified-feasible") {
+        break;
+      }
+      if (candN > nextThresholdN) {
+        nextFeasibleN = candN;
+        nextFeasibleMults = res.mults;
+        break;
+      }
+      if (candN < nextThresholdN) {
+        candN = nextThresholdN + 1;
+        continue;
+      }
+    } else if (res.status === "unknown") {
+      scanProofStatus = "time-budget-unproved";
+    }
+
+    candN += 1;
+  }
+
+  return {
+    cert: {
+      minFeasibleBudget: minFeasibleN !== null ? minFeasibleN * 2 : null,
+      isCurrentFeasible,
+      nextFeasibleBudget:
+        isCurrentFeasible === "certified-feasible"
+          ? null
+          : nextFeasibleN !== null
+            ? nextFeasibleN * 2
+            : null,
+      proofStatus: scanProofStatus,
+      conditionalFloorAtCurrent,
+      zeroPayoutProb,
+    },
+    feasibleMultsAtCurrent: curSolve.mults,
+    minFeasibleMults,
+    nextFeasibleMults,
+    prunedInfo,
+  };
 }

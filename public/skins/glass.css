@@ -19,9 +19,9 @@
       transparent 60%
     );
   --text: #ffffff;
-  --text-2: rgba(255, 255, 255, 0.74);
-  --text-3: rgba(255, 255, 255, 0.46);
-  --line: rgba(255, 255, 255, 0.1);
+  --text-2: rgba(255, 255, 255, 0.8);
+  --text-3: rgba(255, 255, 255, 0.72);
+  --line: rgba(255, 255, 255, 0.12);
   --accent: #ffffff;
   --mark: #ffffff;
   --live: #ff6b6b;
@@ -40,7 +40,7 @@
     inset 0 0 0 1px rgba(255, 255, 255, 0.07),
     0 20px 40px -24px rgba(0, 0, 0, 0.6);
 
-  --key: rgba(255, 255, 255, 0.09);
+  --key: rgba(10, 18, 30, 0.34);
   --key-text: #ffffff;
   --key-r: 12px;
   --key-sh:
@@ -54,8 +54,12 @@
   --key-on-sheen: none;
   --key-on-down: rgba(255, 255, 255, 0.8);
   --key-on-down-sh: none;
-  --cell-sub: rgba(255, 255, 255, 0.46);
-  --cell-sub-on: rgba(13, 17, 23, 0.52);
+  --cell-sub: rgba(255, 255, 255, 0.88);
+  --cell-sub-on: rgba(13, 17, 23, 0.82);
+  --dp-pos: #bbf7d0;
+  --dp-neg: #ffe4e6;
+  --dp-on-pos: #065f46;
+  --dp-on-neg: #9f1239;
 
   --track: rgba(255, 255, 255, 0.07);
   --track-sh: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
@@ -64,7 +68,7 @@
   --thumb: rgba(255, 255, 255, 0.22);
   --thumb-sh:
     inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 4px 12px -4px rgba(0, 0, 0, 0.4);
-  --seg-text: rgba(255, 255, 255, 0.55);
+  --seg-text: rgba(255, 255, 255, 0.72);
   --seg-on: #ffffff;
   --sw-off: rgba(255, 255, 255, 0.14);
   --sw-off-sh: none;
@@ -136,8 +140,14 @@
 .tag {
   background: rgba(255, 255, 255, 0.75);
 }
+.key {
+  background-color: var(--key);
+  background-image: none;
+}
+.key.on,
 .key.dark {
-  background: #fff;
+  background-color: rgba(255, 255, 255, 0.94);
+  background-image: none;
   color: #0d1117;
 }
 .toast {

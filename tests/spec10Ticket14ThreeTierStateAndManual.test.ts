@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -990,7 +994,9 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
       const ledgerMgr = createLedgerManager({
         filePath: path.join(tmpDir, "ledgers.json"),
       });
-      const fbMatches = FALLBACK_MATCHES as MatchItem[];
+      const fbMatches = withConfirmedSaleRights(
+        FALLBACK_MATCHES as MatchItem[]
+      );
       const [fb0, fb1] = fbMatches;
 
       let capturedComboCalls: Array<Record<string, any>> = [];
@@ -999,6 +1005,7 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
       const appRoutes = createAppRoutes({
         fetchMatches: async () => ({
           matches: fbMatches,
+          boardMeta: freshOfficialBoard,
           syncNote: "测试实盘快照",
         }),
         getApiKey: () => "test-key",
@@ -1043,13 +1050,16 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
         debounceMs: 0,
         autoSyncRadar: true,
         quantPort: {
-          computeWorkspace: (params, matches) =>
-            evaluateQuantWorkspace(params, matches),
+          computeWorkspace: (params, matches) => ({
+            ...evaluateQuantWorkspace(params, matches),
+            boardMeta: freshOfficialBoard,
+          }),
         },
         ledgerPort: {
           mutate: async (payload) =>
             ledgerMgr.mutateUserLedger("u_free_pool", payload, {
               authoritativeMatches: fbMatches,
+              boardMeta: freshOfficialBoard,
             }) as any,
         },
         xiaogaoPort: {
@@ -1143,6 +1153,7 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
           loginLockedUntil: null,
         },
         matches: fbMatches,
+        boardMeta: freshOfficialBoard,
         syncNote: "ok",
         initialPicks: [],
         workspace: initWs,
@@ -1192,15 +1203,16 @@ describe("Spec #10 · Ticket #14: Three-Tier Slip State Isolation, Quote Version
       );
 
       // Shopkeeper WeChat slip & Poster slip rows work cleanly
+      assert.equal(wb.betSlip.getShopkeeperBlockReason(), null);
       const wcSlip = wb.betSlip.formatShopkeeperWeChatSlip();
       assert.ok(wcSlip.includes("【竞彩出票单"));
       const posterRows = cabinViewModels.buildPosterSlipRows(
         wb.getState().betSlipState.workspace.effectiveReport,
-        wb.getState().playabilityGates.effectiveAppliedPlan,
-        wb.getState().betSlipState.planSpec,
-        wb.getState().betSlipState.picks,
-        wb.getState().betSlipState.multiple,
-        wb.getState().playabilityGates.activeBankerSet
+        wb.getState().betSlipState.matches,
+        wb.getState().betSlipState.workspace.boardMeta,
+        wb.getState().playabilityGates.activeBankerSet,
+        undefined,
+        wb.getState().betSlipState.activeAuditedSlip.physicalSlips
       );
       assert.ok(posterRows.length >= freePool2MatchPlan.lines.length);
 

@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,12 +36,14 @@ import {
   SpringSwitch,
   TeamCrest,
   kickElement,
+  useModalFocusTrap,
 } from "../../spring/widgets.tsx";
 import type {
   StopLossInterceptPrompt,
   WorkbenchController,
   WorkbenchSnapshot,
 } from "../../workspace/workbenchController.ts";
+import type { BankerConfirmPromptState } from "./useShellChoreography.ts";
 import {
   renderCompactDeltaBadge,
   renderTrendArrow,
@@ -138,23 +142,80 @@ export function HoneypotTrapLink() {
   );
 }
 
+export function BankerConfirmModal({
+  prompt,
+  onConfirm,
+  onDismiss,
+}: {
+  prompt: BankerConfirmPromptState | null;
+  onConfirm: () => void;
+  onDismiss: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(Boolean(prompt), dialogRef, onDismiss);
+
+  if (!prompt) return null;
+  return (
+    <div className="manual-backdrop" onClick={onDismiss}>
+      <div
+        ref={dialogRef}
+        className="guardrail-dialog"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        aria-label="设胆过关阶数变更确认"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="guardrail-head">
+          <b>📌 设胆过关变更预览确认</b>
+          <button type="button" className="key mini" onClick={onDismiss}>
+            取消
+          </button>
+        </div>
+        <div className="note-box num">{prompt.promptText}</div>
+        <div className="two">
+          <button type="button" className="key dark num" onClick={onConfirm}>
+            确认改为 {prompt.afterLabel} (¥{prompt.afterCost})
+          </button>
+          <button type="button" className="key" onClick={onDismiss}>
+            保留原 {prompt.beforeLabel} (¥{prompt.beforeCost})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function StopLossInterceptModal({
   stopLossPrompt,
   ledgerBusy,
   onConvertPaper,
   onForceLive,
+  liveBlocked,
   onDismiss,
 }: {
   stopLossPrompt: StopLossInterceptPrompt | null;
   ledgerBusy: boolean;
   onConvertPaper: () => void;
   onForceLive: () => void;
+  liveBlocked: boolean;
   onDismiss: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(Boolean(stopLossPrompt), dialogRef, onDismiss);
+
   if (!stopLossPrompt) return null;
   return (
     <div className="manual-backdrop" onClick={onDismiss}>
-      <div className="guardrail-dialog" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="guardrail-dialog"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        aria-label="每日止损护栏超限预警"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="guardrail-head">
           <b>🛑 每日止损护栏超限预警</b>
           <button type="button" className="key mini" onClick={onDismiss}>
@@ -186,7 +247,7 @@ export function StopLossInterceptModal({
           <button
             type="button"
             className="key"
-            disabled={ledgerBusy}
+            disabled={ledgerBusy || liveBlocked}
             onClick={onForceLive}
           >
             ⚠️ 确认超限，仍记入实买
@@ -289,22 +350,19 @@ export function BottomSheetsLayer({
         : "已切回精确分倍逐票明细"
     );
   };
-  const formatShopkeeperWeChatSlip = () =>
-    betCtrl.formatShopkeeperWeChatSlip({
-      useConsolidated: Boolean(snap.betSlipState.planSpec?.consolidateTickets),
-    });
+  const formatShopkeeperWeChatSlip = () => betCtrl.formatShopkeeperWeChatSlip();
 
   const {
     matches,
     picks,
-    multiple,
     planSpec,
     activeAuditedSlip,
+    livePortfolioQuote,
     lastPoolSwitchUndo,
     workspace,
   } = snap.betSlipState;
   const { playabilityGates, diagnosingMatchId, ledgerBusy } = snap;
-  const effectiveReport = workspace.effectiveReport;
+  const effectiveReport = workspace.baselineReport ?? workspace.effectiveReport;
   const allLeagues = useMemo(
     () => Array.from(new Set(matches.map((m) => m.league))),
     [matches]
@@ -315,27 +373,47 @@ export function BottomSheetsLayer({
       ? (matches.find((m) => m.id === sheet.matchId) ?? matches[0])
       : null;
 
-  const { appliedPlan, effectiveAppliedPlan, activeBankerSet } =
+  const { appliedPlan, activeBankerSet, shopkeeperBlockReason } =
     playabilityGates;
 
-  const posterRows = buildPosterSlipRows(
-    effectiveReport,
-    effectiveAppliedPlan,
-    planSpec,
-    activeAuditedSlip.legs.length > 0 ? activeAuditedSlip.legs : picks,
-    multiple,
-    activeBankerSet
-  );
+  const posterOpen = sheet?.type === "poster";
+  const copyScope = useRef(0);
+  useLayoutEffect(() => {
+    setWechatSlipPreview(null);
+    setCheckedPosterLines({});
+    return () => {
+      copyScope.current += 1;
+    };
+  }, [
+    posterOpen,
+    shopkeeperBlockReason,
+    activeAuditedSlip.revision,
+    livePortfolioQuote.inputSig,
+  ]);
+  const posterRows =
+    posterOpen && !shopkeeperBlockReason
+      ? buildPosterSlipRows(
+          effectiveReport,
+          matches,
+          workspace.boardMeta,
+          activeBankerSet,
+          livePortfolioQuote.inputSig,
+          activeAuditedSlip.physicalSlips
+        )
+      : [];
 
   const handleCopyShopkeeperSlip = async (triggerEl?: HTMLElement | null) => {
+    const scope = copyScope.current;
+    await betCtrl.flush();
+    if (scope !== copyScope.current) return;
     const text = formatShopkeeperWeChatSlip();
     if (!text) {
       showSpringToast(layerRef.current, "当前方案暂无法生成出票口令");
       return;
     }
     let copied = false;
+    const ta = document.createElement("textarea");
     try {
-      const ta = document.createElement("textarea");
       ta.value = text;
       ta.style.position = "fixed";
       ta.style.left = "-9999px";
@@ -345,10 +423,13 @@ export function BottomSheetsLayer({
       ta.select();
       ta.setSelectionRange(0, text.length);
       copied = document.execCommand("copy");
-      ta.remove();
     } catch {
       copied = false;
+    } finally {
+      ta.remove();
     }
+    if (scope !== copyScope.current || formatShopkeeperWeChatSlip() !== text)
+      return;
     if (!copied && window.isSecureContext && navigator.clipboard?.writeText) {
       try {
         await navigator.clipboard.writeText(text);
@@ -357,6 +438,8 @@ export function BottomSheetsLayer({
         copied = false;
       }
     }
+    if (scope !== copyScope.current || formatShopkeeperWeChatSlip() !== text)
+      return;
     setWechatSlipPreview(copied ? null : text);
     haptic(10);
     playTactileCue("optimize-arpeggio");
@@ -710,37 +793,98 @@ export function BottomSheetsLayer({
                       {mq.cardPanTip}
                     </b>
                   </div>
-                  {mq.arbitrages.map((arb, idx) => (
-                    <div
-                      key={idx}
-                      className="tile w"
-                      style={{ fontFamily: "var(--font-ui)" }}
-                    >
-                      <span>💰 同义买法省钱差价 (+{arb.edgePct}%)</span>
-                      <b
-                        style={{
-                          fontSize: 12.5,
-                          fontWeight: 500,
-                          lineHeight: 1.45,
-                        }}
+                  {mq.arbitrages.map((arb, idx) => {
+                    const wholeSlipCandidates =
+                      workspace.insights.wholeSlipEquivalentSwaps ??
+                      (workspace.insights.activeSwapTip
+                        ? [workspace.insights.activeSwapTip]
+                        : []);
+                    const wholeSlipArb =
+                      wholeSlipCandidates.find(
+                        (w) =>
+                          w.matchId === sheetMatch.id &&
+                          w.worsePicks.length === arb.worsePicks.length &&
+                          w.worsePicks.every((wp) =>
+                            arb.worsePicks.some(
+                              (ap) =>
+                                ap.poolCode === wp.poolCode &&
+                                ap.optionKey === wp.optionKey
+                            )
+                          ) &&
+                          w.betterPicks.length === arb.betterPicks.length &&
+                          w.betterPicks.every((bp) =>
+                            arb.betterPicks.some(
+                              (ap) =>
+                                ap.poolCode === bp.poolCode &&
+                                ap.optionKey === bp.optionKey
+                            )
+                          )
+                      ) ?? null;
+                    const effectiveArb = wholeSlipArb ?? arb;
+                    const swapPv = betCtrl.previewEquivalentSwap(effectiveArb);
+                    const hasWorsePickedOnMatch =
+                      arb.worsePicks.length > 0 &&
+                      arb.worsePicks.every((wp) =>
+                        picks.some(
+                          (p) =>
+                            p.matchId === sheetMatch.id &&
+                            p.poolCode === wp.poolCode &&
+                            p.optionKey === wp.optionKey
+                        )
+                      );
+                    return (
+                      <div
+                        key={idx}
+                        className="tile w"
+                        style={{ fontFamily: "var(--font-ui)" }}
                       >
-                        {arb.detail}
-                      </b>
-                      <div className="note-act">
-                        <button
-                          type="button"
-                          data-spring="0.88"
-                          className="key mini dark"
-                          onClick={(e) => {
-                            onApplyEquivalentSwap(arb, e.currentTarget);
-                            onCloseSheet();
+                        <span>💰 同义买法省钱差价 (+{arb.edgePct}%)</span>
+                        <b
+                          style={{
+                            fontSize: 12.5,
+                            fontWeight: 500,
+                            lineHeight: 1.45,
                           }}
                         >
-                          一键选用 {arb.betterChoice}
-                        </button>
+                          {wholeSlipArb ? wholeSlipArb.detail : arb.detail}
+                        </b>
+                        <div className="note-act">
+                          {Boolean(wholeSlipArb) && swapPv.ok ? (
+                            <button
+                              type="button"
+                              data-spring="0.88"
+                              className="key mini dark"
+                              onClick={(e) => {
+                                onApplyEquivalentSwap(
+                                  effectiveArb,
+                                  e.currentTarget
+                                );
+                                onCloseSheet();
+                              }}
+                            >
+                              一键选用 {effectiveArb.betterChoice}
+                              {wholeSlipArb?.equalStakeCostYuan
+                                ? `（整单 ¥${wholeSlipArb.equalStakeCostYuan}）`
+                                : ""}
+                            </button>
+                          ) : (
+                            <span
+                              style={{
+                                fontSize: 11.5,
+                                color: "var(--ink-2)",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              {!hasWorsePickedOnMatch
+                                ? "单场跨盘参考（当前选单未勾选被替项）"
+                                : swapPv.blockedReason ||
+                                  "当前整单整数配平下存在少返态，仅作单场参考"}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   <div
                     className={`tile w sonar-card ${diagnosingMatchId === sheetMatch.id ? "scanning" : ""}`}
                     style={{ fontFamily: "var(--font-ui)" }}
@@ -784,150 +928,191 @@ export function BottomSheetsLayer({
         onClose={onCloseSheet}
         onAfterOpen={(sh) => bindTilt(sh.querySelector<HTMLElement>(".poster"))}
       >
-        <div className="poster">
-          <div className="p-top">
-            <span>优竞体育内部专用 · 店面防错打票单 (点击逐行打钩)</span>
-            <span className="num">{effectiveReport.modeLabel}</span>
-          </div>
-          <div className="p-amt num">合计应付 ¥{effectiveReport.totalCost}</div>
-          {planSpec && appliedPlan && appliedPlan.lines.length >= 2 && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 6,
-                flexWrap: "wrap",
-                padding: "0 0 8px",
-                marginBottom: 6,
-                borderBottom: "1px dashed rgba(15,23,42,0.16)",
-              }}
-            >
-              <span className="small num" style={{ margin: 0 }}>
-                店面实打约 {effectiveReport.consolidatedTickets} 张票
-                {planSpec.consolidateTickets
-                  ? "（已合并相近倍数防滑点）"
-                  : "（当前为逐注精确分倍）"}
-              </span>
+        {posterOpen &&
+          (shopkeeperBlockReason ? (
+            <div className="card">
+              <div className="sh-head">
+                <b>模拟核对</b>
+              </div>
+              <p role="status">{shopkeeperBlockReason}。当前可按参考价模拟。</p>
+              <p className="num">
+                参考金额 ¥{effectiveReport.totalCost} · 实际支出 ¥0
+              </p>
               <button
                 type="button"
-                data-spring="0.88"
-                className={`key mini ${planSpec.consolidateTickets ? "on" : ""}`}
-                onClick={(e) => onToggleTicketConsolidation(e.currentTarget)}
+                className="key full"
+                disabled={
+                  ledgerBusy ||
+                  !effectiveReport.canCheckout ||
+                  livePortfolioQuote.isStale
+                }
+                onClick={() => onRecordToLedger("paper")}
               >
-                🔗 智能合票减张{planSpec.consolidateTickets ? " · 已开" : ""}
+                🧪 存 0 成本模拟单
+              </button>
+              <button type="button" className="key full" onClick={onCloseSheet}>
+                关闭
               </button>
             </div>
-          )}
+          ) : (
+            <>
+              <div className="poster">
+                <div className="p-top">
+                  <span>优竞体育内部专用 · 店面防错打票单 (点击逐行打钩)</span>
+                  <span className="num">{effectiveReport.modeLabel}</span>
+                </div>
+                <div className="p-amt num">
+                  合计应付 ¥{effectiveReport.totalCost}
+                </div>
+                {planSpec && appliedPlan && appliedPlan.lines.length >= 2 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 6,
+                      flexWrap: "wrap",
+                      padding: "0 0 8px",
+                      marginBottom: 6,
+                      borderBottom: "1px dashed rgba(15,23,42,0.16)",
+                    }}
+                  >
+                    <span className="small num" style={{ margin: 0 }}>
+                      店面实打约 {effectiveReport.consolidatedTickets} 张票
+                      {planSpec.consolidateTickets
+                        ? "（已合并相近倍数防滑点）"
+                        : "（当前为逐注精确分倍）"}
+                    </span>
+                    <button
+                      type="button"
+                      data-spring="0.88"
+                      className={`key mini ${planSpec.consolidateTickets ? "on" : ""}`}
+                      onClick={(e) =>
+                        onToggleTicketConsolidation(e.currentTarget)
+                      }
+                    >
+                      🔗 智能合票减张
+                      {planSpec.consolidateTickets ? " · 已开" : ""}
+                    </button>
+                  </div>
+                )}
 
-          {posterRows.map((row, _, allRows) => {
-            const done = Boolean(checkedPosterLines[row.key]);
-            return (
-              <div
-                key={row.key}
-                onClick={(e) => {
-                  const nextDone = !done;
-                  kickElement(e.currentTarget, nextDone ? 2.4 : -1.2);
-                  playTactileCue(nextDone ? "ticket-stamp" : "tap-off");
-                  setCheckedPosterLines((prev) => {
-                    const updated = { ...prev, [row.key]: nextDone };
-                    if (nextDone && allRows.every((r) => updated[r.key])) {
-                      playTactileCue("defuse-celebrate");
-                      burstCelebrationSparks(e.currentTarget, 30);
-                    }
-                    return updated;
-                  });
-                }}
-                className={`p-line num ${done ? "done" : ""}`}
-              >
-                <span>
-                  {done ? "✓ " : "□ "}
-                  {row.left}
-                </span>
-                <span>{row.right}</span>
+                {posterRows.map((row, _, allRows) => {
+                  const done = Boolean(checkedPosterLines[row.checkKey]);
+                  return (
+                    <div
+                      key={row.checkKey}
+                      onClick={(e) => {
+                        const nextDone = !done;
+                        kickElement(e.currentTarget, nextDone ? 2.4 : -1.2);
+                        playTactileCue(nextDone ? "ticket-stamp" : "tap-off");
+                        setCheckedPosterLines((prev) => {
+                          const updated = { ...prev, [row.checkKey]: nextDone };
+                          if (
+                            nextDone &&
+                            allRows.every((r) => updated[r.checkKey])
+                          ) {
+                            playTactileCue("defuse-celebrate");
+                            burstCelebrationSparks(e.currentTarget, 30);
+                          }
+                          return updated;
+                        });
+                      }}
+                      className={`p-line num ${done ? "done" : ""}`}
+                    >
+                      <span>
+                        {done ? "✓ " : "□ "}
+                        {row.left}
+                      </span>
+                      <span>{row.right}</span>
+                    </div>
+                  );
+                })}
+
+                <div className="p-foot">
+                  <span className="num">
+                    {effectiveReport.isUnconditionalFloorGuaranteed
+                      ? "真实保底"
+                      : "命中最低"}{" "}
+                    ¥{effectiveReport.minPayout.toFixed(2)} · 严格净赚{" "}
+                    {(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(
+                      1
+                    )}
+                    %
+                  </span>
+                  <div className="qr">
+                    {Array.from({ length: 49 }, (_, i) => (
+                      <i
+                        key={i}
+                        className={
+                          (i * 37 + 11) % 7 > 2 && ![8, 12, 36, 40].includes(i)
+                            ? ""
+                            : "o"
+                        }
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
-            );
-          })}
 
-          <div className="p-foot">
-            <span className="num">
-              {effectiveReport.isUnconditionalFloorGuaranteed
-                ? "真实保底"
-                : "命中最低"}{" "}
-              ¥{effectiveReport.minPayout.toFixed(2)} · 严格净赚{" "}
-              {(effectiveReport.objectiveStrictNetGainProb * 100).toFixed(1)}%
-            </span>
-            <div className="qr">
-              {Array.from({ length: 49 }, (_, i) => (
-                <i
-                  key={i}
-                  className={
-                    (i * 37 + 11) % 7 > 2 && ![8, 12, 36, 40].includes(i)
-                      ? ""
-                      : "o"
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                <button
+                  type="button"
+                  className="key dark full"
+                  data-spring="0.94"
+                  onClick={(e) =>
+                    void handleCopyShopkeeperSlip(e.currentTarget)
                   }
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-          <button
-            type="button"
-            className="key dark full"
-            data-spring="0.94"
-            onClick={(e) => void handleCopyShopkeeperSlip(e.currentTarget)}
-          >
-            📋 一键复制发店主微信口令
-          </button>
-          {wechatSlipPreview && (
-            <textarea
-              readOnly
-              value={wechatSlipPreview}
-              rows={4}
-              onFocus={(e) => e.currentTarget.select()}
-              className="ledger-input num"
-              style={{
-                height: "auto",
-                padding: "6px 8px",
-                lineHeight: 1.4,
-                fontSize: 11,
-              }}
-            />
-          )}
-          <div className="two">
-            <button
-              type="button"
-              className="key"
-              data-spring="0.92"
-              disabled={ledgerBusy}
-              onClick={() => onRecordToLedger("paper")}
-            >
-              🧪 存 0 成本模拟单
-            </button>
-            <button
-              type="button"
-              className="key dark"
-              data-spring="0.92"
-              disabled={ledgerBusy}
-              onClick={() => onRecordToLedger("live")}
-            >
-              💰 已发店主·记实买
-            </button>
-          </div>
-          <button
-            type="button"
-            className="key full"
-            data-spring="0.94"
-            onClick={() => {
-              showSpringToast(layerRef.current, "实票已全部核对无误");
-              onCloseSheet();
-            }}
-          >
-            仅关闭打票单
-          </button>
-        </div>
+                >
+                  📋 一键复制发店主微信口令
+                </button>
+                {wechatSlipPreview &&
+                  wechatSlipPreview === formatShopkeeperWeChatSlip() && (
+                    <textarea
+                      readOnly
+                      value={wechatSlipPreview}
+                      rows={4}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="ledger-input num"
+                      style={{
+                        height: "auto",
+                        padding: "6px 8px",
+                        lineHeight: 1.4,
+                        fontSize: 11,
+                      }}
+                    />
+                  )}
+                <div className="two">
+                  <button
+                    type="button"
+                    className="key"
+                    data-spring="0.92"
+                    disabled={ledgerBusy}
+                    onClick={() => onRecordToLedger("paper")}
+                  >
+                    🧪 存 0 成本模拟单
+                  </button>
+                  <button
+                    type="button"
+                    className="key dark"
+                    data-spring="0.92"
+                    disabled={ledgerBusy}
+                    onClick={() => onRecordToLedger("live")}
+                  >
+                    💰 已发店主·记实买
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="key full"
+                  data-spring="0.94"
+                  onClick={() => onCloseSheet()}
+                >
+                  仅关闭打票单
+                </button>
+              </div>
+            </>
+          ))}
       </SpringSheet>
 
       {/* Sheet 4: 联赛筛选 */}

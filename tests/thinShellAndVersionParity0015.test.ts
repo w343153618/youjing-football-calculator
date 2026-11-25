@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -242,7 +246,7 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
     );
     assert.deepEqual(synFirstCta, {
       kind: "synthetic",
-      label: "一键合成单关",
+      label: "核对合成票行",
     });
 
     const bridgeFallbackCta = resolveCompactAuditBarPrimaryAction(
@@ -369,10 +373,8 @@ describe("Spec #5 · Ticket #9: Thin 5-Cabin Shell, Behavioral UI View-Models & 
     );
     const posterRows = buildPosterSlipRows(
       wsSample.effectiveReport,
-      null,
-      null,
-      [],
-      150,
+      withConfirmedSaleRights(matches),
+      freshOfficialBoard,
       new Set([matches[0].id])
     );
     assert.equal(posterRows.length, 2, "150x ticket must split into 99x + 51x");

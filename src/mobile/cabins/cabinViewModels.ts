@@ -1,12 +1,14 @@
+import { getPhysicalTicketBlockReason } from "../../workspace/ticketExport.ts";
 import {
   SUBJECTIVE_DELTA_MAX,
   SUBJECTIVE_DELTA_MIN,
-  type AppliedPlanSpec,
+  type ActiveAuditedSlip,
   type ArchetypePlan,
   type BoardFreshnessMeta,
   type BridgeMatchCandidate,
   type BridgeMatchPreview,
   type ComboRow,
+  type DistributionComputeStatus,
   type DualAxisOptionMovement,
   type LedgerSettlementDetail,
   type MatchItem,
@@ -20,6 +22,7 @@ import {
   type PortfolioRemediationAction,
   type ProOrderInsights,
   type SelectedPick,
+  type SelectionLifecycleStatus,
   type StaggeredHedgePlan,
   type SyntheticSingleMode,
   type TruthReport,
@@ -29,10 +32,11 @@ import type {
   UserLedgerSnapshot,
 } from "../../security/secureClient.ts";
 import {
+  dedupeRepeatedDotTokens,
   resolveComboTicketBreakdown,
-  splitTerminalPosterSlips,
   type AttributedWinningTicket,
   type ComboSortMode,
+  type ManualDraftState,
   type MatchMode,
 } from "../../workspace/betSlipController.ts";
 
@@ -54,6 +58,15 @@ export interface HandoffBannerState {
   title: string;
   cost: number;
   seq: number;
+}
+
+export function formatCandidateBudgetSwitchToast(
+  action: Pick<PortfolioRemediationAction, "isExactMinimumBudget">,
+  nextBudget: number
+): string {
+  return action.isExactMinimumBudget
+    ? `已切换预览预算至最低可行门槛 ¥${nextBudget}`
+    : `已切换至已验证的候选预算 ¥${nextBudget}`;
 }
 
 export interface SkinPresetDef {
@@ -520,6 +533,50 @@ export function buildMatchRadarBoardFreshnessBanner(
   };
 }
 
+export function buildBoardHeaderStatusText(
+  matchCount: number,
+  boardMeta?: BoardFreshnessMeta | null,
+  offlineMode = false
+): {
+  text: string;
+  isFallbackReadOnly: boolean;
+  tone: "live" | "fallback" | "offline";
+} {
+  if (offlineMode) {
+    return {
+      text: `⚡ 离线缓存 ${matchCount} 场`,
+      isFallbackReadOnly: true,
+      tone: "offline",
+    };
+  }
+  if (
+    boardMeta &&
+    boardMeta.isFallbackReadOnly &&
+    boardMeta.boardState !== "fresh"
+  ) {
+    const clock =
+      boardMeta.lastValidBoardClock ||
+      (typeof boardMeta.lastValidBoardAt === "number" &&
+      Number.isFinite(boardMeta.lastValidBoardAt)
+        ? formatBeijingClockFromEpoch(boardMeta.lastValidBoardAt)
+        : "内置快照");
+    return {
+      text: `回退快照 ${matchCount} 场（采集于 ${clock} · 只读参考）`,
+      isFallbackReadOnly: true,
+      tone: "fallback",
+    };
+  }
+  return {
+    text: `实盘 ${matchCount} 场`,
+    isFallbackReadOnly: false,
+    tone: "live",
+  };
+}
+
+export function dedupePlanTitle(raw?: string | null): string {
+  return dedupeRepeatedDotTokens(String(raw ?? ""));
+}
+
 export const PORTFOLIO_BUDGET_PRESETS = [10, 20, 50, 100];
 export const PORTFOLIO_CUSTOM_BUDGET_LIMITS = {
   min: 2,
@@ -629,6 +686,47 @@ export function formatPortfolioProbPct(prob: number): string {
   return `${pct.toFixed(1)}%`;
 }
 
+export interface PortfolioPlanGovernanceBadges {
+  isTier1B: boolean;
+  tier1bBadge: string | null;
+  tier1bMetricsText: string | null;
+  coOptimalBadge: string | null;
+  optimalityBadge: string | null;
+}
+
+export function buildPortfolioPlanGovernanceBadges(
+  plan: ArchetypePlan
+): PortfolioPlanGovernanceBadges {
+  const isTier1B = plan.slotTier === "tier-1b";
+  const pLoss = Number(plan.partialLossProb) || 0;
+  const shortfall = Number(plan.partialLossShortfall) || 0;
+  const tier1bBadge = isTier1B ? "允许局部回血 · 非保本" : null;
+  const tier1bMetricsText = isTier1B
+    ? `局部回血率 ${formatPortfolioProbPct(pLoss)}${
+        shortfall > 0 ? ` · 期望回血缺口 ¥${shortfall.toFixed(2)}` : ""
+      }`
+    : null;
+  const coOptimalBadge =
+    Array.isArray(plan.coOptimalWithSlots) && plan.coOptimalWithSlots.length > 1
+      ? "双目标共选最优"
+      : null;
+  const optimalityBadge =
+    plan.optimalityStatus === "domain-certified"
+      ? "精确全局最优"
+      : plan.optimalityStatus === "library-certified"
+        ? "候选库最优"
+        : plan.optimalityStatus === "time-budget-best"
+          ? "时限内最优"
+          : null;
+  return {
+    isTier1B,
+    tier1bBadge,
+    tier1bMetricsText,
+    coOptimalBadge,
+    optimalityBadge,
+  };
+}
+
 export function buildPortfolioKpiTiles(
   plan: ArchetypePlan,
   options?: { allowSaveCash?: boolean }
@@ -654,7 +752,9 @@ export function buildPortfolioKpiTiles(
       : Math.max(0, 1 - (plan.winProb ?? 0));
 
   const subParts: string[] = [`整单归零率 ${formatPortfolioProbPct(zeroProb)}`];
-  if (
+  if (plan.slotTier === "tier-1b") {
+    subParts.push("允许局部回血 · 非保本");
+  } else if (
     (plan.key === "max-profit-prob" || plan.key === "iron-shield") &&
     (plan.underwaterCount ?? 0) === 0
   ) {
@@ -711,6 +811,18 @@ export function buildPortfolioKpiTiles(
       ? `个人推演 ${archSubjEvPct >= 0 ? "+" : ""}${archSubjEvPct.toFixed(1)}% · 返${payoutReturnPct}%`
       : `票面返还 ${payoutReturnPct}%`;
 
+  const partialLossText =
+    plan.slotTier === "tier-1b" && typeof plan.partialLossProb === "number"
+      ? `⚠️ 允许局部回血 ${formatPortfolioProbPct(plan.partialLossProb)}${
+          typeof plan.partialLossShortfall === "number" &&
+          plan.partialLossShortfall > 0
+            ? `（期望缺口¥${plan.partialLossShortfall.toFixed(2)}）`
+            : `（${uwCount}项<本金）`
+        }`
+      : uwCount > 0
+        ? `⚠️ 含 ${uwCount} 组局部回血(<本金)`
+        : "0 假中奖倒贴";
+
   return {
     groupTicket,
     saveCashSummary,
@@ -729,9 +841,8 @@ export function buildPortfolioKpiTiles(
       value: showCrossMatchMissOne
         ? `¥${plan.missOneReturn!.toFixed(0)} (全中¥${plan.maxReturn.toFixed(0)})`
         : `¥${plan.minReturn.toFixed(0)}~${plan.maxReturn.toFixed(0)}`,
-      subtitle:
-        uwCount > 0 ? `⚠️ 含 ${uwCount} 组局部回血(<本金)` : "0 假中奖倒贴",
-      isDanger: uwCount > 0,
+      subtitle: partialLossText,
+      isDanger: uwCount > 0 || plan.slotTier === "tier-1b",
     },
     tile3: {
       label: "客观数学期望与抽水",
@@ -1102,12 +1213,14 @@ export function buildAuditScenarioRows(
     matchCount?: number;
     defaultMultiple?: number;
     appliedLines?: PlanTicketLine[];
+    pinZeroPayoutTop?: boolean;
   }
 ): AuditScenarioRow[] {
   const totalCost = Number(effectiveReport.totalCost) || 0;
   if (!(totalCost > 0)) return [];
 
   const rows: AuditScenarioRow[] = [];
+  let pinnedZeroRow: AuditScenarioRow | null = null;
   const bucketSum =
     (effectiveReport.zeroPayoutProb ?? 0) +
     (effectiveReport.partialLossProb ?? 0) +
@@ -1120,9 +1233,11 @@ export function buildAuditScenarioRows(
 
   if (zeroProb > 1e-9) {
     const wipeoutNet = -Number(totalCost.toFixed(2));
-    rows.push({
+    const zeroRow: AuditScenarioRow = {
       id: "__zero_payout_wipeout__",
-      desc: `全部未中（返奖 ¥0.00 · 损失全部本金 ¥${totalCost}）`,
+      desc: options?.pinZeroPayoutTop
+        ? `整单无中奖票（返奖 ¥0 · 损失本金 ¥${totalCost}）`
+        : `全部未中（返奖 ¥0.00 · 损失全部本金 ¥${totalCost}）`,
       legs: [],
       prob: zeroProb,
       probText: formatAuditProbabilityPct(zeroProb),
@@ -1133,19 +1248,27 @@ export function buildAuditScenarioRows(
       netProfit: wipeoutNet,
       isUnderwater: false,
       isZeroWipeoutRow: true,
+      isZeroPayoutSummary: true,
       expandable: false,
-      scenarioLabel: "全部未中",
+      scenarioLabel: options?.pinZeroPayoutTop
+        ? "整单无中奖票（返奖 ¥0）"
+        : "全部未中",
       statusBadgeText: "整单归零(返奖¥0)",
       winningTicketCount: 0,
       winningTickets: [],
       roiMultiple: 0,
       barTone: "loss",
       barFillPct: 100,
-    });
+    };
+    if (options?.pinZeroPayoutTop) {
+      pinnedZeroRow = zeroRow;
+    } else {
+      rows.push(zeroRow);
+    }
   }
 
   const combos = Array.isArray(effectiveReport.combos)
-    ? effectiveReport.combos
+    ? effectiveReport.combos.filter((c) => !c.isZeroPayoutSummary)
     : [];
   for (let i = 0; i < combos.length; i++) {
     const c = combos[i];
@@ -1163,7 +1286,7 @@ export function buildAuditScenarioRows(
       ? "局部回血(<本金)"
       : Math.round(c.netProfit * 100) === 0
         ? "刚好保本"
-        : `净赚 (${bd.roiMultiple}x)`;
+        : `返奖 ${bd.roiMultiple}倍`;
     rows.push({
       ...c,
       isZeroWipeoutRow: false,
@@ -1188,20 +1311,627 @@ export function buildAuditScenarioRows(
       if (a.netProfit !== b.netProfit) return a.netProfit - b.netProfit;
       return b.prob - a.prob;
     });
-    return rows;
+    return pinnedZeroRow ? [pinnedZeroRow, ...rows] : rows;
   }
   if (sortMode === "prob-first") {
     rows.sort((a, b) => {
       if (b.prob !== a.prob) return b.prob - a.prob;
       return b.netProfit - a.netProfit;
     });
-    return rows;
+    return pinnedZeroRow ? [pinnedZeroRow, ...rows] : rows;
   }
   rows.sort((a, b) => {
     if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
     return b.prob - a.prob;
   });
-  return rows;
+  return pinnedZeroRow ? [pinnedZeroRow, ...rows] : rows;
+}
+
+export interface AuditCabinLifecycleState {
+  selectionStatus: SelectionLifecycleStatus;
+  distributionStatus: DistributionComputeStatus;
+  ruleBlockReason: string | null;
+}
+
+export function resolveAuditCabinLifecycleState(
+  manualDraft: Pick<ManualDraftState, "picks" | "passRuleBlockReason">,
+  effectiveReport: TruthReport,
+  activeSlip: ActiveAuditedSlip
+): AuditCabinLifecycleState {
+  const passRuleErr =
+    !activeSlip.isAppliedPlan && !activeSlip.isAutoSynthetic
+      ? manualDraft.passRuleBlockReason
+      : null;
+  if (
+    effectiveReport.matchCount === 0 &&
+    (effectiveReport.selectionStatus === "empty" ||
+      (!effectiveReport.selectionStatus && manualDraft.picks.length === 0)) &&
+    !passRuleErr
+  ) {
+    return {
+      selectionStatus: "empty",
+      distributionStatus: "none",
+      ruleBlockReason: null,
+    };
+  }
+  const overCap =
+    effectiveReport.distributionStatus === "uncomputed-over-cap" ||
+    (effectiveReport.basicExpandedCount ?? effectiveReport.betCount) > 2048;
+  if (passRuleErr) {
+    return {
+      selectionStatus: "rule-blocked",
+      distributionStatus: overCap ? "uncomputed-over-cap" : "none",
+      ruleBlockReason: passRuleErr,
+    };
+  }
+  if (
+    effectiveReport.selectionStatus &&
+    effectiveReport.selectionStatus !== "empty"
+  ) {
+    const dist: DistributionComputeStatus = overCap
+      ? "uncomputed-over-cap"
+      : effectiveReport.selectionStatus !== "ready"
+        ? "none"
+        : effectiveReport.distributionStatus &&
+            effectiveReport.distributionStatus !== "none"
+          ? effectiveReport.distributionStatus
+          : "computed";
+    return {
+      selectionStatus: effectiveReport.selectionStatus,
+      distributionStatus: dist,
+      ruleBlockReason: effectiveReport.ruleBlockReason,
+    };
+  }
+  if (!effectiveReport.canCheckout) {
+    if (
+      effectiveReport.matchCount === 1 &&
+      !effectiveReport.hasSameMatchCrossPoolConflict
+    ) {
+      return {
+        selectionStatus: "pending-single-auth",
+        distributionStatus: overCap ? "uncomputed-over-cap" : "none",
+        ruleBlockReason: effectiveReport.ruleBlockReason,
+      };
+    }
+    return {
+      selectionStatus: "rule-blocked",
+      distributionStatus: overCap ? "uncomputed-over-cap" : "none",
+      ruleBlockReason: effectiveReport.ruleBlockReason,
+    };
+  }
+  return {
+    selectionStatus: "ready",
+    distributionStatus: overCap ? "uncomputed-over-cap" : "computed",
+    ruleBlockReason: null,
+  };
+}
+
+export interface AuditLayer1TicketItem {
+  ticketNo: number;
+  id: string;
+  modeLabel: string;
+  legsText: string;
+  oddsProductText: string;
+  multiple: number;
+  stakeCost: number;
+  singleHitPayout: number;
+  matchPairKey: string;
+  matchPairLabel: string;
+}
+
+export interface AuditLayer1TicketGroup {
+  matchPairKey: string;
+  matchPairLabel: string;
+  ticketCount: number;
+  subTotalCost: number;
+  tickets: AuditLayer1TicketItem[];
+}
+
+export interface AuditLayer2BucketItem {
+  key: "zero" | "partial" | "breakeven" | "gain";
+  label: string;
+  formulaLabel: string;
+  prob: number;
+  probText: string;
+  widthPct: number;
+  tone: "loss" | "warn" | "neutral" | "gain";
+}
+
+export interface AuditLayer3ZeroSummary {
+  title: string;
+  prob: number;
+  probText: string;
+  netLossYuan: number;
+  splitSubline: string;
+}
+
+export interface AuditLayer3WinningScenario {
+  id: string;
+  desc: string;
+  prob: number;
+  probText: string;
+  hitMatchCount: number;
+  bucketKey: string;
+  bucketLabel: string;
+  hitTicketBadgesText: string;
+  winningTickets: AttributedWinningTicket[];
+  payout: number;
+  netProfit: number;
+  roiMultiple: number;
+  returnSummaryText: string;
+  statusBadgeText: string;
+  barTone: "loss" | "breakeven" | "gain";
+  barFillPct: number;
+}
+
+export interface AuditThreeLayerViewModel {
+  layer1: {
+    sourceBadge: string;
+    equationText: string;
+    matchCount: number;
+    modeLabel: string;
+    logicalLineCount: number;
+    stakeUnitsCount: number;
+    totalCost: number;
+    physicalSlipCount: number;
+    groups: AuditLayer1TicketGroup[];
+    totalTicketCount: number;
+  };
+  layer2: {
+    titleText: string;
+    buckets: AuditLayer2BucketItem[];
+    conditionalRangeText: string;
+    objectiveEvPctText: string;
+    expectedNetText: string;
+    fiveZeroStreakText: string;
+    fiveNoGainStreakText: string;
+    avgVigLossPct: number;
+    avgPayoutPctText: string;
+  };
+  layer3: {
+    headerCountText: string;
+    winningScenarioCount: number;
+    pinnedZeroSummary: AuditLayer3ZeroSummary;
+    scenarios: AuditLayer3WinningScenario[];
+    hitBuckets: Array<{
+      bucketKey: string;
+      bucketLabel: string;
+      count: number;
+    }>;
+  };
+}
+
+export function buildAuditThreeLayerViewModel(
+  effectiveReport: TruthReport,
+  activeSlip: ActiveAuditedSlip,
+  appliedPlan: ArchetypePlan | null,
+  defaultMultiple: number,
+  sortMode: ComboSortMode = "prob-first"
+): AuditThreeLayerViewModel {
+  const totalCost = Math.max(0, Number(effectiveReport.totalCost) || 0);
+  const sourceBadge =
+    activeSlip.sourceKind === "archetype"
+      ? `精算配单·${appliedPlan?.shortTab || "推荐"}`
+      : activeSlip.sourceKind === "bonus-opt"
+        ? "分倍优化"
+        : activeSlip.sourceKind === "auto-synthetic"
+          ? "跨池等价单关"
+          : "我的手选";
+
+  const ticketItems: AuditLayer1TicketItem[] = [];
+  if (
+    appliedPlan &&
+    Array.isArray(appliedPlan.lines) &&
+    appliedPlan.lines.length > 0
+  ) {
+    for (let i = 0; i < appliedPlan.lines.length; i++) {
+      const ln = appliedPlan.lines[i];
+      const legs = ln.legs ?? [];
+      const pairKey = legs.map((g) => g.matchId).join("__") || `ln_${i + 1}`;
+      const pairLabel =
+        legs.length === 1
+          ? `单关 · ${legs[0].matchNumStr} ${legs[0].home}`
+          : legs.map((g) => `${g.matchNumStr} ${g.home}`).join(" × ");
+      const legsText = legs
+        .map(
+          (g) =>
+            `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`
+        )
+        .join(" × ");
+      const oddsProd = legs.reduce((p, g) => p * (Number(g.odds) || 1), 1);
+      ticketItems.push({
+        ticketNo: i + 1,
+        id: ln.id || `tk_${i + 1}`,
+        modeLabel:
+          ln.modeLabel || (legs.length === 1 ? "单关" : `${legs.length}串1`),
+        legsText,
+        oddsProductText: `@${oddsProd.toFixed(2)}`,
+        multiple: Math.max(1, Math.round(ln.multiple || 1)),
+        stakeCost: ln.cost || Math.max(1, Math.round(ln.multiple || 1)) * 2,
+        singleHitPayout: ln.returnPayout,
+        matchPairKey: pairKey,
+        matchPairLabel: pairLabel,
+      });
+    }
+  } else if (
+    Array.isArray(effectiveReport.tickets) &&
+    effectiveReport.tickets.length > 0
+  ) {
+    const fallbackMult = Math.max(
+      1,
+      Math.round(defaultMultiple || effectiveReport.multiple || 1)
+    );
+    for (let i = 0; i < effectiveReport.tickets.length; i++) {
+      const tk = effectiveReport.tickets[i];
+      const legs = tk.legs ?? [];
+      const pairKey =
+        tk.matchPairKey ||
+        legs.map((g) => g.matchId).join("__") ||
+        `tk_${i + 1}`;
+      const pairLabel =
+        tk.matchPairLabel ||
+        (legs.length === 1
+          ? `单关 · ${legs[0].matchNumStr} ${legs[0].home}`
+          : legs.map((g) => `${g.matchNumStr} ${g.home}`).join(" × "));
+      const legsText =
+        legs.length > 0
+          ? legs
+              .map(
+                (g) =>
+                  `${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}@${g.odds.toFixed(2)}]`
+              )
+              .join(" × ")
+          : tk.desc;
+      const oddsProd =
+        legs.length > 0
+          ? legs.reduce((p, g) => p * (Number(g.odds) || 1), 1)
+          : Math.max(1, tk.unitPayout / 2);
+      const mult = Math.max(1, Math.round(tk.multiple ?? fallbackMult));
+      ticketItems.push({
+        ticketNo: tk.ticketNo ?? i + 1,
+        id: tk.id || `tk_${i + 1}`,
+        modeLabel: legs.length === 1 ? "单关" : `${legs.length}串1`,
+        legsText,
+        oddsProductText: `@${oddsProd.toFixed(2)}`,
+        multiple: mult,
+        stakeCost: tk.stakeCost ?? mult * 2,
+        singleHitPayout: tk.totalPayout,
+        matchPairKey: pairKey,
+        matchPairLabel: pairLabel,
+      });
+    }
+  }
+
+  const groupMap = new Map<string, AuditLayer1TicketGroup>();
+  for (const item of ticketItems) {
+    let grp = groupMap.get(item.matchPairKey);
+    if (!grp) {
+      grp = {
+        matchPairKey: item.matchPairKey,
+        matchPairLabel: item.matchPairLabel,
+        ticketCount: 0,
+        subTotalCost: 0,
+        tickets: [],
+      };
+      groupMap.set(item.matchPairKey, grp);
+    }
+    grp.ticketCount += 1;
+    grp.subTotalCost += item.stakeCost;
+    grp.tickets.push(item);
+  }
+
+  const logicalLineCount =
+    effectiveReport.logicalLineCount ??
+    (ticketItems.length > 0
+      ? ticketItems.length
+      : Math.max(1, effectiveReport.betCount));
+  const stakeUnitsCount =
+    effectiveReport.stakeUnitsCount ?? Math.max(1, Math.round(totalCost / 2));
+  const physicalSlipCount =
+    effectiveReport.physicalSlipCount ??
+    (activeSlip.physicalSlips && activeSlip.physicalSlips.length > 0
+      ? activeSlip.physicalSlips.length
+      : Math.max(1, effectiveReport.consolidatedTickets || logicalLineCount));
+  const equationText = `${effectiveReport.matchCount}场 · ${effectiveReport.modeLabel} · ${logicalLineCount}种基本票 · 共 ${stakeUnitsCount} 份2元注 = 应付 ¥${totalCost}（预计终端纸票 ${physicalSlipCount} 张）`;
+
+  const { wipeoutProb, partialLossProb, breakEvenProb, strictGainProb } =
+    resolveReportUnconditionalProbs(effectiveReport);
+
+  const buckets: AuditLayer2BucketItem[] = [
+    {
+      key: "zero",
+      label: "零返奖",
+      formulaLabel: "P(R=0)",
+      prob: wipeoutProb,
+      probText: formatAuditProbabilityPct(wipeoutProb),
+      widthPct: Math.max(0, Math.min(100, wipeoutProb * 100)),
+      tone: "loss",
+    },
+    {
+      key: "partial",
+      label: "局部回血",
+      formulaLabel: "P(0<R<C)",
+      prob: partialLossProb,
+      probText: formatAuditProbabilityPct(partialLossProb),
+      widthPct: Math.max(0, Math.min(100, partialLossProb * 100)),
+      tone: "warn",
+    },
+    {
+      key: "breakeven",
+      label: "平手返本",
+      formulaLabel: "P(R=C)",
+      prob: breakEvenProb,
+      probText: formatAuditProbabilityPct(breakEvenProb),
+      widthPct: Math.max(0, Math.min(100, breakEvenProb * 100)),
+      tone: "neutral",
+    },
+    {
+      key: "gain",
+      label: "严格净赚",
+      formulaLabel: "P(R>C)",
+      prob: strictGainProb,
+      probText: formatAuditProbabilityPct(strictGainProb),
+      widthPct: Math.max(0, Math.min(100, strictGainProb * 100)),
+      tone: "gain",
+    },
+  ];
+
+  const minHit =
+    effectiveReport.conditionalMinHitPayout ?? effectiveReport.minPayout ?? 0;
+  const maxHit =
+    effectiveReport.conditionalMaxHitPayout ?? effectiveReport.maxPayout ?? 0;
+  const conditionalRangeText =
+    Math.abs(minHit - maxHit) < 0.005
+      ? `有票命中时返 ¥${minHit.toFixed(2)}`
+      : `有票命中时返 ¥${minHit.toFixed(2)} ~ ¥${maxHit.toFixed(2)}`;
+  const objEvRate = Number(effectiveReport.objectiveEVRate) || 0;
+  const expectedNet = totalCost * objEvRate;
+  const objectiveEvPctText = `${objEvRate >= 0 ? "+" : ""}${(objEvRate * 100).toFixed(1)}%`;
+  const expectedNetText = `${expectedNet >= 0 ? "+" : "-"}¥${Math.abs(expectedNet).toFixed(2)}`;
+  const fiveZeroProb = Math.pow(Math.max(0, Math.min(1, wipeoutProb)), 5);
+  const fiveNoGainProb = Math.pow(
+    Math.max(0, Math.min(1, 1 - strictGainProb)),
+    5
+  );
+
+  const zeroHitRaw =
+    typeof effectiveReport.zeroPayoutZeroHitProb === "number"
+      ? effectiveReport.zeroPayoutZeroHitProb
+      : effectiveReport.activePassSizes?.length === 1 &&
+          effectiveReport.activePassSizes[0] === 1
+        ? wipeoutProb
+        : null;
+  const subThreshRaw =
+    typeof effectiveReport.zeroPayoutSubThresholdProb === "number"
+      ? effectiveReport.zeroPayoutSubThresholdProb
+      : zeroHitRaw !== null
+        ? Math.max(0, wipeoutProb - zeroHitRaw)
+        : null;
+  const splitSubline =
+    zeroHitRaw !== null && subThreshRaw !== null
+      ? `全未中 ${formatAuditProbabilityPct(zeroHitRaw)} + 命中部分场次但未达过关/胆码条件 ${formatAuditProbabilityPct(subThreshRaw)}`
+      : `全未中或部分命中未达【${effectiveReport.modeLabel}】过关/胆码门槛（合计 ${formatAuditProbabilityPct(wipeoutProb)}）`;
+
+  const rawCombos = Array.isArray(effectiveReport.combos)
+    ? effectiveReport.combos.filter((c) => !c.isZeroPayoutSummary)
+    : [];
+  const builtScenarios: AuditLayer3WinningScenario[] = rawCombos.map((c) => {
+    const bd = resolveComboTicketBreakdown(
+      c,
+      effectiveReport.tickets,
+      totalCost,
+      {
+        matchCount: effectiveReport.matchCount,
+        defaultMultiple,
+        appliedLines: appliedPlan?.lines,
+      }
+    );
+    const hitM =
+      typeof c.hitMatchCount === "number" && c.hitMatchCount > 0
+        ? c.hitMatchCount
+        : bd.legs.length;
+    const totalM = Math.max(hitM, effectiveReport.matchCount || 1);
+    const bucketKey = bd.isAggregateRange
+      ? "agg"
+      : hitM >= totalM
+        ? `hit_${totalM}`
+        : `hit_${hitM}`;
+    const bucketLabel = bd.isAggregateRange
+      ? "区间聚合"
+      : hitM >= totalM
+        ? `全中 (${totalM}场)`
+        : `命中 ${hitM}/${totalM} 场`;
+    const ticketNos =
+      Array.isArray(c.hitTicketNos) && c.hitTicketNos.length > 0
+        ? c.hitTicketNos
+        : bd.winningTickets.map((wt) => wt.ticketNo);
+    const hitTicketBadgesText =
+      ticketNos.length > 0
+        ? `命中实票 ${ticketNos
+            .slice(0, 6)
+            .map((n) => `#${n}`)
+            .join(", ")}${
+            ticketNos.length > 6 ? ` 等${ticketNos.length}张` : ""
+          }`
+        : bd.isAggregateRange
+          ? "聚合派奖分位段"
+          : "命中票归因";
+    const netSign = c.netProfit >= 0 ? "+" : "-";
+    const returnSummaryText = `返奖 ${bd.roiMultiple.toFixed(2)}倍 · 净利 ${netSign}¥${Math.abs(c.netProfit).toFixed(2)}`;
+    const statusBadgeText = c.isUnderwater
+      ? "局部回血(<本金)"
+      : Math.round(c.netProfit * 100) === 0
+        ? "平手返本"
+        : `返奖 ${bd.roiMultiple.toFixed(2)}倍`;
+    return {
+      id: c.id,
+      desc: c.desc,
+      prob: c.prob,
+      probText: formatAuditProbabilityPct(c.prob),
+      hitMatchCount: hitM,
+      bucketKey,
+      bucketLabel,
+      hitTicketBadgesText,
+      winningTickets: bd.winningTickets,
+      payout: c.totalPayout,
+      netProfit: c.netProfit,
+      roiMultiple: bd.roiMultiple,
+      returnSummaryText,
+      statusBadgeText,
+      barTone: bd.barTone,
+      barFillPct: bd.barFillPct,
+    };
+  });
+
+  if (sortMode === "loss-first") {
+    builtScenarios.sort((a, b) => {
+      if (a.netProfit !== b.netProfit) return a.netProfit - b.netProfit;
+      return b.prob - a.prob;
+    });
+  } else if (sortMode === "profit-first") {
+    builtScenarios.sort((a, b) => {
+      if (b.netProfit !== a.netProfit) return b.netProfit - a.netProfit;
+      return b.prob - a.prob;
+    });
+  } else {
+    builtScenarios.sort((a, b) => {
+      if (b.prob !== a.prob) return b.prob - a.prob;
+      return b.netProfit - a.netProfit;
+    });
+  }
+
+  const bucketCountMap = new Map<
+    string,
+    { bucketLabel: string; count: number }
+  >();
+  for (const sc of builtScenarios) {
+    const prev = bucketCountMap.get(sc.bucketKey);
+    if (prev) prev.count += 1;
+    else
+      bucketCountMap.set(sc.bucketKey, {
+        bucketLabel: sc.bucketLabel,
+        count: 1,
+      });
+  }
+  const hitBuckets = Array.from(bucketCountMap.entries()).map(
+    ([bucketKey, val]) => ({
+      bucketKey,
+      bucketLabel: val.bucketLabel,
+      count: val.count,
+    })
+  );
+
+  const winningScenarioCount = Math.max(
+    effectiveReport.comboCount || 0,
+    builtScenarios.length
+  );
+
+  return {
+    layer1: {
+      sourceBadge,
+      equationText,
+      matchCount: effectiveReport.matchCount,
+      modeLabel: effectiveReport.modeLabel,
+      logicalLineCount,
+      stakeUnitsCount,
+      totalCost,
+      physicalSlipCount,
+      groups: Array.from(groupMap.values()),
+      totalTicketCount: ticketItems.length,
+    },
+    layer2: {
+      titleText: `📊 ② 四桶客观盈亏概率分布 · ¥${totalCost} 会发生什么`,
+      buckets,
+      conditionalRangeText,
+      objectiveEvPctText,
+      expectedNetText,
+      fiveZeroStreakText: `连续 5 单全归零概率 p₀⁵ = ${formatAuditProbabilityPct(fiveZeroProb)}`,
+      fiveNoGainStreakText: `连续 5 单未净赚概率 (1-p₊)⁵ = ${formatAuditProbabilityPct(fiveNoGainProb)}`,
+      avgVigLossPct: effectiveReport.avgVigLossPer100,
+      avgPayoutPctText: `${(effectiveReport.avgPayoutRatio * 100).toFixed(1)}%`,
+    },
+    layer3: {
+      headerCountText: `${winningScenarioCount} 种中奖赛果情景 + 1 条零返奖汇总`,
+      winningScenarioCount,
+      pinnedZeroSummary: {
+        title: "整单无中奖票（返奖 ¥0）",
+        prob: wipeoutProb,
+        probText: formatAuditProbabilityPct(wipeoutProb),
+        netLossYuan: totalCost,
+        splitSubline,
+      },
+      scenarios: builtScenarios,
+      hitBuckets,
+    },
+  };
+}
+
+export interface PendingSingleCrossPoolCardSpec {
+  key: string;
+  preview: PartialCoveragePreview;
+  poolTitle: string;
+  legCount: number;
+  legCountBadge: string;
+  coverageBadge: string;
+  isExactEquivalent: boolean;
+  costYuan: number;
+  payoutRangeText: string;
+}
+
+export function buildPendingSingleCrossPoolCards(
+  manualReport: TruthReport,
+  effectiveReport: TruthReport
+): PendingSingleCrossPoolCardSpec[] {
+  const rawList: PartialCoveragePreview[] = [];
+  const primary =
+    effectiveReport.partialCoveragePreview ??
+    manualReport.partialCoveragePreview ??
+    null;
+  if (primary) rawList.push(primary);
+  const extras =
+    effectiveReport.crossPoolSingleAlternatives ??
+    manualReport.crossPoolSingleAlternatives ??
+    [];
+  for (const ex of extras) {
+    if (ex) rawList.push(ex);
+  }
+  const seen = new Set<string>();
+  const out: PendingSingleCrossPoolCardSpec[] = [];
+  for (const pv of rawList) {
+    const legCount =
+      pv.keptLegCount ??
+      (Array.isArray(pv.previewLines) && pv.previewLines.length > 0
+        ? pv.previewLines.length
+        : pv.previewBetCount || 1);
+    const sig = `${pv.poolCode}|${pv.isCrossPoolMixed ? "mix" : "pure"}|${legCount}|${pv.previewCost}`;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    const retPct = (Math.max(0, pv.retainedDirectionRatio) * 100).toFixed(1);
+    const withinMissRaw =
+      typeof pv.withinDirectionMissRatio === "number"
+        ? pv.withinDirectionMissRatio
+        : Math.max(0, 1 - pv.retainedDirectionRatio);
+    const withinMissPct = (Math.max(0, withinMissRaw) * 100).toFixed(1);
+    const boardMissPct = formatAuditProbabilityPct(pv.blindSpotProb);
+    const coverageBadge = pv.isExactEquivalent
+      ? "100% 等价零死角"
+      : `保 ${retPct}% · 同向漏 ${withinMissPct}%（占全场 ${boardMissPct}）`;
+    const poolTitle = pv.isCrossPoolMixed
+      ? `混合单关（${pv.poolName || "半全场+比分"}）`
+      : `${pv.poolName || POOL_SHORT_SINGLE_NAMES[pv.poolCode]}替代`;
+    out.push({
+      key: sig,
+      preview: pv,
+      poolTitle,
+      legCount,
+      legCountBadge: `${legCount}项单关`,
+      coverageBadge,
+      isExactEquivalent: pv.isExactEquivalent,
+      costYuan: pv.previewCost,
+      payoutRangeText: `命中返 ¥${pv.previewMinPayout.toFixed(2)} ~ ¥${pv.previewMaxPayout.toFixed(2)}`,
+    });
+  }
+  return out;
 }
 
 export interface HedgeDrawerCopy {
@@ -1402,6 +2132,47 @@ export function buildMatchRadarSelectedSubPoolPills(
   return pills;
 }
 
+export function isPoolSingleOpenForRadar(pool?: MatchPool): boolean {
+  if (!isViewModelPoolSingleOpen(pool)) return false;
+  return Boolean(
+    pool?.options?.some(
+      (o) => Number.isFinite(Number(o.odds)) && Number(o.odds) >= 1.01
+    )
+  );
+}
+
+export interface MatchSingleSubPoolEntryPill {
+  poolCode: "CRS" | "TTG" | "HAFU";
+  label: string;
+  minOddsText: string;
+}
+
+export function buildMatchSingleSubPoolEntryPills(
+  match: Pick<MatchItem, "pools">
+): MatchSingleSubPoolEntryPill[] {
+  const defs: Array<{ code: "CRS" | "TTG" | "HAFU"; label: string }> = [
+    { code: "CRS", label: "比分单关" },
+    { code: "TTG", label: "总进球单关" },
+    { code: "HAFU", label: "半全场单关" },
+  ];
+  const out: MatchSingleSubPoolEntryPill[] = [];
+  for (const d of defs) {
+    const pool = match.pools?.[d.code];
+    if (!isPoolSingleOpenForRadar(pool)) continue;
+    const validOdds = (pool?.options ?? [])
+      .map((o) => Number(o.odds))
+      .filter((n) => Number.isFinite(n) && n >= 1.01);
+    if (validOdds.length === 0) continue;
+    const minOdds = Math.min(...validOdds);
+    out.push({
+      poolCode: d.code,
+      label: d.label,
+      minOddsText: `@${minOdds.toFixed(2)}起`,
+    });
+  }
+  return out;
+}
+
 export interface SyntheticModePillSpec {
   mode: SyntheticSingleMode;
   label: string;
@@ -1411,30 +2182,53 @@ export function buildSyntheticModePillSpecs(
   canTrim2Way: boolean,
   hasInherentBlindSpot = false,
   compactMobile = false,
-  partialPreview?: PartialCoveragePreview | null
+  partialPreview?: PartialCoveragePreview | null,
+  trimLegCount?: number
 ): SyntheticModePillSpec[] {
   const sp = compactMobile ? "" : " ";
+  const trimCount =
+    partialPreview?.trim2WayLegCount ??
+    (typeof trimLegCount === "number" && trimLegCount > 0 ? trimLegCount : 2);
+  const trimCostSuffix =
+    typeof partialPreview?.trim2WayCost === "number" &&
+    partialPreview.trim2WayCost > 0
+      ? compactMobile
+        ? `(¥${partialPreview.trim2WayCost})`
+        : ` (¥${partialPreview.trim2WayCost})`
+      : "";
   if (partialPreview?.requiresExplicitConfirm) {
     const retPct = (partialPreview.retainedDirectionRatio * 100).toFixed(1);
-    const missPct =
-      partialPreview.blindSpotProb >= 0.01
-        ? (partialPreview.blindSpotProb * 100).toFixed(2)
-        : (partialPreview.blindSpotProb * 100).toFixed(3);
-    const confirmLabel = partialPreview.isExactEquivalent
+    const withinMissRaw =
+      typeof partialPreview.withinDirectionMissRatio === "number"
+        ? partialPreview.withinDirectionMissRatio
+        : Math.max(0, 1 - partialPreview.retainedDirectionRatio);
+    const withinMissPct = (withinMissRaw * 100).toFixed(1);
+    const boardMissPct = formatAuditProbabilityPct(
+      partialPreview.blindSpotProb
+    );
+    const legCnt =
+      partialPreview.keptLegCount ??
+      (partialPreview.previewLines?.length ||
+        partialPreview.previewBetCount ||
+        1);
+    const previewLabel = partialPreview.isExactEquivalent
       ? compactMobile
-        ? `⚠️确认超额等价单关(¥${partialPreview.previewCost})`
-        : `⚠️ 确认超额等价单关（¥${partialPreview.previewCost} · 0%死角）`
+        ? `⚠️核对${legCnt}项等价单关(¥${partialPreview.previewCost})`
+        : `⚠️ 核对${legCnt}项等价单关（¥${partialPreview.previewCost} · 100%等价零死角）`
       : compactMobile
-        ? `⚠️确认部分覆盖(${retPct}%·¥${partialPreview.previewCost})`
-        : `⚠️ 确认部分覆盖单关（保${retPct}%·漏${missPct}%·¥${partialPreview.previewCost}）`;
+        ? `⚠️核对${legCnt}项(保${retPct}%·同向漏${withinMissPct}%·¥${partialPreview.previewCost})`
+        : `⚠️ 核对${legCnt}项覆盖（保${retPct}%·同向漏${withinMissPct}%[全场${boardMissPct}]·¥${partialPreview.previewCost}）`;
     const list: SyntheticModePillSpec[] = [
       {
         mode: "partial-cover",
-        label: confirmLabel,
+        label: previewLabel,
       },
     ];
     if (canTrim2Way) {
-      list.push({ mode: "trim-2way", label: `⚡${sp}2项省本搏常规` });
+      list.push({
+        mode: "trim-2way",
+        label: `⚡${sp}${trimCount}项省本搏常规${trimCostSuffix}`,
+      });
     }
     list.push({ mode: "off", label: `🌉${sp}搭1场过桥凑2串1` });
     return list;
@@ -1448,7 +2242,10 @@ export function buildSyntheticModePillSpecs(
     },
   ];
   if (canTrim2Way) {
-    list.push({ mode: "trim-2way", label: `⚡${sp}2项省本搏常规` });
+    list.push({
+      mode: "trim-2way",
+      label: `⚡${sp}${trimCount}项省本搏常规${trimCostSuffix}`,
+    });
   }
   list.push({ mode: "off", label: `🌉${sp}搭1场过桥凑2串1` });
   return list;
@@ -1581,19 +2378,24 @@ export function resolveCompactAuditBarPrimaryAction(
         effectiveReport.isExactSyntheticEquivalent === false)
     ) {
       const retPct = (preview.retainedDirectionRatio * 100).toFixed(1);
-      const missPct =
+      const withinMissRaw =
+        typeof preview.withinDirectionMissRatio === "number"
+          ? preview.withinDirectionMissRatio
+          : Math.max(0, 1 - preview.retainedDirectionRatio);
+      const withinMissPct = (withinMissRaw * 100).toFixed(1);
+      const boardMissPct =
         preview.blindSpotProb >= 0.01
-          ? (preview.blindSpotProb * 100).toFixed(1)
-          : (preview.blindSpotProb * 100).toFixed(2);
+          ? `${(preview.blindSpotProb * 100).toFixed(1)}%`
+          : `${(preview.blindSpotProb * 100).toFixed(2)}%`;
       const disclosureText = preview.isExactEquivalent
         ? `等价0%漏·实投¥${preview.previewCost}`
-        : `保${retPct}%·漏${missPct}%·¥${preview.previewCost}`;
+        : `保${retPct}%·同向漏${withinMissPct}%(全场${boardMissPct})·¥${preview.previewCost}`;
       if (options?.confirmingPartial) {
         return {
           kind: "partial-confirm",
           label: preview.isExactEquivalent
-            ? `确认超额挂载 ¥${preview.previewCost}`
-            : `确认部分覆盖 ¥${preview.previewCost}`,
+            ? `核对超额票行 ¥${preview.previewCost}`
+            : `核对部分覆盖票行 ¥${preview.previewCost}`,
           disclosureText,
         };
       }
@@ -1601,11 +2403,11 @@ export function resolveCompactAuditBarPrimaryAction(
         kind: "partial-preview",
         label: preview.isExactEquivalent
           ? `超额等价预览 ¥${preview.previewCost}`
-          : `部分覆盖预览 ¥${preview.previewCost}·漏${missPct}%`,
+          : `部分覆盖预览 ¥${preview.previewCost}·同向漏${withinMissPct}%(全场${boardMissPct})`,
         disclosureText,
       };
     }
-    return { kind: "synthetic", label: "一键合成单关" };
+    return { kind: "synthetic", label: "核对合成票行" };
   }
   if (gates.showBridgeFinder && bridgeCandidates[0]) {
     const bp = options?.bridgePreview ?? null;
@@ -1811,55 +2613,38 @@ export function formatLedgerStatsSummary(stats: UserLedgerSnapshot["stats"]): {
   };
 }
 
+export interface PosterSlipRowSpec {
+  key: string;
+  checkKey: string;
+  left: string;
+  right: string;
+}
+
 export function buildPosterSlipRows(
-  effectiveReport: TruthReport,
-  effectiveAppliedPlan: ArchetypePlan | null,
-  planSpec: AppliedPlanSpec,
-  picks: SelectedPick[],
-  multiple: number,
-  activeBankerSet: Set<string>
-): Array<{ key: string; left: string; right: string }> {
-  if (effectiveAppliedPlan) {
-    const sourceLines =
-      planSpec?.consolidateTickets &&
-      Array.isArray(effectiveAppliedPlan.consolidatedLines) &&
-      effectiveAppliedPlan.consolidatedLines.length > 0
-        ? effectiveAppliedPlan.consolidatedLines
-        : effectiveAppliedPlan.lines;
-    return sourceLines.flatMap((l) => {
-      const left = l.legs
-        .map(
-          (g) =>
-            `${activeBankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
-        )
-        .join("×");
-      return splitTerminalPosterSlips(
-        l.id,
-        left,
-        l.modeLabel,
-        l.multiple,
-        l.cost
-      );
-    });
-  }
-  if (effectiveReport.tickets && effectiveReport.tickets.length > 0) {
-    return effectiveReport.tickets.flatMap((tk) => {
-      const left = (tk.legs ?? [])
-        .map(
-          (g) =>
-            `${activeBankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr.slice(-3)}${g.home}[${g.optionLabel}]`
-        )
-        .join("×");
-      const passTxt =
-        (tk.legs?.length ?? 1) === 1
-          ? "单关"
-          : `${tk.legs?.length}串1${activeBankerSet.size > 0 ? `(${activeBankerSet.size}胆)` : ""}`;
-      return splitTerminalPosterSlips(tk.id, left, passTxt, multiple);
-    });
-  }
-  return picks.map((p) => ({
-    key: `${p.matchId}-${p.poolCode}-${p.optionKey}`,
-    left: `${activeBankerSet.has(p.matchId) ? "📌【胆】" : ""}${p.matchNumStr} ${p.home}vs${p.away}`,
-    right: `${p.poolName}[${p.optionLabel}] × ${multiple}倍`,
-  }));
+  report: TruthReport,
+  matches: MatchItem[],
+  boardMeta: BoardFreshnessMeta | null | undefined,
+  activeBankerSet: Set<string>,
+  quoteVersionSig = "v1",
+  physicalSlips = report.physicalSlips ?? []
+): PosterSlipRowSpec[] {
+  if (getPhysicalTicketBlockReason(matches, boardMeta, report, physicalSlips))
+    return [];
+  return physicalSlips.map((ps) => {
+    const left = ps.legsByMatch
+      .map((g) => {
+        const optsTxt = g.options.map((o) => o.optionLabel).join("/");
+        return `${g.isBanker || activeBankerSet.has(g.matchId) ? "📌【胆】" : ""}${g.matchNumStr.slice(-3)}${g.home}[${optsTxt}]`;
+      })
+      .join("×");
+    const unitsSuffix =
+      ps.basicUnitsPerSlip > 1 ? `(${ps.basicUnitsPerSlip}注)` : "";
+    const right = `${ps.modeLabel}${unitsSuffix} · ${ps.multiple}倍 (¥${ps.costYuan})`;
+    return {
+      key: ps.slipId,
+      checkKey: `${quoteVersionSig}:${ps.lineSignature}:${ps.slipId}:${ps.multiple}:${ps.costYuan}`,
+      left,
+      right,
+    };
+  });
 }

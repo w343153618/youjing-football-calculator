@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   ArchetypePlan,
   PortfolioKey,
@@ -27,7 +27,10 @@ import {
   PORTFOLIO_CUSTOM_BUDGET_LIMITS,
   buildAlphaRadarEmptyStateViewModel,
   buildPortfolioKpiTiles,
+  buildPortfolioPlanGovernanceBadges,
   buildPortfolioSlotOptions,
+  dedupePlanTitle,
+  formatCandidateBudgetSwitchToast,
   formatPortfolioProbPct,
 } from "./cabinViewModels.ts";
 
@@ -67,7 +70,7 @@ export function PortfolioBudgetHeader({
         }}
       >
         <span className="small" style={{ margin: 0 }}>
-          预算档位
+          预览预算档位
         </span>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {PORTFOLIO_BUDGET_PRESETS.map((b) => (
@@ -150,6 +153,7 @@ export function ParetoPortfolioCabin({
   archKey,
   notifyToast,
   onFallbackToMatchTab,
+  onNavigateToAudit,
   onChangeArchKey,
   onApplyArchetype,
 }: {
@@ -158,12 +162,46 @@ export function ParetoPortfolioCabin({
   archKey: PortfolioKey;
   notifyToast: (msg: string) => void;
   onFallbackToMatchTab: () => void;
+  onNavigateToAudit?: () => void;
   onChangeArchKey: (next: PortfolioKey) => void;
   onApplyArchetype: (plan: ArchetypePlan) => void;
 }) {
   const [archFlipBack, setArchFlipBack] = useState(false);
+  const [pendingRemediation, setPendingRemediation] =
+    useState<PortfolioRemediationAction | null>(null);
+
   const betCtrl = wbCtrl.betSlip;
   const stanceDelta = betCtrl.getStanceDeltaSummary(archKey);
+  const {
+    matches,
+    picks,
+    targetIds,
+    anchorToRadarPicks,
+    syncedRadarSig,
+    budget,
+    stance,
+    unlockFullAgg,
+    allowSaveCash,
+    livePortfolioQuote,
+    activeAuditedSlip,
+    workspace,
+  } = snap.betSlipState;
+  const { currentArch, fallbackValidArch, hasSuboptimalManual } =
+    snap.playabilityGates;
+  const manualReport = workspace.manualReport;
+  const baseEffectiveReport =
+    workspace.baselineReport ?? workspace.effectiveReport;
+  const budgetMismatchMeta = activeAuditedSlip.budgetMismatchMeta;
+
+  useEffect(() => {
+    setPendingRemediation(null);
+  }, [
+    archKey,
+    budget,
+    livePortfolioQuote.inputSig,
+    activeAuditedSlip.revision,
+  ]);
+
   const onSyncRadarPicks = () => {
     const res = betCtrl.syncRadarPicksToArchetypes();
     if (!res.ok) {
@@ -185,54 +223,413 @@ export function ParetoPortfolioCabin({
   const onChangeStance = (s: UserStance) => betCtrl.setStance(s);
   const onChangeUnlockFullAgg = (v: boolean) => betCtrl.setUnlockFullAgg(v);
   const onChangeAllowSaveCash = (v: boolean) => betCtrl.setAllowSaveCash(v);
-  const onChangeBudget = (b: number) => betCtrl.setBudget(b);
-  const onTriggerRemediationAction = (action: PortfolioRemediationAction) => {
-    haptic(6);
-    const res = betCtrl.applyPortfolioRemediationAction(action);
-    if (!res.ok) return;
-    if (action.kind === "lower-pass-preview") {
-      notifyToast(
-        `已解锁同方向降阶结构（${action.structureLabel || "低阶分块"}）`
-      );
-    } else if (action.kind === "min-feasible-budget" && res.nextBudget) {
-      notifyToast(`已切换至经证明的最低可行预算 ¥${res.nextBudget}`);
-    } else if (action.kind === "keep-cash") {
-      notifyToast(`已保留 ¥${snap.betSlipState.budget} 本金空仓观望`);
-    } else if (action.kind === "go-manual") {
-      notifyToast("已保持原始手选方向，请前往审单手动区核对注倍");
-    } else if (action.kind === "switch-main-pool") {
-      notifyToast("已切回赛事雷达主盘视图，可改选低抽水在售主盘");
-      onFallbackToMatchTab();
-    }
-  };
-  const {
-    matches,
-    picks,
-    targetIds,
-    anchorToRadarPicks,
-    syncedRadarSig,
-    budget,
-    stance,
-    unlockFullAgg,
-    allowSaveCash,
-    livePortfolioQuote,
-    activeAuditedSlip,
-    workspace,
-  } = snap.betSlipState;
-  const { currentArch, fallbackValidArch, hasSuboptimalManual } =
-    snap.playabilityGates;
-  const manualReport = workspace.manualReport;
-  const budgetMismatchMeta = activeAuditedSlip.budgetMismatchMeta;
+
   const onRequoteAtCurrentBudget = () => {
     haptic(7);
     if (betCtrl.requoteAppliedPlanAtCurrentBudget()) {
       playTactileCue("optimize-arpeggio");
-      notifyToast(`已按当前新预算 ¥${budget} 重新配单并更新审单台`);
+      notifyToast(`已按当前新参数（预算 ¥${budget}）重新配单并更新审单台`);
     } else {
       notifyToast(
         `当前新预算 ¥${budget} 下原档方案未过准入红线，已退回待选方案态`
       );
     }
+  };
+
+  const onTriggerRemediationAction = (action: PortfolioRemediationAction) => {
+    haptic(6);
+    if (action.kind === "min-feasible-budget") {
+      const res = betCtrl.applyPortfolioRemediationAction(action);
+      if (res.ok && res.nextBudget) {
+        notifyToast(formatCandidateBudgetSwitchToast(action, res.nextBudget));
+      }
+      return;
+    }
+    if (action.kind === "go-manual") {
+      const res = betCtrl.applyPortfolioRemediationAction(action);
+      if (res.ok) {
+        onNavigateToAudit?.();
+        notifyToast("已切换至审单台手选微调");
+      }
+      return;
+    }
+    if (action.kind === "lower-pass-preview") {
+      if (
+        (action.targetPassSizes && action.targetPassSizes.length > 0) ||
+        (action.previewLines && action.previewLines.length > 0)
+      ) {
+        setPendingRemediation(action);
+        return;
+      }
+      const res = betCtrl.applyPortfolioRemediationAction(action);
+      if (res.ok) {
+        notifyToast(
+          `已切换同方向低阶过关预览（${action.structureLabel || "降阶分块"}）`
+        );
+      }
+      return;
+    }
+    if (action.kind === "switch-main-pool") {
+      const swPreview = betCtrl.previewSwitchMainPool();
+      if (swPreview.items.length > 0 && swPreview.changedMatchCount > 0) {
+        setPendingRemediation(action);
+        return;
+      }
+      onFallbackToMatchTab();
+      notifyToast("已切回赛事雷达主盘视图，可改选低抽水在售主盘");
+      return;
+    }
+    if (action.kind === "save-cash-preview") {
+      setPendingRemediation(action);
+      return;
+    }
+    if (action.kind === "keep-cash") {
+      if (activeAuditedSlip.sourceKind === "empty" && picks.length === 0) {
+        notifyToast("当前核对台已为空仓（应付 ¥0），已保留本金观望");
+        return;
+      }
+      setPendingRemediation(action);
+    }
+  };
+
+  const renderPendingRemediationCard = () => {
+    if (!pendingRemediation) return null;
+    const preview =
+      betCtrl.previewPortfolioRemediationAction(pendingRemediation);
+
+    if (pendingRemediation.kind === "lower-pass-preview") {
+      return (
+        <div
+          className="card enter num"
+          style={{ border: "1px solid var(--mark)", marginTop: 8 }}
+        >
+          <div className="note-box" style={{ margin: 0 }}>
+            <strong>
+              🔍 降阶过关结构预览：{preview.currentPassLabel} →{" "}
+              {preview.targetPassLabel ||
+                pendingRemediation.structureLabel ||
+                "低阶自由过关"}
+            </strong>
+            <div style={{ marginTop: 3 }}>{preview.summaryText}</div>
+            <div
+              className="note-act"
+              style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            >
+              {Array.isArray(pendingRemediation.previewLines) &&
+                pendingRemediation.previewLines.length > 0 && (
+                  <button
+                    type="button"
+                    data-spring="0.88"
+                    className="key mini dark num"
+                    onClick={() => {
+                      const res = betCtrl.applyPortfolioRemediationAction(
+                        pendingRemediation,
+                        { applyPreviewPlan: true }
+                      );
+                      setPendingRemediation(null);
+                      if (res.ok) {
+                        onNavigateToAudit?.();
+                        notifyToast(
+                          `✅ 已直接套用降阶分块方案至核对台（¥${pendingRemediation.previewCost ?? budget} · 手选草稿过关保持不变）`
+                        );
+                      } else {
+                        haptic(12);
+                        notifyToast(
+                          "当前盘口或选单已变更，请重新展开查看最新候选方案"
+                        );
+                      }
+                    }}
+                  >
+                    直接套用降阶方案至核对台 (¥
+                    {pendingRemediation.previewCost ?? budget})
+                  </button>
+                )}
+              <button
+                type="button"
+                data-spring="0.88"
+                className={`key mini num ${
+                  Array.isArray(pendingRemediation.previewLines) &&
+                  pendingRemediation.previewLines.length > 0
+                    ? ""
+                    : "dark"
+                }`}
+                onClick={() => {
+                  const res =
+                    betCtrl.applyPortfolioRemediationAction(pendingRemediation);
+                  setPendingRemediation(null);
+                  if (res.ok) {
+                    const stillLocked = Boolean(betCtrl.getState().planSpec);
+                    notifyToast(
+                      stillLocked
+                        ? `已将手选草稿过关切为【${preview.targetPassLabel || "低阶分块"}】（核对台仍锁定原方案）`
+                        : `已将手选过关切为【${preview.targetPassLabel || "低阶分块"}】并刷新候选`
+                    );
+                  }
+                }}
+              >
+                仅改手选过关为 {preview.targetPassLabel || "低阶过关"}
+              </button>
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => setPendingRemediation(null)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (pendingRemediation.kind === "save-cash-preview") {
+      return (
+        <div
+          className="card enter num"
+          style={{ border: "1px solid var(--mark)", marginTop: 8 }}
+        >
+          <div className="note-box" style={{ margin: 0 }}>
+            <strong>
+              💰 确认省钱留现 / 轻仓试水预览：实投 ¥
+              {pendingRemediation.previewCost ?? 0} · 留存 ¥
+              {pendingRemediation.savedCash ?? 0}
+            </strong>
+            <div style={{ marginTop: 3 }}>{preview.summaryText}</div>
+            <div
+              className="note-act"
+              style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            >
+              {Array.isArray(pendingRemediation.previewLines) &&
+                pendingRemediation.previewLines.length > 0 && (
+                  <button
+                    type="button"
+                    data-spring="0.88"
+                    className="key mini dark num"
+                    onClick={() => {
+                      const res = betCtrl.applyPortfolioRemediationAction(
+                        pendingRemediation,
+                        { applyPreviewPlan: true }
+                      );
+                      setPendingRemediation(null);
+                      if (res.ok) {
+                        onNavigateToAudit?.();
+                        notifyToast(
+                          `✅ 已确认省钱留现并套用方案至核对台（实投 ¥${pendingRemediation.previewCost ?? 0} · 留存 ¥${pendingRemediation.savedCash ?? 0}）`
+                        );
+                      } else {
+                        haptic(12);
+                        notifyToast(
+                          "当前盘口或选单已变更，请重新展开查看最新候选方案"
+                        );
+                      }
+                    }}
+                  >
+                    确认省本并套用至核对台 (¥
+                    {pendingRemediation.previewCost ?? 0})
+                  </button>
+                )}
+              <button
+                type="button"
+                data-spring="0.88"
+                className="key mini num"
+                onClick={() => {
+                  const res =
+                    betCtrl.applyPortfolioRemediationAction(pendingRemediation);
+                  setPendingRemediation(null);
+                  if (res.ok) {
+                    notifyToast("已开启「允许省钱留现」并刷新候选方案");
+                  }
+                }}
+              >
+                仅开启允许省钱留现
+              </button>
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => setPendingRemediation(null)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (pendingRemediation.kind === "switch-main-pool") {
+      const sw =
+        preview.switchMainPoolPreview ?? betCtrl.previewSwitchMainPool();
+      const changedItems = sw.items.filter((it) => it.changed);
+      return (
+        <div
+          className="card enter num"
+          style={{ border: "1px solid var(--mark)", marginTop: 8 }}
+        >
+          <div className="note-box" style={{ margin: 0 }}>
+            <strong>🔄 子玩法同向切换低抽水主盘预览：</strong>
+            <div
+              className="small num"
+              style={{ marginTop: 4, fontWeight: 600 }}
+            >
+              过关与应付核对：保留显式过关【
+              {sw.afterPassLabel || preview.currentPassLabel} ·{" "}
+              {snap.betSlipState.multiple}倍】不变（切换前 ¥
+              {sw.beforeTotalCost ?? 0} → 切换后应付 ¥{sw.afterTotalCost ?? 0}）
+            </div>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+                marginTop: 5,
+              }}
+            >
+              {changedItems.map((d) => (
+                <div
+                  key={d.matchId}
+                  className="small num"
+                  style={{ margin: 0 }}
+                >
+                  ·{" "}
+                  <b>
+                    {d.matchNumStr} {d.home}
+                  </b>
+                  ：
+                  {d.fromPicks
+                    .map((p) => `${p.poolName}·${p.optionLabel}`)
+                    .join("+")}{" "}
+                  →{" "}
+                  <b>
+                    {d.toPicks
+                      .map(
+                        (p) =>
+                          `${p.poolName}·${p.optionLabel}@${p.odds.toFixed(2)}`
+                      )
+                      .join("+")}
+                  </b>
+                  {d.isDirectionlessFallback && (
+                    <span style={{ color: "var(--warn)", marginLeft: 4 }}>
+                      （⚠️ {d.note}）
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div
+              className="note-act"
+              style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            >
+              <button
+                type="button"
+                data-spring="0.88"
+                className="key mini dark"
+                onClick={() => {
+                  const res =
+                    betCtrl.applyPortfolioRemediationAction(pendingRemediation);
+                  setPendingRemediation(null);
+                  if (res.ok) {
+                    playTactileCue("optimize-arpeggio");
+                    notifyToast(
+                      `已同向切换 ${sw.changedMatchCount} 场至低抽水主盘`
+                    );
+                  }
+                }}
+              >
+                确认同向切换主玩法
+              </button>
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => {
+                  setPendingRemediation(null);
+                  onFallbackToMatchTab();
+                }}
+              >
+                去赛事雷达手动改选
+              </button>
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => setPendingRemediation(null)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (pendingRemediation.kind === "keep-cash") {
+      const curSrcTitle =
+        activeAuditedSlip.sourceKind === "archetype"
+          ? "精算配单"
+          : activeAuditedSlip.sourceKind === "bonus-opt"
+            ? "分倍优化"
+            : activeAuditedSlip.sourceKind === "auto-synthetic"
+              ? "跨池等价单关"
+              : "我的手选";
+      return (
+        <div
+          className="card enter num"
+          style={{ border: "1px solid var(--warn)", marginTop: 8 }}
+        >
+          <div className="note-box alert" style={{ margin: 0 }}>
+            <strong>🛡️ 空仓护本确认（避免核对台残留未清订单）：</strong>
+            <div style={{ marginTop: 3 }}>
+              当前核对台仍有【{curSrcTitle} · 应付 ¥
+              {baseEffectiveReport.totalCost}】，请选择处理方式：
+            </div>
+            <div
+              className="note-act"
+              style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
+            >
+              <button
+                type="button"
+                data-spring="0.88"
+                className="key mini dark num"
+                onClick={() => {
+                  betCtrl.applyPortfolioRemediationAction(pendingRemediation, {
+                    clearManualPicks: true,
+                  });
+                  setPendingRemediation(null);
+                  notifyToast("已清空当前核对单（应付 ¥0），本金全额空仓护本");
+                }}
+              >
+                清空当前核对单护本（¥0）
+              </button>
+              <button
+                type="button"
+                className="key mini num"
+                onClick={() => {
+                  const res = betCtrl.applyPortfolioRemediationAction(
+                    pendingRemediation,
+                    { clearManualPicks: false }
+                  );
+                  setPendingRemediation(null);
+                  notifyToast(
+                    res.remainingSlipCost && res.remainingSlipCost > 0
+                      ? `暂不套用新推荐（右侧核对单 ¥${res.remainingSlipCost} 保持原样不变）`
+                      : "暂不套用推荐，保留中栏空仓观察"
+                  );
+                }}
+              >
+                暂不套用推荐（保留中栏空仓观察）
+              </button>
+              <button
+                type="button"
+                className="key mini"
+                onClick={() => setPendingRemediation(null)}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
   };
 
   const pickedMatchIds = useMemo(
@@ -254,6 +651,33 @@ export function ParetoPortfolioCabin({
   if (!currentArch) return null;
   const cappedRadarCount = cappedRadarIds.length;
   const kpi = buildPortfolioKpiTiles(currentArch, { allowSaveCash });
+  const govBadges = buildPortfolioPlanGovernanceBadges(currentArch);
+  const cleanArchTitle = dedupePlanTitle(currentArch.title);
+  const combinedArchHeading = dedupePlanTitle(
+    `${currentArch.badge} · ${cleanArchTitle}`
+  );
+  const fallbackIsZeroPartialLoss =
+    fallbackValidArch &&
+    (fallbackValidArch.underwaterCount ?? 0) === 0 &&
+    fallbackValidArch.slotTier !== "tier-1b" &&
+    (fallbackValidArch.partialLossProb ?? 0) <= 0.0005;
+
+  const activeSlipSourceTitle =
+    activeAuditedSlip.sourceKind === "archetype"
+      ? "精算配单"
+      : activeAuditedSlip.sourceKind === "bonus-opt"
+        ? "分倍优化"
+        : activeAuditedSlip.sourceKind === "auto-synthetic"
+          ? "跨池等价单关"
+          : "我的手选";
+  const primaryReplaceLabel = !livePortfolioQuote.canApplyLiveQuote
+    ? livePortfolioQuote.isStale
+      ? "正在重算报价…"
+      : "等待完整选单同步后套用"
+    : activeAuditedSlip.sourceKind !== "empty" &&
+        activeAuditedSlip.totalLegCount > 0
+      ? `将当前【${activeSlipSourceTitle} · ¥${baseEffectiveReport.totalCost}】替换为【${currentArch.shortTab} · ¥${currentArch.totalCost}】 → ③`
+      : `套用【${currentArch.shortTab} · ¥${currentArch.totalCost}】至核对台 → ③`;
 
   return (
     <>
@@ -279,7 +703,7 @@ export function ParetoPortfolioCabin({
             className="key mini dark num"
             onClick={onRequoteAtCurrentBudget}
           >
-            点此按 ¥{budgetMismatchMeta.currentBudgetYuan} 重配
+            按新参数重配并替换 (¥{budgetMismatchMeta.currentBudgetYuan})
           </button>
         </div>
       )}
@@ -288,19 +712,26 @@ export function ParetoPortfolioCabin({
         <div className="card enter" style={{ marginBottom: 10 }}>
           <div className="note-box alert">
             <strong>🩺 买法不划算纠偏诊断：</strong>
-            你当前自选暗扣抽水 <strong>{manualReport.avgVigLossPer100}%</strong>
+            你当前自选均值抽水 <strong>{manualReport.avgVigLossPer100}%</strong>
             {manualReport.underwaterCount > 0 && (
               <>
                 ，且有{" "}
                 <strong>
-                  {manualReport.underwaterCount} 种结果假中奖倒亏钱
+                  {manualReport.underwaterCount} 种结果局部回血低于本金
                 </strong>
-                （严格净赚率仅{" "}
+                （严格净赚率{" "}
                 {(manualReport.objectiveStrictNetGainProb * 100).toFixed(1)}%）
               </>
             )}
-            ！改用下方【{fallbackValidArch.shortTab}
-            】可立消假中奖，严格净赚率提升至{" "}
+            ！改用下方【{fallbackValidArch.shortTab}】
+            {fallbackIsZeroPartialLoss
+              ? "可消除覆盖内倒贴回血"
+              : `可优化抽水与分倍结构${
+                  (fallbackValidArch.partialLossProb ?? 0) > 0.0005
+                    ? `（含受控局部回血 ${formatPortfolioProbPct(fallbackValidArch.partialLossProb ?? 0)}）`
+                    : ""
+                }`}
+            ，严格净赚率提升至{" "}
             <strong>
               {(
                 (fallbackValidArch.objectiveStrictNetGainProb ??
@@ -398,7 +829,26 @@ export function ParetoPortfolioCabin({
         </div>
       </SpringCollapseDrawer>
 
+      {/* Preview-Only Controls Card (explicitly separated from Atomic Apply CTA) */}
       <div className="card rows enter">
+        <div
+          className="small num"
+          style={{
+            margin: 0,
+            paddingTop: 6,
+            fontWeight: 600,
+            color: "var(--text-2)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span>🎛️ 配单预览调节（仅刷新候选预览，不自动改动核对台）</span>
+          {livePortfolioQuote.isStale && (
+            <span className="qpill warn">⏳ 重算中…</span>
+          )}
+        </div>
         <div className="row">
           <span className="lbl">看球直觉倾向</span>
           <div className="pass">
@@ -451,8 +901,8 @@ export function ParetoPortfolioCabin({
               </span>
               <span className="qpill num">
                 {stanceDelta.ticketsChanged
-                  ? "🔄 实票配单已随倾向联动调整"
-                  : "📌 最优实票未变·仅微调概率评估"}
+                  ? "🔄 候选预览已随倾向联动"
+                  : "📌 最优候选未变·仅微调概率评估"}
               </span>
             </div>
           )}
@@ -501,9 +951,7 @@ export function ParetoPortfolioCabin({
                 <div className="card enter">
                   <div className="co-head">
                     <div>
-                      <div className="h2">
-                        {currentArch.badge} · {currentArch.title}
-                      </div>
+                      <div className="h2">{combinedArchHeading}</div>
                       <div className="small">{alphaEmptyVm.noteLead}</div>
                     </div>
                     <span className="chip num" style={{ flexShrink: 0 }}>
@@ -524,6 +972,7 @@ export function ParetoPortfolioCabin({
                       </div>
                     ))}
                   </div>
+                  {renderPendingRemediationCard()}
                 </div>
 
                 <div
@@ -576,12 +1025,10 @@ export function ParetoPortfolioCabin({
           <div className="card enter">
             <div className="co-head">
               <div>
-                <div className="h2">
-                  {currentArch.badge} · {currentArch.title}
-                </div>
+                <div className="h2">{combinedArchHeading}</div>
                 <div className="small">
                   {currentArch.emptyReason ||
-                    `当前 ¥${budget}（共 ${Math.floor(budget / 2)} 注）未通过该档精算准入红线，系统拒绝硬凑高归零或假保本废单`}
+                    `当前 ¥${budget}（共 ${Math.floor(budget / 2)} 注）未通过该档精算准入红线，系统拒绝硬凑高归零或伪保本废单`}
                 </div>
               </div>
               <span className="chip num">
@@ -613,6 +1060,7 @@ export function ParetoPortfolioCabin({
                   </div>
                 ))}
             </div>
+            {renderPendingRemediationCard()}
             {Array.isArray(currentArch.remediationActions) &&
             currentArch.remediationActions.length > 0 ? (
               <div
@@ -664,10 +1112,37 @@ export function ParetoPortfolioCabin({
             flipToFrontLabel="↩ 返回方案核心指标"
             frontHeader={
               <div>
-                <div className="h2">
-                  {currentArch.badge} · {currentArch.title}
+                <div
+                  className="h2"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span>{combinedArchHeading}</span>
+                  {govBadges.tier1bBadge && (
+                    <span className="qpill warn num">
+                      {govBadges.tier1bBadge}
+                    </span>
+                  )}
+                  {govBadges.coOptimalBadge && (
+                    <span className="qpill hi num">
+                      {govBadges.coOptimalBadge}
+                    </span>
+                  )}
+                  {govBadges.optimalityBadge && (
+                    <span className="qpill num">
+                      {govBadges.optimalityBadge}
+                    </span>
+                  )}
                 </div>
-                <div className="small">{currentArch.tagline}</div>
+                <div className="small">
+                  {govBadges.tier1bMetricsText
+                    ? `${currentArch.tagline}（${govBadges.tier1bMetricsText}）`
+                    : currentArch.tagline}
+                </div>
               </div>
             }
             backHeader={
@@ -719,6 +1194,8 @@ export function ParetoPortfolioCabin({
                     )}
                     {(currentArch.key === "max-profit-prob" ||
                       currentArch.key === "iron-shield") &&
+                      !govBadges.isTier1B &&
+                      (currentArch.underwaterCount ?? 0) === 0 &&
                       " · 覆盖范围内不倒贴"}
                   </span>
                   {currentArch.totalCost > budget && (
@@ -781,7 +1258,7 @@ export function ParetoPortfolioCabin({
                       <small>
                         {line.netProfit >= 0
                           ? `净赚 +¥${line.netProfit.toFixed(1)}`
-                          : `保命回血 ¥${line.returnPayout.toFixed(0)}`}
+                          : `局部回血 ¥${line.returnPayout.toFixed(0)}`}
                       </small>
                     </div>
                   </div>
@@ -809,9 +1286,7 @@ export function ParetoPortfolioCabin({
             className="key dark full enter num"
             onClick={() => onApplyArchetype(currentArch)}
           >
-            {!livePortfolioQuote.canApplyLiveQuote
-              ? `⏳ 新报价重算中（版本锁保护）...`
-              : `套用【${currentArch.shortTab}】方案并查看审单台 → ③ (¥${currentArch.totalCost})`}
+            {primaryReplaceLabel}
           </button>
         </>
       )}

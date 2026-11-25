@@ -555,11 +555,11 @@ describe("Spec #10 · Two-Axis Code Review Remediation (Standards + Spec)", () =
     );
     assert.equal(step2Action.kind, "partial-confirm");
     assert.ok(
-      step2Action.label.includes("确认") &&
+      step2Action.label.includes("核对") &&
         step2Action.label.includes(
           `¥${eff.partialCoveragePreview!.previewCost}`
         ),
-      `Expected step-2 confirmation label with ¥cost, got: ${step2Action.label}`
+      `Expected step-2 review label with ¥cost, got: ${step2Action.label}`
     );
     assert.ok(
       step2Action.disclosureText?.includes("保") &&
@@ -569,7 +569,7 @@ describe("Spec #10 · Two-Axis Code Review Remediation (Standards + Spec)", () =
         )
     );
 
-    // Exact 100% equivalent single when unmounted ("off" mode -> no requiresExplicitConfirm partial discrepancy) keeps "一键合成单关"
+    // Exact 100% equivalent single when unmounted ("off" mode -> no requiresExplicitConfirm partial discrepancy) opens the line review
     const exactStep = resolveCompactAuditBarPrimaryAction(
       {
         canCheckout: false,
@@ -580,7 +580,7 @@ describe("Spec #10 · Two-Axis Code Review Remediation (Standards + Spec)", () =
       []
     );
     assert.equal(exactStep.kind, "synthetic");
-    assert.equal(exactStep.label, "一键合成单关");
+    assert.equal(exactStep.label, "核对合成票行");
   });
 
   it("Slice 4 (Axis 1 #4): /api/xiaogao/analyze-combo sanitizes, deduplicates & caps auditedLegs and picks at 512 items while preserving legSource", async () => {

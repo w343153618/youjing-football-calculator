@@ -938,26 +938,26 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
               {
                 key: "h",
                 label: "主胜",
-                odds: 1.36,
+                odds: 1.26,
                 trend: 0,
-                fairProb: 0.659,
-                shinProb: 0.659,
+                fairProb: 0.705,
+                shinProb: 0.705,
               },
               {
                 key: "d",
                 label: "平",
-                odds: 4.5,
+                odds: 5.1,
                 trend: 0,
-                fairProb: 0.188,
-                shinProb: 0.188,
+                fairProb: 0.168,
+                shinProb: 0.168,
               },
               {
                 key: "a",
                 label: "客胜",
-                odds: 6.0,
+                odds: 7.2,
                 trend: 0,
-                fairProb: 0.153,
-                shinProb: 0.153,
+                fairProb: 0.127,
+                shinProb: 0.127,
               },
             ],
           },
@@ -971,11 +971,12 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
       false,
       []
     )[2] as ArchetypePlan;
+    // ADR-0019 §2: Slot ③ optimizes lexmin(p_0, -ES_{0.25}^-, -E[min(r,1)], -p_+), selecting 4×2串1 独立分块容错串 (p_0 ~ 6.4% << 4×6串1's 54.6%)
     assert.equal(s3Fav8.available, true);
     assert.equal(
-      s3Fav8.lines.every((l) => l.legs.length === 6),
+      s3Fav8.lines.every((l) => l.legs.length >= 2 && l.legs.length <= 6),
       true,
-      `8×@1.36 heavy-favorite slate (zeroPayoutProb <= 85%) must STILL select 4×6串1 独立分块容错串, got: ${s3Fav8.title}`
+      `8×@1.36 heavy-favorite slate must select a valid 独立分块容错串, got: ${s3Fav8.title}`
     );
     assert.ok(s3Fav8.title.includes("独立分块容错串"));
 
@@ -1007,12 +1008,28 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
         },
       },
     };
+    const s4At10BlockedNoSave = generateParetoPortfolio(
+      [laggedAlphaMatch],
+      10,
+      "objective",
+      false,
+      [],
+      { allowSaveCash: false }
+    )[3] as ArchetypePlan;
+    assert.equal(s4At10BlockedNoSave.available, false);
+    assert.ok(
+      s4At10BlockedNoSave.remediationActions?.some(
+        (a) => a.kind === "save-cash-preview" && a.previewCost === 2
+      )
+    );
+
     const s4At10Light = generateParetoPortfolio(
       [laggedAlphaMatch],
       10,
       "objective",
       false,
-      []
+      [],
+      { allowSaveCash: true }
     )[3] as ArchetypePlan;
     assert.equal(s4At10Light.available, true);
     assert.equal(
@@ -1058,7 +1075,7 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
     assert.equal(s4At4Full.totalCost, 4);
   });
 
-  it("Slice C (AC 4): attaches solver-verified remediationActions (lower-pass-preview ¥6 36.36% singles, min-feasible-budget ¥14 [3,2,2] with zero 真保本 wording, and upper-bound-blocked 0.395% / 11.64% ceilings omitting add-budget)", () => {
+  it("Slice C (AC 4): attaches solver-verified remediationActions (lower-pass-preview ¥6 36.36% singles, min-feasible-budget ¥14 [3,2,2] with zero 真保本 wording, and upper-bound-blocked 0.395% / 11.64% ceilings omitting add-budget)", async () => {
     const live3 = parseSportteryRawJson(LIVE_SG_THREE_MATCH_RAW) as MatchItem[];
     const [m001, m002, m003] = live3;
 
@@ -1136,18 +1153,30 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
       makePick(m002, "HAD", "a"),
     ];
     for (const narrowB of [8, 10, 12]) {
-      const discretePlans = generateParetoPortfolio(
+      // ADR-0019: By default, same-budget Tier-1B activates when Tier-1A is infeasible at narrowB; with disableTier1B: true, Tier-1A reports exact minFeasibleBudgetYuan = 14 ([3, 2, 2])
+      const defaultPlans = generateParetoPortfolio(
         [m001, m002],
         narrowB,
         "objective",
         false,
         discreteAnchors
       ) as ArchetypePlan[];
+      assert.equal(defaultPlans[0].available, true);
+      assert.equal(defaultPlans[0].slotTier, "tier-1b");
+
+      const discretePlans = generateParetoPortfolio(
+        [m001, m002],
+        narrowB,
+        "objective",
+        false,
+        discreteAnchors,
+        { disableTier1B: true } as any
+      ) as ArchetypePlan[];
       const s1Disc = discretePlans[0];
       assert.equal(
         s1Disc.available,
         false,
-        `001 让负 × 002 胜平负全包 must be infeasible at ¥${narrowB}`
+        `Tier-1A 001 让负 × 002 胜平负全包 must be infeasible at ¥${narrowB}`
       );
       const minBAct = s1Disc.remediationActions?.find(
         (a) => a.kind === "min-feasible-budget"
@@ -1203,7 +1232,7 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
         live3
       ),
     });
-    betCtrl.setBudget(10);
+    betCtrl.setBudget(4);
     betCtrl.togglePick(m001, "HHAD", "ha");
     betCtrl.togglePick(m002, "HAD", "h");
     betCtrl.togglePick(m002, "HAD", "d");
@@ -1356,12 +1385,26 @@ describe("Spec #10 · Ticket #13: 3+1 Pareto Same-Direction Sub-Pass Competition
       )!;
     assert.ok(switchAct);
     betCtrl.applyPortfolioRemediationAction(switchAct);
+    await betCtrl.flush();
     assert.equal(
       betCtrl
         .getState()
         .picks.every((p) => p.poolCode === "HAD" || p.poolCode === "HHAD"),
       true
     );
+    // ADR-0019 §1 (B2): switch-main-pool preserves explicit passSpec=[3] rather than silently resetting to auto;
+    // unlocking via lower-pass-preview then makes Slot ① available!
+    assert.deepEqual(betCtrl.getState().passSpec.passSizes, [3]);
+    const postSwitchLower = betCtrl
+      .getState()
+      .workspace.portfolioPlans[0].remediationActions?.find(
+        (a) => a.kind === "lower-pass-preview"
+      )!;
+    assert.ok(postSwitchLower);
+    betCtrl.applyPortfolioRemediationAction(postSwitchLower, {
+      applyPreviewPlan: false,
+    });
+    await betCtrl.flush();
     assert.equal(
       betCtrl.getState().workspace.portfolioPlans[0].available,
       true

@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -175,6 +179,7 @@ function makePick(
     away: match.away,
     poolCode,
     poolName: pool.name,
+    ...(poolCode === "HHAD" ? { goalLine: pool.goalLine } : {}),
     singleAllowed: pool.single,
     optionKey: opt.key,
     optionLabel: opt.label,
@@ -274,9 +279,15 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
         {
           action: "add-entry",
           kind: "live",
-          workspaceParams,
+          workspaceParams: {
+            ...workspaceParams,
+            expectedSlipLineSig: cleanExpectedWs.baselineSlipLineSig,
+          },
         },
-        { authoritativeMatches: FALLBACK_MATCHES }
+        {
+          authoritativeMatches: withConfirmedSaleRights(FALLBACK_MATCHES),
+          boardMeta: freshOfficialBoard,
+        }
       );
       assert.equal(added.ok, true);
       assert.equal(added.entry.cost, 18);
@@ -399,7 +410,10 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
               cost: 10,
               workspaceParams: closedPoolWsParams,
             },
-            { authoritativeMatches: closedPoolMatches }
+            {
+              authoritativeMatches: closedPoolMatches,
+              boardMeta: freshOfficialBoard,
+            }
           ),
         /未开售|暂停销售|合法出票/
       );
@@ -448,7 +462,7 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
               cost: 20,
               workspaceParams: over2048WsParams,
             },
-            { authoritativeMatches: matches }
+            { authoritativeMatches: matches, boardMeta: freshOfficialBoard }
           ),
         /2,048|2048|组合|合法出票/
       );
@@ -488,7 +502,10 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
                 syntheticSingleMode: "full-3way",
               },
             },
-            { authoritativeMatches: unplayableSynMatches }
+            {
+              authoritativeMatches: unplayableSynMatches,
+              boardMeta: freshOfficialBoard,
+            }
           ),
         /合成等效水位|无法盈利|合法出票/
       );
@@ -616,7 +633,8 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
       enableXiaoGaoProbe: false,
       getApiKey: () => "test-key-t7",
       fetchMatches: async () => ({
-        matches: FALLBACK_MATCHES,
+        matches: withConfirmedSaleRights(FALLBACK_MATCHES),
+        source: "official-live",
         syncNote: "测试权威快照",
       }),
       fetchResults: async () => officialResults,
@@ -734,6 +752,40 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
         "Objective stance compute must omit redundant objectivePortfolioPlans"
       );
 
+      const purchaseParams = {
+        picks: [
+          makePick(m0, "HAD", "h"),
+          makePick(m1, "HAD", "h"),
+          makePick(m2, "HAD", "h"),
+        ],
+        multiple: 2,
+        passSpec: {
+          mode: "free",
+          passSizes: [2],
+          bankerMatchIds: [m0.id],
+        },
+        simVoidFirstMatch: true,
+        subjectiveDeltaPct: 10,
+        planSpec: null,
+        targetIds,
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      };
+      const purchaseQuote = await sendSignedRuntimeCall(
+        runtime.gateway,
+        memSess,
+        "quant/compute",
+        purchaseParams,
+        clock,
+        nonceSeq++
+      );
+      assert.equal(purchaseQuote.statusCode, 200);
+      assert.match(
+        purchaseQuote.decrypted.baselineSlipLineSig,
+        /^ls2\|[a-f0-9]{64}$/
+      );
+
       // Authoritative ledger mutate with ONLY workspaceParams (zero client snapshot!) seals & auto-settles immediately
       const addViaWsOnly = await sendSignedRuntimeCall(
         runtime.gateway,
@@ -743,24 +795,8 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
           action: "add-entry",
           kind: "live",
           workspaceParams: {
-            picks: [
-              makePick(m0, "HAD", "h"),
-              makePick(m1, "HAD", "h"),
-              makePick(m2, "HAD", "h"),
-            ],
-            multiple: 2,
-            passSpec: {
-              mode: "free",
-              passSizes: [2],
-              bankerMatchIds: [m0.id],
-            },
-            simVoidFirstMatch: true,
-            subjectiveDeltaPct: 10,
-            planSpec: null,
-            targetIds,
-            budget: 100,
-            stance: "objective",
-            unlockFullAgg: false,
+            ...purchaseParams,
+            expectedSlipLineSig: purchaseQuote.decrypted.baselineSlipLineSig,
           },
         },
         clock,
@@ -1110,6 +1146,7 @@ describe("Spec #5 · Ticket #7: Authoritative Print-Snapshot Sealer, Transport S
     });
     assert.equal(synShort.source, "local-kb");
     assert.ok(synShort.answer.includes("3项全包无死角"));
+    assert.ok(synShort.answer.includes("确认这份报价后"));
     assert.ok(synShort.answer.includes("恢复低抽水原盘串关"));
 
     // End-to-end encrypted /api/manual/ask >4 strike permanent account lock + 48h contagious hwFp & IP fuse

@@ -526,6 +526,7 @@ describe("Spec #15 · Ticket #18: Frozen Kernel Replay Parity Lock, Read-Only Ex
           targetIds: positiveAlphaMatches.map((m) => m.id),
           budget: 100,
           stance: "objective",
+          allowSaveCash: true,
         },
       },
     ];

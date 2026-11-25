@@ -1,34 +1,82 @@
 /* 11 · 草坪 Pitch — morning pitch. Pale sage, faint mowing stripes, white keys,
    deep pitch-green as the only accent. */
 :root {
-  --page: #DDE5DD; --bg: #EDF2EC;
-  --bg-img: repeating-linear-gradient(180deg, rgba(14, 92, 58, 0.022) 0 44px, transparent 44px 88px),
-            radial-gradient(130% 55% at 50% 0%, #F6F9F5 0%, #EDF2EC 60%, #E6EDE5 100%);
-  --text: #10221A; --text-2: #4E5E55; --text-3: #87988D; --line: rgba(16, 34, 26, 0.08);
-  --accent: #0E5C3A; --mark: #0E5C3A; --live: #D9483B; --good: #0E5C3A;
+  --page: #dde5dd;
+  --bg: #edf2ec;
+  --bg-img:
+    repeating-linear-gradient(
+      180deg,
+      rgba(14, 92, 58, 0.022) 0 44px,
+      transparent 44px 88px
+    ),
+    radial-gradient(130% 55% at 50% 0%, #f6f9f5 0%, #edf2ec 60%, #e6ede5 100%);
+  --text: #10221a;
+  --text-2: #3f5247;
+  --text-3: #4a5e52;
+  --line: rgba(16, 34, 26, 0.08);
+  --accent: #0e5c3a;
+  --mark: #0e5c3a;
+  --live: #d9483b;
+  --good: #0e5c3a;
 
-  --card: #FFFFFF; --card-r: 22px;
-  --card-sh: 0 0 0 0.5px rgba(16, 34, 26, 0.05), 0 1px 2px rgba(16, 34, 26, 0.04), 0 14px 28px -20px rgba(14, 60, 38, 0.22);
-  --key: linear-gradient(180deg, #FFFFFF, #F2F6F2); --key-text: #10221A; --key-r: 12px;
-  --key-sh: inset 0 1px 0 #fff, 0 0 0 0.5px rgba(16, 34, 26, 0.10), 0 1px 1.5px rgba(16, 34, 26, 0.06), 0 3px 7px -3px rgba(14, 60, 38, 0.14);
-  --key-down: linear-gradient(180deg, #E9EFE9, #F4F7F4); --key-down-sh: inset 0 1.5px 3px rgba(16, 34, 26, 0.13), inset 0 0 0 0.5px rgba(16, 34, 26, 0.1);
-  --key-on: linear-gradient(180deg, #1A7A50 0%, #0E5C3A 55%, #0A4A2E 100%); --key-on-text: #FFFFFF;
-  --key-on-sh: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(7, 50, 30, 0.6), 0 6px 14px -7px rgba(14, 92, 58, 0.55);
-  --key-on-down: linear-gradient(180deg, #0A4A2E, #0E5C3A); --key-on-down-sh: inset 0 2px 4px rgba(0, 0, 0, 0.35);
-  --cell-sub: #87988D; --cell-sub-on: rgba(255, 255, 255, 0.62);
-  --track: #E1E9E1; --seg-on: #0E5C3A; --seg-text: #7F8F85;
-  --sw-on: linear-gradient(180deg, #1A7A50, #0E5C3A);
-  --slip: linear-gradient(180deg, #14402C, #0B2B1D);
-  --slip-sh: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.4), 0 16px 30px -12px rgba(11, 43, 29, 0.55);
-  --slip-trash: linear-gradient(180deg, #0A2519, #123826);
-  --dock: linear-gradient(180deg, rgba(243, 247, 243, 0.76), rgba(243, 247, 243, 0.96));
-  --nav-on: #0E5C3A; --nav-text: #8B9B91;
-  --chip: linear-gradient(180deg, #14663F, #0B4A2D);
-  --poster: radial-gradient(120% 90% at 0% 0%, #1C6A45 0%, #0B2B1D 65%);
-  --prob1: #0E5C3A; --prob2: #8FB8A0; --prob3: #D7E4DA; --prob-track: #E8EFE9;
-  --ava: linear-gradient(180deg, #EDF3EE, #E0E9E2); --ava-text: #0E5C3A;
-  --toast: linear-gradient(180deg, #14402C, #0B2B1D); --dash: #C9D6CC;
+  --card: #ffffff;
+  --card-r: 22px;
+  --card-sh:
+    0 0 0 0.5px rgba(16, 34, 26, 0.05), 0 1px 2px rgba(16, 34, 26, 0.04),
+    0 14px 28px -20px rgba(14, 60, 38, 0.22);
+  --key: linear-gradient(180deg, #ffffff, #f2f6f2);
+  --key-text: #10221a;
+  --key-r: 12px;
+  --key-sh:
+    inset 0 1px 0 #fff, 0 0 0 0.5px rgba(16, 34, 26, 0.1),
+    0 1px 1.5px rgba(16, 34, 26, 0.06), 0 3px 7px -3px rgba(14, 60, 38, 0.14);
+  --key-down: linear-gradient(180deg, #e9efe9, #f4f7f4);
+  --key-down-sh:
+    inset 0 1.5px 3px rgba(16, 34, 26, 0.13),
+    inset 0 0 0 0.5px rgba(16, 34, 26, 0.1);
+  --key-on: linear-gradient(180deg, #156b45 0%, #0e5c3a 55%, #0a4a2e 100%);
+  --key-on-text: #ffffff;
+  --key-on-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.25),
+    0 0 0 0.5px rgba(7, 50, 30, 0.6), 0 6px 14px -7px rgba(14, 92, 58, 0.55);
+  --key-on-down: linear-gradient(180deg, #0a4a2e, #0e5c3a);
+  --key-on-down-sh: inset 0 2px 4px rgba(0, 0, 0, 0.35);
+  --cell-sub: #4a5e52;
+  --cell-sub-on: rgba(255, 255, 255, 0.92);
+  --dp-pos: #065f46;
+  --dp-neg: #9f1239;
+  --dp-on-pos: #d1fae5;
+  --dp-on-neg: #ffe4e6;
+  --track: #e1e9e1;
+  --seg-on: #0e5c3a;
+  --seg-text: #4a5e52;
+  --sw-on: linear-gradient(180deg, #1a7a50, #0e5c3a);
+  --slip: linear-gradient(180deg, #14402c, #0b2b1d);
+  --slip-sh:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 16px 30px -12px rgba(11, 43, 29, 0.55);
+  --slip-trash: linear-gradient(180deg, #0a2519, #123826);
+  --dock: linear-gradient(
+    180deg,
+    rgba(243, 247, 243, 0.76),
+    rgba(243, 247, 243, 0.96)
+  );
+  --nav-on: #0e5c3a;
+  --nav-text: #8b9b91;
+  --chip: linear-gradient(180deg, #14663f, #0b4a2d);
+  --poster: radial-gradient(120% 90% at 0% 0%, #1c6a45 0%, #0b2b1d 65%);
+  --prob1: #0e5c3a;
+  --prob2: #8fb8a0;
+  --prob3: #d7e4da;
+  --prob-track: #e8efe9;
+  --ava: linear-gradient(180deg, #edf3ee, #e0e9e2);
+  --ava-text: #0e5c3a;
+  --toast: linear-gradient(180deg, #14402c, #0b2b1d);
+  --dash: #c9d6cc;
   --spring-press: 1180 54;
   --spring-release: 480 14;
 }
-.key.dark { background: var(--key-on); box-shadow: var(--key-on-sh); }
+.key.dark {
+  background: var(--key-on);
+  box-shadow: var(--key-on-sh);
+}

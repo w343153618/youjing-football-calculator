@@ -6,8 +6,8 @@
   --bg: #ffffff;
   --bg-img: none;
   --text: #000;
-  --text-2: #4a4a4a;
-  --text-3: #8e8e8e;
+  --text-2: #424242;
+  --text-3: #595959;
   --line: #e8e8e8;
   --accent: #000;
   --mark: #e30613;
@@ -40,8 +40,8 @@
   --key-on-sheen: none;
   --key-on-down: #222;
   --key-on-down-sh: none;
-  --cell-sub: #8e8e8e;
-  --cell-sub-on: rgba(255, 255, 255, 0.55);
+  --cell-sub: #595959;
+  --cell-sub-on: rgba(255, 255, 255, 0.84);
 
   --track: transparent;
   --track-sh: inset 0 -1px 0 #e8e8e8;
@@ -49,7 +49,7 @@
   --thumb-r: 0;
   --thumb: #000;
   --thumb-sh: none;
-  --seg-text: #8e8e8e;
+  --seg-text: #595959;
   --seg-on: #000;
   --sw-off: #e6e6e6;
   --sw-off-sh: none;

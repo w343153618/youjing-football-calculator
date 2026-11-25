@@ -1,12 +1,18 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { buildTicketLineReceipt } from "./ticketReceipt.mjs";
+import {
+  isFreshTicketBoard,
+  isTicketLineSaleConfirmed,
+} from "./ticketSaleRights.mjs";
 import {
   POOL_MAX_PASS,
   evaluateQuantWorkspace,
   settleTicketSnapshotWithOfficialResults,
 } from "./quantEngine.mjs";
 import {
+  consolidateTerminalPhysicalSlips,
   isPoolAllUpEligible,
   isPoolSingleEligible,
 } from "./quant/statutoryRules.mjs";
@@ -22,7 +28,7 @@ const MAX_ENTRIES_PER_USER = 200;
 const MAX_SNAPSHOT_MATCHES = 15;
 const MAX_SNAPSHOT_PICKS_PER_MATCH = 31;
 const MAX_UNTRUSTED_SNAPSHOT_LINES = 64;
-const MAX_TRUSTED_SNAPSHOT_LINES = 512;
+const MAX_TRUSTED_SNAPSHOT_LINES = 2048;
 const UNDO_TTL_MS = 15_000;
 
 const VALID_POOLS = new Set(["HAD", "HHAD", "TTG", "HAFU", "CRS"]);
@@ -75,6 +81,21 @@ function toAuthoritativeMap(authInput) {
     );
   }
   return null;
+}
+
+function assertLiveTicketHandicap(leg, board) {
+  if (String(leg.poolCode).toUpperCase() !== "HHAD") return;
+  const reviewed = String(leg.goalLine ?? "").trim();
+  const current = String(
+    board?.get(String(leg.matchId))?.pools?.HHAD?.goalLine ?? ""
+  ).trim();
+  if (!/^[+-]?\d+$/.test(reviewed) || reviewed !== current) {
+    const error = new Error(
+      "票行的原让球线与当前官方盘口尚未核对，请重新确认报价"
+    );
+    error.code = "QUOTE_DRIFTED";
+    throw error;
+  }
 }
 
 function resolveAuthoritativePick(authMap, matchId, poolCode, optionKey) {
@@ -192,6 +213,8 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         anyLegNotAllUp = true;
       }
 
+      if (opts.requireConfirmedSaleRights)
+        assertLiveTicketHandicap(lg, authMap);
       const resolvedOdds = authPick ? authPick.odds : clampCustomOdds(lg.odds);
       const resolvedGoalLine = authPick
         ? authPick.goalLine
@@ -237,6 +260,16 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
         );
       }
       return undefined;
+    }
+    if (
+      opts.requireConfirmedSaleRights &&
+      !isTicketLineSaleConfirmed(legs, authMap)
+    ) {
+      const err = new Error(
+        "当前票行的单关或过关售权尚未确认，可查看参考价或记模拟单"
+      );
+      err.code = "UNCONFIRMED_SALE_RIGHTS";
+      throw err;
     }
     if (legs.length > minPoolCap) {
       if (strict) {
@@ -400,6 +433,51 @@ function sanitizeTicketSnapshot(raw, opts = {}) {
   };
 }
 
+function extractBoardProvenanceMeta(rawMeta, fallbackMeta = null) {
+  const src = rawMeta && typeof rawMeta === "object" ? rawMeta : null;
+  const fb =
+    fallbackMeta && typeof fallbackMeta === "object" ? fallbackMeta : null;
+  if (!src && !fb) return {};
+
+  const out = {};
+  const rawBoardState = src?.boardState ?? fb?.boardState;
+  if (typeof rawBoardState === "string" && rawBoardState.trim()) {
+    out.boardState = rawBoardState.trim().slice(0, 48);
+  }
+  const rawBoardSource =
+    src?.boardSource ?? src?.source ?? fb?.boardSource ?? fb?.source;
+  if (typeof rawBoardSource === "string" && rawBoardSource.trim()) {
+    const cleanSource = rawBoardSource.trim().slice(0, 48);
+    out.boardSource = cleanSource;
+    out.source = cleanSource;
+  }
+  const rawSyncedAt =
+    src?.boardSyncedAt ??
+    src?.syncedAt ??
+    src?.lastValidBoardAt ??
+    fb?.boardSyncedAt ??
+    fb?.syncedAt ??
+    fb?.lastValidBoardAt;
+  if (Number.isFinite(Number(rawSyncedAt)) && Number(rawSyncedAt) > 0) {
+    const cleanSyncedAt = Math.round(Number(rawSyncedAt));
+    out.boardSyncedAt = cleanSyncedAt;
+    out.syncedAt = cleanSyncedAt;
+  }
+  const rawQuoteVersion = src?.quoteVersion ?? fb?.quoteVersion;
+  if (typeof rawQuoteVersion === "string" && rawQuoteVersion.trim()) {
+    out.quoteVersion = rawQuoteVersion.trim().slice(0, 96);
+  }
+  const rawQuotedAt = src?.quotedAt ?? fb?.quotedAt;
+  if (Number.isFinite(Number(rawQuotedAt)) && Number(rawQuotedAt) > 0) {
+    out.quotedAt = Math.round(Number(rawQuotedAt));
+  }
+  const rawFallbackFlag = src?.isFallbackReadOnly ?? fb?.isFallbackReadOnly;
+  if (typeof rawFallbackFlag === "boolean") {
+    out.isFallbackReadOnly = rawFallbackFlag;
+  }
+  return out;
+}
+
 /**
  * 服务端唯一权威出票快照封存器：
  * 共享精算模块导出的 POOL_MAX_PASS，依据权威在售盘口一次性定格对阵元数据、开球时间、让球线、固定水位、胆码标识与实票列表；
@@ -410,6 +488,9 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     workspaceParams = null,
     workspaceRes = null,
     authoritativeMatches = null,
+    boardMeta = null,
+    entryKind = null,
+    allowOfflineTicketOverride: requestedOfflineImport = false,
     rawSnapshotFallback = undefined,
     trustedServerSnapshot = false,
     title,
@@ -421,6 +502,8 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     maxPayout,
   } = opts;
 
+  const provenanceMeta = extractBoardProvenanceMeta(boardMeta, opts);
+
   const hasWorkspaceParams =
     workspaceParams !== null && workspaceParams !== undefined;
   if (
@@ -430,30 +513,82 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     throw new Error("选单工作区参数格式无效");
   }
 
+  const hasRawSnapshotInput =
+    rawSnapshotFallback !== undefined && rawSnapshotFallback !== null;
+  // A previously bought physical ticket can be imported by a trusted caller.
+  // A new workspace ticket must always use the server's current board and rights.
+  const allowOfflineTicketOverride =
+    requestedOfflineImport &&
+    hasRawSnapshotInput &&
+    !hasWorkspaceParams &&
+    !workspaceRes;
+  const requireConfirmedSaleRights =
+    entryKind === "live" && !allowOfflineTicketOverride;
+  if (
+    requireConfirmedSaleRights &&
+    !isFreshTicketBoard(boardMeta) &&
+    (hasWorkspaceParams || workspaceRes || hasRawSnapshotInput)
+  ) {
+    const staleErr = new Error(
+      "当前盘面处于离线或回退只读状态（STALE_FALLBACK_BOARD），禁止按回退缓存水位封存实买出票单；请先同步最新官网实盘或改记模拟观察单"
+    );
+    staleErr.code = "STALE_FALLBACK_BOARD";
+    throw staleErr;
+  }
+
   if (hasWorkspaceParams || workspaceRes) {
+    const cleanCallerSd = Math.max(
+      -15,
+      Math.min(15, Math.round(Number(workspaceParams?.subjectiveDeltaPct) || 0))
+    );
+    const hasArchetypeAppliedSd =
+      workspaceParams?.planSpec?.kind === "archetype" &&
+      workspaceParams.planSpec.appliedSubjectiveDeltaPct !== undefined;
+    const cleanAppliedSd = hasArchetypeAppliedSd
+      ? Math.max(
+          -15,
+          Math.min(
+            15,
+            Math.round(
+              Number(workspaceParams.planSpec.appliedSubjectiveDeltaPct) || 0
+            )
+          )
+        )
+      : cleanCallerSd;
+    const alignedExpectedQuoteInputSig =
+      hasWorkspaceParams &&
+      typeof workspaceParams.expectedQuoteInputSig === "string" &&
+      hasArchetypeAppliedSd &&
+      cleanAppliedSd !== cleanCallerSd
+        ? workspaceParams.expectedQuoteInputSig.replace(
+            `|sd=${cleanCallerSd}|`,
+            `|sd=${cleanAppliedSd}|`
+          )
+        : workspaceParams?.expectedQuoteInputSig;
+
     const cleanWsParams = hasWorkspaceParams
       ? {
           ...workspaceParams,
+          ...(alignedExpectedQuoteInputSig !== undefined
+            ? { expectedQuoteInputSig: alignedExpectedQuoteInputSig }
+            : {}),
           enforceFreshQuoteSignature: true,
           simVoidFirstMatch: false,
+          voidMatchIds: [],
           subjectiveDeltaPct: 0,
           ...(workspaceParams.expectedQuoteInputSig !== undefined ||
+          workspaceParams.quoteInputSig !== undefined ||
           workspaceParams.planSpec?.kind === "archetype"
             ? {
-                quoteCheckSubjectiveDeltaPct:
-                  workspaceParams.planSpec?.kind === "archetype" &&
-                  workspaceParams.planSpec.appliedSubjectiveDeltaPct !==
-                    undefined
-                    ? Number(
-                        workspaceParams.planSpec.appliedSubjectiveDeltaPct
-                      ) || 0
-                    : Number(workspaceParams.subjectiveDeltaPct) || 0,
+                quoteCheckSubjectiveDeltaPct: cleanAppliedSd,
               }
             : {}),
         }
       : null;
     const hasCallerSandboxShift =
       Boolean(workspaceParams?.simVoidFirstMatch) ||
+      (Array.isArray(workspaceParams?.voidMatchIds) &&
+        workspaceParams.voidMatchIds.length > 0) ||
       Number(workspaceParams?.subjectiveDeltaPct || 0) !== 0 ||
       Boolean(workspaceParams?.planSpec?.allowBudgetMismatchReadOnly);
     const authList = Array.isArray(authoritativeMatches)
@@ -468,15 +603,163 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     const effRep = ws?.effectiveReport;
 
     if (!effRep?.canCheckout || !(effRep.totalCost > 0)) {
-      throw new Error(
-        effRep?.ruleBlockReason || "当前选单尚未满足中国体彩合法出票条件"
+      const unplayableErr = new Error(
+        ws?.quoteRejectedReason ||
+          effRep?.ruleBlockReason ||
+          "当前选单尚未满足中国体彩合法出票条件"
       );
+      if (ws?.quoteRejectedReason) {
+        unplayableErr.code = "QUOTE_DRIFTED";
+      }
+      throw unplayableErr;
+    }
+
+    const authMap = toAuthoritativeMap(authoritativeMatches);
+    if (hasWorkspaceParams && !allowOfflineTicketOverride) {
+      const callerQuoteSig = String(
+        workspaceParams.expectedQuoteInputSig ||
+          workspaceParams.quoteInputSig ||
+          ""
+      ).trim();
+      if (callerQuoteSig.length > 0) {
+        const callerSigAligned =
+          hasArchetypeAppliedSd && cleanAppliedSd !== cleanCallerSd
+            ? callerQuoteSig.replace(
+                `|sd=${cleanCallerSd}|`,
+                `|sd=${cleanAppliedSd}|`
+              )
+            : callerQuoteSig;
+        const serverQuoteSig = String(ws?.quoteInputSig || "").trim();
+        const pickedQuoteDrifted =
+          Boolean(authMap) &&
+          Array.isArray(workspaceParams.picks) &&
+          workspaceParams.picks.some((pk) => {
+            if (!pk || !pk.matchId || !pk.poolCode || !pk.optionKey)
+              return false;
+            const authPick = resolveAuthoritativePick(
+              authMap,
+              String(pk.matchId),
+              String(pk.poolCode).toUpperCase(),
+              String(pk.optionKey)
+            );
+            if (!authPick) return true;
+            if (
+              String(pk.poolCode).toUpperCase() === "HHAD" &&
+              pk.goalLine !== undefined &&
+              String(pk.goalLine ?? "") !== String(authPick.goalLine ?? "")
+            ) {
+              return true;
+            }
+            if (
+              pk.odds !== undefined &&
+              Math.abs(Number(authPick.odds) - Number(pk.odds)) > 1e-6
+            ) {
+              return true;
+            }
+            return false;
+          });
+        if (
+          (serverQuoteSig.length > 0 && callerSigAligned !== serverQuoteSig) ||
+          pickedQuoteDrifted
+        ) {
+          const driftErr = new Error(
+            "盘口水位或让球线已变动，请确认最新报价后再记账锁单"
+          );
+          driftErr.code = "QUOTE_DRIFTED";
+          throw driftErr;
+        }
+      }
+
+      if (
+        workspaceParams.expectedTotalCost !== undefined &&
+        workspaceParams.expectedTotalCost !== null
+      ) {
+        const expCost = Number(workspaceParams.expectedTotalCost);
+        if (
+          !Number.isFinite(expCost) ||
+          Math.abs(effRep.totalCost - expCost) > 1e-6
+        ) {
+          const costErr = new Error(
+            `确认金额（¥${expCost}）与当前最新重算应付（¥${effRep.totalCost}）不一致，请确认最新报价后再记账锁单`
+          );
+          costErr.code = "QUOTE_DRIFTED";
+          throw costErr;
+        }
+      }
+
+      const specLinesToVerify = [
+        ...(Array.isArray(workspaceParams.planSpec?.baseLines)
+          ? workspaceParams.planSpec.baseLines
+          : []),
+        ...(Array.isArray(workspaceParams.planSpec?.snapshotPlan?.lines)
+          ? workspaceParams.planSpec.snapshotPlan.lines
+          : []),
+      ];
+      if (authMap && specLinesToVerify.length > 0) {
+        for (const ln of specLinesToVerify) {
+          for (const lg of ln?.legs ?? []) {
+            if (!lg || !lg.matchId || !lg.poolCode || !lg.optionKey) continue;
+            if (requireConfirmedSaleRights)
+              assertLiveTicketHandicap(lg, authMap);
+            const authPick = resolveAuthoritativePick(
+              authMap,
+              String(lg.matchId),
+              String(lg.poolCode).toUpperCase(),
+              String(lg.optionKey)
+            );
+            if (
+              !authPick ||
+              (String(lg.poolCode).toUpperCase() === "HHAD" &&
+                lg.goalLine !== undefined &&
+                String(lg.goalLine ?? "") !==
+                  String(authPick.goalLine ?? "")) ||
+              (lg.odds !== undefined &&
+                Math.abs(Number(authPick.odds) - Number(lg.odds)) > 1e-6)
+            ) {
+              const driftErr = new Error(
+                "盘口水位或让球线已变动，请确认最新报价后再记账锁单"
+              );
+              driftErr.code = "QUOTE_DRIFTED";
+              throw driftErr;
+            }
+          }
+        }
+      }
     }
 
     const appPlan =
       cleanWsParams?.planSpec || effRep.syntheticAutoMounted
         ? ws.appliedPlan
         : null;
+    const confirmedLines = appPlan ? appPlan.lines : (effRep.tickets ?? []);
+    if (
+      hasWorkspaceParams &&
+      (workspaceParams.expectedSlipLineSig !== undefined ||
+        entryKind === "live")
+    ) {
+      // A saved ticket or a delayed checkout must carry the receipt that was issued
+      // with its quote. Recompute against today's board before sealing the paid lines.
+      const expected = workspaceParams.expectedSlipLineSig;
+      const actual = authMap
+        ? buildTicketLineReceipt(
+            confirmedLines,
+            cleanWsParams?.multiple,
+            authMap
+          )
+        : ws.baselineSlipLineSig;
+      if (
+        typeof expected !== "string" ||
+        !expected.startsWith("ls2|") ||
+        !actual ||
+        expected !== actual
+      ) {
+        const err = new Error(
+          "实票对阵、盘口或基本票行已变动或缺少确认记录，请重新核对选单"
+        );
+        err.code = "QUOTE_DRIFTED";
+        throw err;
+      }
+    }
     const bankerSet = new Set(
       (
         effRep.bankerMatchIds ??
@@ -485,12 +768,26 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
         []
       ).map((id) => String(id))
     );
-    const authMap = toAuthoritativeMap(authoritativeMatches);
+    const manualHandicaps = new Map();
+    if (requireConfirmedSaleRights && hasWorkspaceParams && !appPlan) {
+      for (const pick of workspaceParams.picks ?? []) {
+        if (pick?.poolCode === "HHAD")
+          manualHandicaps.set(`${pick.matchId}:${pick.optionKey}`, pick);
+      }
+    }
     const mapSealedLeg = (lg) => {
       const m = authMap?.get(String(lg.matchId));
       const opt = m?.pools?.[lg.poolCode]?.options?.find(
         (o) => String(o.key) === String(lg.optionKey)
       );
+      const preserveOfflineQuote =
+        Boolean(allowOfflineTicketOverride) && Number(lg.odds) > 1;
+      if (requireConfirmedSaleRights && lg.poolCode === "HHAD") {
+        // The calculator may have rebound a manual selection to the latest board.
+        // Verify the submitted pick as well as the priced ticket line.
+        const pick = manualHandicaps.get(`${lg.matchId}:${lg.optionKey}`);
+        if (pick) assertLiveTicketHandicap(pick, authMap);
+      }
       return {
         matchId: lg.matchId,
         matchNumStr: m?.matchNumStr || lg.matchNumStr,
@@ -500,13 +797,23 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
         poolCode: lg.poolCode,
         optionKey: lg.optionKey,
         optionLabel: opt?.label || lg.optionLabel,
-        odds: opt?.odds ?? lg.odds,
-        goalLine: m?.pools?.HHAD?.goalLine ?? lg.goalLine ?? "-1",
+        odds: preserveOfflineQuote
+          ? clampCustomOdds(lg.odds)
+          : (opt?.odds ?? lg.odds),
+        goalLine:
+          requireConfirmedSaleRights && lg.poolCode === "HHAD"
+            ? lg.goalLine
+            : preserveOfflineQuote && lg.goalLine !== undefined
+              ? String(lg.goalLine).slice(0, 8)
+              : (m?.pools?.HHAD?.goalLine ?? lg.goalLine ?? "-1"),
       };
     };
 
+    const sourceLineCount = appPlan
+      ? (appPlan.lines || []).length
+      : (effRep.tickets || []).length;
     const builtLines =
-      effRep.betCount <= MAX_TRUSTED_SNAPSHOT_LINES
+      sourceLineCount <= MAX_TRUSTED_SNAPSHOT_LINES
         ? appPlan
           ? appPlan.lines.map((ln, idx) => ({
               id: ln.id || `ap_${idx + 1}`,
@@ -546,20 +853,53 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
             {
               strictValidate: true,
               trustedServerSnapshot: true,
-              authoritativeMatches,
+              requireConfirmedSaleRights,
+              authoritativeMatches: allowOfflineTicketOverride
+                ? null
+                : authoritativeMatches,
               bankerMatchIds: bankerSet,
             }
           )
         : undefined;
 
+    if (
+      !snapshot ||
+      !Array.isArray(snapshot.lines) ||
+      snapshot.lines.length === 0
+    ) {
+      throw new Error(
+        `出票快照构建失败或超出 ${MAX_TRUSTED_SNAPSHOT_LINES} 注基础组合上限，拒绝无快照裸封存`
+      );
+    }
+
     const resolvedBetCount = Math.max(1, effRep.betCount);
+    const logicalLineCount = Math.max(1, snapshot.lines.length);
+    const stakeUnitsCount = Math.max(
+      logicalLineCount,
+      effRep.stakeUnitsCount ?? Math.round(effRep.totalCost / 2)
+    );
+    const physicalSlipCount = Math.max(
+      1,
+      effRep.physicalSlipCount ??
+        (Array.isArray(effRep.physicalSlips) && effRep.physicalSlips.length > 0
+          ? effRep.physicalSlips.length
+          : consolidateTerminalPhysicalSlips(snapshot.lines).length)
+    );
+    const firstMult = Math.max(1, Math.round(snapshot.lines[0]?.multiple || 1));
+    const isUniformMult = snapshot.lines.every(
+      (ln) => Math.max(1, Math.round(ln.multiple || 1)) === firstMult
+    );
     const resolvedModeLabel =
       String(modeLabel || effRep.modeLabel || "方案")
         .trim()
         .slice(0, 40) || "方案";
     const defaultTitle = appPlan
-      ? `${effRep.modeLabel} · ${appPlan.shortTab}(${appPlan.lines.length}张)`
-      : `${effRep.modeLabel} · ${resolvedBetCount}注方案`;
+      ? `${effRep.modeLabel} · ${appPlan.shortTab}（${logicalLineCount}组共${stakeUnitsCount}注）`
+      : isUniformMult && firstMult > 1
+        ? `${effRep.modeLabel} · ${logicalLineCount}种×${firstMult}倍（共${stakeUnitsCount}注）`
+        : !isUniformMult
+          ? `${effRep.modeLabel} · ${logicalLineCount}组共${stakeUnitsCount}注`
+          : `${effRep.modeLabel} · ${stakeUnitsCount}注方案`;
     const resolvedTitle =
       String(title || defaultTitle)
         .trim()
@@ -569,21 +909,29 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
       sealedFromWorkspace: true,
       snapshot,
       betCount: resolvedBetCount,
+      betCountUnit: appPlan
+        ? "stake-units"
+        : (effRep.betCountUnit ?? "logical-lines"),
+      logicalLineCount,
+      stakeUnitsCount,
+      physicalSlipCount,
       totalCost: effRep.totalCost,
       minPayout: effRep.minPayout,
       maxPayout: effRep.maxPayout,
       modeLabel: resolvedModeLabel,
       title: resolvedTitle,
       bankerMatchIds: Array.from(bankerSet),
+      ...provenanceMeta,
     };
   }
 
-  const hasRawSnapshotInput =
-    rawSnapshotFallback !== undefined && rawSnapshotFallback !== null;
   const snapshot = sanitizeTicketSnapshot(rawSnapshotFallback, {
     strictValidate: true,
     trustedServerSnapshot: Boolean(trustedServerSnapshot),
-    authoritativeMatches,
+    requireConfirmedSaleRights,
+    authoritativeMatches: allowOfflineTicketOverride
+      ? null
+      : authoritativeMatches,
   });
   if (hasRawSnapshotInput && !snapshot) {
     throw new Error("出票快照参数无效或实票列表为空");
@@ -594,19 +942,50 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
   const resolvedBetCount = clampBetCount(
     betCount ?? (snapshot ? snapshot.lines.length : 1)
   );
+  const logicalLineCount = snapshot
+    ? Math.max(1, snapshot.lines.length)
+    : resolvedBetCount;
+  const stakeUnitsCount = snapshot
+    ? Math.max(
+        logicalLineCount,
+        snapshot.lines.reduce((s, l) => s + l.multiple, 0)
+      )
+    : clampBetCount(opts.stakeUnitsCount ?? resolvedBetCount);
+  const physicalSlipCount = snapshot
+    ? Math.max(1, consolidateTerminalPhysicalSlips(snapshot.lines).length)
+    : clampBetCount(opts.physicalSlipCount ?? logicalLineCount);
   const resolvedModeLabel =
     String(modeLabel || snapshot?.lines?.[0]?.modeLabel || "方案")
       .trim()
       .slice(0, 40) || "方案";
+  const fbFirstMult = snapshot
+    ? Math.max(1, Math.round(snapshot.lines[0]?.multiple || 1))
+    : 1;
+  const fbUniformMult = snapshot
+    ? snapshot.lines.every(
+        (ln) => Math.max(1, Math.round(ln.multiple || 1)) === fbFirstMult
+      )
+    : true;
+  const fallbackDefaultTitle =
+    snapshot && fbUniformMult && fbFirstMult > 1
+      ? `${resolvedModeLabel} · ${logicalLineCount}种×${fbFirstMult}倍（共${stakeUnitsCount}注）`
+      : snapshot && !fbUniformMult
+        ? `${resolvedModeLabel} · ${logicalLineCount}组共${stakeUnitsCount}注`
+        : `${resolvedModeLabel} · ${stakeUnitsCount}注方案`;
   const resolvedTitle =
-    String(title || `${resolvedModeLabel} · ${resolvedBetCount}注方案`)
+    String(title || fallbackDefaultTitle)
       .trim()
-      .slice(0, 120) || `${resolvedModeLabel} · ${resolvedBetCount}注方案`;
+      .slice(0, 120) || fallbackDefaultTitle;
 
   return {
     sealedFromWorkspace: false,
     snapshot,
     betCount: resolvedBetCount,
+    betCountUnit:
+      opts.betCountUnit === "stake-units" ? "stake-units" : "logical-lines",
+    logicalLineCount,
+    stakeUnitsCount,
+    physicalSlipCount,
     totalCost: snapshotCost,
     minPayout,
     maxPayout,
@@ -615,6 +994,7 @@ export function sealAuthoritativePrintSnapshot(opts = {}) {
     bankerMatchIds: snapshot
       ? snapshot.matches.filter((m) => m.isBanker).map((m) => m.matchId)
       : [],
+    ...provenanceMeta,
   };
 }
 
@@ -687,13 +1067,38 @@ function sanitizeEntry(raw) {
     strictValidate: false,
     trustedServerSnapshot: true,
   });
+  const betCount = clampBetCount(raw.betCount);
+  const logicalLineCount = clampBetCount(
+    raw.logicalLineCount ?? (snapshot ? snapshot.lines.length : betCount)
+  );
+  const refMoney = kind === "live" ? cost : paperRefCost;
+  const stakeUnitsCount = clampBetCount(
+    raw.stakeUnitsCount ??
+      (snapshot
+        ? snapshot.lines.reduce((s, l) => s + l.multiple, 0)
+        : refMoney > 0
+          ? Math.round(refMoney / 2)
+          : betCount)
+  );
+  const physicalSlipCount = clampBetCount(
+    raw.physicalSlipCount ??
+      (snapshot
+        ? consolidateTerminalPhysicalSlips(snapshot.lines).length
+        : logicalLineCount)
+  );
+  const provenanceMeta = extractBoardProvenanceMeta(raw);
 
   return {
     id: raw.id,
     kind,
     title: String(raw.title || "方案").slice(0, 120),
     modeLabel: String(raw.modeLabel || "方案").slice(0, 40),
-    betCount: clampBetCount(raw.betCount),
+    betCount,
+    betCountUnit:
+      raw.betCountUnit === "stake-units" ? "stake-units" : "logical-lines",
+    logicalLineCount,
+    stakeUnitsCount,
+    physicalSlipCount,
     cost,
     paperRefCost,
     minPayout,
@@ -711,6 +1116,7 @@ function sanitizeEntry(raw) {
         : undefined,
     createdAt: Number(raw.createdAt) || 0,
     settledAt: norm.status === "pending" ? null : Number(raw.settledAt) || null,
+    ...provenanceMeta,
   };
 }
 
@@ -1052,11 +1458,18 @@ export function createLedgerManager(opts = {}) {
       const sealed = sealAuthoritativePrintSnapshot({
         workspaceParams: payload?.workspaceParams,
         authoritativeMatches: callOpts.authoritativeMatches,
+        boardMeta:
+          callOpts.boardMeta ?? (kind === "paper" ? payload?.boardMeta : null),
+        entryKind: kind,
+        allowOfflineTicketOverride:
+          callOpts.allowOfflineTicketOverride === true,
         rawSnapshotFallback: payload?.snapshot,
         trustedServerSnapshot: Boolean(callOpts.trustedServerSnapshot),
         title: payload?.title,
         modeLabel: payload?.modeLabel,
         betCount: payload?.betCount,
+        stakeUnitsCount: payload?.stakeUnitsCount,
+        physicalSlipCount: payload?.physicalSlipCount,
         cost: payload?.cost,
         paperRefCost: payload?.paperRefCost,
         minPayout: payload?.minPayout,
@@ -1101,6 +1514,17 @@ export function createLedgerManager(opts = {}) {
             )
           : 0;
       const betCount = clampBetCount(sealed.betCount);
+      const logicalLineCount = clampBetCount(
+        sealed.logicalLineCount ?? (snapshot ? snapshot.lines.length : betCount)
+      );
+      const refMoney = kind === "live" ? cost : paperRefCost;
+      const stakeUnitsCount = clampBetCount(
+        sealed.stakeUnitsCount ??
+          (refMoney > 0 ? Math.round(refMoney / 2) : betCount)
+      );
+      const physicalSlipCount = clampBetCount(
+        sealed.physicalSlipCount ?? logicalLineCount
+      );
       const modeLabel = sealed.modeLabel;
       const title = sealed.title;
       const minPayout = clampMoney(sealed.minPayout, MAX_PAYOUT);
@@ -1108,6 +1532,7 @@ export function createLedgerManager(opts = {}) {
         minPayout,
         clampMoney(sealed.maxPayout, MAX_PAYOUT)
       );
+      const entryProvenance = extractBoardProvenanceMeta(sealed, payload);
 
       const entry = {
         id: `ldg_${now}_${crypto.randomBytes(4).toString("hex")}`,
@@ -1115,6 +1540,13 @@ export function createLedgerManager(opts = {}) {
         title,
         modeLabel,
         betCount,
+        betCountUnit:
+          sealed.betCountUnit === "stake-units"
+            ? "stake-units"
+            : "logical-lines",
+        logicalLineCount,
+        stakeUnitsCount,
+        physicalSlipCount,
         cost,
         paperRefCost,
         minPayout,
@@ -1135,6 +1567,7 @@ export function createLedgerManager(opts = {}) {
           : undefined,
         createdAt: now,
         settledAt: null,
+        ...entryProvenance,
       };
 
       rec.entries.unshift(entry);

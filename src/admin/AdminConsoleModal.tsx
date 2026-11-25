@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   adminCreateUser,
   adminDeleteUser,
@@ -16,6 +16,7 @@ import {
   type AdminConsoleTabId,
 } from "./adminHistoryMonitorViewModel.ts";
 import { playTactileCue } from "../spring/tactileSymphony";
+import { useModalFocusTrap } from "../spring/widgets";
 
 export {
   ADMIN_HISTORY_MONITOR_TAB_LABEL,
@@ -88,6 +89,12 @@ export function AdminConsoleModal({
 
   // Self password change
   const [selfNewPass, setSelfNewPass] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(
+    open && canAccessAdminConsole(currentUser),
+    dialogRef,
+    onClose
+  );
 
   const refreshOverview = async () => {
     setLoading(true);
@@ -205,10 +212,12 @@ export function AdminConsoleModal({
   return (
     <div className="manual-backdrop" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="manual-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        tabIndex={-1}
         aria-label="超级管理员总控台"
       >
         <div className="manual-head">

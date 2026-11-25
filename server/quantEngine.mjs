@@ -1,21 +1,9 @@
 // Pure in-process actuarial orchestration facade (zero filesystem or network I/O).
+import { buildTicketLineReceipt } from "./ticketReceipt.mjs";
+import { scanMatchAlphaCandidates } from "./quant/coherentCalibration.mjs";
 import {
-  OFFICIAL_CRS_PAIRS,
-  POOL_MAX_PASS,
-  bankerRoundCents,
-  bankerRoundParlayUnitPayout,
-  statutorySingleBetCap,
-} from "./quant/statutoryRules.mjs";
-import {
-  analyzeMatchMicroQuant,
-  calibrateMatchCoherentModel,
-  computeMatchPoolsFingerprint,
-  devigPoolProbabilities,
-  scanMatchAlphaCandidates,
-} from "./quant/coherentCalibration.mjs";
-import {
-  generateFiveArchetypes,
-  generateParetoPortfolio,
+  getCachedWorkspaceFivePlans,
+  serializePassSpecCacheKey,
 } from "./quant/paretoPortfolio.mjs";
 import {
   applyAutoSyntheticReportMeta,
@@ -28,105 +16,51 @@ import {
   computeTruthReport,
   isValidPlanObject,
   normalizePortfolioKey,
-  optimizeBonusPlan,
   orchestrateSingleMatchSynthetic,
+  resolveCachedBaselineArchetypePlan,
+  resolveCachedBonusPlan,
+  resolveCachedWorkspaceBaseline,
   sanitizeAndDeduplicatePicks,
   scaleArchetypePlan,
   settleTicketSnapshotOnResultsMap,
   validateAppliedArchetypeQuoteGate,
+  validateBoundBonusSingleAuthGate,
 } from "./quant/reportAndSettlement.mjs";
 import {
   FALLBACK_MATCHES,
-  parseSportteryRawJson,
   parseSportteryResultsJson,
 } from "./quant/sportteryParsers.mjs";
 
 export {
-  FALLBACK_MATCHES,
   OFFICIAL_CRS_PAIRS,
   POOL_MAX_PASS,
-  analyzeMatchMicroQuant,
-  archetypeToReport,
   bankerRoundCents,
   bankerRoundParlayUnitPayout,
-  buildXiaoGaoWarnings,
+  consolidateTerminalPhysicalSlips,
+  statutorySingleBetCap,
+} from "./quant/statutoryRules.mjs";
+export {
+  analyzeMatchMicroQuant,
   calibrateMatchCoherentModel,
-  computeProOrderInsights,
-  computeTruthReport,
   devigPoolProbabilities,
+} from "./quant/coherentCalibration.mjs";
+export {
   generateFiveArchetypes,
   generateParetoPortfolio,
-  optimizeBonusPlan,
-  parseSportteryRawJson,
+} from "./quant/paretoPortfolio.mjs";
+export { optimizeBonusPlan } from "./quant/reportAndSettlement.mjs";
+export { parseSportteryRawJson } from "./quant/sportteryParsers.mjs";
+export {
+  FALLBACK_MATCHES,
+  archetypeToReport,
+  buildXiaoGaoWarnings,
+  computeProOrderInsights,
+  computeTruthReport,
   parseSportteryResultsJson,
   sanitizeAndDeduplicatePicks,
-  statutorySingleBetCap,
 };
 
 const WORKSPACE_PARETO_CACHE = new Map();
-
-function serializePassSpecCacheKey(passSpec) {
-  if (!passSpec || passSpec.mode === "auto") return "auto";
-  if (passSpec.mode === "combo" && passSpec.comboCode) {
-    return `c:${passSpec.comboCode}`;
-  }
-  if (passSpec.mode === "free" && Array.isArray(passSpec.passSizes)) {
-    return `f:${[...passSpec.passSizes].sort((a, b) => a - b).join(",")}`;
-  }
-  return "auto";
-}
-
-function getCachedWorkspaceFivePlans(
-  resolvedTargets,
-  budget,
-  stance,
-  unlockFullAgg,
-  anchorPicks,
-  portfolioOptions = {}
-) {
-  const acceptPartialSingleCoverage = Boolean(
-    portfolioOptions?.acceptPartialSingleCoverage
-  );
-  const allowSaveCash = Boolean(portfolioOptions?.allowSaveCash);
-  const passKey = serializePassSpecCacheKey(portfolioOptions?.passSpec);
-  let key = `${budget}|${stance}|${unlockFullAgg ? 1 : 0}|p=${acceptPartialSingleCoverage ? 1 : 0}|sc=${allowSaveCash ? 1 : 0}|ps=${passKey}|t=${resolvedTargets.length}`;
-  for (let i = 0; i < resolvedTargets.length; i++) {
-    const m = resolvedTargets[i];
-    const fp = computeMatchPoolsFingerprint(m);
-    key += `;${m.id}:${fp.h1.toString(36)}:${fp.h2.toString(36)}:${fp.len}`;
-  }
-  if (Array.isArray(anchorPicks) && anchorPicks.length > 0) {
-    key += `|a=${anchorPicks.length}`;
-    for (let i = 0; i < anchorPicks.length; i++) {
-      const p = anchorPicks[i];
-      key += `;${p.matchId}:${p.poolCode}:${p.optionKey}:${Number(p.odds).toFixed(4)}`;
-    }
-  }
-  const hit = WORKSPACE_PARETO_CACHE.get(key);
-  if (hit) {
-    WORKSPACE_PARETO_CACHE.delete(key);
-    WORKSPACE_PARETO_CACHE.set(key, hit);
-    return hit;
-  }
-  const plans = generateFiveArchetypes(
-    resolvedTargets,
-    budget,
-    stance,
-    unlockFullAgg,
-    anchorPicks,
-    {
-      acceptPartialSingleCoverage,
-      allowSaveCash,
-      passSpec: portfolioOptions?.passSpec ?? { mode: "auto" },
-    }
-  );
-  if (WORKSPACE_PARETO_CACHE.size >= 32) {
-    const oldestKey = WORKSPACE_PARETO_CACHE.keys().next().value;
-    if (oldestKey !== undefined) WORKSPACE_PARETO_CACHE.delete(oldestKey);
-  }
-  WORKSPACE_PARETO_CACHE.set(key, plans);
-  return plans;
-}
 
 /**
  * 统一服务端黑盒精算调度器（单次密文往返完成全部五维审单、三模分倍、精算配单与对冲计算）
@@ -160,6 +94,14 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     Math.min(15, Number(params?.subjectiveDeltaPct) || 0)
   );
   const simVoidFirstMatch = Boolean(params?.simVoidFirstMatch);
+  const voidMatchIds = Array.isArray(params?.voidMatchIds)
+    ? params.voidMatchIds.map(String).filter(Boolean).slice(0, 16)
+    : [];
+  const hasVoidSim = simVoidFirstMatch || voidMatchIds.length > 0;
+  const singleAuthGrant =
+    params?.singleAuthGrant && typeof params.singleAuthGrant === "object"
+      ? params.singleAuthGrant
+      : undefined;
   const planSpec = params?.planSpec ?? null;
   const targetIds = Array.isArray(params?.targetIds) ? params.targetIds : [];
   const anchorToRadarPicks = Boolean(params?.anchorToRadarPicks);
@@ -178,35 +120,34 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     picks,
     matches,
     simVoidFirstMatch,
-    subjectiveDeltaPct
+    subjectiveDeltaPct,
+    { voidMatchIds }
   );
   const sandboxAdjustedPicks = sandboxBundle.picks;
   const hasSubjectiveShift = subjectiveDeltaPct !== 0;
-  const hasSandboxShift = simVoidFirstMatch || hasSubjectiveShift;
+  const hasSandboxShift = hasVoidSim || hasSubjectiveShift;
   const baselineBundle = hasSandboxShift
     ? buildSandboxAdjustedBundle(picks, matches, false, 0)
     : sandboxBundle;
   const baselinePicks = baselineBundle.picks;
   const objectiveVoidBundle =
-    hasSubjectiveShift && simVoidFirstMatch
-      ? buildSandboxAdjustedBundle(picks, matches, true, 0)
+    hasSubjectiveShift && hasVoidSim
+      ? buildSandboxAdjustedBundle(picks, matches, simVoidFirstMatch, 0, {
+          voidMatchIds,
+        })
       : baselineBundle;
 
-  const precomputedBaselineManual =
-    hasSandboxShift && (hasSubjectiveShift || planSpec?.kind === "bonus")
-      ? computeTruthReport(
-          baselinePicks,
-          multiple,
-          matches,
-          passSpec,
-          baselineBundle.atomicMap,
-          {
-            metricsOnly: true,
-            captureHitMatrix: true,
-            isBaselineAtomic: true,
-          }
-        )
-      : null;
+  const { precomputedBaselineManual, entry: baseCacheEntry } =
+    resolveCachedWorkspaceBaseline({
+      hasSandboxShift,
+      clientAlerts,
+      baselinePicks,
+      multiple,
+      passKey: serializePassSpecCacheKey(passSpec),
+      matches,
+      passSpec,
+      atomicMap: baselineBundle.atomicMap,
+    });
 
   const manualReport = computeTruthReport(
     sandboxAdjustedPicks,
@@ -220,11 +161,12 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       hasSubjectiveShift,
       objectiveAtomicMap: objectiveVoidBundle.atomicMap,
       precomputedObjectiveEval:
-        hasSubjectiveShift && !simVoidFirstMatch && precomputedBaselineManual
+        hasSubjectiveShift && !hasVoidSim && precomputedBaselineManual
           ? precomputedBaselineManual
           : null,
     }
   );
+  const baselineManualReport = precomputedBaselineManual ?? manualReport;
 
   const foundTargets = matches.filter((m) => targetIds.includes(m.id));
   const resolvedTargets =
@@ -273,6 +215,7 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       : currentQuoteInputSig;
 
   const rawFivePlans = getCachedWorkspaceFivePlans(
+    WORKSPACE_PARETO_CACHE,
     resolvedTargets,
     budget,
     stance,
@@ -280,14 +223,27 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     anchorPicks,
     portfolioOpts
   );
-  const fivePlans = rawFivePlans.map((p) => ({
+  const stampPortfolioPlan = (p, sig) => ({
     ...p,
-    quoteInputSig: currentQuoteInputSig,
+    ...(sig ? { quoteInputSig: sig } : {}),
     quoteBudgetYuan: budget,
-  }));
+    ...(Array.isArray(p.remediationActions) && p.remediationActions.length > 0
+      ? {
+          remediationActions: p.remediationActions.map((a) => ({
+            ...a,
+            sourceQuoteInputSig: currentQuoteInputSig,
+            sourceBudgetYuan: budget,
+          })),
+        }
+      : {}),
+  });
+  const fivePlans = rawFivePlans.map((p) =>
+    stampPortfolioPlan(p, currentQuoteInputSig)
+  );
   const rawObjectivePlans =
     stance !== "objective"
       ? getCachedWorkspaceFivePlans(
+          WORKSPACE_PARETO_CACHE,
           resolvedTargets,
           budget,
           "objective",
@@ -297,43 +253,51 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         )
       : undefined;
   const objectivePortfolioPlans = rawObjectivePlans
-    ? rawObjectivePlans.map((p) => ({
-        ...p,
-        quoteBudgetYuan: budget,
-      }))
+    ? rawObjectivePlans.map((p) => stampPortfolioPlan(p, null))
     : undefined;
 
   let appliedPlan = null;
+  let baselineAppliedPlan = null;
   let alphaSmoothedAfterSync = false;
   let quoteRejectedReason = null;
   if (planSpec?.kind === "bonus") {
-    const mode =
-      planSpec.optMode === "hot-first" || planSpec.optMode === "cold-first"
-        ? planSpec.optMode
-        : "equal";
-    const baselineManualForOpt = precomputedBaselineManual ?? manualReport;
-    const baseAppliedPlan = scaleArchetypePlan(
-      optimizeBonusPlan(baselineManualForOpt, matches, mode, {
-        upgradeToBreakeven: Boolean(planSpec.upgradeToBreakeven),
-        consolidateTickets: Boolean(planSpec.consolidateTickets),
-        targetBudgetCost: planSpec.targetBudgetCost,
-      }),
-      planSpec.scaleMultiple
-    );
-    appliedPlan = applySandboxToPlan(
-      baseAppliedPlan,
+    const bonusGate = validateBoundBonusSingleAuthGate({
+      planSpec,
+      singleAuthGrant,
+      picks: baselinePicks,
       matches,
-      picks,
-      simVoidFirstMatch,
-      subjectiveDeltaPct,
-      {
-        isArchetype: false,
-        consolidateTickets: Boolean(planSpec.consolidateTickets),
-        stance,
-        manualReport,
-        objectiveHitMatrix: baselineManualForOpt?._reusableHitMatrix ?? null,
-      }
-    );
+    });
+    if (!bonusGate.ok) {
+      quoteRejectedReason = bonusGate.reason;
+    } else {
+      const mode =
+        planSpec.optMode === "hot-first" || planSpec.optMode === "cold-first"
+          ? planSpec.optMode
+          : "equal";
+      const baseAppliedPlan = resolveCachedBonusPlan(
+        baselineManualReport,
+        matches,
+        mode,
+        planSpec,
+        baseCacheEntry
+      );
+      baselineAppliedPlan = hasSandboxShift ? baseAppliedPlan : null;
+      appliedPlan = applySandboxToPlan(
+        baseAppliedPlan,
+        matches,
+        picks,
+        simVoidFirstMatch,
+        subjectiveDeltaPct,
+        {
+          isArchetype: false,
+          consolidateTickets: planSpec.consolidateTickets !== false,
+          stance,
+          manualReport,
+          objectiveHitMatrix: baselineManualReport?._reusableHitMatrix ?? null,
+          voidMatchIds,
+        }
+      );
+    }
   } else if (planSpec?.kind === "archetype") {
     const normalizedKey = normalizePortfolioKey(planSpec.key);
     const validSnap = isValidPlanObject(planSpec.snapshotPlan)
@@ -344,10 +308,13 @@ export function evaluateQuantWorkspace(params, matchesInput) {
       planSpec,
       validSnap,
       currentQuoteInputSig: gateQuoteInputSig,
+      matches,
     });
     if (!quoteGate.ok) {
       quoteRejectedReason = quoteGate.reason;
     } else {
+      const rawLiveRef =
+        rawFivePlans.find((p) => p.key === normalizedKey) ?? null;
       const liveCandidate =
         fivePlans.find((p) => p.key === normalizedKey) ?? null;
       const usableLive =
@@ -361,6 +328,22 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         basePlan,
         planSpec.scaleMultiple
       );
+      baselineAppliedPlan = hasSandboxShift
+        ? resolveCachedBaselineArchetypePlan(
+            scaledBasePlan,
+            usableLive ? rawLiveRef : null,
+            matches,
+            picks,
+            {
+              hasFrozenSnapshot: Boolean(validSnap),
+              scaleMultiple: planSpec.scaleMultiple,
+              consolidateTickets: planSpec.consolidateTickets !== false,
+              stance,
+              baselineManualReport,
+            },
+            baseCacheEntry
+          )
+        : null;
       appliedPlan = applySandboxToPlan(
         scaledBasePlan,
         matches,
@@ -370,51 +353,43 @@ export function evaluateQuantWorkspace(params, matchesInput) {
         {
           isArchetype: true,
           hasFrozenSnapshot: Boolean(validSnap),
-          consolidateTickets: Boolean(planSpec.consolidateTickets),
+          consolidateTickets: planSpec.consolidateTickets !== false,
           stance,
           manualReport,
-          targetFirstMid: foundTargets[0]?.id ?? null,
+          voidMatchIds,
         }
       );
 
       if (normalizedKey === "alpha-radar" && validSnap && appliedPlan) {
-        // Check if live alpha-radar is now empty OR none of validSnap's legs still clear >= +3% alpha on live matches
-        let anySnapLegStillAlpha = false;
-        for (const l of validSnap.lines) {
-          for (const lg of l.legs) {
+        const anyStillAlpha = validSnap.lines.some((l) =>
+          l.legs.some((lg) => {
             const fm = matches.find((m) => m.id === lg.matchId);
-            if (!fm) continue;
-            const scan = scanMatchAlphaCandidates(fm, null);
-            if (
-              scan.candidates.some((c) =>
-                Array.isArray(c.betterPicks)
-                  ? c.betterPicks.some(
-                      (bp) =>
-                        bp.poolCode === lg.poolCode &&
-                        bp.optionKey === lg.optionKey
-                    )
-                  : c.poolCode === lg.poolCode && c.optionKey === lg.optionKey
-              )
-            ) {
-              anySnapLegStillAlpha = true;
-              break;
-            }
-          }
-          if (anySnapLegStillAlpha) break;
-        }
-        if (!usableLive || !anySnapLegStillAlpha) {
-          alphaSmoothedAfterSync = true;
-        }
+            if (!fm) return false;
+            return scanMatchAlphaCandidates(fm, null).candidates.some((c) =>
+              Array.isArray(c.betterPicks)
+                ? c.betterPicks.some(
+                    (bp) =>
+                      bp.poolCode === lg.poolCode &&
+                      bp.optionKey === lg.optionKey
+                  )
+                : c.poolCode === lg.poolCode && c.optionKey === lg.optionKey
+            );
+          })
+        );
+        alphaSmoothedAfterSync = !usableLive || !anyStillAlpha;
       }
     }
   }
 
   let autoSyntheticMeta = null;
+  let baselineAutoSyntheticMeta = null;
   if (
-    !planSpec &&
+    (!planSpec || quoteRejectedReason) &&
     !appliedPlan &&
     manualReport.matchCount === 1 &&
     !manualReport.canCheckout &&
+    !manualReport.canSingle &&
+    manualReport.selectionStatus !== "rule-blocked" &&
     !manualReport.hasSameMatchCrossPoolConflict
   ) {
     const singleMid = picks[0]?.matchId;
@@ -424,42 +399,74 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     const matchPicks = singleMatch
       ? picks.filter((p) => p.matchId === singleMatch.id)
       : [];
-    const synRes = orchestrateSingleMatchSynthetic({
+    const baseSynArgs = {
       singleMatch,
       matchPicks,
       matches,
       picks,
       multiple,
-      syntheticSingleMode,
+      syntheticSingleMode: quoteRejectedReason ? "off" : syntheticSingleMode,
+      singleAuthGrant: quoteRejectedReason ? undefined : singleAuthGrant,
+      stance,
+    };
+    const synRes = orchestrateSingleMatchSynthetic({
+      ...baseSynArgs,
       simVoidFirstMatch,
+      voidMatchIds,
       subjectiveDeltaPct,
       hasSubjectiveShift,
       sandboxAtomicMap: singleMatch
         ? (sandboxBundle.atomicMap?.get(singleMatch.id) ?? null)
         : null,
-      stance,
       manualReport,
     });
     appliedPlan = synRes.appliedPlan;
     autoSyntheticMeta = synRes.autoSyntheticMeta;
+    if (synRes.quoteRejectedReason && !quoteRejectedReason) {
+      quoteRejectedReason = synRes.quoteRejectedReason;
+    }
+    if (hasSandboxShift && appliedPlan) {
+      const baseSynRes = orchestrateSingleMatchSynthetic({
+        ...baseSynArgs,
+        simVoidFirstMatch: false,
+        voidMatchIds: [],
+        subjectiveDeltaPct: 0,
+        hasSubjectiveShift: false,
+        sandboxAtomicMap: singleMatch
+          ? (baselineBundle.atomicMap?.get(singleMatch.id) ?? null)
+          : null,
+        manualReport: baselineManualReport,
+      });
+      baselineAppliedPlan = baseSynRes.appliedPlan;
+      baselineAutoSyntheticMeta = baseSynRes.autoSyntheticMeta;
+    }
   }
 
-  const effectiveReport = appliedPlan
-    ? archetypeToReport(appliedPlan, manualReport, matches)
-    : quoteRejectedReason
-      ? {
-          ...manualReport,
-          canCheckout: false,
-          ruleBlockReason: quoteRejectedReason,
-        }
-      : manualReport;
-
-  applyAutoSyntheticReportMeta(
-    effectiveReport,
+  const buildEffReport = (appPlan, manRep, synMeta) => {
+    const rep = appPlan
+      ? archetypeToReport(appPlan, manRep, matches)
+      : quoteRejectedReason
+        ? {
+            ...manRep,
+            canCheckout: false,
+            ruleBlockReason: quoteRejectedReason,
+          }
+        : manRep;
+    applyAutoSyntheticReportMeta(rep, manRep, synMeta, syntheticSingleMode);
+    return rep;
+  };
+  const effectiveReport = buildEffReport(
+    appliedPlan,
     manualReport,
-    autoSyntheticMeta,
-    syntheticSingleMode
+    autoSyntheticMeta
   );
+  const baselineReport = hasSandboxShift
+    ? buildEffReport(
+        baselineAppliedPlan,
+        baselineManualReport,
+        baselineAutoSyntheticMeta ?? autoSyntheticMeta
+      )
+    : effectiveReport;
 
   if (
     alphaSmoothedAfterSync &&
@@ -504,10 +511,19 @@ export function evaluateQuantWorkspace(params, matchesInput) {
     ...buildXiaoGaoWarnings(auditedWarningLegs, matches),
   ];
 
+  const quotedPlan = hasSandboxShift ? baselineAppliedPlan : appliedPlan;
+  const quotedLines =
+    (planSpec || baselineReport.syntheticAutoMounted) && quotedPlan
+      ? quotedPlan.lines
+      : baselineReport.tickets;
   return {
     manualReport,
+    baselineSlipLineSig: buildTicketLineReceipt(quotedLines, multiple, matches),
     effectiveReport,
+    baselineManualReport,
+    baselineReport,
     appliedPlan,
+    baselineAppliedPlan: hasSandboxShift ? baselineAppliedPlan : appliedPlan,
     insights,
     portfolioPlans: fivePlans,
     ...(objectivePortfolioPlans ? { objectivePortfolioPlans } : {}),

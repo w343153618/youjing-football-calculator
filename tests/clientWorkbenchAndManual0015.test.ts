@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -425,7 +429,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
   });
 
   it("Slice 4 (Composed Headless Workbench · Dual-Track Ledger, Stop-Loss Guardrail, 5s Soft Undo & 45s Auto-Settle Throttle): manages full ledger lifecycle in memory with zero DOM", async () => {
-    const matches = FALLBACK_MATCHES as MatchItem[];
+    const matches = withConfirmedSaleRights(FALLBACK_MATCHES as MatchItem[]);
     let nowMs = Date.parse("2026-11-21T20:00:00+08:00");
     let nextTimerId = 1;
     const timers = new Map<number, { dueAt: number; fn: () => void }>();
@@ -660,7 +664,10 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
       clockPort,
       storagePort,
       quantPort: {
-        computeWorkspace: (params, ms) => evaluateQuantWorkspace(params, ms),
+        computeWorkspace: (params, ms) => ({
+          ...evaluateQuantWorkspace(params, ms),
+          boardMeta: freshOfficialBoard,
+        }),
       },
       ledgerPort,
       authPort: {
@@ -670,6 +677,7 @@ describe("Spec #5 · Ticket #8: Client 1-RTT BetSlip Gates, Composed Headless Wo
           authToken: "tok_demo_1",
           matches,
           syncNote: "已同步官网在售赛事",
+          boardMeta: freshOfficialBoard,
           initialPicks: [],
           workspace: evaluateQuantWorkspace(
             { picks: [], multiple: 5 },

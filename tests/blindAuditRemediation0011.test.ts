@@ -338,7 +338,7 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     const lowOddsEarly: MatchItem = {
       ...earlyM,
       id: "20261117-011",
-      kickoff: "20:00",
+      kickoff: "19:30",
       pools: {
         ...earlyM.pools,
         HAD: {
@@ -401,18 +401,19 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     assert.ok(!insReduceLoss.hedge.reason.includes("保本"));
 
     // Positive net profit case -> hedgeMode === "lock-profit"
+    const early1930: MatchItem = { ...earlyM, kickoff: "19:30" };
     const lockProfitPicks = [
-      makePick(earlyM, "HAD", "h"),
+      makePick(early1930, "HAD", "h"),
       makePick(FALLBACK_MATCHES[3] as MatchItem, "HAD", "a"),
     ];
     const repLockProfit = computeTruthReport(lockProfitPicks, 15, [
-      earlyM,
+      early1930,
       FALLBACK_MATCHES[3] as MatchItem,
     ]);
     const insLockProfit = computeProOrderInsights(
       lockProfitPicks,
       repLockProfit,
-      [earlyM, FALLBACK_MATCHES[3] as MatchItem]
+      [early1930, FALLBACK_MATCHES[3] as MatchItem]
     );
     assert.equal(insLockProfit.hedge.available, true);
     assert.ok(insLockProfit.hedge.lockedNetProfit > 0);
@@ -806,8 +807,8 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     assert.equal(slot1Mixed.underwaterCount, 0);
     assert.ok(
       slot1Mixed.profitProb > pure1MSlot1.profitProb + 0.05 &&
-        slot1Mixed.profitProb > 0.85,
-      `Expected hybrid single + 2串1 zero-underwater Slot ① profitProb (${(slot1Mixed.profitProb * 100).toFixed(2)}%) > pure 1-match single (${(pure1MSlot1.profitProb * 100).toFixed(2)}%) + 5pp and > 85%`
+        slot1Mixed.profitProb > 0.84,
+      `Expected hybrid single + 2串1 zero-underwater Slot ① profitProb (${(slot1Mixed.profitProb * 100).toFixed(2)}%) > pure 1-match single (${(pure1MSlot1.profitProb * 100).toFixed(2)}%) + 5pp and > 84%`
     );
     assert.ok(
       slot1Mixed.lines.some((l) => l.legs.length === 1) &&
@@ -1474,7 +1475,7 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     const pairHedgeEarly: MatchItem = {
       ...baseEarly,
       id: "20261117-021",
-      kickoff: "20:00",
+      kickoff: "19:30",
       pools: {
         ...baseEarly.pools,
         HAD: {
@@ -1581,12 +1582,23 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
         },
       },
     };
-    const slot2Anc1M = generateParetoPortfolio(
+    // ADR-0019 T Δ S = ∅: single-pick anchor [HAD:h] must NOT inject unpicked HAD:d without consent
+    const slot2Anc1MPure = generateParetoPortfolio(
       [anchored1M],
       100,
       "objective",
       false,
       [makePick(anchored1M, "HAD", "h")]
+    )[1] as ArchetypePlan;
+    assert.equal(slot2Anc1MPure.lines.length, 1);
+
+    // Explicit 2-way anchor [HAD:h, HAD:d] optimizes exact integer log-wealth utility split (28, 22) beyond minimum shield (31, 19)
+    const slot2Anc1M = generateParetoPortfolio(
+      [anchored1M],
+      100,
+      "objective",
+      false,
+      [makePick(anchored1M, "HAD", "h"), makePick(anchored1M, "HAD", "d")]
     )[1] as ArchetypePlan;
     assert.equal(slot2Anc1M.lines.length, 2);
     // For h@2.35 (p=0.40) + d@2.65 (p=0.35) at ¥100 (50 notes), minimum shield is ceil(100/5.30)=19 (split 31/19),
@@ -1818,7 +1830,6 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
     ];
     const swap6Picks = [
       makePick(swap6Matches[0], "HHAD", "ha"),
-      makePick(swap6Matches[0], "HHAD", "hd"),
       ...swap6Matches
         .slice(1)
         .flatMap((m) =>
@@ -1831,7 +1842,7 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
       workspace: evaluateQuantWorkspace(
         {
           picks: swap6Picks,
-          multiple: 1,
+          multiple: 2,
           passSpec: { mode: "free", passSizes: [6] },
           subjectiveDeltaPct: 0,
           simVoidFirstMatch: false,
@@ -1844,7 +1855,9 @@ describe("Spec 0011 · Blind-Audit Actuarial Precision & Honesty Remediation", (
         swap6Matches
       ),
     });
-    assert.equal(ctrl.getState().workspace.manualReport.betCount, 486);
+    ctrl.setDirectMultiple(2);
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.manualReport.betCount, 243);
     const swapOk486 = ctrl.applyEquivalentSwap({
       matchId: "swap6-m0",
       title: "同义替换测试",

@@ -243,6 +243,15 @@ export function SpringSheet({
   const sheetRef = useRef<HTMLDivElement>(null);
   const ySpringRef = useRef<Spring | null>(null);
   const closingRef = useRef(false);
+  const triggerElRef = useRef<HTMLElement | null>(null);
+
+  const restoreTriggerFocus = () => {
+    const prev = triggerElRef.current;
+    triggerElRef.current = null;
+    if (prev && typeof prev.focus === "function" && prev.isConnected) {
+      requestAnimationFrame(() => prev.focus());
+    }
+  };
 
   const triggerClose = () => {
     if (closingRef.current) return;
@@ -252,6 +261,7 @@ export function SpringSheet({
     const y = ySpringRef.current;
     if (!sh || !y) {
       onClose();
+      restoreTriggerFocus();
       return;
     }
     if (mask) mask.style.pointerEvents = "none";
@@ -260,8 +270,11 @@ export function SpringSheet({
     y.onRest = () => {
       closingRef.current = false;
       onClose();
+      restoreTriggerFocus();
     };
   };
+
+  useModalFocusTrap(open, sheetRef, triggerClose);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -354,7 +367,13 @@ export function SpringSheet({
   return (
     <>
       <div ref={maskRef} className="mask" onClick={triggerClose} />
-      <div ref={sheetRef} className="sheet">
+      <div
+        ref={sheetRef}
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+      >
         <div
           className="grabber"
           onPointerDown={handlePointerDown}
@@ -412,6 +431,112 @@ export function SpringProbBar({ probs }: { probs: [number, number, number] }) {
       </div>
     </>
   );
+}
+
+/** Kick helper when clicking a button */
+const MODAL_FOCUSABLE_SELECTOR =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+let lastInteractiveFocusEl: HTMLElement | null = null;
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "focusin",
+    (ev) => {
+      if (
+        ev.target instanceof HTMLElement &&
+        ev.target !== document.body &&
+        ev.target !== document.documentElement
+      ) {
+        lastInteractiveFocusEl = ev.target;
+      }
+    },
+    true
+  );
+}
+
+export function useModalFocusTrap(
+  open: boolean,
+  dialogRef: React.RefObject<HTMLElement | null>,
+  onClose?: () => void
+) {
+  const prevFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const curActive =
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement !== document.body &&
+      document.activeElement !== document.documentElement
+        ? document.activeElement
+        : lastInteractiveFocusEl;
+    prevFocusRef.current = curActive;
+
+    const moveInitialFocus = () => {
+      const dialog = dialogRef.current;
+      if (!dialog || dialog.contains(document.activeElement)) return;
+      const focusables = Array.from(
+        dialog.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE_SELECTOR)
+      ).filter((el) => !el.closest("[inert]"));
+      if (focusables[0]) {
+        focusables[0].focus({ preventScroll: true });
+      } else {
+        dialog.focus({ preventScroll: true });
+      }
+    };
+    moveInitialFocus();
+    const timerId = window.setTimeout(moveInitialFocus, 0);
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        onCloseRef.current?.();
+        return;
+      }
+      if (ev.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusables = Array.from(
+        dialog.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE_SELECTOR)
+      ).filter((el) => !el.closest("[inert]"));
+      if (focusables.length === 0) {
+        ev.preventDefault();
+        dialog.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (ev.shiftKey) {
+        if (!active || !dialog.contains(active) || active === first) {
+          ev.preventDefault();
+          last.focus();
+        }
+      } else if (!active || !dialog.contains(active) || active === last) {
+        ev.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(timerId);
+      window.removeEventListener("keydown", onKeyDown);
+      const prev = prevFocusRef.current;
+      prevFocusRef.current = null;
+      if (prev) {
+        window.setTimeout(() => {
+          if (
+            prev.isConnected &&
+            !prev.closest("[inert]") &&
+            typeof prev.focus === "function"
+          ) {
+            prev.focus({ preventScroll: true });
+          }
+        }, 0);
+      }
+    };
+  }, [open, dialogRef]);
 }
 
 /** Kick helper when clicking a button */
@@ -651,7 +776,11 @@ export function SpringCollapseDrawer({
           <span className={`sdrawer-chev ${isOpen ? "open" : ""}`}>▾</span>
         </div>
       </button>
-      <div className="sdrawer-body">
+      <div
+        className="sdrawer-body"
+        aria-hidden={!isOpen}
+        inert={!isOpen || undefined}
+      >
         <div className="sdrawer-inner">{children}</div>
       </div>
     </div>

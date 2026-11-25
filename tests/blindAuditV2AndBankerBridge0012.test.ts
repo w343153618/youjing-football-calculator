@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -274,6 +278,7 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
         budget: 100,
         stance: "objective",
         unlockFullAgg: false,
+        allowSaveCash: true,
       },
       [genuineLag]
     );
@@ -645,7 +650,8 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     assert.equal(manualAsym3x3.totalCost, 30);
     assert.equal(manualAsym3x3.underwaterCount, 1);
 
-    const wsAsym3x3Opt = evaluateQuantWorkspace(
+    // ADR-0019: Official fixed combo 3串3 keeps uniform linked multiplicity unless allowUnbundleCombo: true is explicitly confirmed
+    const wsAsym3x3Locked = evaluateQuantWorkspace(
       {
         picks: asym3x3Picks,
         multiple: 5,
@@ -660,11 +666,36 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
       },
       asym3x3Matches
     );
+    assert.equal(
+      wsAsym3x3Locked.appliedPlan?.requiresComboUnbundleConfirm,
+      true
+    );
+
+    const wsAsym3x3Opt = evaluateQuantWorkspace(
+      {
+        picks: asym3x3Picks,
+        multiple: 5,
+        passSpec: { mode: "combo", comboCode: "3x3" },
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: {
+          kind: "bonus",
+          optMode: "equal",
+          scaleMultiple: 1,
+          allowUnbundleCombo: true,
+        },
+        targetIds: asym3x3Matches.map((m) => m.id),
+        budget: 100,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      asym3x3Matches
+    );
     assert.equal(wsAsym3x3Opt.effectiveReport.totalCost, 30);
     assert.equal(
       wsAsym3x3Opt.effectiveReport.underwaterCount,
       0,
-      `Joint-bucket 3串3 bonus optimization within ¥30 must lift worst miss-1 payout >= ¥30, got minPayout=${wsAsym3x3Opt.effectiveReport.minPayout}`
+      `Unbundled 3串3 -> independent 2串1 bonus optimization within ¥30 must lift worst miss-1 payout >= ¥30, got minPayout=${wsAsym3x3Opt.effectiveReport.minPayout}`
     );
 
     // 4. Smart ticket consolidation (consolidateTickets: true): clusters close-multiple lines into fewer batches while preserving exact totalCost & zero underwater
@@ -746,30 +777,30 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     );
     assert.equal(wsCons4.effectiveReport.totalCost, 200);
     assert.equal(wsCons4.effectiveReport.underwaterCount, 0);
-    const exactDistinctMults = new Set(
-      wsExact4.appliedPlan!.lines.map((l) => l.multiple)
-    ).size;
-    const consDistinctMults = new Set(
-      wsCons4.appliedPlan!.lines.map((l) => l.multiple)
-    ).size;
-    assert.ok(
-      consDistinctMults < exactDistinctMults,
-      `Expected consolidateTickets: true to merge close multiples into fewer batches (${consDistinctMults} < ${exactDistinctMults})`
+    // ADR-0019: consolidateTickets is strictly lossless on optimized multiples (never degrades minPayout!), while uniform-multiple Cartesian grids merge into 1 physical slip
+    assert.equal(
+      wsCons4.effectiveReport.minPayout,
+      wsExact4.effectiveReport.minPayout,
+      `Lossless consolidation must preserve exact floor (${wsCons4.effectiveReport.minPayout} === ${wsExact4.effectiveReport.minPayout})`
     );
-    assert.ok(
-      wsCons4.effectiveReport.minPayout >=
-        wsExact4.effectiveReport.minPayout * 0.97 - 1e-6,
-      `Consolidated floor (${wsCons4.effectiveReport.minPayout}) must stay within <=3% of exact floor (${wsExact4.effectiveReport.minPayout})`
+    const wsManualUniform4 = evaluateQuantWorkspace(
+      {
+        picks: close4Picks,
+        multiple: 25,
+        subjectiveDeltaPct: 0,
+        simVoidFirstMatch: false,
+        planSpec: null,
+        targetIds: [closeMultMatchA.id, closeMultMatchB.id],
+        budget: 200,
+        stance: "objective",
+        unlockFullAgg: false,
+      },
+      [closeMultMatchA, closeMultMatchB]
     );
     assert.equal(
-      wsCons4.appliedPlan!.consolidatedLines?.length,
+      wsManualUniform4.manualReport.physicalSlips?.length,
       1,
-      "Four uniform-multiple 2x2 compound lines must merge into 1 single Sporttery compound slip in consolidatedLines"
-    );
-    assert.ok(
-      wsCons4.effectiveReport.consolidatedTickets <
-        wsExact4.effectiveReport.consolidatedTickets,
-      `Expected consolidated shop ticket count (${wsCons4.effectiveReport.consolidatedTickets}) < unmerged (${wsExact4.effectiveReport.consolidatedTickets})`
+      "Four uniform-multiple 2x2 compound lines must merge into 1 single Sporttery compound slip"
     );
   });
 
@@ -1539,14 +1570,16 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
 
     const uiCtrl = createBetSlipController({
       debounceMs: 0,
-      computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+      computeWorkspace: (p, ms) => ({
+        ...evaluateQuantWorkspace(p, ms),
+        boardMeta: freshOfficialBoard,
+      }),
     });
-    const mList = FALLBACK_MATCHES as MatchItem[];
-    uiCtrl.initializeMatches(
-      mList,
-      [],
-      evaluateQuantWorkspace({ picks: [], multiple: 5 }, mList)
-    );
+    const mList = withConfirmedSaleRights(FALLBACK_MATCHES);
+    uiCtrl.initializeMatches(mList, [], {
+      ...evaluateQuantWorkspace({ picks: [], multiple: 5 }, mList),
+      boardMeta: freshOfficialBoard,
+    });
     uiCtrl.togglePick(mList[0], "HAD", "h");
     uiCtrl.togglePick(mList[1], "HAD", "h");
     uiCtrl.togglePick(mList[2], "HAD", "h");
@@ -1560,10 +1593,8 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
 
     const posterRows = buildPosterSlipRows(
       uiCtrl.getState().workspace.effectiveReport,
-      null,
-      uiCtrl.getState().planSpec,
-      uiCtrl.getState().picks,
-      5,
+      uiCtrl.getState().matches,
+      uiCtrl.getState().workspace.boardMeta,
       new Set(uiCtrl.getState().passSpec.bankerMatchIds ?? [])
     );
     assert.ok(
@@ -2029,8 +2060,8 @@ describe("Spec 0012 · Blind Audit V2 Actuarial Remediation, Banker Parlay, Brid
     );
     assert.equal(
       synFirst.label,
-      "一键合成单关",
-      "Compact bottom bar must prioritize 一键合成单关 when same-match HAFU rescue is playable"
+      "核对合成票行",
+      "Compact bottom bar must prioritize 核对合成票行 when same-match HAFU rescue is playable"
     );
     assert.equal(
       bridgeWhenOff.label,

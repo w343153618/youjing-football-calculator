@@ -1,5 +1,10 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { confirmQuotedSynthetic } from "./fixtures/confirmQuotedSynthetic.ts";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -15,6 +20,7 @@ import {
   parseSportteryResultsJson,
   settleTicketSnapshotWithOfficialResults,
 } from "../server/quantEngine.mjs";
+import { applySandboxToPlan } from "../server/quant/reportAndSettlement.mjs";
 import { createLedgerManager } from "../server/ledgerManager.mjs";
 import { createManualQaEngine } from "../server/manualQaEngine.mjs";
 import { createYouJingRuntime } from "../server/runtimeApp.mjs";
@@ -697,9 +703,65 @@ describe("Spec #1 (0014) · Ticket #2: OOS Fixture Remediation, Upstream Calibra
         odds: opt.odds,
         fairProb: opt.fairProb,
       };
-      const plans = generateParetoPortfolio([m], 100, stance, false, [pick]);
-      const activePlan = plans.find((p: any) => p.lines.length > 0)!;
-      return activePlan.lines[0].legs[0].fairProb;
+      const probePlan = {
+        key: "max-ev-utility" as const,
+        available: true,
+        shortTab: "probe",
+        badge: "probe",
+        title: "probe",
+        tagline: "probe",
+        totalCost: 2,
+        savedCash: 0,
+        minReturn: opt.odds * 2,
+        maxReturn: opt.odds * 2,
+        winProb: opt.fairProb,
+        profitProb: opt.fairProb,
+        expectedValueRate: opt.odds * opt.fairProb - 1,
+        underwaterCount: 0,
+        missOneReturn: null,
+        vigPct: 12,
+        reasons: ["probe"],
+        lines: [
+          {
+            id: "probe-1",
+            roleLabel: "probe",
+            legs: [
+              {
+                matchId: m.id,
+                matchNumStr: m.matchNumStr,
+                home: m.home,
+                away: m.away,
+                kickoff: m.kickoff,
+                poolCode,
+                poolName: pool.name,
+                optionKey: opt.key,
+                optionLabel: opt.label,
+                odds: opt.odds,
+                fairProb: opt.fairProb,
+              },
+            ],
+            modeLabel: "单关",
+            multiple: 1,
+            cost: 2,
+            unitPayout: opt.odds * 2,
+            returnPayout: opt.odds * 2,
+            netProfit: opt.odds * 2 - 2,
+            prob: opt.fairProb,
+          },
+        ],
+      };
+      const applied = applySandboxToPlan(
+        probePlan as any,
+        [m],
+        [pick],
+        false,
+        0,
+        {
+          isArchetype: true,
+          stance,
+        }
+      );
+      return applied!.lines[0].legs[0].fairProb;
     };
 
     // 1. Home deep favorite (-2): CRS 1:0 & 2:1 (diff=1) protected >= objective, HAD d/a & HHAD ha up, HAD h down, sums = 1
@@ -960,7 +1022,10 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
         const s2 = generateParetoPortfolio(sub, 100, "objective", false, [])[1];
         totalSlates += 1;
         assert.equal(s2.available, true);
-        assert.equal(s2.underwaterCount, 0);
+        assert.ok(
+          (s2.partialLossShortfall ?? 0) <= 0.16 + 1e-9,
+          `ADR-0019 Slot ② must enforce partialLossShortfall <= 16%, got ${s2.partialLossShortfall}`
+        );
         assert.equal(s2.totalCost + s2.savedCash, 100);
         if (s2.lines.length === 1) {
           assert.equal(
@@ -978,7 +1043,9 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
       );
     }
 
-    // 3. Full matrix 1~8 matches × ¥10~¥20,000: per-line multiple <= 999, totalCost <= budget, totalCost + savedCash === budget, underwaterCount === 0!
+    // 3. Full matrix 1~8 matches × ¥10~¥20,000:
+    //    - ADR-0019 strict C === B when allowSaveCash === false (or explicit save-cash prompt when hitting statutory 999x per-line ceiling)
+    //    - With allowSaveCash: true, per-line multiple <= 999, totalCost <= budget, totalCost + savedCash === budget, underwaterCount === 0!
     const budgets = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
     for (const mCount of [1, 2, 3, 4, 5, 6, 7, 8]) {
       for (const b of budgets) {
@@ -987,13 +1054,31 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
           oosMatches.slice(0, mCount),
           oosMatches.slice(8, 8 + mCount),
         ]) {
-          const s2 = generateParetoPortfolio(
+          const s2Strict = generateParetoPortfolio(
             slate,
             b,
             "objective",
             false,
             []
           )[1];
+          if (s2Strict.available) {
+            assert.equal(
+              s2Strict.totalCost,
+              b,
+              `ADR-0019 strict C === B violated on M=${mCount}, B=${b}: got ¥${s2Strict.totalCost}`
+            );
+          } else {
+            assert.ok(
+              b >= 2000 ||
+                (s2Strict.emptyReason ?? "").includes("允许省钱留现"),
+              `Unexpected block on M=${mCount}, B=${b}: ${s2Strict.emptyReason}`
+            );
+          }
+          const s2 = s2Strict.available
+            ? s2Strict
+            : generateParetoPortfolio(slate, b, "objective", false, [], {
+                allowSaveCash: true,
+              })[1];
           assert.equal(s2.key, "max-ev-utility");
           assert.equal(s2.available, true);
           assert.ok(
@@ -1005,15 +1090,25 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
             b,
             `M=${mCount}, B=${b}: totalCost(${s2.totalCost}) + savedCash(${s2.savedCash}) !== ${b}`
           );
-          assert.equal(
-            s2.underwaterCount,
-            0,
-            `M=${mCount}, B=${b}: broken shield detected (underwaterCount=${s2.underwaterCount}, minReturn=${s2.minReturn}, totalCost=${s2.totalCost})`
-          );
+          // ADR-0019 §2: Slot ② allows controlled partial recovery (partialLossShortfall <= 16%) on multi-block parlays while zero-underwater spear+shield plans stay underwaterCount === 0
           assert.ok(
-            s2.minReturn >= s2.totalCost - 1e-6,
-            `M=${mCount}, B=${b}: minReturn ${s2.minReturn} < totalCost ${s2.totalCost}`
+            (s2.partialLossShortfall ?? 0) <= 0.16 + 1e-6,
+            `M=${mCount}, B=${b}: Slot ② violated partialLossShortfall <= 16%: ${s2.partialLossShortfall}`
           );
+          if (
+            !s2.structureBadge &&
+            s2.lines.every((ln) => !ln.roleLabel.includes("分块"))
+          ) {
+            assert.equal(
+              s2.underwaterCount,
+              0,
+              `M=${mCount}, B=${b}: broken shield detected (underwaterCount=${s2.underwaterCount}, minReturn=${s2.minReturn}, totalCost=${s2.totalCost})`
+            );
+            assert.ok(
+              s2.minReturn >= s2.totalCost - 1e-6,
+              `M=${mCount}, B=${b}: minReturn ${s2.minReturn} < totalCost ${s2.totalCost}`
+            );
+          }
           for (const ln of s2.lines) {
             assert.ok(
               ln.multiple >= 1 && ln.multiple <= 999,
@@ -1026,13 +1121,18 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
 
     // Specifically sweep all 64 real OOS single matches at ¥10,000 & ¥100 (catches the 286/909 broken shields at ¥10,000 & 794/1,418 suboptimal 3-line splits at ¥100!)
     for (const m of oosMatches) {
-      const s2At10k = generateParetoPortfolio(
+      const s2At10kStrict = generateParetoPortfolio(
         [m],
         10000,
         "objective",
         false,
         []
       )[1];
+      const s2At10k = s2At10kStrict.available
+        ? s2At10kStrict
+        : generateParetoPortfolio([m], 10000, "objective", false, [], {
+            allowSaveCash: true,
+          })[1];
       assert.equal(
         s2At10k.underwaterCount,
         0,
@@ -1133,8 +1233,32 @@ describe("Spec #1 (0014) · Ticket #3: 3+1 Pareto Portfolio Budget Sovereignty, 
     for (const mCount of [1, 2, 3, 4, 5, 6, 7, 8]) {
       const slate = oosMatches.slice(0, mCount);
       for (const b of [4, 6, 8, 10, 20, 100, 5000, 20000]) {
-        const plans = generateParetoPortfolio(slate, b, "objective", false, []);
-        const s3 = plans[2];
+        const s3Strict = generateParetoPortfolio(
+          slate,
+          b,
+          "objective",
+          false,
+          []
+        )[2];
+        // ADR-0019: On M=8 at ¥4 (only 2 notes -> 2×4串1 has 79.6% > 75.0% wipeout), Slot ③ honestly blocks >75% wipeout;
+        // and when b >= 5000 hits China Sporttery's statutory 999x per-line ceiling on M=1..2, allowSaveCash=false requires explicit save-cash confirmation.
+        if (mCount === 8 && b < 8 && !s3Strict.available) {
+          assert.ok(s3Strict.emptyReason?.includes("75.0%"));
+          continue;
+        }
+        if (s3Strict.available) {
+          assert.equal(s3Strict.totalCost, b);
+        } else {
+          assert.ok(
+            b >= 5000 && (s3Strict.emptyReason ?? "").includes("允许省钱留现"),
+            `Unexpected Slot ③ block on M=${mCount} at ¥${b}: ${s3Strict.emptyReason}`
+          );
+        }
+        const s3 = s3Strict.available
+          ? s3Strict
+          : generateParetoPortfolio(slate, b, "objective", false, [], {
+              allowSaveCash: true,
+            })[2];
         assert.equal(
           s3.available,
           true,
@@ -1825,7 +1949,7 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     assert.equal(forgedRep.maxPayout, 0);
   });
 
-  it("Slice 11 (Ticket #4 AC 2): upgrades syntheticRescuePicks to full 3-way equivalence and auto-mounts zero-blind-spot inverse-odds balanced Synthetic Single into effectiveReport, shopkeeper slip & sealed ledger snapshot without mutating picks", async () => {
+  it("Slice 11 (Ticket #4 AC 2): upgrades syntheticRescuePicks to full 3-way equivalence and applies a confirmed zero-blind-spot inverse-odds balanced Synthetic Single to effectiveReport, shopkeeper slip & sealed ledger snapshot without mutating picks", async () => {
     const os = await import("node:os");
     const m0 = FALLBACK_MATCHES[0] as MatchItem; // HAD.single = false, HAFU.single = true
     assert.equal(m0.pools.HAD.single, false);
@@ -1908,20 +2032,27 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       "HHAD(-1) hh (win by >=2) must resolve to single-eligible CRS scorelines"
     );
 
-    // 2. BetSlipController: selecting 1 non-single HAD:h preserves state.picks=[HAD:h] while auto-mounting balanced 3-way HAFU in effectiveReport
+    // 2. BetSlipController: selecting 1 non-single HAD:h preserves state.picks=[HAD:h] when confirming its balanced 3-way HAFU quote
     const ctrl = createBetSlipController({
       debounceMs: 0,
-      computeWorkspace: (params, matches) =>
-        evaluateQuantWorkspace(params, matches),
+      computeWorkspace: (params, matches) => ({
+        ...evaluateQuantWorkspace(params, matches),
+        boardMeta: freshOfficialBoard,
+      }),
     });
-    ctrl.initializeMatches(
-      FALLBACK_MATCHES as MatchItem[],
-      [],
-      evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
-    );
+    ctrl.applyAuthenticatedBundle({
+      matches: withConfirmedSaleRights(FALLBACK_MATCHES as MatchItem[]),
+      initialPicks: [],
+      workspace: evaluateQuantWorkspace(
+        { picks: [], multiple: 5 },
+        FALLBACK_MATCHES
+      ),
+      boardMeta: freshOfficialBoard,
+    });
 
     const vPick = ctrl.togglePick(m0, "HAD", "h");
     assert.equal(vPick.ok, true);
+    await confirmQuotedSynthetic(ctrl);
     assert.equal(ctrl.getState().syntheticSingleMode, "full-3way");
     // Intent preserved! Match Radar button stays highlighted on HAD:h!
     assert.deepEqual(
@@ -1955,6 +2086,7 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     );
 
     // 3. Shopkeeper WeChat Slip outputs the 3 balanced HAFU single lines summing to effectiveReport.totalCost
+    assert.equal(ctrl.getShopkeeperBlockReason(), null);
     const slipText = ctrl.formatShopkeeperWeChatSlip();
     assert.ok(slipText.includes(`合计 ¥${ws.effectiveReport.totalCost}`));
     assert.ok(
@@ -1981,7 +2113,10 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
           ...draft,
         },
         {
-          authoritativeMatches: FALLBACK_MATCHES,
+          authoritativeMatches: withConfirmedSaleRights(
+            FALLBACK_MATCHES as MatchItem[]
+          ),
+          boardMeta: freshOfficialBoard,
           trustedServerSnapshot: true,
         }
       );
@@ -2046,14 +2181,16 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
     );
 
-    // 1. Start on 1 non-single match (m0 HAD:h): full-3way default -> switch to trim-2way -> switch to off
+    // 1. Confirm the full cover quote, then select the disclosed trim and bridge alternatives.
     ctrl.togglePick(m0, "HAD", "h");
+    await confirmQuotedSynthetic(ctrl);
     const repFull = ctrl.getState().workspace.effectiveReport;
     assert.equal(repFull.syntheticAutoMounted, true);
     assert.equal(repFull.syntheticModeUsed, "full-3way");
     assert.equal(repFull.syntheticBlindSpotProb, 0);
 
     ctrl.setSyntheticSingleMode("trim-2way");
+    await confirmQuotedSynthetic(ctrl);
     const repTrim = ctrl.getState().workspace.effectiveReport;
     assert.equal(repTrim.canCheckout, true);
     assert.equal(repTrim.syntheticAutoMounted, true);
@@ -2091,6 +2228,7 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     ctrl.clearPicks();
     ctrl.togglePick(m0, "HAD", "a");
     ctrl.setSyntheticSingleMode("trim-2way");
+    await confirmQuotedSynthetic(ctrl);
     const repAwayTrim = ctrl.getState().workspace.effectiveReport;
     assert.deepEqual(
       repAwayTrim.tickets?.map((t) => t.legs?.[0]?.optionKey).sort(),
@@ -2107,9 +2245,10 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
     assert.equal(wsOff.effectiveReport.syntheticModeUsed, "off");
     assert.ok(wsOff.insights.bridgeCandidates.length >= 1);
 
-    // Switch back to full-3way before testing 2nd-match parlay restoration
+    // Clearing the draft ends its consent. Confirm the new full quote before adding a bridge.
     ctrl.clearPicks();
     ctrl.togglePick(m0, "HAD", "h");
+    await confirmQuotedSynthetic(ctrl);
     assert.equal(
       ctrl.getState().workspace.effectiveReport.syntheticAutoMounted,
       true
@@ -2142,18 +2281,19 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       stParlay.workspace.effectiveReport.avgVigLossPer100 < 24,
       `Expected low-vig HADxHAD parlay (<24%), got ${stParlay.workspace.effectiveReport.avgVigLossPer100}%`
     );
-    const slot1Parlay = stParlay.workspace.portfolioPlans.find(
-      (p) => p.key === "max-profit-prob"
+    const availParlayPlan = stParlay.workspace.portfolioPlans.find(
+      (p) => p.available && p.lines.length > 0
     )!;
+    assert.ok(availParlayPlan);
     assert.ok(
-      slot1Parlay.lines[0].legs.some(
+      availParlayPlan.lines[0].legs.some(
         (lg) =>
           lg.matchId === m0.id && lg.poolCode === "HAD" && lg.optionKey === "h"
       ),
       "3+1 Pareto anchor must see clean m0 HAD:h without HAFU pollution"
     );
 
-    // Removing 2nd match smoothly re-mounts 3-way synthetic single on m0!
+    // Returning to the identical previously confirmed quote may reuse that consent.
     ctrl.removeMatchFromSlip(m2.id);
     assert.equal(
       ctrl.getState().workspace.effectiveReport.syntheticAutoMounted,
@@ -2245,7 +2385,8 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
       getApiKey: () => "test-key",
       enableXiaoGaoProbe: false,
       fetchMatches: async () => ({
-        matches: FALLBACK_MATCHES,
+        matches: withConfirmedSaleRights(FALLBACK_MATCHES as MatchItem[]),
+        boardMeta: freshOfficialBoard,
         syncNote: "测试快照",
       }),
     });
@@ -2355,13 +2496,16 @@ describe("Spec #1 (0014) · Ticket #4: Intent-Preserving Mutex-Free Selection, A
         "a".repeat(32)
       );
       const sealedDraft = ctrl.buildSealedLedgerDraft()!;
+      assert.match(
+        sealedDraft.workspaceParams!.expectedSlipLineSig!,
+        /^ls2\|[a-f0-9]{64}$/
+      );
       const ledgerRes = await postEnc(
         "ledger/mutate",
         {
           action: "add-entry",
           kind: "live",
           ...sealedDraft,
-          workspaceParams: ctrl.buildWorkspaceParams(),
         },
         "b".repeat(32)
       );
@@ -2716,7 +2860,8 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
     ctrl.togglePick(swapTrapMatch, "HHAD", "ha");
     await ctrl.flush();
 
-    // 1. On 1-match slip (both auto-synthetic mode AND off mode), activeSwapTip MUST NOT recommend non-single HAD[d+a]
+    await confirmQuotedSynthetic(ctrl);
+    // 1. On a confirmed single-match synthetic slip and in bridge mode, activeSwapTip MUST NOT recommend non-single HAD[d+a]
     const ws1Auto = ctrl.getState().workspace;
     assert.equal(ws1Auto.effectiveReport.canCheckout, true);
     assert.equal(ws1Auto.effectiveReport.syntheticAutoMounted, true);
@@ -2743,6 +2888,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
     ctrl.setSyntheticSingleMode("full-3way");
     await ctrl.flush();
 
+    await confirmQuotedSynthetic(ctrl);
     // Verify the same match DOES surface HAD[d+a] swap tip when paired in a 2-match parlay
     ctrl.togglePick(m2, "HAD", "h");
     await ctrl.flush();
@@ -2755,13 +2901,37 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
     );
     const parlayDuplexArb = ws2Parlay.insights.activeSwapTip!;
 
-    // 2. Back on 1-match slip: invoking applyEquivalentSwap with a non-single duplex MUST keep planSpec = null so auto-synthetic stays playable (never collapsing to 应付 ¥0)
+    // 2. Back on 1-match slip: stale 2-match activeSwapTip (bound to [swapTrapMatch, m2]) MUST be rejected, while bare 1-match non-single duplex MUST keep planSpec = null so auto-synthetic stays playable (never collapsing to 应付 ¥0)
     ctrl.removeMatchFromSlip(m2.id);
     await ctrl.flush();
     assert.equal(ctrl.getState().picks.length, 1);
-    const swapped = ctrl.applyEquivalentSwap(parlayDuplexArb);
+    assert.equal(
+      ctrl.applyEquivalentSwap(parlayDuplexArb),
+      false,
+      "Stale 2-match activeSwapTip with executableSwapLines must be rejected after removing m2"
+    );
+    const bareDuplexArb: typeof parlayDuplexArb = {
+      ...parlayDuplexArb,
+      executableSwapLines: undefined,
+      executableSwapMultiple: undefined,
+      sourcePicksSig: undefined,
+      sourceTotalCost: undefined,
+      sourceActivePassSig: undefined,
+    };
+    assert.equal(
+      ctrl.applyEquivalentSwap(bareDuplexArb),
+      false,
+      "Playable auto-synthetic 1-match slip must refuse unquoted bare swap that would alter ¥40 stake"
+    );
+    ctrl.setSyntheticSingleMode("off");
+    await ctrl.flush();
+    assert.equal(ctrl.getState().workspace.effectiveReport.canCheckout, false);
+    const swapped = ctrl.applyEquivalentSwap(bareDuplexArb);
     await ctrl.flush();
     assert.equal(swapped, true);
+    ctrl.setSyntheticSingleMode("full-3way");
+    await ctrl.flush();
+    await confirmQuotedSynthetic(ctrl);
     assert.equal(
       ctrl.getState().planSpec,
       null,
@@ -2837,7 +3007,7 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
               outOfScope: false,
               section: "quickstart",
               answer:
-                "只选1场未开单关主胜时，前台保留原主胜高亮，出票层自动挂载胜胜+平胜+负胜3项全包反比例配平合成单关；再选第2场自动恢复低抽水原盘串关。",
+                "只选1场未开单关主胜时，前台保留主胜方向，展示胜胜+平胜+负胜的反比例配平报价。核对并确认票行及总额后可出票。补选第2场可恢复低抽水原盘串关。",
             }),
           };
         },
@@ -2863,7 +3033,8 @@ describe("Slice 13: Two-Axis Code-Review Remediation", () => {
       "APP_GROUND_TRUTH_MANUAL_SPEC must remove legacy 互斥-block and 0-yuan dead-end descriptions"
     );
     assert.ok(
-      capturedSysPrompt.includes("撤销切换") &&
+      capturedSysPrompt.includes("确认这份报价后") &&
+        capturedSysPrompt.includes("撤销切换") &&
         capturedSysPrompt.includes("3项全包无死角") &&
         capturedSysPrompt.includes("2项省本搏常规") &&
         capturedSysPrompt.includes("≤ 1.00") &&

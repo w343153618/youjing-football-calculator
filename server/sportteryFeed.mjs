@@ -2,10 +2,12 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { orderedMatchKey } from "./matchIdentity.mjs";
 import {
   FALLBACK_MATCHES,
   parseSportteryRawJson,
   parseSportteryResultsJson,
+  recalibrateMergedMatch,
 } from "./quant/sportteryParsers.mjs";
 import {
   buildBoardFreshnessMeta,
@@ -14,6 +16,141 @@ import {
 } from "./history/sportteryHistoryNormalizers.mjs";
 
 export { FALLBACK_MATCHES, parseSportteryRawJson, parseSportteryResultsJson };
+
+const ALL_SPORTTERY_POOL_CODES = ["HAD", "HHAD", "TTG", "HAFU", "CRS"];
+
+function normalizeFeedPoolQuoteStamp(pool) {
+  const ut = String(pool?.updateTime ?? "").trim();
+  if (!ut) return { full: "", date: "", time: "" };
+  const ud = String(pool?.updateDate ?? "").trim();
+  return {
+    full: ud ? `${ud} ${ut}` : ut,
+    date: ud,
+    time: ut,
+  };
+}
+
+/**
+ * 同一在售场次跨次拉取时按各奖池官方更新时间单调合并，防止上游局部边缘缓存回退覆盖更新的单池水位。
+ */
+export function reconcileMatchesPoolsNonRegressive(
+  prevMatches,
+  incomingMatches,
+  recomputeMicroQuantFn = null
+) {
+  if (
+    !Array.isArray(prevMatches) ||
+    prevMatches.length === 0 ||
+    !Array.isArray(incomingMatches) ||
+    incomingMatches.length === 0
+  ) {
+    return incomingMatches;
+  }
+  const prevById = new Map();
+  for (let i = 0; i < prevMatches.length; i++) {
+    const pm = prevMatches[i];
+    if (pm?.id != null) prevById.set(String(pm.id), pm);
+  }
+  return incomingMatches.map((incM) => {
+    if (!incM || incM.id == null) return incM;
+    const prevM = prevById.get(String(incM.id));
+    if (
+      !prevM ||
+      String(prevM.matchNumStr || "") !== String(incM.matchNumStr || "") ||
+      orderedMatchKey(prevM) !== orderedMatchKey(incM)
+    ) {
+      return incM;
+    }
+    let patchedPools = null;
+    for (let i = 0; i < ALL_SPORTTERY_POOL_CODES.length; i++) {
+      const pc = ALL_SPORTTERY_POOL_CODES[i];
+      const prevP = prevM.pools?.[pc];
+      const incP = incM.pools?.[pc];
+      if (!prevP || !incP) continue;
+      const pSt = normalizeFeedPoolQuoteStamp(prevP);
+      const nSt = normalizeFeedPoolQuoteStamp(incP);
+      if (!pSt.time || !nSt.time) continue;
+      const isRegressive =
+        pSt.date && nSt.date
+          ? nSt.full < pSt.full
+          : !pSt.date && !nSt.date
+            ? nSt.time < pSt.time
+            : false;
+      if (isRegressive) {
+        if (!patchedPools) patchedPools = { ...incM.pools };
+        patchedPools[pc] = {
+          ...prevP,
+          selling: incP.selling,
+          confirmedSaleRights: incP.confirmedSaleRights,
+          single: incP.single,
+          ...(incP.canSingle !== undefined
+            ? { canSingle: incP.canSingle }
+            : {}),
+          ...(incP.canAllUp !== undefined ? { canAllUp: incP.canAllUp } : {}),
+        };
+      }
+    }
+    if (!patchedPools) return incM;
+    const rawMerged = { ...incM, pools: patchedPools };
+    try {
+      return recalibrateMergedMatch(rawMerged);
+    } catch {
+      if (typeof recomputeMicroQuantFn === "function") {
+        try {
+          rawMerged.microQuant = recomputeMicroQuantFn(rawMerged);
+        } catch {
+          // Keep incoming microQuant if optional recompute fails
+        }
+      }
+      return rawMerged;
+    }
+  });
+}
+
+export function enrichBoardQuoteMeta(
+  boardMeta,
+  matches,
+  syncedAtMs = Date.now()
+) {
+  if (!boardMeta || typeof boardMeta !== "object") return boardMeta;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  const list = Array.isArray(matches) ? matches : [];
+  const mix = (str) => {
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 ^ (c + i), 0x85ebca6b) >>> 0;
+    }
+  };
+  mix(`${boardMeta.boardState || ""}|${list.length}`);
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    mix(`;${m?.id || ""}:${orderedMatchKey(m ?? {})}:`);
+    const pools = m?.pools || {};
+    for (const code of ["HAD", "HHAD", "TTG", "HAFU", "CRS"]) {
+      const p = pools[code];
+      if (!p || p.selling === false) {
+        mix(`${code}:0;`);
+        continue;
+      }
+      mix(
+        `${code},${p.single ? 1 : 0},${p.canSingle === false ? 0 : 1},${p.canAllUp === false ? 0 : 1},${p.confirmedSaleRights?.single === true ? 1 : 0},${p.confirmedSaleRights?.allUp === true ? 1 : 0},${p.goalLine || ""}:`
+      );
+      const opts = p.options || [];
+      for (let j = 0; j < opts.length; j++) {
+        mix(`${opts[j].key}=${opts[j].odds},`);
+      }
+    }
+  }
+  const quoteVersion = `qv1-${list.length}-${h1.toString(36)}${h2.toString(36)}`;
+  return {
+    ...boardMeta,
+    quotedAt: boardMeta.lastValidBoardAt ?? null,
+    syncedAt: Number.isFinite(syncedAtMs) ? syncedAtMs : null,
+    quoteVersion,
+  };
+}
 
 /** 服务端体彩实盘同步（带内存热缓存、磁盘快照与板级时效元数据透传） */
 export async function fetchOfficialMatchesServer(snapshotFilePath, opts = {}) {
@@ -66,11 +203,15 @@ export async function fetchOfficialMatchesServer(snapshotFilePath, opts = {}) {
               p.options.some((o) => o.trend === -1)
             )
           ).length;
-          const boardMeta = buildBoardFreshnessMeta({
-            source: "official-live",
-            boardState: "fresh",
-            lastValidBoardAt: capturedAt,
-          });
+          const boardMeta = enrichBoardQuoteMeta(
+            buildBoardFreshnessMeta({
+              source: "official-live",
+              boardState: "fresh",
+              lastValidBoardAt: capturedAt,
+            }),
+            parsed,
+            capturedAt
+          );
           return {
             matches: parsed,
             rawJson: json,
@@ -113,11 +254,15 @@ export async function fetchOfficialMatchesServer(snapshotFilePath, opts = {}) {
           })() ??
           fallbackValidAt;
 
-        const boardMeta = buildBoardFreshnessMeta({
-          source: "cached-snapshot",
-          boardState: failureBoardState,
-          lastValidBoardAt: snapCapturedAt,
-        });
+        const boardMeta = enrichBoardQuoteMeta(
+          buildBoardFreshnessMeta({
+            source: "cached-snapshot",
+            boardState: failureBoardState,
+            lastValidBoardAt: snapCapturedAt,
+          }),
+          parsed,
+          nowFn()
+        );
         return {
           matches: parsed,
           source: "cached-snapshot",
@@ -138,11 +283,15 @@ export async function fetchOfficialMatchesServer(snapshotFilePath, opts = {}) {
       : fallbackValidAt !== null
         ? failureBoardState
         : "builtin-fallback";
-  const boardMeta = buildBoardFreshnessMeta({
-    source: "fallback",
-    boardState: builtinState,
-    lastValidBoardAt: fallbackValidAt,
-  });
+  const boardMeta = enrichBoardQuoteMeta(
+    buildBoardFreshnessMeta({
+      source: "fallback",
+      boardState: builtinState,
+      lastValidBoardAt: fallbackValidAt,
+    }),
+    FALLBACK_MATCHES,
+    nowFn()
+  );
 
   return {
     matches: FALLBACK_MATCHES,

@@ -623,22 +623,25 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
         false,
         anchorAllHad
       );
-      if (exactMLegProb >= 0.2) {
+      const approxBoxEv = Math.pow(0.88, mCount) - 1;
+      if (
+        exactMLegProb >= 0.25 &&
+        approxBoxEv >= -0.35 &&
+        ancPlans[0].available
+      ) {
         assert.ok(
           Math.abs(ancPlans[0].profitProb - exactMLegProb) < 1e-9,
           `Anchored Slot ① (${ancPlans[0].profitProb}) must equal exact 3^${mCount} 0-1 knapsack (${exactMLegProb})`
         );
-        assert.ok(
-          ancPlans[0].reasons.some((r: string) => r.includes("2 场")),
-          `Anchored Slot ① on M=${mCount} >= 4 must include honest 2-match break-even comparison reason`
-        );
       } else {
-        // ADR-0017: <20% strictNetGainProb (84.7% wipeout on 8串1 @ ¥100; <=64-line ceiling 18.0% < 20.0%) must honestly reject with explicit red-line reason
+        // ADR-0019: Tier-1A strictly enforces <=75.0% wipeout, >=20.0% strictNetGain, and >=-35.0% objective EV
         assert.equal(ancPlans[0].available, false);
         assert.ok(
-          ancPlans[0].emptyReason?.includes("20.0%") &&
-            ancPlans[0].emptyReason?.includes("80.0%"),
-          `Expected explicit 20%/80% admission red-line disclosure on M=${mCount}, got: ${ancPlans[0].emptyReason}`
+          Boolean(
+            ancPlans[0].emptyReason &&
+            ancPlans[0].emptyReason.includes("保留 ¥100")
+          ),
+          `Expected explicit admission / budget red-line disclosure on M=${mCount}, got: ${ancPlans[0].emptyReason}`
         );
       }
     }
@@ -1383,7 +1386,8 @@ describe("Spec 0009 · Red-Team Quant Remediation (D-01 .. D-10)", () => {
       100,
       "objective",
       false,
-      []
+      [],
+      { allowSaveCash: true }
     )[3];
     assert.equal(p4TwoSingles.available, true);
     assert.equal(

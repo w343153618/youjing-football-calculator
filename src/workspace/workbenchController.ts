@@ -68,6 +68,7 @@ export interface WorkbenchStoragePort {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+  getBackingTarget?(): object;
 }
 
 export interface WorkbenchQuantPort {
@@ -78,6 +79,7 @@ export interface WorkbenchQuantPort {
   syncMatches?(workspaceParams: QuantWorkspaceParams): Promise<{
     matches: MatchItem[];
     syncNote: string;
+    freshBoardForRequest?: boolean;
     boardMeta?: BoardFreshnessMeta;
     workspace: QuantWorkspaceResponse;
     ledger?: UserLedgerSnapshot;
@@ -217,6 +219,9 @@ function createDefaultStoragePort(): WorkbenchStoragePort {
       }
       fallback.delete(key);
     },
+    getBackingTarget() {
+      return (resolveDomStorage() as unknown as object) ?? fallback;
+    },
   };
 }
 
@@ -300,6 +305,24 @@ function isExplicitAuthInvalidationError(err: unknown): boolean {
   );
 }
 
+function getBoardMetaOrderStamp(m?: BoardFreshnessMeta | null): number {
+  if (!m || typeof m !== "object") return 0;
+  const t = Number(m.syncedAt ?? m.quotedAt ?? m.lastValidBoardAt ?? 0);
+  return Number.isFinite(t) && t > 0 ? t : 0;
+}
+
+function pickNewerBoardMeta(
+  cur: BoardFreshnessMeta | null | undefined,
+  inc: BoardFreshnessMeta | null | undefined
+): BoardFreshnessMeta | null {
+  if (!inc) return cur ?? null;
+  if (!cur) return inc;
+  const curT = getBoardMetaOrderStamp(cur);
+  const incT = getBoardMetaOrderStamp(inc);
+  if (curT > 0 && incT > 0 && incT < curT) return cur;
+  return inc;
+}
+
 export function createWorkbenchController(
   options: WorkbenchControllerOptions = {}
 ) {
@@ -357,6 +380,8 @@ export function createWorkbenchController(
   let authNotice: string | null = null;
   let offlineMode = false;
   let syncing = false;
+  let sessionVersion = 0;
+  let pendingBoardSyncs = 0;
   let syncSummary = "正在建立 AES-256-GCM 加密精算会话...";
   let syncClock = formatClockHMS(clockPort.now());
   let boardMeta: BoardFreshnessMeta | null = null;
@@ -379,11 +404,25 @@ export function createWorkbenchController(
     debounceMs: options.debounceMs ?? 18,
     autoSyncRadar: options.autoSyncRadar ?? true,
     nowFn: () => clockPort.now(),
+    storagePort,
+    isOffline: () => offlineMode,
+    getAccountId: () => authUser?.id ?? null,
     computeWorkspace: (params, matches) =>
       quantPort.computeWorkspace(params, matches),
-    onComputeSuccess: () => {
+    onComputeSuccess: (ws) => {
+      let changed = false;
       if (offlineMode) {
         offlineMode = false;
+        changed = true;
+      }
+      if (ws?.boardMeta !== undefined) {
+        const nextMeta = pickNewerBoardMeta(boardMeta, ws.boardMeta);
+        if (nextMeta !== boardMeta) {
+          boardMeta = nextMeta;
+          changed = true;
+        }
+      }
+      if (changed) {
         rebuildSnapshotAndEmit();
       }
     },
@@ -433,10 +472,13 @@ export function createWorkbenchController(
       authChecked,
       authNotice,
       offlineMode,
-      syncing,
+      syncing: syncing || pendingBoardSyncs > 0,
       syncSummary,
       syncClock,
-      boardMeta,
+      boardMeta: pickNewerBoardMeta(
+        boardMeta,
+        betSlipState.workspace.boardMeta
+      ),
       ledger,
       ledgerBusy,
       ledgerFilter,
@@ -564,6 +606,8 @@ export function createWorkbenchController(
   }
 
   function clearSessionState(reason: string | null) {
+    sessionVersion++;
+    pendingBoardSyncs = 0;
     clearPersistedAuth();
     clearUndoTimer();
     undoBanner = null;
@@ -584,6 +628,8 @@ export function createWorkbenchController(
   });
 
   function applyLoginBundle(bundle: AuthenticatedWorkspaceBundle) {
+    sessionVersion++;
+    pendingBoardSyncs = 0;
     authUser = bundle.user;
     remainingAiQuota = computeRemainingQuota(bundle.user);
     authChecked = true;
@@ -604,6 +650,7 @@ export function createWorkbenchController(
     syncClock = formatClockHMS(clockPort.now());
     boardMeta = bundle.boardMeta ?? null;
     rebuildSnapshotAndEmit();
+    if (betSlip.isDraftWaitingForBoard()) void syncOfficialMatches();
   }
 
   async function bootstrapHandshake(opts?: {
@@ -737,27 +784,46 @@ export function createWorkbenchController(
     if (!quantPort.syncMatches) {
       return { ok: false, error: "当前环境未配置实盘同步通道" };
     }
-    syncing = true;
+    const requestSession = sessionVersion;
+    const obsolete = () => requestSession !== sessionVersion || disposed;
+    const expired = { ok: false, error: "会话已切换，此次同步结果已忽略" };
+    pendingBoardSyncs++;
     rebuildSnapshotAndEmit();
     try {
+      const syncReqCtx = betSlip.captureSyncRequestContext();
       const res = await quantPort.syncMatches(betSlip.buildWorkspaceParams());
+      if (obsolete()) return expired;
       offlineMode = false;
-      betSlip.applyMatchesSync(res);
+      const rosterAdopted = betSlip.applyMatchesSync(res, syncReqCtx);
+      await betSlip.flush();
+      if (obsolete()) return expired;
       if (res.ledger) {
         syncLedgerSnapshot(res.ledger);
       }
-      syncSummary = res.syncNote;
-      syncClock = formatClockHMS(clockPort.now());
-      if (res.boardMeta !== undefined) {
-        boardMeta = res.boardMeta ?? null;
+      const incMetaStamp = getBoardMetaOrderStamp(res.boardMeta);
+      const curMetaStamp = getBoardMetaOrderStamp(boardMeta);
+      const metaAdvancedOrEqual =
+        res.boardMeta !== undefined &&
+        (curMetaStamp === 0 ||
+          incMetaStamp === 0 ||
+          incMetaStamp >= curMetaStamp);
+      if (rosterAdopted !== false || metaAdvancedOrEqual) {
+        if (typeof res.syncNote === "string" && res.syncNote.length > 0) {
+          syncSummary = res.syncNote;
+        }
+        syncClock = formatClockHMS(clockPort.now());
+        if (res.boardMeta !== undefined) {
+          boardMeta = pickNewerBoardMeta(boardMeta, res.boardMeta);
+        }
       }
       rebuildSnapshotAndEmit();
       return {
         ok: true,
-        matchCount: res.matches.length,
+        matchCount: betSlip.getState().matches.length,
         newlySettledCount: res.newlySettledCount ?? 0,
       };
     } catch (err) {
+      if (obsolete()) return expired;
       if (err instanceof TypeError) {
         offlineMode = true;
       }
@@ -767,8 +833,10 @@ export function createWorkbenchController(
         error: (err as Error)?.message || "同步繁忙，请稍后再试",
       };
     } finally {
-      syncing = false;
-      rebuildSnapshotAndEmit();
+      if (!obsolete()) {
+        pendingBoardSyncs--;
+        rebuildSnapshotAndEmit();
+      }
     }
   }
 
@@ -782,12 +850,35 @@ export function createWorkbenchController(
     stopLossPrompt?: StopLossInterceptPrompt;
     error?: string;
   }> {
+    if (!recordOpts?.draft || kind === "live") await betSlip.flush();
+    if (kind === "live") {
+      const reason = betSlip.getShopkeeperBlockReason();
+      if (reason) return { ok: false, code: "UNPLAYABLE_SLIP", error: reason };
+      if (recordOpts?.draft) {
+        const now = betSlip.buildSealedLedgerDraft()?.workspaceParams;
+        const reviewed = recordOpts.draft.workspaceParams;
+        if (
+          !now ||
+          !reviewed ||
+          now.expectedQuoteInputSig !== reviewed.expectedQuoteInputSig ||
+          now.expectedSlipLineSig !== reviewed.expectedSlipLineSig ||
+          now.expectedTotalCost !== reviewed.expectedTotalCost
+        ) {
+          return {
+            ok: false,
+            code: "UNPLAYABLE_SLIP",
+            error: "选单已变化，请重新核对后记入实买",
+          };
+        }
+      }
+    }
     const draft = recordOpts?.draft ?? betSlip.buildSealedLedgerDraft();
     if (!draft) {
       return {
         ok: false,
         code: "UNPLAYABLE_SLIP",
         error:
+          betSlip.getState().manualDraft.passRuleBlockReason ||
           betSlip.getState().workspace.effectiveReport.ruleBlockReason ||
           "当前方案未满足出票条件，暂无法记入账本",
       };
@@ -805,6 +896,16 @@ export function createWorkbenchController(
         title: draft.title,
         modeLabel: draft.modeLabel,
         betCount: draft.betCount,
+        ...(draft.betCountUnit ? { betCountUnit: draft.betCountUnit } : {}),
+        ...(typeof draft.logicalLineCount === "number"
+          ? { logicalLineCount: draft.logicalLineCount }
+          : {}),
+        ...(typeof draft.stakeUnitsCount === "number"
+          ? { stakeUnitsCount: draft.stakeUnitsCount }
+          : {}),
+        ...(typeof draft.physicalSlipCount === "number"
+          ? { physicalSlipCount: draft.physicalSlipCount }
+          : {}),
         cost: kind === "live" ? draft.cost : 0,
         paperRefCost: kind === "paper" ? draft.paperRefCost : undefined,
         minPayout: draft.minPayout,
@@ -1252,6 +1353,8 @@ export function createWorkbenchController(
     dispose() {
       if (disposed) return;
       disposed = true;
+      sessionVersion++;
+      pendingBoardSyncs = 0;
       clearUndoTimer();
       unsubBetSlip();
       authPort.registerRevokedHandler?.(null);

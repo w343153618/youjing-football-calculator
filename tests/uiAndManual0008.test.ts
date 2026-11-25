@@ -271,10 +271,12 @@ describe("Spec 0008 · Seam C: Bet-Slip Controller, Dual-Viewport 3+1 UI Contrac
           budget: 100,
           stance: "objective",
           unlockFullAgg: false,
+          allowSaveCash: true,
         },
         laggedSlate
       ),
     });
+    ctrl.setAllowSaveCash(true);
     const activeAlpha = ctrl
       .getState()
       .workspace.portfolioPlans.find((p) => p.key === "alpha-radar")!;

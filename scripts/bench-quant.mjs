@@ -1240,60 +1240,123 @@ function solveReferenceZeroUnderwaterBestProb(matches, budgetYuan) {
       );
     if (sorted.length === 0) return 0;
 
-    for (let N = 1; N <= maxNotes; N++) {
-      const cost = 2 * N - 1e-12;
+    for (const N of [maxNotes]) {
+      const costCents = 200 * N;
       if (!requireFullSlate || cands.every((c) => c.mMask === fullMask)) {
-        const dp = new Float64Array(N + 1).fill(-1);
-        const cnt = new Int16Array(N + 1);
-        dp[0] = 0;
+        const dpStrict = new Float64Array(N + 1).fill(-1);
+        const cntStrict = new Int16Array(N + 1);
+        const dpZero = new Uint8Array(N + 1);
+        const cntZero = new Int16Array(N + 1);
+        dpZero[0] = 1;
         let w1Shown = 0;
         for (let i = 0; i < sorted.length; i++) {
-          const w = Math.max(1, Math.ceil(cost / sorted[i].unitPayout));
-          if (w > N || w > 999) continue;
-          if (w === 1) {
+          const uCents = Math.round((Number(sorted[i].unitPayout) || 0) * 100);
+          if (uCents <= 200) continue;
+          const wStrict = Math.floor(costCents / uCents) + 1;
+          const wRefund = costCents % uCents === 0 ? costCents / uCents : -1;
+          const minW = wRefund >= 1 ? wRefund : wStrict;
+          if (minW > N || minW > 999) continue;
+          if (minW === 1) {
             if (w1Shown >= maxLinesCap) continue;
             w1Shown++;
           }
           const p = sorted[i].prob;
-          for (let cap = N; cap >= w; cap--) {
-            if (
-              dp[cap - w] >= 0 &&
-              cnt[cap - w] + 1 <= maxLinesCap &&
-              dp[cap - w] + p > dp[cap] + 1e-15
-            ) {
-              dp[cap] = dp[cap - w] + p;
-              cnt[cap] = cnt[cap - w] + 1;
+          for (let cap = N; cap >= minW; cap--) {
+            if (wStrict <= cap && wStrict <= 999) {
+              const prevS = dpStrict[cap - wStrict];
+              if (
+                prevS >= 0 &&
+                cntStrict[cap - wStrict] + 1 <= maxLinesCap &&
+                prevS + p > dpStrict[cap] + 1e-15
+              ) {
+                dpStrict[cap] = prevS + p;
+                cntStrict[cap] = cntStrict[cap - wStrict] + 1;
+              }
+              if (
+                dpZero[cap - wStrict] === 1 &&
+                cntZero[cap - wStrict] + 1 <= maxLinesCap &&
+                p > dpStrict[cap] + 1e-15
+              ) {
+                dpStrict[cap] = p;
+                cntStrict[cap] = cntZero[cap - wStrict] + 1;
+              }
             }
-          }
-        }
-        for (let cap = 1; cap <= N; cap++) {
-          if (dp[cap] > best) best = dp[cap];
-        }
-      } else {
-        // Track exact match-coverage mask on M = 2 hybrid sets
-        const dpMask = Array.from({ length: fullMask + 1 }, () =>
-          new Float64Array(N + 1).fill(-1)
-        );
-        dpMask[0][0] = 0;
-        for (let i = 0; i < sorted.length; i++) {
-          const w = Math.max(1, Math.ceil(cost / sorted[i].unitPayout));
-          if (w > N || w > 999) continue;
-          const p = sorted[i].prob;
-          const mm = sorted[i].mMask;
-          for (let cap = N; cap >= w; cap--) {
-            for (let msk = fullMask; msk >= 0; msk--) {
-              const prev = dpMask[msk][cap - w];
-              if (prev >= 0) {
-                const nm = msk | mm;
-                if (prev + p > dpMask[nm][cap] + 1e-15) {
-                  dpMask[nm][cap] = prev + p;
+            if (wRefund >= 1 && wRefund <= cap && wRefund <= 999) {
+              const prevS = dpStrict[cap - wRefund];
+              if (
+                prevS >= 0 &&
+                cntStrict[cap - wRefund] + 1 <= maxLinesCap &&
+                prevS > dpStrict[cap] + 1e-15
+              ) {
+                dpStrict[cap] = prevS;
+                cntStrict[cap] = cntStrict[cap - wRefund] + 1;
+              }
+              if (
+                dpZero[cap - wRefund] === 1 &&
+                cntZero[cap - wRefund] + 1 <= maxLinesCap
+              ) {
+                const nextCnt = cntZero[cap - wRefund] + 1;
+                if (dpZero[cap] === 0 || nextCnt < cntZero[cap]) {
+                  dpZero[cap] = 1;
+                  cntZero[cap] = nextCnt;
                 }
               }
             }
           }
         }
         for (let cap = 1; cap <= N; cap++) {
-          if (dpMask[fullMask][cap] > best) best = dpMask[fullMask][cap];
+          if (dpStrict[cap] > best) best = dpStrict[cap];
+        }
+      } else {
+        // Track exact match-coverage mask on M = 2 hybrid sets with integer-cent strict vs refund separation
+        const dpStrictMask = Array.from({ length: fullMask + 1 }, () =>
+          new Float64Array(N + 1).fill(-1)
+        );
+        const dpZeroMask = Array.from(
+          { length: fullMask + 1 },
+          () => new Uint8Array(N + 1)
+        );
+        dpZeroMask[0][0] = 1;
+        for (let i = 0; i < sorted.length; i++) {
+          const uCents = Math.round((Number(sorted[i].unitPayout) || 0) * 100);
+          if (uCents <= 200) continue;
+          const wStrict = Math.floor(costCents / uCents) + 1;
+          const wRefund = costCents % uCents === 0 ? costCents / uCents : -1;
+          const minW = wRefund >= 1 ? wRefund : wStrict;
+          if (minW > N || minW > 999) continue;
+          const p = sorted[i].prob;
+          const mm = sorted[i].mMask;
+          for (let cap = N; cap >= minW; cap--) {
+            for (let msk = fullMask; msk >= 0; msk--) {
+              const nm = msk | mm;
+              if (wStrict <= cap && wStrict <= 999) {
+                const prevS = dpStrictMask[msk][cap - wStrict];
+                if (prevS >= 0 && prevS + p > dpStrictMask[nm][cap] + 1e-15) {
+                  dpStrictMask[nm][cap] = prevS + p;
+                }
+                if (
+                  dpZeroMask[msk][cap - wStrict] === 1 &&
+                  p > dpStrictMask[nm][cap] + 1e-15
+                ) {
+                  dpStrictMask[nm][cap] = p;
+                }
+              }
+              if (wRefund >= 1 && wRefund <= cap && wRefund <= 999) {
+                const prevS = dpStrictMask[msk][cap - wRefund];
+                if (prevS >= 0 && prevS > dpStrictMask[nm][cap] + 1e-15) {
+                  dpStrictMask[nm][cap] = prevS;
+                }
+                if (dpZeroMask[msk][cap - wRefund] === 1) {
+                  dpZeroMask[nm][cap] = 1;
+                }
+              }
+            }
+          }
+        }
+        for (let cap = 1; cap <= N; cap++) {
+          if (dpStrictMask[fullMask][cap] > best) {
+            best = dpStrictMask[fullMask][cap];
+          }
         }
       }
     }
@@ -1459,7 +1522,8 @@ function evaluateSlateMonteCarloPareto(
   const refKnapsackProb = solveReferenceZeroUnderwaterBestProb(matches, budget);
   const knapsackOptimalityGap = Math.max(
     0,
-    refKnapsackProb - primarySlots[0].profitProb
+    refKnapsackProb -
+      (primarySlots[0].strictNetGainProb ?? primarySlots[0].profitProb)
   );
 
   // 1. Collect candidate legs per match (keep per-match branching bounded on M >= 6 so S stays <= 3,000 and < 50ms/slate)
@@ -2023,6 +2087,7 @@ function evaluateSlateMonteCarloPareto(
       matchMask,
       minTicketLen,
       hasUnderwater,
+      minMissReturn: missScratch[0] / costYuan,
       evRate,
       profitProb,
       fullDepthReturnRatio,
@@ -2132,6 +2197,14 @@ function evaluateSlateMonteCarloPareto(
       if (
         s === 0 &&
         (candMetrics.hasUnderwater || candMetrics.matchMask !== fullSlateMask)
+      ) {
+        continue;
+      }
+      if (
+        s === 2 &&
+        M >= 3 &&
+        slotRefs[s].metrics.minMissReturn > 1e-6 &&
+        candMetrics.minMissReturn <= 1e-6
       ) {
         continue;
       }

@@ -1,3 +1,7 @@
+import {
+  freshOfficialBoard,
+  withConfirmedSaleRights,
+} from "./fixtures/officialSaleBoard.ts";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -712,28 +716,38 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
         ],
       };
 
-      const lPartial = ldg.mutateUserLedger(uid, {
-        action: "add-entry",
-        kind: "live",
-        title: "实买3串4容错",
-        modeLabel: "3串4",
-        betCount: 4,
-        cost: 40,
-        minPayout: 29.7,
-        maxPayout: 140,
-        snapshot: partial3x4Snap,
-      });
-      const lWon = ldg.mutateUserLedger(uid, {
-        action: "add-entry",
-        kind: "live",
-        title: "实买2串1主攻",
-        modeLabel: "2串1",
-        betCount: 1,
-        cost: 10,
-        minPayout: 52.5,
-        maxPayout: 52.5,
-        snapshot: won2x1Snap,
-      });
+      // Import the already purchased paper tickets at their printed prices for settlement.
+      const historicalImport = { allowOfflineTicketOverride: true };
+      const lPartial = ldg.mutateUserLedger(
+        uid,
+        {
+          action: "add-entry",
+          kind: "live",
+          title: "实买3串4容错",
+          modeLabel: "3串4",
+          betCount: 4,
+          cost: 40,
+          minPayout: 29.7,
+          maxPayout: 140,
+          snapshot: partial3x4Snap,
+        },
+        historicalImport
+      );
+      const lWon = ldg.mutateUserLedger(
+        uid,
+        {
+          action: "add-entry",
+          kind: "live",
+          title: "实买2串1主攻",
+          modeLabel: "2串1",
+          betCount: 1,
+          cost: 10,
+          minPayout: 52.5,
+          maxPayout: 52.5,
+          snapshot: won2x1Snap,
+        },
+        historicalImport
+      );
       ldg.mutateUserLedger(uid, {
         action: "add-entry",
         kind: "paper",
@@ -929,16 +943,18 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
   });
 
   it("Slice 03 · Seam 3: seals print-time banker/bonus snapshots, formats shopkeeper WeChat slips (incl. >99x terminal split), computes weekday/weekend cutoff windows, and searches/groups radar matches", async () => {
+    const officialMatches = withConfirmedSaleRights(FALLBACK_MATCHES);
     const ctrl = createBetSlipController({
       debounceMs: 0,
-      computeWorkspace: async (params) =>
-        evaluateQuantWorkspace(params, FALLBACK_MATCHES),
+      computeWorkspace: (params, matches) => ({
+        ...evaluateQuantWorkspace(params, matches),
+        boardMeta: freshOfficialBoard,
+      }),
     });
-    ctrl.initializeMatches(
-      FALLBACK_MATCHES,
-      [],
-      evaluateQuantWorkspace({ picks: [], multiple: 1 }, FALLBACK_MATCHES)
-    );
+    ctrl.initializeMatches(officialMatches, [], {
+      ...evaluateQuantWorkspace({ picks: [], multiple: 1 }, officialMatches),
+      boardMeta: freshOfficialBoard,
+    });
 
     const [m1, m2, m3] = ctrl.getState().matches;
     ctrl.togglePick(m1, "HAD", "h");
@@ -1114,17 +1130,20 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
         path.join(process.cwd(), "public/skins/core.css"),
         "utf8"
       );
+      const officialMatches = withConfirmedSaleRights(FALLBACK_MATCHES);
       const wechatCtrl = createBetSlipController({
         debounceMs: 0,
-        computeWorkspace: (p, ms) => evaluateQuantWorkspace(p, ms),
+        computeWorkspace: (params, matches) => ({
+          ...evaluateQuantWorkspace(params, matches),
+          boardMeta: freshOfficialBoard,
+        }),
       });
-      wechatCtrl.initializeMatches(
-        FALLBACK_MATCHES as MatchItem[],
-        [],
-        evaluateQuantWorkspace({ picks: [], multiple: 5 }, FALLBACK_MATCHES)
-      );
-      wechatCtrl.togglePick(FALLBACK_MATCHES[0] as MatchItem, "HAD", "h");
-      wechatCtrl.togglePick(FALLBACK_MATCHES[1] as MatchItem, "HAD", "h");
+      wechatCtrl.initializeMatches(officialMatches, [], {
+        ...evaluateQuantWorkspace({ picks: [], multiple: 5 }, officialMatches),
+        boardMeta: freshOfficialBoard,
+      });
+      wechatCtrl.togglePick(officialMatches[0], "HAD", "h");
+      wechatCtrl.togglePick(officialMatches[1], "HAD", "h");
       await wechatCtrl.flush();
       const wechatSlip = wechatCtrl.formatShopkeeperWeChatSlip();
       assert.ok(
@@ -1409,7 +1428,10 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
             ],
           },
         },
-        { authoritativeMatches: FALLBACK_MATCHES }
+        {
+          authoritativeMatches: withConfirmedSaleRights(FALLBACK_MATCHES),
+          boardMeta: freshOfficialBoard,
+        }
       );
       assert.equal(
         forgedAdd.entry.snapshot.lines[0].legs[0].odds,
@@ -1620,7 +1642,10 @@ describe("Spec 0013 · Dual-Track Ledger Auto-Settlement & Sporttery Workflow Po
           forceConfirmed: true,
           ...draftUnderVoidSim,
         },
-        { authoritativeMatches: FALLBACK_MATCHES }
+        {
+          authoritativeMatches: withConfirmedSaleRights(FALLBACK_MATCHES),
+          boardMeta: freshOfficialBoard,
+        }
       );
       assert.ok(sealedUnderVoidSim.entry.snapshot);
       const sealedFirstLegOdds =

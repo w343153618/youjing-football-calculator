@@ -171,6 +171,13 @@ declare module "../server/quantEngine.mjs" {
   export const buildXiaoGaoWarnings: (...args: any[]) => any[];
   export const evaluateQuantWorkspace: (...args: any[]) => any;
   export const settleTicketSnapshotWithOfficialResults: (...args: any[]) => any;
+  export const consolidateTerminalPhysicalSlips: (...args: any[]) => any[];
+}
+
+declare module "../server/quant/statutoryRules.mjs" {
+  export const consolidateTerminalPhysicalSlips: (...args: any[]) => any[];
+  export const certifyAndSolveJointBreakeven: (...args: any[]) => any;
+  export const solveJointBreakevenAtNotes: (...args: any[]) => any;
 }
 
 declare module "../server/sportteryFeed.mjs" {
@@ -259,6 +266,8 @@ declare module "../server/quant/coherentCalibration.mjs" {
   export const calibrateMatchCoherentModel: (...args: any[]) => any;
   export const analyzeMatchMicroQuant: (...args: any[]) => any;
   export const formatDualAxisSteamSignal: (...args: any[]) => string;
+  export const computeEquivalentArbitrages: (...args: any[]) => any[];
+  export const resolvePureSingleSubsetPoolCandidates: (...args: any[]) => any[];
 }
 
 declare module "../server/history/historyCoordinator.mjs" {

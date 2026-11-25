@@ -47,6 +47,9 @@ export interface BoardFreshnessMeta {
   lastValidBoardClock: string | null;
   isFallbackReadOnly: boolean;
   bannerText: string | null;
+  quotedAt?: number | null;
+  syncedAt?: number | null;
+  quoteVersion?: string;
 }
 
 export interface OddsOption {
@@ -60,6 +63,7 @@ export interface OddsOption {
 }
 
 export interface MatchPool {
+  confirmedSaleRights?: { single: boolean; allUp: boolean };
   code: PoolCode;
   name: string;
   single: boolean;
@@ -82,6 +86,8 @@ export interface MicroBadge {
 export interface EquivalentArbPickRef {
   poolCode: PoolCode;
   optionKey: string;
+  odds?: number;
+  goalLine?: string;
 }
 
 export interface EquivalentArbItem {
@@ -95,6 +101,34 @@ export interface EquivalentArbItem {
   worsePicks: EquivalentArbPickRef[];
   poolCode: PoolCode;
   optionKey: string;
+  isExactEventEquivalent?: boolean;
+  isStatewiseNonDecreasing?: boolean;
+  minStateReturnDiff?: number;
+  maxStateReturnDiff?: number;
+  equalStakeCostYuan?: number;
+  executableSwapCost?: number;
+  executableSwapLines?: PlanTicketLine[];
+  executableSwapMultiple?: number;
+  sourcePicksSig?: string;
+  sourceTotalCost?: number;
+  sourceActivePassSig?: string;
+  sourceBankerSig?: string;
+  sourceComboCode?: string;
+  sourceActualLinesSig?: string;
+  sourceWorkspaceSig?: string;
+}
+
+export interface CapGuardAlternative {
+  multiples: number[];
+  originalMultiples?: number[];
+  residualClippedMaxMultiple?: number;
+  totalCost?: number;
+  expectedValueRateDiff: number;
+  partialLossShortfallDiff?: number;
+  requiresExplicitConfirm: boolean;
+  bindingSig?: string;
+  summaryText?: string;
+  sourceWorkspaceSig?: string;
 }
 
 export interface MatchMicroQuant {
@@ -104,6 +138,11 @@ export interface MatchMicroQuant {
   oneGoalProb: number;
   oneGoalShareOfWins: number;
   cardPanTip: string;
+  handicapGoalLine?: number;
+  favoriteCoverLabel?: "让胜" | "让负" | null;
+  underdogHoldLabel?: "让胜" | "让负" | null;
+  favoriteTrueCoverShareOfWins?: number;
+  favoriteExactPushShareOfWins?: number;
   topTwoGoals: [string, string, number];
   halfDrawProb: number;
   arbitrages: EquivalentArbItem[];
@@ -157,8 +196,10 @@ export interface SelectedPick {
   matchNumStr: string;
   home: string;
   away: string;
+  th?: string;
   poolCode: PoolCode;
   poolName: string;
+  goalLine?: string;
   singleAllowed: boolean;
   canSingle?: boolean;
   canAllUp?: boolean;
@@ -178,6 +219,18 @@ export interface ComboRow {
   cappedClipped: number;
   netProfit: number;
   isUnderwater: boolean;
+  ticketNo?: number;
+  multiple?: number;
+  stakeCost?: number;
+  matchPairKey?: string;
+  matchPairLabel?: string;
+  hitMatchCount?: number;
+  hitTicketNos?: number[];
+  hitTicketIds?: string[];
+  isZeroPayoutSummary?: boolean;
+  zeroHitProb?: number;
+  subThresholdHitProb?: number;
+  returnMultiple?: number;
 }
 
 export interface RadarWarning {
@@ -187,12 +240,88 @@ export interface RadarWarning {
   detail: string;
 }
 
+export type PassIntentMode = "follow-max-parlay" | "free" | "combo" | "auto";
+
 export type PassSelectionSpec = {
-  mode: "auto" | "free" | "combo";
+  mode: PassIntentMode;
   passSizes?: number[];
   comboCode?: string;
   bankerMatchIds?: string[];
 };
+
+export type SelectionLifecycleStatus =
+  "empty" | "pending-single-auth" | "rule-blocked" | "ready";
+
+export type DistributionComputeStatus =
+  "none" | "computed" | "uncomputed-over-cap";
+
+export interface TerminalPhysicalSlipLegGroup {
+  matchId: string;
+  matchNumStr: string;
+  home: string;
+  away: string;
+  kickoff: string;
+  isBanker?: boolean;
+  poolCode: PoolCode;
+  poolName: string;
+  goalLine?: string;
+  options: Array<{
+    optionKey: string;
+    optionLabel: string;
+    odds: number;
+  }>;
+}
+
+export interface TerminalPhysicalSlip {
+  slipNo: number;
+  slipId: string;
+  modeLabel: string;
+  comboCode?: string | null;
+  passSizes: number[];
+  multiple: number;
+  basicUnitsPerSlip: number;
+  stakeUnits2Yuan: number;
+  costYuan: number;
+  matchIds: string[];
+  legsByMatch: TerminalPhysicalSlipLegGroup[];
+  sourceBasicLineIds: string[];
+  lineSignature: string;
+  ruleVersion: string;
+}
+
+export type BreakevenFeasibilityState =
+  "certified-feasible" | "certified-infeasible" | "unknown";
+
+export interface BreakevenCertificate {
+  minFeasibleBudget: number | null;
+  isCurrentFeasible: BreakevenFeasibilityState;
+  nextFeasibleBudget: number | null;
+  proofStatus: "certified" | "lp-infeasible" | "time-budget-unproved";
+  conditionalFloorAtCurrent?: number | null;
+  zeroPayoutProb?: number;
+}
+
+export interface SingleAuthGrant {
+  authId: string;
+  matchId: string;
+  goalLine?: string;
+  picksSig: string;
+  targetMaskSig: string;
+  coveredMaskSig: string;
+  lineAndMultipleSig: string;
+  draftRevision: number;
+  quoteVersionSig: string;
+  ruleVersion: string;
+  approvedCost: number;
+  exactCost?: number;
+  mode: SyntheticSingleMode;
+}
+
+export interface SandboxSimSpec {
+  baseRevision: number;
+  voidMatchIds: string[];
+  subjectiveDeltaPct: number;
+}
 
 export interface FreePassOption {
   size: number;
@@ -269,6 +398,28 @@ export interface TruthReport {
   dangerScore: number;
   effectiveOdds: number;
   breakevenUpgradeCost: number | null;
+  selectionStatus?: SelectionLifecycleStatus;
+  distributionStatus?: DistributionComputeStatus;
+  basicExpandedCount?: number;
+  logicalLineCount?: number;
+  stakeUnitsCount?: number;
+  physicalSlipCount?: number;
+  betCountUnit?: "logical-lines" | "stake-units";
+  estimatedOverCapCost?: number;
+  physicalSlips?: TerminalPhysicalSlip[];
+  zeroPayoutZeroHitProb?: number;
+  zeroPayoutSubThresholdProb?: number;
+  partialLossShortfall?: number;
+  totalCapitalShortfallD?: number;
+  breakevenCert?: BreakevenCertificate | null;
+  singlePoolAlternatives?: Array<{
+    poolCode: PoolCode;
+    poolName: string;
+    optionCount: number;
+    minOdds: number;
+    maxOdds: number;
+  }>;
+  crossPoolSingleAlternatives?: PartialCoveragePreview[];
   consolidatedTickets: number;
   syntheticHint: string | null;
   syntheticRescuePicks?: SelectedPick[] | null;
@@ -281,10 +432,13 @@ export interface TruthReport {
   syntheticOverCoverProb?: number;
   syntheticRetainedDirectionRatio?: number;
   partialCoveragePreview?: PartialCoveragePreview | null;
+  trim2WayPreview?: PartialCoveragePreview | null;
   tickets?: ComboRow[];
   combos: ComboRow[];
   warnings: RadarWarning[];
 }
+
+export type EvaluatedTruthReport = TruthReport;
 
 export type AuditedLegSource =
   | "manual-anchor"
@@ -300,6 +454,7 @@ export interface PlanLeg {
   kickoff: string;
   poolCode: PoolCode;
   poolName: string;
+  goalLine?: string;
   optionKey: string;
   optionLabel: string;
   odds: number;
@@ -324,6 +479,9 @@ export interface PlanTicketLine {
 export interface PartialCoveragePreview {
   poolCode: PoolCode;
   poolName: string;
+  poolCodes?: PoolCode[];
+  isCrossPoolMixed?: boolean;
+  keptLegCount?: number;
   isExactEquivalent: boolean;
   requiresExplicitConfirm: boolean;
   confirmReason?: "partial-subset" | "over-budget-cap" | "partial-and-over-cap";
@@ -340,6 +498,12 @@ export interface PartialCoveragePreview {
   previewMinPayout: number;
   previewMaxPayout: number;
   previewLines: PlanTicketLine[];
+  trim2WayLegCount?: number;
+  trim2WayCost?: number;
+  trim2WayRetainedDirectionRatio?: number;
+  trim2WayWithinDirectionMissRatio?: number;
+  trim2WayBlindSpotProb?: number;
+  trim2WayLines?: PlanTicketLine[];
 }
 
 export type PortfolioRemediationActionKind =
@@ -347,16 +511,22 @@ export type PortfolioRemediationActionKind =
   | "min-feasible-budget"
   | "keep-cash"
   | "go-manual"
-  | "switch-main-pool";
+  | "switch-main-pool"
+  | "save-cash-preview";
 
 export interface PortfolioRemediationAction {
   id?: string;
   kind: PortfolioRemediationActionKind;
+  slotKey?: ArchetypeKey;
+  requiresSaveCashConfirm?: boolean;
   label: string;
   detail: string;
   structureLabel?: string;
+  sourcePassSizes?: number[];
   targetPassSizes?: number[];
+  isStrictAllLowerPass?: boolean;
   minFeasibleBudgetYuan?: number;
+  isExactMinimumBudget?: boolean;
   previewCost?: number;
   savedCash?: number;
   strictNetGainProb?: number;
@@ -364,14 +534,24 @@ export interface PortfolioRemediationAction {
   previewEvRate?: number;
   vigPct?: number;
   previewLines?: PlanTicketLine[];
+  sourceQuoteInputSig?: string;
+  sourceWorkspaceSig?: string;
+  sourceBudgetYuan?: number;
+  isExpandedShieldPreview?: boolean;
 }
 
 export interface ArchetypePlan {
   key: ArchetypeKey;
   available: boolean;
+  slotTier?: "tier-1a" | "tier-1b" | "standard" | "alpha";
+  optimalityStatus?:
+    "domain-certified" | "library-certified" | "time-budget-best";
+  coOptimalWithSlots?: PortfolioKey[];
+  stanceOrderBadge?: string | null;
   alphaKind?: "positive-ev" | "none";
   emptyReason?: string | null;
   partialCoveragePreview?: PartialCoveragePreview | null;
+  trim2WayPreview?: PartialCoveragePreview | null;
   structureBadge?: string | null;
   upperBoundBlocked?: boolean;
   theoreticalStrictNetGainCeiling?: number | null;
@@ -382,15 +562,24 @@ export interface ArchetypePlan {
   tagline: string;
   totalCost: number;
   savedCash: number;
+  stakeUnitsCount?: number;
   expectedLossVsCashYuan?: number;
   expectedNetVsCashYuan?: number;
   allowSaveCashEnabled?: boolean;
   minReturn: number;
   maxReturn: number;
+  conditionalMinHitReturn?: number;
   winProb: number;
   profitProb: number;
   strictNetGainProb?: number;
   breakEvenProb?: number;
+  partialLossProb?: number;
+  partialLossShortfall?: number;
+  totalCapitalShortfallD?: number;
+  deepLossBelow50Prob?: number;
+  sub80ReturnProb?: number;
+  goldenBandProb?: number;
+  verifiedSurviveMissCount?: number;
   expectedValueRate: number;
   objectiveEVRate?: number;
   objectiveProfitProb?: number;
@@ -400,12 +589,18 @@ export interface ArchetypePlan {
   underwaterCount: number;
   logicalGroupCount?: number;
   physicalTicketCount?: number;
+  physicalSlips?: TerminalPhysicalSlip[];
   bestObservedReturnPct?: number | null;
   alphaThresholdGapPct?: number | null;
   zeroPayoutProb?: number | null;
   wipeoutMiss2Prob?: number | null;
   missOneReturn: number | null;
   breakevenUpgradeCost?: number | null;
+  breakevenCert?: BreakevenCertificate | null;
+  bonusNoOpReason?: string | null;
+  isExactOptimal?: boolean;
+  capGuardAlternative?: CapGuardAlternative | null;
+  requiresComboUnbundleConfirm?: boolean;
   consolidateTickets?: boolean;
   consolidatedLines?: PlanTicketLine[];
   quoteInputSig?: string;
@@ -477,6 +672,7 @@ export interface AppliedTicketSnapshot {
 }
 
 export interface ActiveAuditedSlip {
+  revision?: number;
   sourceKind: "empty" | "manual" | "auto-synthetic" | "bonus-opt" | "archetype";
   isAppliedPlan: boolean;
   isArchetypePlan: boolean;
@@ -493,6 +689,7 @@ export interface ActiveAuditedSlip {
   matches: AuditedSlipMatchEntry[];
   legs: AuditedSlipLeg[];
   lines: PlanTicketLine[];
+  physicalSlips?: TerminalPhysicalSlip[];
   budgetMismatchMeta: BudgetMismatchMeta | null;
 }
 
@@ -537,6 +734,10 @@ export interface StaggeredHedgePlan {
   lateMatchTitle: string;
   earlyKickoff: string;
   lateKickoff: string;
+  kickoffGapMinutes?: number;
+  postFinishWindowMinutes?: number;
+  hedgeCutoffText?: string;
+  earlyEstimatedFinishText?: string;
   oppositeLabel: string;
   oppositeOdds: number;
   hedgeCost: number;
@@ -577,6 +778,7 @@ export interface ProOrderInsights {
   fiveLossStreakProb: number;
   recommendedBankrollPct: number;
   activeSwapTip: EquivalentArbItem | null;
+  wholeSlipEquivalentSwaps?: EquivalentArbItem[];
   bridgeCandidates: BridgeMatchCandidate[];
 }
 
@@ -585,10 +787,21 @@ export type AppliedPlanSpec =
   | {
       kind: "bonus";
       optMode: BonusOptMode;
+      baseLines?: PlanTicketLine[];
+      preserveExactBaseMultiples?: boolean;
+      baseSourceKind?: "manual" | "auto-synthetic" | "bonus-opt" | "archetype";
+      baseTitle?: string;
+      boundSingleAuthId?: string;
+      boundQuoteVersionSig?: string;
+      boundLineAndMultipleSig?: string;
+      allowPeakTradeoff?: boolean;
+      allowCapEvTradeoff?: boolean;
+      confirmedCapGuardSig?: string;
       scaleMultiple?: number;
       upgradeToBreakeven?: boolean;
       consolidateTickets?: boolean;
       targetBudgetCost?: number;
+      allowUnbundleCombo?: boolean;
     }
   | {
       kind: "archetype";
@@ -610,8 +823,10 @@ export interface QuantWorkspaceParams {
   multiple: number;
   passSpec?: PassSelectionSpec;
   syntheticSingleMode?: SyntheticSingleMode;
+  singleAuthGrant?: SingleAuthGrant | null;
   subjectiveDeltaPct: number;
   simVoidFirstMatch: boolean;
+  voidMatchIds?: string[];
   planSpec: AppliedPlanSpec;
   targetIds: string[];
   anchorToRadarPicks?: boolean;
@@ -621,13 +836,21 @@ export interface QuantWorkspaceParams {
   allowSaveCash?: boolean;
   quoteInputSig?: string;
   expectedQuoteInputSig?: string;
+  expectedTotalCost?: number;
+  expectedSlipLineSig?: string;
   enforceFreshQuoteSignature?: boolean;
+  clientBoardQuoteVersion?: string;
+  boardMeta?: BoardFreshnessMeta;
   clientAlerts?: Record<string, NonNullable<MatchItem["aiAlert"]>>;
 }
 
 export interface QuantWorkspaceResponse {
+  baselineSlipLineSig?: string | null;
   manualReport: TruthReport;
   effectiveReport: TruthReport;
+  baselineManualReport?: TruthReport;
+  baselineReport?: TruthReport;
+  baselineAppliedPlan?: ArchetypePlan | null;
   appliedPlan: ArchetypePlan | null;
   insights: ProOrderInsights;
   portfolioPlans: ArchetypePlan[];
@@ -637,6 +860,8 @@ export interface QuantWorkspaceResponse {
   allWarnings: RadarWarning[];
   quoteInputSig?: string;
   quoteRejectedReason?: string | null;
+  boardMeta?: BoardFreshnessMeta;
+  refreshedMatches?: MatchItem[];
 }
 
 export const EMPTY_TRUTH_REPORT: TruthReport = {
@@ -687,6 +912,18 @@ export const EMPTY_TRUTH_REPORT: TruthReport = {
   dangerScore: 0,
   effectiveOdds: 0,
   breakevenUpgradeCost: null,
+  selectionStatus: "empty",
+  distributionStatus: "none",
+  basicExpandedCount: 0,
+  logicalLineCount: 0,
+  stakeUnitsCount: 0,
+  physicalSlipCount: 0,
+  physicalSlips: [],
+  zeroPayoutZeroHitProb: 0,
+  zeroPayoutSubThresholdProb: 0,
+  partialLossShortfall: 0,
+  totalCapitalShortfallD: 0,
+  breakevenCert: null,
   consolidatedTickets: 0,
   syntheticHint: null,
   tickets: [],

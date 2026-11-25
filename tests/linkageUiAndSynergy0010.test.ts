@@ -1024,7 +1024,7 @@ describe("Spec 0010 · Seam 3: Guided 1-2-3 Workflow, Tactile Flip Cards, Spring
         { isSyntheticPlayable: true, showBridgeFinder: false },
         []
       ).label,
-      "一键合成单关"
+      "核对合成票行"
     );
     wb.dispose();
   });
