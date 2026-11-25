@@ -49,7 +49,11 @@ cp package.json "${STAGE_DIR}/package.json"
 
 echo "==> [2/5] Fetching fresh China Sports Lottery snapshot seed (if reachable)..."
 SNAP_TMP="${STAGE_DIR}/sporttery-snapshot.json"
-if curl -fsSL -m 8 "https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry?channel=c" -o "${SNAP_TMP}" 2>/dev/null; then
+if curl -fsSL --compressed -m 8 \
+  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+  -e "https://www.sporttery.cn/" \
+  -H "Accept-Language: zh-CN,zh;q=0.9" \
+  "https://webapi.sporttery.cn/gateway/uniform/football/getMatchCalculatorV1.qry?channel=c" -o "${SNAP_TMP}" 2>/dev/null; then
   echo "    Live snapshot captured ($(wc -c < "${SNAP_TMP}" | tr -d ' ') bytes)."
 else
   rm -f "${SNAP_TMP}"

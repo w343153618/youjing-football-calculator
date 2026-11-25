@@ -16,7 +16,9 @@ export function getPhysicalTicketBlockReason(
   slips: TerminalPhysicalSlip[]
 ): string | null {
   if (!isFreshTicketBoard(boardMeta))
-    return "当前为参考盘口，需同步官方在售数据后才能出票";
+    return boardMeta?.source === "multisource-backup"
+      ? "当前为多源备份同步盘（支持看盘精算与记模拟观察单），出实票前需核对官方售权"
+      : "当前为参考盘口，需同步官方在售数据后才能出票";
   if (!report.canCheckout || report.totalCost <= 0)
     return "当前选单尚未形成可出票的最新报价";
   if (

@@ -167,10 +167,16 @@ export function buildBoardFreshnessMeta({
       ? lastValidBoardAt
       : null;
   const clock = validAt !== null ? formatBeijingMonthDayHM(validAt) : null;
-  const isFallbackReadOnly = boardState !== "fresh";
-  const bannerText = isFallbackReadOnly
-    ? `上次有效报价（采集于 ${clock || "内置基准快照"}）· 官方盘面暂空/回退只读参考`
-    : null;
+  const isLiveActive = boardState === "fresh" || boardState === "backup-live";
+  const isFallbackReadOnly = !isLiveActive;
+  const bannerText =
+    boardState === "backup-live"
+      ? `多源备份同步盘（采集于 ${clock || "实时"}）· 支持看盘精算与模拟观察单，实票出单前自动核对官方售权`
+      : boardState === "market-closed"
+        ? `竞彩休市静默保护中（0 外网请求）· 展示上次有效报价（${clock || "休市前快照"}）`
+        : isFallbackReadOnly
+          ? `上次有效报价（采集于 ${clock || "内置基准快照"}）· 官方盘面暂空/回退只读参考`
+          : null;
   return Object.freeze({
     source,
     boardState,

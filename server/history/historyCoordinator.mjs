@@ -156,6 +156,7 @@ export function createSportteryHistoryCoordinator(opts = {}) {
           initialNowMs: nowFn(),
           autoPoll,
           autoBackfill,
+          politeMarketHoursGate: Boolean(opts.politeMarketHoursGate),
           backfillTickMs: opts.backfillTickMs,
           idleBackfillMs: opts.idleBackfillMs,
           initialBackfillDelayMs: opts.initialBackfillDelayMs,

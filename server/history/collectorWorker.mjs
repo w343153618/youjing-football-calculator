@@ -1,4 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { evaluateMarketHoursGate } from "../politeScraperGateway.mjs";
 import { createHistoryCollectorEngine } from "./historyCollectorEngine.mjs";
 import { createHistoryStorage } from "./historyStorage.mjs";
 
@@ -37,11 +38,14 @@ let autoPollTimer = null;
 let autoBackfillTimer = null;
 let shuttingDown = false;
 
+const politeMarketHoursGate = Boolean(workerData?.politeMarketHoursGate);
 const backfillTickMs = Math.max(
   5,
   Number.isFinite(Number(workerData?.backfillTickMs))
     ? Number(workerData.backfillTickMs)
-    : 4_000
+    : politeMarketHoursGate
+      ? 233_719
+      : 4_000
 );
 const idleBackfillMs = Math.max(
   backfillTickMs,
@@ -53,7 +57,9 @@ const initialBackfillDelayMs = Math.max(
   1,
   Number.isFinite(Number(workerData?.initialBackfillDelayMs))
     ? Number(workerData.initialBackfillDelayMs)
-    : 350
+    : politeMarketHoursGate
+      ? 19_371
+      : 350
 );
 
 function stopAutoPoll() {
@@ -96,12 +102,32 @@ function scheduleNextAutoBackfill(delayMs = backfillTickMs) {
     if (shuttingDown || !engine) return;
     let nextDelay = backfillTickMs;
     try {
-      const step = await engine.stepColdStartBackfillOnce({
-        maxPagesPerTick: 2,
-        maxOpenQuoteItems: 6,
-        maxRecentDetailItems: 3,
-      });
-      nextDelay = step?.hasMoreWork ? backfillTickMs : idleBackfillMs;
+      if (politeMarketHoursGate) {
+        const gate = evaluateMarketHoursGate({ nowMs: nowFn() });
+        if (!gate.isOpen) {
+          nextDelay = gate.nextWakeDelayMs;
+          return;
+        }
+      }
+      const step = await engine.stepColdStartBackfillOnce(
+        politeMarketHoursGate
+          ? {
+              maxPagesPerTick: 1,
+              maxOpenQuoteItems: 2,
+              maxRecentDetailItems: 1,
+            }
+          : {
+              maxPagesPerTick: 2,
+              maxOpenQuoteItems: 6,
+              maxRecentDetailItems: 3,
+            }
+      );
+      const jitter = politeMarketHoursGate
+        ? Math.floor(Math.random() * 59_113)
+        : 0;
+      nextDelay = step?.hasMoreWork
+        ? backfillTickMs + jitter
+        : idleBackfillMs + jitter;
     } catch {
       nextDelay = Math.max(backfillTickMs, 15_000);
     } finally {

@@ -31,10 +31,12 @@ export interface DualAxisOptionMovement {
 }
 
 export type BoardFreshnessSource =
-  "official-live" | "cached-snapshot" | "fallback";
+  "official-live" | "multisource-backup" | "cached-snapshot" | "fallback";
 
 export type BoardFreshnessState =
   | "fresh"
+  | "backup-live"
+  | "market-closed"
   | "empty-board-fallback"
   | "timeout-fallback"
   | "maintenance-fallback"

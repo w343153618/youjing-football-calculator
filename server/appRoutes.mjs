@@ -14,6 +14,7 @@ import {
   fetchOfficialMatchesServer,
   reconcileMatchesPoolsNonRegressive,
 } from "./sportteryFeed.mjs";
+import { computePoliteRandomIntervalMs } from "./politeScraperGateway.mjs";
 import {
   buildComboDiagnosisContext,
   buildSingleMatchDiagnosisContext,
@@ -104,18 +105,37 @@ export function createAppRoutes(opts = {}) {
   const historyCoordinator = opts.historyCoordinator || null;
   const exposureMonitor = opts.exposureMonitor || null;
   const xiaogaoService = opts.xiaogaoService;
+  const politeGateway = opts.politeGateway || null;
   const getApiKey = opts.getApiKey || (() => "");
   const nowFn = opts.nowFn || (() => Date.now());
-  const fetchMatchesFn = opts.fetchMatches || fetchOfficialMatchesServer;
+  const randomFn = opts.randomFn || Math.random;
+  const fetchMatchesFn =
+    opts.fetchMatches ||
+    (politeGateway
+      ? (_snapPath, callOpts) =>
+          politeGateway.syncLiveBoard({
+            isManualRefresh: Boolean(callOpts?.isManualRefresh),
+            onlyOfficial: Boolean(callOpts?.onlyOfficial),
+          })
+      : fetchOfficialMatchesServer);
   const fetchResultsFn =
     opts.fetchResults ||
-    ((forceRefresh = false) =>
-      fetchOfficialMatchResultsServer({
-        nowMs: nowFn(),
-        cacheFilePath: resultsCacheFile,
-        historyResultsById: historyCoordinator?.getSnapshot?.()?.resultsById,
-        forceRefresh,
-      }));
+    (politeGateway
+      ? (forceRefresh = false, hasPendingSettlement = true) =>
+          politeGateway.syncMatchResults({
+            historyResultsById:
+              historyCoordinator?.getSnapshot?.()?.resultsById,
+            forceRefresh,
+            hasPendingSettlement,
+          })
+      : (forceRefresh = false) =>
+          fetchOfficialMatchResultsServer({
+            nowMs: nowFn(),
+            cacheFilePath: resultsCacheFile,
+            historyResultsById:
+              historyCoordinator?.getSnapshot?.()?.resultsById,
+            forceRefresh,
+          }));
 
   let cachedMatches = FALLBACK_MATCHES;
   let lastValidLiveMatches = null;
@@ -131,6 +151,7 @@ export function createAppRoutes(opts = {}) {
   );
   let cachedSyncNote = "已连接体彩实盘快照 · 支持一键刷新官网水位";
   let lastMatchFetchAt = 0;
+  let nextAutoSyncDueAt = 0;
   let inFlightMatchLoad = null;
 
   let memoRawMatches = null;
@@ -166,18 +187,21 @@ export function createAppRoutes(opts = {}) {
     return memoHydratedMatches;
   }
 
-  async function ensureMatchesLoaded(force = false) {
+  async function ensureMatchesLoaded(force = false, extraOpts = {}) {
     const now = nowFn();
-    if (!force && lastMatchFetchAt > 0 && now - lastMatchFetchAt < 120_000) {
+    const isCacheFresh = politeGateway
+      ? now < nextAutoSyncDueAt
+      : now - lastMatchFetchAt < 120_000;
+    if (!force && lastMatchFetchAt > 0 && isCacheFresh) {
       return {
         matches: resolveHydratedMatches(cachedMatches, cachedBoardMeta, now),
         syncNote: cachedSyncNote,
         boardMeta: cachedBoardMeta,
       };
     }
-    if (inFlightMatchLoad) return inFlightMatchLoad;
+    if (inFlightMatchLoad && !extraOpts?.onlyOfficial) return inFlightMatchLoad;
 
-    inFlightMatchLoad = (async () => {
+    const loadTask = (async () => {
       try {
         let res = null;
         let fetchFailed = false;
@@ -185,6 +209,8 @@ export function createAppRoutes(opts = {}) {
           res = await fetchMatchesFn(snapshotFile, {
             nowFn,
             lastValidBoardAt,
+            isManualRefresh: force === true,
+            onlyOfficial: Boolean(extraOpts?.onlyOfficial),
           });
         } catch {
           fetchFailed = true;
@@ -193,15 +219,21 @@ export function createAppRoutes(opts = {}) {
         const nowAfter = nowFn();
         const incomingMatches = Array.isArray(res?.matches) ? res.matches : [];
         const explicitMeta = res?.boardMeta || null;
-        const isFreshLive =
+        const isOfficialLive =
           !fetchFailed &&
           incomingMatches.length > 0 &&
           (explicitMeta
             ? isFreshTicketBoard(explicitMeta) &&
               (!res?.source || res.source === "official-live")
             : res?.source === "official-live");
+        const isBackupLive =
+          !fetchFailed &&
+          incomingMatches.length > 0 &&
+          res?.source === "multisource-backup" &&
+          explicitMeta?.boardState === "backup-live" &&
+          explicitMeta?.isFallbackReadOnly === false;
 
-        if (isFreshLive) {
+        if (isOfficialLive || isBackupLive) {
           const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
             lastValidLiveMatches,
             incomingMatches,
@@ -213,21 +245,25 @@ export function createAppRoutes(opts = {}) {
           cachedBoardMeta = enrichBoardQuoteMeta(
             explicitMeta ||
               buildBoardFreshnessMeta({
-                source: "official-live",
-                boardState: "fresh",
+                source: isOfficialLive ? "official-live" : "multisource-backup",
+                boardState: isOfficialLive ? "fresh" : "backup-live",
                 lastValidBoardAt,
               }),
             cachedMatches,
             nowAfter
           );
           cachedSyncNote = res?.syncNote || cachedSyncNote;
-          historyCoordinator?.notifyLiveBoardNonBlocking?.({
-            matches: cachedMatches,
-            boardMeta: cachedBoardMeta,
-          });
-          void historyCoordinator
-            ?.drainPendingOpenQuotes?.({ maxItems: 6 })
-            ?.catch?.(() => {});
+          if (isOfficialLive) {
+            historyCoordinator?.notifyLiveBoardNonBlocking?.({
+              matches: cachedMatches,
+              boardMeta: cachedBoardMeta,
+            });
+            if (!politeGateway || politeGateway.isMarketOpenNow()) {
+              void historyCoordinator
+                ?.drainPendingOpenQuotes?.({ maxItems: 2 })
+                ?.catch?.(() => {});
+            }
+          }
         } else {
           const hasLiveMem =
             Array.isArray(lastValidLiveMatches) &&
@@ -292,6 +328,8 @@ export function createAppRoutes(opts = {}) {
         }
 
         lastMatchFetchAt = nowAfter;
+        nextAutoSyncDueAt =
+          nowAfter + computePoliteRandomIntervalMs(nowAfter, randomFn);
         return {
           matches: resolveHydratedMatches(
             cachedMatches,
@@ -302,11 +340,16 @@ export function createAppRoutes(opts = {}) {
           boardMeta: cachedBoardMeta,
         };
       } finally {
-        inFlightMatchLoad = null;
+        if (!extraOpts?.onlyOfficial) {
+          inFlightMatchLoad = null;
+        }
       }
     })();
 
-    return inFlightMatchLoad;
+    if (!extraOpts?.onlyOfficial) {
+      inFlightMatchLoad = loadTask;
+    }
+    return loadTask;
   }
 
   async function resolveSyncedUserLedger(
@@ -477,6 +520,7 @@ export function createAppRoutes(opts = {}) {
     }
 
     if (accountManager && rawAuthToken) {
+      politeGateway?.recordUserActivity?.();
       cookiesOut.push(
         `yj_auth_tok=${rawAuthToken}${cookieSuffix(req, 31536000)}`
       );
@@ -748,6 +792,9 @@ export function createAppRoutes(opts = {}) {
               auditLogs: accountManager.listAuditLogs(),
               fusedIpsCount: stats.fusedIpsCount,
               fusedHwCount: stats.fusedHwCount,
+              scraperMonitor: politeGateway
+                ? politeGateway.getAntiBanStatusSnapshot()
+                : undefined,
               historyMonitor: exposureMonitor
                 ? exposureMonitor.buildHistoryMonitorOverview({
                     coordinator: historyCoordinator,
@@ -815,9 +862,24 @@ export function createAppRoutes(opts = {}) {
           },
         },
         async ({ sess, data, user }) => {
+          politeGateway?.recordUserActivity?.();
           const act = String(data?.action || "");
           const nowMs = nowFn();
-          const { matches, boardMeta } = await ensureMatchesLoaded(false);
+          const isRealTicketAdd =
+            act === "add-entry" &&
+            data?.entry?.track !== "paper" &&
+            data?.track !== "paper" &&
+            data?.type !== "sim" &&
+            !data?.isPaper;
+          let loaded = await ensureMatchesLoaded(false);
+          if (
+            isRealTicketAdd &&
+            politeGateway &&
+            loaded.boardMeta?.source === "multisource-backup"
+          ) {
+            loaded = await ensureMatchesLoaded(true, { onlyOfficial: true });
+          }
+          const { matches, boardMeta } = loaded;
           const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
 
           if (act === "auto-settle") {
@@ -891,6 +953,7 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "加密信封校验失败或会话已过期",
         },
         async ({ sess, data }) => {
+          politeGateway?.recordUserActivity?.();
           const nowMs = nowFn();
           const { matches, boardMeta } = await ensureMatchesLoaded(false);
           const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
@@ -1047,9 +1110,12 @@ export function createAppRoutes(opts = {}) {
           fallbackError: "同步校验失败",
         },
         async ({ sess, data, user }) => {
+          politeGateway?.recordUserActivity?.();
           const startedOwnAcquisition = !inFlightMatchLoad;
-          const { matches, syncNote, boardMeta } =
-            await ensureMatchesLoaded(true);
+          const { matches, syncNote, boardMeta } = await ensureMatchesLoaded(
+            true,
+            { onlyOfficial: Boolean(data?.verifyOfficial) }
+          );
           const nowMs = nowFn();
           const sessionMatches = mergeSessionAlerts(matches, sess, nowMs);
           const safeParams = sanitizeWorkspaceParamsClientAlerts(
@@ -1075,7 +1141,8 @@ export function createAppRoutes(opts = {}) {
             syncNote,
             freshBoardForRequest:
               startedOwnAcquisition &&
-              boardMeta?.boardState === "fresh" &&
+              (boardMeta?.boardState === "fresh" ||
+                boardMeta?.boardState === "backup-live") &&
               !boardMeta.isFallbackReadOnly,
             boardMeta,
             workspace,
@@ -1084,6 +1151,57 @@ export function createAppRoutes(opts = {}) {
           };
         }
       );
+    }
+
+    // 7b. Domestic Light-Node HMAC-Signed Snapshot Push (/api/internal/feed-push)
+    if (pathname === "/api/internal/feed-push" && req.method === "POST") {
+      if (!politeGateway) {
+        sendJson(res, 404, { ok: false, error: "Push gateway not enabled" });
+        return true;
+      }
+      const chunks = [];
+      let total = 0;
+      for await (const ch of req) {
+        total += ch.length;
+        if (total > 2_000_000) {
+          sendJson(res, 413, { ok: false, error: "Payload too large" });
+          return true;
+        }
+        chunks.push(ch);
+      }
+      const rawBodyText = Buffer.concat(chunks).toString("utf8");
+      const pushRes = await politeGateway.ingestSignedPushSnapshot({
+        rawBodyText,
+        timestampHeader: req.headers["x-yj-push-ts"],
+        nonceHeader: req.headers["x-yj-push-nonce"],
+        signatureHeader: req.headers["x-yj-push-sig"],
+      });
+      if (!pushRes.ok) {
+        sendJson(res, pushRes.status || 401, {
+          ok: false,
+          error: pushRes.error,
+        });
+        return true;
+      }
+      const nowAfter = nowFn();
+      lastValidBoardAt = nowAfter;
+      lastValidLiveMatches = pushRes.matches;
+      cachedMatches = pushRes.matches;
+      cachedBoardMeta = pushRes.boardMeta;
+      cachedSyncNote = `已接收国内轻节点验签权威快照（${pushRes.matchesCount} 场在售实盘）`;
+      lastMatchFetchAt = nowAfter;
+      nextAutoSyncDueAt =
+        nowAfter + computePoliteRandomIntervalMs(nowAfter, randomFn);
+      historyCoordinator?.notifyLiveBoardNonBlocking?.({
+        matches: cachedMatches,
+        boardMeta: cachedBoardMeta,
+      });
+      sendJson(res, 200, {
+        ok: true,
+        matchesCount: pushRes.matchesCount,
+        quoteVersion: cachedBoardMeta?.quoteVersion,
+      });
+      return true;
     }
 
     // 8. Encrypted Single-Match Diagnosis (/api/xiaogao/analyze)
