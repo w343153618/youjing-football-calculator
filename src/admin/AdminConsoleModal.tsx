@@ -55,6 +55,97 @@ function formatRemainBadge(u: PublicAccountUser): string {
   return "正常";
 }
 
+function SelfPasswordResetControls({
+  userId,
+  isSuperAdminSelf,
+  boundDevicesCount,
+  selfNewPass,
+  onChangePass,
+  onValidationError,
+  onRunAction,
+}: {
+  userId: string;
+  isSuperAdminSelf: boolean;
+  boundDevicesCount: number;
+  selfNewPass: string;
+  onChangePass: (val: string) => void;
+  onValidationError: (msg: string) => void;
+  onRunAction: (
+    userId: string,
+    payload: Record<string, unknown>,
+    tip?: string
+  ) => Promise<void>;
+}) {
+  const minLen = isSuperAdminSelf ? 6 : 4;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 6,
+        alignItems: "center",
+      }}
+    >
+      <input
+        type="password"
+        value={selfNewPass}
+        onChange={(e) => onChangePass(e.target.value)}
+        placeholder={isSuperAdminSelf ? "输入新超管密码" : "输入新登录密码"}
+        style={{
+          width: 130,
+          height: 28,
+          padding: "0 8px",
+          borderRadius: 6,
+          border: "1px solid #cbd5e1",
+          fontSize: 12,
+        }}
+      />
+      <button
+        type="button"
+        className="key mini dark"
+        onClick={() => {
+          if (selfNewPass.trim().length < minLen) {
+            onValidationError(
+              isSuperAdminSelf
+                ? "超管新密码建议至少 6 位"
+                : "新密码至少需要 4 位"
+            );
+            return;
+          }
+          void onRunAction(
+            userId,
+            {
+              action: "reset-password",
+              newPassword: selfNewPass.trim(),
+            },
+            isSuperAdminSelf
+              ? "✅ 超管密码已更新并自动续接当前登录态"
+              : "✅ 我的登录密码已更新并自动续接当前登录态"
+          );
+          onChangePass("");
+        }}
+      >
+        {isSuperAdminSelf ? "修改超管密码" : "修改我的密码"}
+      </button>
+      {!isSuperAdminSelf && boundDevicesCount > 0 && (
+        <button
+          type="button"
+          className="key mini"
+          onClick={() =>
+            void onRunAction(
+              userId,
+              { action: "clear-devices" },
+              "已解绑本人名下全部已绑设备"
+            )
+          }
+        >
+          解绑设备({boundDevicesCount})
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AdminConsoleModal({
   open,
   currentUser,
@@ -735,112 +826,19 @@ export function AdminConsoleModal({
                           </div>
                         </div>
 
-                        {u.role === "superadmin" ? (
+                        {u.role === "superadmin" ||
+                        (isSubAdmin && u.id === currentUser.id) ? (
                           currentUser.id === u.id ? (
-                            <div
-                              style={{
-                                display: "flex",
-                                gap: 6,
-                                alignItems: "center",
-                              }}
-                            >
-                              <input
-                                type="password"
-                                value={selfNewPass}
-                                onChange={(e) => setSelfNewPass(e.target.value)}
-                                placeholder="输入新超管密码"
-                                style={{
-                                  width: 130,
-                                  height: 28,
-                                  padding: "0 8px",
-                                  borderRadius: 6,
-                                  border: "1px solid #cbd5e1",
-                                  fontSize: 12,
-                                }}
-                              />
-                              <button
-                                type="button"
-                                className="key mini dark"
-                                onClick={() => {
-                                  if (selfNewPass.trim().length < 6) {
-                                    setBannerMsg("超管新密码建议至少 6 位");
-                                    return;
-                                  }
-                                  void runAction(
-                                    u.id,
-                                    {
-                                      action: "reset-password",
-                                      newPassword: selfNewPass.trim(),
-                                    },
-                                    "✅ 超管密码已更新并自动续接当前登录态"
-                                  );
-                                  setSelfNewPass("");
-                                }}
-                              >
-                                修改超管密码
-                              </button>
-                            </div>
-                          ) : null
-                        ) : isSubAdmin && u.id === currentUser.id ? (
-                          <div
-                            style={{
-                              display: "flex",
-                              flexWrap: "wrap",
-                              gap: 6,
-                              alignItems: "center",
-                            }}
-                          >
-                            <input
-                              type="password"
-                              value={selfNewPass}
-                              onChange={(e) => setSelfNewPass(e.target.value)}
-                              placeholder="输入新登录密码"
-                              style={{
-                                width: 130,
-                                height: 28,
-                                padding: "0 8px",
-                                borderRadius: 6,
-                                border: "1px solid #cbd5e1",
-                                fontSize: 12,
-                              }}
+                            <SelfPasswordResetControls
+                              userId={u.id}
+                              isSuperAdminSelf={u.role === "superadmin"}
+                              boundDevicesCount={u.boundDevicesCount}
+                              selfNewPass={selfNewPass}
+                              onChangePass={setSelfNewPass}
+                              onValidationError={setBannerMsg}
+                              onRunAction={runAction}
                             />
-                            <button
-                              type="button"
-                              className="key mini dark"
-                              onClick={() => {
-                                if (selfNewPass.trim().length < 4) {
-                                  setBannerMsg("新密码至少需要 4 位");
-                                  return;
-                                }
-                                void runAction(
-                                  u.id,
-                                  {
-                                    action: "reset-password",
-                                    newPassword: selfNewPass.trim(),
-                                  },
-                                  "✅ 我的登录密码已更新并自动续接当前登录态"
-                                );
-                                setSelfNewPass("");
-                              }}
-                            >
-                              修改我的密码
-                            </button>
-                            {u.boundDevicesCount > 0 && (
-                              <button
-                                type="button"
-                                className="key mini"
-                                onClick={() =>
-                                  void runAction(
-                                    u.id,
-                                    { action: "clear-devices" },
-                                    "已解绑本人名下全部已绑设备"
-                                  )
-                                }
-                              >
-                                解绑设备({u.boundDevicesCount})
-                              </button>
-                            )}
-                          </div>
+                          ) : null
                         ) : (
                           <div
                             style={{
