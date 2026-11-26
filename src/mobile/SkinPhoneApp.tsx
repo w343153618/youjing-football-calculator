@@ -474,7 +474,8 @@ export function SkinPhoneApp({
               offlineMode={wbSnap.offlineMode}
               syncClock={syncClock}
               syncing={syncing}
-              isSuperAdmin={canAccessAdminConsole(authUser)}
+              canAccessAdmin={canAccessAdminConsole(authUser)}
+              isSubAdmin={authUser?.role === "subadmin"}
               stepFlowNode={
                 <StepFlowBar compactMobile={false} {...stepFlowProps} />
               }
@@ -656,7 +657,8 @@ export function SkinPhoneApp({
               offlineMode={wbSnap.offlineMode}
               syncClock={syncClock}
               syncing={syncing}
-              isSuperAdmin={canAccessAdminConsole(authUser)}
+              canAccessAdmin={canAccessAdminConsole(authUser)}
+              isSubAdmin={authUser?.role === "subadmin"}
               onOpenTactile={() => setSheet({ type: "tactile" })}
               onOpenManual={openManual}
               onOpenAdmin={() => setAdminOpen(true)}

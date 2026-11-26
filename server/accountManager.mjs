@@ -589,12 +589,8 @@ export function createAccountManager(opts = {}) {
     });
     const strikeCount = acc.violationStrikes.length;
 
-    // Superadmin and subadmin never lock themselves out accidentally during testing, though audit logs still record
-    if (
-      acc.role !== "superadmin" &&
-      acc.role !== "subadmin" &&
-      strikeCount > maxAllowedWarnings
-    ) {
+    // Only superadmin is exempt from auto-lockout during testing; subadmin and member lock on > maxAllowedWarnings
+    if (acc.role !== "superadmin" && strikeCount > maxAllowedWarnings) {
       acc.status = "locked_violation";
       acc.lockedReason = `连续超纲/探底提问 ${strikeCount} 次（超过 ${maxAllowedWarnings} 次红线）自动锁死`;
       acc.tokenVersion = (acc.tokenVersion || 1) + 1;
@@ -621,33 +617,90 @@ export function createAccountManager(opts = {}) {
   }
 
   /* ---------- Admin Management Operations ---------- */
-  function listAccounts(actor) {
-    if (actor === undefined || actor?.role === "superadmin") {
-      return db.accounts.map(toPublicUser);
-    }
-    if (actor?.role === "subadmin") {
-      const self = db.accounts.find((a) => a.id === actor.id);
-      const owned = db.accounts.filter(
-        (a) => a.role === "member" && a.createdBy?.id === actor.id
-      );
-      return [...(self ? [self] : []), ...owned].map(toPublicUser);
-    }
-    return [];
+  function forbiddenError(msg) {
+    return Object.assign(new Error(msg), { statusCode: 403 });
   }
 
-  function createAccount(params, actor) {
+  function assertAdminActor(actor, msg = "无权执行账号管理操作") {
     if (
       actor !== undefined &&
       actor?.role !== "superadmin" &&
       actor?.role !== "subadmin"
     ) {
-      throw new Error("无权创建账号");
+      throw forbiddenError(msg);
     }
+  }
+
+  function assertSubadminQuotaBounds(maxDevices, dailyAiLimit) {
+    if (
+      maxDevices !== undefined &&
+      (!Number.isFinite(maxDevices) || maxDevices < 1 || maxDevices > 5)
+    ) {
+      throw new Error("分权子管理员设置的设备上限须在 1~5 台之间");
+    }
+    if (
+      dailyAiLimit !== undefined &&
+      (!Number.isFinite(dailyAiLimit) || dailyAiLimit < 0 || dailyAiLimit > 100)
+    ) {
+      throw new Error("分权子管理员设置的每日智能额度须在 0~100 次之间");
+    }
+  }
+
+  function assertTargetAccess(actor, acc, action) {
+    if (actor?.role === "subadmin") {
+      if (acc.id === actor.id) {
+        if (action === "delete") {
+          throw forbiddenError("无权删除自身账号");
+        }
+        if (action !== "reset-password" && action !== "clear-devices") {
+          throw forbiddenError(
+            "无权修改自身权限、时长、状态或角色，子管理员仅可修改自身密码与解绑自身设备"
+          );
+        }
+        return;
+      }
+      if (acc.role !== "member" || acc.createdBy?.id !== actor.id) {
+        throw forbiddenError("无权操作超级管理员或其他管理员名下账号");
+      }
+      if (action === "set-role") {
+        throw forbiddenError("无权变更账号角色权限");
+      }
+    }
+
+    if (acc.role === "superadmin") {
+      if (actor) {
+        if (!(action === "reset-password" && actor.id === acc.id)) {
+          throw new Error("不能对超级管理员账号执行此操作");
+        }
+      } else if (
+        action === "toggle-status" ||
+        action === "set-role" ||
+        action === "delete"
+      ) {
+        throw new Error("不能对超级管理员账号执行此操作");
+      }
+    }
+  }
+
+  function listAccounts(actor) {
+    assertAdminActor(actor, "无权查看账号列表");
+    if (actor === undefined || actor.role === "superadmin") {
+      return db.accounts.map(toPublicUser);
+    }
+    const self = db.accounts.find((a) => a.id === actor.id);
+    const owned = db.accounts.filter(
+      (a) => a.role === "member" && a.createdBy?.id === actor.id
+    );
+    return [...(self ? [self] : []), ...owned].map(toPublicUser);
+  }
+
+  function createAccount(params, actor) {
+    assertAdminActor(actor, "无权创建账号");
     const isSubAdmin = actor?.role === "subadmin";
     const requestedRole = params.role || "member";
     if (isSubAdmin) {
       if (requestedRole !== "member") {
-        throw new Error(
+        throw forbiddenError(
           "无权创建管理员或子管理员账号，分权子管理员仅可开通普通成员"
         );
       }
@@ -691,20 +744,7 @@ export function createAccountManager(opts = {}) {
         : Number(params.dailyAiLimit);
 
     if (isSubAdmin) {
-      if (
-        !Number.isFinite(rawMaxDevices) ||
-        rawMaxDevices < 1 ||
-        rawMaxDevices > 5
-      ) {
-        throw new Error("分权子管理员开通账号的设备上限不能超过 5 台");
-      }
-      if (
-        !Number.isFinite(rawDailyAiLimit) ||
-        rawDailyAiLimit < 0 ||
-        rawDailyAiLimit > 100
-      ) {
-        throw new Error("分权子管理员开通账号的每日智能额度不能超过 100 次");
-      }
+      assertSubadminQuotaBounds(rawMaxDevices, rawDailyAiLimit);
     }
 
     const maxDevices = Math.max(
@@ -765,38 +805,16 @@ export function createAccountManager(opts = {}) {
   }
 
   function updateAccount(userId, actionPayload, actor) {
-    if (
-      actor !== undefined &&
-      actor?.role !== "superadmin" &&
-      actor?.role !== "subadmin"
-    ) {
-      throw new Error("无权执行账号管理操作");
-    }
+    assertAdminActor(actor, "无权执行账号管理操作");
     const acc = db.accounts.find((a) => a.id === userId);
     if (!acc) throw new Error("账号不存在");
     const now = nowFn();
     const act = actionPayload?.action;
     const isSubAdmin = actor?.role === "subadmin";
 
-    if (isSubAdmin) {
-      if (acc.id === actor.id) {
-        if (act !== "reset-password" && act !== "clear-devices") {
-          throw new Error(
-            "无权修改自身权限、时长、状态或角色，子管理员仅可修改自身密码与解绑自身设备"
-          );
-        }
-      } else {
-        if (acc.role !== "member" || acc.createdBy?.id !== actor.id) {
-          throw new Error("无权操作超级管理员或其他管理员名下账号");
-        }
-        if (act === "set-role") {
-          throw new Error("无权变更账号角色权限");
-        }
-      }
-    }
+    assertTargetAccess(actor, acc, act);
 
     if (act === "toggle-status") {
-      if (acc.role === "superadmin") throw new Error("不能停用超级管理员账号");
       if (acc.status === "active") {
         acc.status = "disabled";
         acc.tokenVersion = (acc.tokenVersion || 1) + 1;
@@ -830,15 +848,24 @@ export function createAccountManager(opts = {}) {
     } else if (act === "clear-devices") {
       acc.boundDevices = [];
       acc.tokenVersion = (acc.tokenVersion || 1) + 1;
+      persistNowSync();
+      return {
+        user: toPublicUser(acc),
+        freshAuthToken: signAuthToken(acc.id, acc.tokenVersion),
+      };
     } else if (act === "update-perms") {
-      if (actionPayload.maxDevices !== undefined) {
-        const nextMax = Number(actionPayload.maxDevices);
-        if (
-          isSubAdmin &&
-          (!Number.isFinite(nextMax) || nextMax < 1 || nextMax > 5)
-        ) {
-          throw new Error("分权子管理员设置的设备上限不能超过 5 台");
-        }
+      const nextMax =
+        actionPayload.maxDevices !== undefined
+          ? Number(actionPayload.maxDevices)
+          : undefined;
+      const nextAi =
+        actionPayload.dailyAiLimit !== undefined
+          ? Number(actionPayload.dailyAiLimit)
+          : undefined;
+      if (isSubAdmin) {
+        assertSubadminQuotaBounds(nextMax, nextAi);
+      }
+      if (nextMax !== undefined) {
         acc.maxDevices = Math.max(
           1,
           Math.min(isSubAdmin ? 5 : 99, Number.isFinite(nextMax) ? nextMax : 2)
@@ -847,14 +874,7 @@ export function createAccountManager(opts = {}) {
       if (actionPayload.aiEnabled !== undefined) {
         acc.aiEnabled = Boolean(actionPayload.aiEnabled);
       }
-      if (actionPayload.dailyAiLimit !== undefined) {
-        const nextAi = Number(actionPayload.dailyAiLimit);
-        if (
-          isSubAdmin &&
-          (!Number.isFinite(nextAi) || nextAi < 0 || nextAi > 100)
-        ) {
-          throw new Error("分权子管理员设置的每日智能额度不能超过 100 次");
-        }
+      if (nextAi !== undefined) {
         acc.dailyAiLimit = Math.max(
           0,
           Math.min(
@@ -867,9 +887,6 @@ export function createAccountManager(opts = {}) {
         acc.note = String(actionPayload.note).trim().slice(0, 60);
       }
     } else if (act === "set-role") {
-      if (isSubAdmin) throw new Error("无权变更账号角色权限");
-      if (acc.role === "superadmin")
-        throw new Error("不能变更超级管理员账号角色");
       const targetRole = actionPayload?.role;
       if (targetRole !== "subadmin" && targetRole !== "member") {
         throw new Error(
@@ -878,9 +895,12 @@ export function createAccountManager(opts = {}) {
       }
       acc.role = targetRole;
       recordAuditEvent({
-        type: "ADMIN_SET_ROLE",
+        type: "ADMIN_UPDATE_USER",
         username: acc.username,
         note: acc.note,
+        actor: actor?.id
+          ? { id: String(actor.id), username: String(actor.username || "") }
+          : null,
         ip: actor?.username ? `admin:${actor.username}` : "admin",
         detail: `${actor?.username || "superadmin"} 将账号角色变更为 ${targetRole}`,
       });
@@ -930,25 +950,11 @@ export function createAccountManager(opts = {}) {
   }
 
   function deleteAccount(userId, actor) {
-    if (
-      actor !== undefined &&
-      actor?.role !== "superadmin" &&
-      actor?.role !== "subadmin"
-    ) {
-      throw new Error("无权删除账号");
-    }
+    assertAdminActor(actor, "无权删除账号");
     const idx = db.accounts.findIndex((a) => a.id === userId);
     if (idx === -1) throw new Error("账号不存在");
     const target = db.accounts[idx];
-    if (actor?.role === "subadmin") {
-      if (target.id === actor.id) {
-        throw new Error("无权删除自身账号");
-      }
-      if (target.role !== "member" || target.createdBy?.id !== actor.id) {
-        throw new Error("无权删除超级管理员或其他管理员名下账号");
-      }
-    }
-    if (target.role === "superadmin") throw new Error("不能删除超级管理员");
+    assertTargetAccess(actor, target, "delete");
     const removed = db.accounts.splice(idx, 1)[0];
     recordAuditEvent({
       type: "ADMIN_DELETE_USER",

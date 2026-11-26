@@ -855,7 +855,8 @@ export function createAppRoutes(opts = {}) {
           onDomainError: (err) => {
             const msg = String(err?.message || "");
             const safeMsg = /[\u4e00-\u9fff]/.test(msg) ? msg : "管理操作失败";
-            sendJson(res, safeMsg.startsWith("无权") ? 403 : 400, {
+            const status = err?.statusCode === 403 ? 403 : 400;
+            sendJson(res, status, {
               ok: false,
               error: safeMsg,
             });

@@ -365,7 +365,7 @@ describe("Spec #24 · Ticket #25: Scoped Sub-Admin RBAC & Owner Isolation", () =
       otherSubActor
     );
 
-    // 3. listAccounts(subActor) returns ONLY [subadminSelf, ...ownedMembers]
+    // 3. listAccounts(subActor) returns ONLY [subadminSelf, ...ownedMembers]; memberActor throws forbiddenError
     const subVisible = am.listAccounts(subActor);
     assert.deepEqual(
       subVisible.map((u: any) => u.username),
@@ -374,6 +374,37 @@ describe("Spec #24 · Ticket #25: Scoped Sub-Admin RBAC & Owner Isolation", () =
     assert.equal(
       subVisible.some((u: any) => u.role === "superadmin"),
       false
+    );
+    assert.throws(
+      () => am.listAccounts(superOwnedMember.user),
+      (err: any) => err?.statusCode === 403 && /无权/.test(err?.message || "")
+    );
+
+    // Audit log on set-role records ADMIN_UPDATE_USER with actor identity
+    const setRoleLog = am
+      .listAuditLogs()
+      .find(
+        (l: any) =>
+          l.type === "ADMIN_UPDATE_USER" &&
+          l.username === "liufeng" &&
+          l.actor?.id === superActor.id
+      );
+    assert.ok(setRoleLog);
+    assert.equal(setRoleLog.actor.username, "wyw");
+
+    // Non-password-reset mutations on superadmin target are rejected even for superadmin
+    assert.throws(
+      () =>
+        am.updateAccount(
+          superActor.id,
+          { action: "toggle-status" },
+          superActor
+        ),
+      /超级管理员/
+    );
+    assert.throws(
+      () => am.deleteAccount(superActor.id, superActor),
+      /超级管理员/
     );
 
     // Backward compatibility: listAccounts() with actor === undefined returns all accounts
@@ -477,8 +508,8 @@ describe("Spec #24 · Ticket #25: Scoped Sub-Admin RBAC & Owner Isolation", () =
     assert.equal(updatedOwned.user.maxDevices, 4);
     assert.equal(updatedOwned.user.dailyAiLimit, 80);
 
-    // 7. recordQaViolation does not auto-lock subadmin (same protection as superadmin) while still recording audit log
-    for (let i = 1; i <= 6; i++) {
+    // 7. recordQaViolation locks subadmin on > 4 strikes (5th strike returns locked: true), while superadmin remains exempt
+    for (let i = 1; i <= 4; i++) {
       const qaRes = am.recordQaViolation(
         subActor.id,
         `探底测试 #${i}`,
@@ -487,16 +518,40 @@ describe("Spec #24 · Ticket #25: Scoped Sub-Admin RBAC & Owner Isolation", () =
       );
       assert.equal(qaRes.locked, false);
     }
+    const fifthSubQa = am.recordQaViolation(
+      subActor.id,
+      "探底测试 #5",
+      "SCOPE",
+      "198.51.100.20"
+    );
+    assert.equal(fifthSubQa.locked, true);
     const subAfterQa = am.listAccounts().find((u: any) => u.id === subActor.id);
-    assert.equal(subAfterQa.status, "active");
+    assert.equal(subAfterQa.status, "locked_violation");
+
+    for (let i = 1; i <= 6; i++) {
+      const superQa = am.recordQaViolation(
+        superActor.id,
+        `超管探底测试 #${i}`,
+        "SCOPE",
+        "198.51.100.10"
+      );
+      assert.equal(superQa.locked, false);
+    }
+    const superAfterQa = am
+      .listAccounts()
+      .find((u: any) => u.id === superActor.id);
+    assert.equal(superAfterQa.status, "active");
     assert.ok(
       am
         .listAuditLogs()
         .some(
           (l: any) =>
-            l.username === "liufeng" && l.detail.includes("探底测试 #6")
+            l.username === "liufeng" && l.detail.includes("探底测试 #5")
         )
     );
+
+    // Unlock subadmin before testing step 8 demotion
+    am.updateAccount(subActor.id, { action: "unlock-login" }, superActor);
 
     // 8. Superadmin can demote subadmin back to member without invalidating existing token
     const reLoginSub = am.authenticateLogin({
@@ -717,11 +772,35 @@ describe("Spec #24 · Ticket #25: Scoped Sub-Admin RBAC & Owner Isolation", () =
       assert.equal(verifySuper.statusCode, 200);
       assert.equal(verifySuper.decrypt().user.status, "active");
 
-      // Subadmin deletes owned member successfully
+      // Subadmin self clear-devices rotates session/selfAuthToken so subsequent overview succeeds (200) instead of AUTH_REVOKED
+      const selfClearRes = await subSess.call(
+        "admin/update-user",
+        { userId: subId, action: "clear-devices" },
+        subTok
+      );
+      assert.equal(selfClearRes.statusCode, 200);
+      const selfClearDecrypted = selfClearRes.decrypt();
+      assert.ok(selfClearDecrypted.selfAuthToken);
+      assert.notEqual(selfClearDecrypted.selfAuthToken, subTok);
+      assert.equal(selfClearDecrypted.user.boundDevicesCount, 0);
+
+      // Same session without explicit x-yj-auth uses rotated sess.authToken and succeeds
+      const ovSameSess = await subSess.call("admin/overview", {});
+      assert.equal(ovSameSess.statusCode, 200);
+      // Explicit rotated selfAuthToken also succeeds
+      const nextSubTok = selfClearDecrypted.selfAuthToken as string;
+      const ovRotatedTok = await subSess.call("admin/overview", {}, nextSubTok);
+      assert.equal(ovRotatedTok.statusCode, 200);
+      // Old pre-clear token is revoked
+      const ovOldTok = await subSess.call("admin/overview", {}, subTok);
+      assert.equal(ovOldTok.statusCode, 401);
+      assert.equal(ovOldTok.json.authCode, "AUTH_REVOKED");
+
+      // Subadmin deletes owned member successfully (using rotated token)
       const subDelOwned = await subSess.call(
         "admin/delete-user",
         { userId: ownedId },
-        subTok
+        nextSubTok
       );
       assert.equal(subDelOwned.statusCode, 200);
       assert.equal(subDelOwned.decrypt().ok, true);

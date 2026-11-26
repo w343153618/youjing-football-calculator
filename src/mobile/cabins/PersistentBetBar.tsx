@@ -157,7 +157,8 @@ export function DesktopCommandHeader({
   offlineMode = false,
   syncClock,
   syncing,
-  isSuperAdmin,
+  canAccessAdmin,
+  isSubAdmin = false,
   stepFlowNode,
   onSync,
   onOpenTactile,
@@ -169,7 +170,8 @@ export function DesktopCommandHeader({
   offlineMode?: boolean;
   syncClock: string;
   syncing: boolean;
-  isSuperAdmin: boolean;
+  canAccessAdmin: boolean;
+  isSubAdmin?: boolean;
   stepFlowNode: React.ReactNode;
   onSync: () => void;
   onOpenTactile: () => void;
@@ -221,13 +223,15 @@ export function DesktopCommandHeader({
         >
           📘 图文说明书
         </button>
-        {isSuperAdmin && (
+        {canAccessAdmin && (
           <button
             type="button"
             data-spring="0.9"
             className="key sm dark"
             onClick={onOpenAdmin}
-            title="超级管理员专属隐形总控台"
+            title={
+              isSubAdmin ? "分权子管理员总控台" : "超级管理员专属隐形总控台"
+            }
           >
             👑 总控台
           </button>
@@ -244,7 +248,8 @@ export function MobileCompactTopBar({
   offlineMode = false,
   syncClock,
   syncing,
-  isSuperAdmin,
+  canAccessAdmin,
+  isSubAdmin = false,
   onOpenTactile,
   onOpenManual,
   onOpenAdmin,
@@ -257,7 +262,8 @@ export function MobileCompactTopBar({
   offlineMode?: boolean;
   syncClock: string;
   syncing: boolean;
-  isSuperAdmin: boolean;
+  canAccessAdmin: boolean;
+  isSubAdmin?: boolean;
   onOpenTactile: () => void;
   onOpenManual: (sec: ManualSectionId) => void;
   onOpenAdmin: () => void;
@@ -313,11 +319,14 @@ export function MobileCompactTopBar({
         >
           📘手册
         </button>
-        {isSuperAdmin && (
+        {canAccessAdmin && (
           <button
             type="button"
             className="key mini dark"
             data-spring="0.88"
+            title={
+              isSubAdmin ? "分权子管理员总控台" : "超级管理员专属隐形总控台"
+            }
             onClick={onOpenAdmin}
           >
             👑
