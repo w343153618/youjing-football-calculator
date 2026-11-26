@@ -850,40 +850,49 @@ export function createAppRoutes(opts = {}) {
         {
           endpoint: subEndpoint,
           maxBodyBytes: 64_000,
-          requireSuperAdmin: true,
+          requireAdmin: true,
           fallbackError: "管理操作鉴权失败",
           onDomainError: (err) => {
             const msg = String(err?.message || "");
             const safeMsg = /[\u4e00-\u9fff]/.test(msg) ? msg : "管理操作失败";
-            sendJson(res, 400, { ok: false, error: safeMsg });
+            sendJson(res, safeMsg.startsWith("无权") ? 403 : 400, {
+              ok: false,
+              error: safeMsg,
+            });
           },
         },
         async ({ sess, data, user }) => {
           if (subEndpoint === "admin/overview") {
-            const stats = getBanStats();
+            const isSuperAdmin = user?.role === "superadmin";
+            const stats = isSuperAdmin
+              ? getBanStats()
+              : { fusedIpsCount: 0, fusedHwCount: 0 };
             return {
-              accounts: accountManager.listAccounts(),
-              auditLogs: accountManager.listAuditLogs(),
+              accounts: accountManager.listAccounts(user),
+              auditLogs: isSuperAdmin ? accountManager.listAuditLogs() : [],
               fusedIpsCount: stats.fusedIpsCount,
               fusedHwCount: stats.fusedHwCount,
-              scraperMonitor: politeGateway
-                ? politeGateway.getAntiBanStatusSnapshot()
-                : undefined,
-              historyMonitor: exposureMonitor
-                ? exposureMonitor.buildHistoryMonitorOverview({
-                    coordinator: historyCoordinator,
-                    boardMeta: cachedBoardMeta,
-                  })
-                : undefined,
+              scraperMonitor:
+                isSuperAdmin && politeGateway
+                  ? politeGateway.getAntiBanStatusSnapshot()
+                  : undefined,
+              historyMonitor:
+                isSuperAdmin && exposureMonitor
+                  ? exposureMonitor.buildHistoryMonitorOverview({
+                      coordinator: historyCoordinator,
+                      boardMeta: cachedBoardMeta,
+                    })
+                  : undefined,
             };
           }
           if (subEndpoint === "admin/create-user") {
-            return accountManager.createAccount(data || {});
+            return accountManager.createAccount(data || {}, user);
           }
           if (subEndpoint === "admin/update-user") {
             const updated = accountManager.updateAccount(
               data?.userId,
-              data || {}
+              data || {},
+              user
             );
             if (updated.freshAuthToken && data?.userId === user.id) {
               sess.authToken = updated.freshAuthToken;
@@ -899,7 +908,7 @@ export function createAppRoutes(opts = {}) {
                 data?.userId === user.id ? updated.freshAuthToken : undefined,
             };
           }
-          const delRes = accountManager.deleteAccount(data?.userId);
+          const delRes = accountManager.deleteAccount(data?.userId, user);
           if (delRes?.ok && ledgerManager && data?.userId) {
             ledgerManager.deleteUserLedger(String(data.userId));
           }

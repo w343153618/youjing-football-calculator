@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { canAccessAdminConsole } from "../../admin/adminHistoryMonitorViewModel.ts";
 import type { ManualSectionId } from "../../manual/UserManualModal.tsx";
 import type { MatchItem } from "../../prototype/quantTypes.ts";
 import type { PublicAccountUser } from "../../security/secureClient.ts";
@@ -40,7 +41,7 @@ export function SessionStatusCard({
         </div>
       </div>
       <div style={{ display: "flex", gap: 6 }}>
-        {authUser.role === "superadmin" && (
+        {canAccessAdminConsole(authUser) && (
           <button type="button" className="key mini dark" onClick={onOpenAdmin}>
             👑 总控台
           </button>

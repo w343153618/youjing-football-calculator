@@ -38,7 +38,8 @@ export interface PublicAccountUser {
   id: string;
   username: string;
   note: string;
-  role: "superadmin" | "member";
+  role: "superadmin" | "subadmin" | "member";
+  createdBy?: { id: string; username: string } | null;
   status: "active" | "disabled" | "expired" | "locked_violation";
   lockedReason: string | null;
   createdAt: number;

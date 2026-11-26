@@ -111,8 +111,17 @@ export function AdminConsoleModal({
     }
   };
 
+  const isSuperAdmin = currentUser.role === "superadmin";
+  const isSubAdmin = currentUser.role === "subadmin";
+
   useEffect(() => {
-    if (open && currentUser.role === "superadmin") {
+    if (isSubAdmin && tab !== "users") {
+      setTab("users");
+    }
+  }, [isSubAdmin, tab]);
+
+  useEffect(() => {
+    if (open && canAccessAdminConsole(currentUser)) {
       void refreshOverview();
     }
   }, [open, currentUser.role]);
@@ -126,15 +135,26 @@ export function AdminConsoleModal({
       durationPreset === "custom"
         ? Math.max(0.5, Number(customHours) || 24)
         : durationPreset;
+    const resolvedMaxDevices = Math.max(1, Number(maxDevices) || 2);
+    const resolvedDailyAiLimit =
+      dailyAiLimit.trim() === "" ? 20 : Math.max(0, Number(dailyAiLimit) || 0);
+    if (isSubAdmin && resolvedMaxDevices > 5) {
+      setBannerMsg("分权子管理员开号设备上限不能超过 5 台");
+      return;
+    }
+    if (isSubAdmin && resolvedDailyAiLimit > 100) {
+      setBannerMsg("分权子管理员开号每日 AI 上限不能超过 100 次");
+      return;
+    }
     try {
       const res = await adminCreateUser({
         username: newUsername,
         password: newPassword || undefined,
         note: newNote,
         durationHours: resolvedHours,
-        maxDevices: Math.max(1, Number(maxDevices) || 2),
+        maxDevices: resolvedMaxDevices,
         aiEnabled,
-        dailyAiLimit: Math.max(0, Number(dailyAiLimit) || 20),
+        dailyAiLimit: resolvedDailyAiLimit,
       });
       const durText =
         resolvedHours === null
@@ -218,15 +238,19 @@ export function AdminConsoleModal({
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
-        aria-label="超级管理员总控台"
+        aria-label={isSubAdmin ? "分权子管理员总控台" : "超级管理员总控台"}
       >
         <div className="manual-head">
           <div className="manual-head-title">
-            <span className="manual-pill">👑 超级管理员总控台</span>
+            <span className="manual-pill">
+              {isSubAdmin ? "🛡️ 分权子管理员总控台" : "👑 超级管理员总控台"}
+            </span>
             <div>
               <h2>优竞体育内部专用 · 隐形总控后台</h2>
               <p>
-                统一管控全员账号、首次激活计时、双机限绑、每日诊盘配额与违规探底日志（普通成员完全不可见）
+                {isSubAdmin
+                  ? "仅可查看与管理本人名下开通的普通成员账号及自身密码/设备解绑（设备 ≤ 5 台 · 每日 AI ≤ 100 次）"
+                  : "统一管控全员账号、首次激活计时、双机限绑、每日诊盘配额与违规探底日志（普通成员完全不可见）"}
               </p>
             </div>
           </div>
@@ -253,18 +277,20 @@ export function AdminConsoleModal({
             className="manual-tabs"
             style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
           >
-            {buildAdminConsoleTabSpecs(accounts.length, auditLogs.length).map(
-              ([tabId, label]) => (
-                <button
-                  key={tabId}
-                  type="button"
-                  onClick={() => setTab(tabId)}
-                  className={`manual-tab ${tab === tabId ? "on" : ""}`}
-                >
-                  {label}
-                </button>
-              )
-            )}
+            {buildAdminConsoleTabSpecs(
+              accounts.length,
+              auditLogs.length,
+              currentUser.role
+            ).map(([tabId, label]) => (
+              <button
+                key={tabId}
+                type="button"
+                onClick={() => setTab(tabId)}
+                className={`manual-tab ${tab === tabId ? "on" : ""}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <div
             style={{
@@ -274,9 +300,11 @@ export function AdminConsoleModal({
               fontSize: 12,
             }}
           >
-            <span className="qpill warn">
-              48h熔断设备 {fusedStats.hws} 台 / IP {fusedStats.ips} 个
-            </span>
+            {isSuperAdmin && (
+              <span className="qpill warn">
+                48h熔断设备 {fusedStats.hws} 台 / IP {fusedStats.ips} 个
+              </span>
+            )}
             <button
               type="button"
               className="key mini"
@@ -441,16 +469,22 @@ export function AdminConsoleModal({
                         opacity: 0.75,
                       }}
                     >
-                      设备限绑台数 / 每日AI上限
+                      {isSubAdmin
+                        ? "设备限绑(≤5台) / 每日AI(≤100次)"
+                        : "设备限绑台数 / 每日AI上限"}
                     </small>
                     <div style={{ display: "flex", gap: 6 }}>
                       <input
                         type="number"
                         min={1}
-                        max={20}
+                        max={isSubAdmin ? 5 : 20}
                         value={maxDevices}
                         onChange={(e) => setMaxDevices(e.target.value)}
-                        title="最多绑定设备数"
+                        title={
+                          isSubAdmin
+                            ? "最多绑定设备数（子管理员封顶 5 台）"
+                            : "最多绑定设备数"
+                        }
                         style={{
                           width: "48%",
                           height: 34,
@@ -463,10 +497,14 @@ export function AdminConsoleModal({
                       <input
                         type="number"
                         min={0}
-                        max={999}
+                        max={isSubAdmin ? 100 : 999}
                         value={dailyAiLimit}
                         onChange={(e) => setDailyAiLimit(e.target.value)}
-                        title="每日小高诊盘与问答上限"
+                        title={
+                          isSubAdmin
+                            ? "每日小高诊盘与问答上限（子管理员封顶 100 次）"
+                            : "每日小高诊盘与问答上限"
+                        }
                         style={{
                           width: "52%",
                           height: 34,
@@ -477,6 +515,17 @@ export function AdminConsoleModal({
                         }}
                       />
                     </div>
+                    {isSubAdmin && (
+                      <small
+                        style={{
+                          display: "block",
+                          marginTop: 3,
+                          opacity: 0.72,
+                        }}
+                      >
+                        分权子管理员开号上限：设备 ≤ 5 台，每日 AI ≤ 100 次
+                      </small>
+                    )}
                   </div>
                 </div>
 
@@ -598,9 +647,21 @@ export function AdminConsoleModal({
                       >
                         <div>
                           <b style={{ fontSize: 14 }}>
-                            {u.role === "superadmin" ? "👑 " : "👤 "}
+                            {u.role === "superadmin"
+                              ? "👑 "
+                              : u.role === "subadmin"
+                                ? "🛡️ "
+                                : "👤 "}
                             {u.username}
                           </b>
+                          {u.role === "subadmin" && (
+                            <span
+                              className="qpill"
+                              style={{ marginLeft: 6, fontSize: 11 }}
+                            >
+                              [子管]
+                            </span>
+                          )}
                           {u.note && (
                             <span
                               style={{
@@ -610,6 +671,17 @@ export function AdminConsoleModal({
                               }}
                             >
                               ({u.note})
+                            </span>
+                          )}
+                          {isSuperAdmin && u.createdBy?.username && (
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                fontSize: 11.5,
+                                opacity: 0.72,
+                              }}
+                            >
+                              开号人：{u.createdBy.username}
                             </span>
                           )}
                           <div
@@ -664,9 +736,56 @@ export function AdminConsoleModal({
                         </div>
 
                         {u.role === "superadmin" ? (
+                          currentUser.id === u.id ? (
+                            <div
+                              style={{
+                                display: "flex",
+                                gap: 6,
+                                alignItems: "center",
+                              }}
+                            >
+                              <input
+                                type="password"
+                                value={selfNewPass}
+                                onChange={(e) => setSelfNewPass(e.target.value)}
+                                placeholder="输入新超管密码"
+                                style={{
+                                  width: 130,
+                                  height: 28,
+                                  padding: "0 8px",
+                                  borderRadius: 6,
+                                  border: "1px solid #cbd5e1",
+                                  fontSize: 12,
+                                }}
+                              />
+                              <button
+                                type="button"
+                                className="key mini dark"
+                                onClick={() => {
+                                  if (selfNewPass.trim().length < 6) {
+                                    setBannerMsg("超管新密码建议至少 6 位");
+                                    return;
+                                  }
+                                  void runAction(
+                                    u.id,
+                                    {
+                                      action: "reset-password",
+                                      newPassword: selfNewPass.trim(),
+                                    },
+                                    "✅ 超管密码已更新并自动续接当前登录态"
+                                  );
+                                  setSelfNewPass("");
+                                }}
+                              >
+                                修改超管密码
+                              </button>
+                            </div>
+                          ) : null
+                        ) : isSubAdmin && u.id === currentUser.id ? (
                           <div
                             style={{
                               display: "flex",
+                              flexWrap: "wrap",
                               gap: 6,
                               alignItems: "center",
                             }}
@@ -675,7 +794,7 @@ export function AdminConsoleModal({
                               type="password"
                               value={selfNewPass}
                               onChange={(e) => setSelfNewPass(e.target.value)}
-                              placeholder="输入新超管密码"
+                              placeholder="输入新登录密码"
                               style={{
                                 width: 130,
                                 height: 28,
@@ -689,8 +808,8 @@ export function AdminConsoleModal({
                               type="button"
                               className="key mini dark"
                               onClick={() => {
-                                if (selfNewPass.trim().length < 6) {
-                                  setBannerMsg("超管新密码建议至少 6 位");
+                                if (selfNewPass.trim().length < 4) {
+                                  setBannerMsg("新密码至少需要 4 位");
                                   return;
                                 }
                                 void runAction(
@@ -699,13 +818,28 @@ export function AdminConsoleModal({
                                     action: "reset-password",
                                     newPassword: selfNewPass.trim(),
                                   },
-                                  "✅ 超管密码已更新并自动续接当前登录态"
+                                  "✅ 我的登录密码已更新并自动续接当前登录态"
                                 );
                                 setSelfNewPass("");
                               }}
                             >
-                              修改超管密码
+                              修改我的密码
                             </button>
+                            {u.boundDevicesCount > 0 && (
+                              <button
+                                type="button"
+                                className="key mini"
+                                onClick={() =>
+                                  void runAction(
+                                    u.id,
+                                    { action: "clear-devices" },
+                                    "已解绑本人名下全部已绑设备"
+                                  )
+                                }
+                              >
+                                解绑设备({u.boundDevicesCount})
+                              </button>
+                            )}
                           </div>
                         ) : (
                           <div
@@ -716,6 +850,31 @@ export function AdminConsoleModal({
                               alignItems: "center",
                             }}
                           >
+                            {isSuperAdmin && (
+                              <button
+                                type="button"
+                                className="key mini dark"
+                                onClick={() =>
+                                  void runAction(
+                                    u.id,
+                                    {
+                                      action: "set-role",
+                                      role:
+                                        u.role === "subadmin"
+                                          ? "member"
+                                          : "subadmin",
+                                    },
+                                    u.role === "subadmin"
+                                      ? `已将 ${u.username} 取消子管并恢复为普通成员`
+                                      : `已将 ${u.username} 设为分权子管理员`
+                                  )
+                                }
+                              >
+                                {u.role === "subadmin"
+                                  ? "取消子管"
+                                  : "设为子管"}
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="key mini"
@@ -788,6 +947,7 @@ export function AdminConsoleModal({
                             <button
                               type="button"
                               className="key mini"
+                              disabled={isSubAdmin && u.maxDevices >= 5}
                               onClick={() =>
                                 void runAction(
                                   u.id,
@@ -804,16 +964,20 @@ export function AdminConsoleModal({
                             <button
                               type="button"
                               className="key mini"
-                              onClick={() =>
+                              disabled={isSubAdmin && u.dailyAiLimit >= 100}
+                              onClick={() => {
+                                const nextAi = isSubAdmin
+                                  ? Math.min(100, u.dailyAiLimit + 20)
+                                  : u.dailyAiLimit + 20;
                                 void runAction(
                                   u.id,
                                   {
                                     action: "update-perms",
-                                    dailyAiLimit: u.dailyAiLimit + 20,
+                                    dailyAiLimit: nextAi,
                                   },
-                                  `已将 ${u.username} 每日AI上限提至 ${u.dailyAiLimit + 20} 次`
-                                )
-                              }
+                                  `已将 ${u.username} 每日AI上限提至 ${nextAi} 次`
+                                );
+                              }}
                             >
                               AI+20
                             </button>

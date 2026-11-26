@@ -6,7 +6,10 @@ import {
   useSyncExternalStore,
   type RefObject,
 } from "react";
-import { AdminConsoleModal } from "../admin/AdminConsoleModal";
+import {
+  AdminConsoleModal,
+  canAccessAdminConsole,
+} from "../admin/AdminConsoleModal";
 import { LoginGate } from "../auth/LoginGate";
 import {
   UserManualModal,
@@ -428,7 +431,7 @@ export function SkinPhoneApp({
         onQuotaUpdate={(rem) => wbCtrl.syncRemainingAiQuota(rem)}
         onLoadPresetScenario={actions.loadPresetScenario}
       />
-      {authUser.role === "superadmin" && (
+      {canAccessAdminConsole(authUser) && (
         <AdminConsoleModal
           open={adminOpen}
           currentUser={authUser}
@@ -471,7 +474,7 @@ export function SkinPhoneApp({
               offlineMode={wbSnap.offlineMode}
               syncClock={syncClock}
               syncing={syncing}
-              isSuperAdmin={authUser.role === "superadmin"}
+              isSuperAdmin={canAccessAdminConsole(authUser)}
               stepFlowNode={
                 <StepFlowBar compactMobile={false} {...stepFlowProps} />
               }
@@ -653,7 +656,7 @@ export function SkinPhoneApp({
               offlineMode={wbSnap.offlineMode}
               syncClock={syncClock}
               syncing={syncing}
-              isSuperAdmin={authUser.role === "superadmin"}
+              isSuperAdmin={canAccessAdminConsole(authUser)}
               onOpenTactile={() => setSheet({ type: "tactile" })}
               onOpenManual={openManual}
               onOpenAdmin={() => setAdminOpen(true)}

@@ -12,13 +12,19 @@ export const ADMIN_HISTORY_MONITOR_TAB_LABEL = "📊 历史库与校准监测";
 export function canAccessAdminConsole(
   user: Pick<PublicAccountUser, "role"> | null | undefined
 ): boolean {
-  return Boolean(user && user.role === "superadmin");
+  return Boolean(
+    user && (user.role === "superadmin" || user.role === "subadmin")
+  );
 }
 
 export function buildAdminConsoleTabSpecs(
   accountsCount: number,
-  auditLogsCount: number
+  auditLogsCount: number,
+  role: PublicAccountUser["role"] = "superadmin"
 ): Array<[AdminConsoleTabId, string]> {
+  if (role === "subadmin") {
+    return [["users", `👥 账号与权限总控 (${accountsCount})`]];
+  }
   return [
     ["users", `👥 账号与权限总控 (${accountsCount})`],
     ["audit", `🛡️ 风控与违规提问日志 (${auditLogsCount})`],
