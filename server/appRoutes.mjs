@@ -202,152 +202,153 @@ export function createAppRoutes(opts = {}) {
     if (inFlightMatchLoad && !extraOpts?.onlyOfficial) return inFlightMatchLoad;
 
     const loadTask = (async () => {
+      let res = null;
+      let fetchFailed = false;
       try {
-        let res = null;
-        let fetchFailed = false;
-        try {
-          res = await fetchMatchesFn(snapshotFile, {
-            nowFn,
-            lastValidBoardAt,
-            isManualRefresh: force === true,
-            onlyOfficial: Boolean(extraOpts?.onlyOfficial),
-          });
-        } catch {
-          fetchFailed = true;
-        }
+        res = await fetchMatchesFn(snapshotFile, {
+          nowFn,
+          lastValidBoardAt,
+          isManualRefresh: force === true,
+          onlyOfficial: Boolean(extraOpts?.onlyOfficial),
+        });
+      } catch {
+        fetchFailed = true;
+      }
 
-        const nowAfter = nowFn();
-        const incomingMatches = Array.isArray(res?.matches) ? res.matches : [];
-        const explicitMeta = res?.boardMeta || null;
-        const isOfficialLive =
-          !fetchFailed &&
-          incomingMatches.length > 0 &&
-          (explicitMeta
-            ? isFreshTicketBoard(explicitMeta) &&
-              (!res?.source || res.source === "official-live")
-            : res?.source === "official-live");
-        const isBackupLive =
-          !fetchFailed &&
-          incomingMatches.length > 0 &&
-          res?.source === "multisource-backup" &&
-          explicitMeta?.boardState === "backup-live" &&
-          explicitMeta?.isFallbackReadOnly === false;
+      const nowAfter = nowFn();
+      const incomingMatches = Array.isArray(res?.matches) ? res.matches : [];
+      const explicitMeta = res?.boardMeta || null;
+      const isOfficialLive =
+        !fetchFailed &&
+        incomingMatches.length > 0 &&
+        (explicitMeta
+          ? isFreshTicketBoard(explicitMeta) &&
+            (!res?.source || res.source === "official-live")
+          : res?.source === "official-live");
+      const isBackupLive =
+        !fetchFailed &&
+        incomingMatches.length > 0 &&
+        res?.source === "multisource-backup" &&
+        explicitMeta?.boardState === "backup-live" &&
+        explicitMeta?.isFallbackReadOnly === false;
 
-        if (isOfficialLive || isBackupLive) {
-          const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
-            lastValidLiveMatches,
-            incomingMatches,
-            analyzeMatchMicroQuant
-          );
-          lastValidBoardAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
-          lastValidLiveMatches = mergedLiveMatches;
-          cachedMatches = mergedLiveMatches;
-          cachedBoardMeta = enrichBoardQuoteMeta(
-            explicitMeta ||
-              buildBoardFreshnessMeta({
-                source: isOfficialLive ? "official-live" : "multisource-backup",
-                boardState: isOfficialLive ? "fresh" : "backup-live",
-                lastValidBoardAt,
-              }),
-            cachedMatches,
-            nowAfter
-          );
-          cachedSyncNote = res?.syncNote || cachedSyncNote;
-          if (isOfficialLive) {
-            historyCoordinator?.notifyLiveBoardNonBlocking?.({
-              matches: cachedMatches,
-              boardMeta: cachedBoardMeta,
-            });
-            if (!politeGateway || politeGateway.isMarketOpenNow()) {
-              void historyCoordinator
-                ?.drainPendingOpenQuotes?.({ maxItems: 2 })
-                ?.catch?.(() => {});
-            }
-          }
-        } else {
-          const hasLiveMem =
-            Array.isArray(lastValidLiveMatches) &&
-            lastValidLiveMatches.length > 0;
-          const memValidAt =
-            typeof lastValidBoardAt === "number" &&
-            Number.isFinite(lastValidBoardAt)
-              ? lastValidBoardAt
-              : null;
-          const incValidAt =
-            typeof explicitMeta?.lastValidBoardAt === "number" &&
-            Number.isFinite(explicitMeta.lastValidBoardAt)
-              ? explicitMeta.lastValidBoardAt
-              : null;
-          const preferMemOverIncoming =
-            hasLiveMem &&
-            (incomingMatches.length === 0 ||
-              res?.source === "fallback" ||
-              (memValidAt !== null &&
-                (incValidAt === null || memValidAt >= incValidAt)));
-          const resolvedLastValidAt = preferMemOverIncoming
-            ? memValidAt
-            : (incValidAt ?? memValidAt ?? null);
-          const resolvedMatches = preferMemOverIncoming
-            ? lastValidLiveMatches
-            : incomingMatches.length > 0 && res?.source !== "fallback"
-              ? incomingMatches
-              : hasLiveMem
-                ? lastValidLiveMatches
-                : incomingMatches.length > 0
-                  ? incomingMatches
-                  : FALLBACK_MATCHES;
-          const resolvedState =
-            explicitMeta?.boardState && explicitMeta.boardState !== "fresh"
-              ? explicitMeta.boardState
-              : !fetchFailed && incomingMatches.length === 0
-                ? "empty-board-fallback"
-                : resolvedLastValidAt !== null
-                  ? "timeout-fallback"
-                  : "builtin-fallback";
-          const resolvedSource = preferMemOverIncoming
-            ? "cached-snapshot"
-            : explicitMeta?.source ||
-              (hasLiveMem ? "cached-snapshot" : res?.source || "fallback");
-
-          cachedMatches = resolvedMatches;
-          cachedBoardMeta = enrichBoardQuoteMeta(
+      if (isOfficialLive || isBackupLive) {
+        const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
+          lastValidLiveMatches,
+          incomingMatches,
+          analyzeMatchMicroQuant
+        );
+        lastValidBoardAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
+        lastValidLiveMatches = mergedLiveMatches;
+        cachedMatches = mergedLiveMatches;
+        cachedBoardMeta = enrichBoardQuoteMeta(
+          explicitMeta ||
             buildBoardFreshnessMeta({
-              source: resolvedSource,
-              boardState: resolvedState,
-              lastValidBoardAt: resolvedLastValidAt,
+              source: isOfficialLive ? "official-live" : "multisource-backup",
+              boardState: isOfficialLive ? "fresh" : "backup-live",
+              lastValidBoardAt,
             }),
-            cachedMatches,
-            nowAfter
-          );
-          cachedSyncNote =
-            res?.syncNote || cachedBoardMeta.bannerText || cachedSyncNote;
+          cachedMatches,
+          nowAfter
+        );
+        cachedSyncNote = res?.syncNote || cachedSyncNote;
+        if (isOfficialLive) {
           historyCoordinator?.notifyLiveBoardNonBlocking?.({
-            matches: [],
+            matches: cachedMatches,
             boardMeta: cachedBoardMeta,
           });
+          if (!politeGateway || politeGateway.isMarketOpenNow()) {
+            void historyCoordinator
+              ?.drainPendingOpenQuotes?.({ maxItems: 2 })
+              ?.catch?.(() => {});
+          }
         }
+      } else {
+        const hasLiveMem =
+          Array.isArray(lastValidLiveMatches) &&
+          lastValidLiveMatches.length > 0;
+        const memValidAt =
+          typeof lastValidBoardAt === "number" &&
+          Number.isFinite(lastValidBoardAt)
+            ? lastValidBoardAt
+            : null;
+        const incValidAt =
+          typeof explicitMeta?.lastValidBoardAt === "number" &&
+          Number.isFinite(explicitMeta.lastValidBoardAt)
+            ? explicitMeta.lastValidBoardAt
+            : null;
+        const preferMemOverIncoming =
+          hasLiveMem &&
+          (incomingMatches.length === 0 ||
+            res?.source === "fallback" ||
+            (memValidAt !== null &&
+              (incValidAt === null || memValidAt >= incValidAt)));
+        const resolvedLastValidAt = preferMemOverIncoming
+          ? memValidAt
+          : (incValidAt ?? memValidAt ?? null);
+        const resolvedMatches = preferMemOverIncoming
+          ? lastValidLiveMatches
+          : incomingMatches.length > 0 && res?.source !== "fallback"
+            ? incomingMatches
+            : hasLiveMem
+              ? lastValidLiveMatches
+              : incomingMatches.length > 0
+                ? incomingMatches
+                : FALLBACK_MATCHES;
+        const resolvedState =
+          explicitMeta?.boardState && explicitMeta.boardState !== "fresh"
+            ? explicitMeta.boardState
+            : !fetchFailed && incomingMatches.length === 0
+              ? "empty-board-fallback"
+              : resolvedLastValidAt !== null
+                ? "timeout-fallback"
+                : "builtin-fallback";
+        const resolvedSource = preferMemOverIncoming
+          ? "cached-snapshot"
+          : explicitMeta?.source ||
+            (hasLiveMem ? "cached-snapshot" : res?.source || "fallback");
 
-        lastMatchFetchAt = nowAfter;
-        nextAutoSyncDueAt =
-          nowAfter + computePoliteRandomIntervalMs(nowAfter, randomFn);
-        return {
-          matches: resolveHydratedMatches(
-            cachedMatches,
-            cachedBoardMeta,
-            nowAfter
-          ),
-          syncNote: cachedSyncNote,
+        cachedMatches = resolvedMatches;
+        cachedBoardMeta = enrichBoardQuoteMeta(
+          buildBoardFreshnessMeta({
+            source: resolvedSource,
+            boardState: resolvedState,
+            lastValidBoardAt: resolvedLastValidAt,
+          }),
+          cachedMatches,
+          nowAfter
+        );
+        cachedSyncNote =
+          res?.syncNote || cachedBoardMeta.bannerText || cachedSyncNote;
+        historyCoordinator?.notifyLiveBoardNonBlocking?.({
+          matches: [],
           boardMeta: cachedBoardMeta,
-        };
-      } finally {
-        if (!extraOpts?.onlyOfficial) {
-          inFlightMatchLoad = null;
-        }
+        });
       }
+
+      lastMatchFetchAt = nowAfter;
+      nextAutoSyncDueAt =
+        nowAfter + computePoliteRandomIntervalMs(nowAfter, randomFn);
+      return {
+        matches: resolveHydratedMatches(
+          cachedMatches,
+          cachedBoardMeta,
+          nowAfter
+        ),
+        syncNote: cachedSyncNote,
+        boardMeta: cachedBoardMeta,
+      };
     })();
 
     if (!extraOpts?.onlyOfficial) {
       inFlightMatchLoad = loadTask;
+      void loadTask
+        .finally(() => {
+          if (inFlightMatchLoad === loadTask) {
+            inFlightMatchLoad = null;
+          }
+        })
+        .catch(() => {});
     }
     return loadTask;
   }

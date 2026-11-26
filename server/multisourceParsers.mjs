@@ -8,12 +8,16 @@ import {
 import { buildPool } from "./sportteryFallbackMatches.mjs";
 import { orderedMatchKey } from "./matchIdentity.mjs";
 
-const SOFT_BLOCK_PATTERNS = [
+const HARD_SOFT_BLOCK_PATTERNS = [
   /acw_sc__v2/i,
   /cf-browser-verification|cf_chl_opt|turnstile/i,
-  /waf_captcha|geetest|aliyun_waf|TencentEdgeOne/i,
+  /waf_captcha|aliyun_waf|TencentEdgeOne/i,
   /<title>\s*(?:403|404|502|503|访问受限|安全验证|系统维护)/i,
 ];
+
+const STATIC_CAPTCHA_SCRIPT_PATTERN = /geetest/i;
+const VALID_MATCH_PAYLOAD_MARKER =
+  /(?:bet-tb-tr|beginBet|touzhu_1|trClass|matchInfoList|data-sp=["'][^"']+["']|data-wf=["']\d+["'])/i;
 
 /**
  * 识别假 200（Soft-Block 空壳 / WAF 挑战页 / 异常截断响应）
@@ -31,10 +35,16 @@ export function detectSoftBlockResponse(
     return { blocked: true, reason: "TINY_PAYLOAD" };
   }
   const headSlice = text.slice(0, 4096);
-  for (const re of SOFT_BLOCK_PATTERNS) {
+  for (const re of HARD_SOFT_BLOCK_PATTERNS) {
     if (re.test(headSlice)) {
       return { blocked: true, reason: "CHALLENGE_OR_WAF_SHELL" };
     }
+  }
+  if (
+    STATIC_CAPTCHA_SCRIPT_PATTERN.test(headSlice) &&
+    (text.length <= 10_240 || !VALID_MATCH_PAYLOAD_MARKER.test(text))
+  ) {
+    return { blocked: true, reason: "CHALLENGE_OR_WAF_SHELL" };
   }
   return { blocked: false, reason: null };
 }
@@ -602,14 +612,18 @@ export function parseOkoooHunheHtml(
     const hhadOdds = [0, 0, 0];
     let hadDg = false;
     let hhadDg = false;
-    const optRe =
-      /data-sp=["']([^"']+)["']\s+data-wf=["'](0|1)["']\s+data-wz=["'](0|1|2)["'][^>]*data-dg=["'](0|1)["']/gi;
-    let om;
-    while ((om = optRe.exec(body)) !== null) {
-      const sp = Number(om[1]);
-      const wf = om[2];
-      const wz = Number(om[3]);
-      const dg = om[4] === "1";
+    const tagRe = /<[^>]+>/g;
+    let tm;
+    while ((tm = tagRe.exec(body)) !== null) {
+      const tag = tm[0];
+      if (!tag.includes("data-sp") || !tag.includes("data-wf")) continue;
+      const sp = Number(extractAttr(tag, "data-sp"));
+      const wf = extractAttr(tag, "data-wf");
+      const wzStr = extractAttr(tag, "data-wz");
+      const dgStr = extractAttr(tag, "data-dg");
+      if ((wf !== "0" && wf !== "1") || !/^[012]$/.test(wzStr)) continue;
+      const wz = Number(wzStr);
+      const dg = dgStr === "1";
       if (!Number.isFinite(sp) || sp <= 1) continue;
       if (wf === "0") {
         hadOdds[wz] = sp;

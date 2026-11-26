@@ -167,8 +167,15 @@ export function createYouJingRuntime(opts = {}) {
     politeBgTimer.unref?.();
   }
 
-  if (enableHistoryCollector && politeGateway) {
+  if (
+    enableHistoryCollector &&
+    politeGateway &&
+    opts.politeBackgroundTimer !== false
+  ) {
     scheduleNextPoliteBoardSync();
+    if (politeGateway.isMarketOpenNow()) {
+      void appRoutes.ensureMatchesLoaded(false).catch(() => {});
+    }
   }
 
   const shield = createSecurityShield({

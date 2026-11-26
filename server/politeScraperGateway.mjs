@@ -213,7 +213,7 @@ function computeDailyMorningWakeOffsetMs(dateStr) {
 }
 
 /**
- * 生成无规律连续毫秒级同步间隔（约 14分13秒 ~ 21分47秒），并强制避开 :00/:15/:30/:45 ±35秒整刻钟栅格
+ * 生成无规律连续毫秒级同步间隔（约 18分 ~ 22分），并强制避开 :00/:15/:30/:45 ±35秒整刻钟栅格
  */
 export function computePoliteRandomIntervalMs(
   nowMs = Date.now(),
@@ -223,19 +223,20 @@ export function computePoliteRandomIntervalMs(
   const u2 = Math.max(0, Math.min(1, Number(randomFn()) || 0));
   const u3 = Math.max(0, Math.min(1, Number(randomFn()) || 0));
   const smooth = 0.5 * (u1 + u2);
-  const minMs = 853_137; // 14m 13.137s
-  const maxMs = 1_306_893; // 21m 46.893s
+  const minMs = 1_080_137; // 18m 0.137s
+  const maxMs = 1_319_893; // 21m 59.893s
   let delayMs =
     minMs + Math.floor(smooth * (maxMs - minMs)) + Math.floor(u3 * 991);
 
   // Never land on exact whole minute (divisible by 60_000 within ±1500ms)
   const modMin = delayMs % 60_000;
   if (modMin < 1_800 || modMin > 58_200) {
-    delayMs += 13_427 + Math.floor((Number(randomFn()) || 0.37) * 19_311);
+    const minShift = 13_427 + Math.floor((Number(randomFn()) || 0.37) * 19_311);
+    delayMs = delayMs > 1_200_000 ? delayMs - minShift : delayMs + minShift;
   }
 
   // Anti-quarter-hour grid guard: forbidden zone [-35s, +35s] is 70s wide;
-  // shifting by +- [81.2s, 128.8s] guarantees exiting the +-35s zone while staying in [853_137ms, 1_390_000ms]
+  // shifting by +- [81.2s, 128.8s] guarantees exiting the +-35s zone while staying in [1_060_000ms, 1_340_000ms]
   const targetBjMs = nowMs + delayMs + BJ_OFFSET_MS;
   const secInHour = (((targetBjMs % 3_600_000) + 3_600_000) % 3_600_000) / 1000;
   const remQuarter = secInHour % 900;
@@ -243,7 +244,7 @@ export function computePoliteRandomIntervalMs(
   if (distToQuarterSec <= 35) {
     const shiftU = Math.max(0, Math.min(1, Number(randomFn()) || 0.53));
     const mag = 81_219 + Math.floor(shiftU * 47_641);
-    delayMs = delayMs > 1_150_000 ? delayMs - mag : delayMs + mag;
+    delayMs = delayMs > 1_200_000 ? delayMs - mag : delayMs + mag;
   }
 
   // Ensure final delayMs is never an exact whole-minute multiple (tiny 1.7s nudge preserves >35s quarter clearance)
@@ -655,6 +656,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
   const slidingWindows = new Map();
   let outboundChain = Promise.resolve();
   let inFlightBoardSync = null;
+  let inFlightResultsSync = null;
   let lastKnownMatches = null;
 
   function persistStateNonBlocking() {
@@ -1164,9 +1166,11 @@ export function createPoliteMultisourceGateway(opts = {}) {
 
     if (!res.ok) {
       const reason = res.reason || `HTTP_${res.status}`;
-      const isBlk =
-        res.status === 403 || res.status === 429 || res.status === 567;
-      markSourceFailure(src.id, src.domainKey, reason, isBlk, now);
+      if (reason !== "LOCAL_SLIDING_WINDOW_GUARD") {
+        const isBlk =
+          res.status === 403 || res.status === 429 || res.status === 567;
+        markSourceFailure(src.id, src.domainKey, reason, isBlk, now);
+      }
       return { ok: false, reason };
     }
 
@@ -1370,34 +1374,37 @@ export function createPoliteMultisourceGateway(opts = {}) {
     if (inFlightBoardSync && !onlyOfficial) return inFlightBoardSync;
 
     const runSync = (async () => {
-      try {
-        const curNow = nowFn();
-        const eligible = LIVE_SPORTTERY_SOURCES.filter((s) => {
-          if (onlyOfficial && s.tier !== "official") return false;
-          const h = state.sourceHealth[s.id];
-          return !h?.cooldownUntil || curNow >= h.cooldownUntil;
-        });
+      const curNow = nowFn();
+      const eligible = LIVE_SPORTTERY_SOURCES.filter((s) => {
+        if (onlyOfficial && s.tier !== "official") return false;
+        const h = state.sourceHealth[s.id];
+        return !h?.cooldownUntil || curNow >= h.cooldownUntil;
+      });
 
-        const ordered = selectWeightedRandomCandidates(eligible);
-        const maxAttempts = onlyOfficial ? 2 : 3;
-        let tried = 0;
-        for (const src of ordered) {
-          if (tried >= maxAttempts) break;
-          tried += 1;
-          const attempt = await trySyncFromSingleSource(src);
-          if (attempt.ok) {
-            return attempt.result;
-          }
-          // 0 retries on failed source — immediately try next distinct source in pool
+      const ordered = selectWeightedRandomCandidates(eligible);
+      const maxAttempts = onlyOfficial ? 2 : 3;
+      let tried = 0;
+      for (const src of ordered) {
+        if (tried >= maxAttempts) break;
+        tried += 1;
+        const attempt = await trySyncFromSingleSource(src);
+        if (attempt.ok) {
+          return attempt.result;
         }
-        return loadDiskSnapshotFallback("timeout-fallback");
-      } finally {
-        if (!onlyOfficial) inFlightBoardSync = null;
+        // 0 retries on failed source — immediately try next distinct source in pool
       }
+      return await loadDiskSnapshotFallback("timeout-fallback");
     })();
 
     if (!onlyOfficial) {
       inFlightBoardSync = runSync;
+      void runSync
+        .finally(() => {
+          if (inFlightBoardSync === runSync) {
+            inFlightBoardSync = null;
+          }
+        })
+        .catch(() => {});
     }
     return runSync;
   }
@@ -1448,247 +1455,275 @@ export function createPoliteMultisourceGateway(opts = {}) {
       }
     }
 
-    const toBjDate = (ms) =>
-      new Date(ms + BJ_OFFSET_MS).toISOString().slice(0, 10);
-    const resolvedEnd = endDate || toBjDate(now + 86_400_000);
-    const resolvedBegin = beginDate || toBjDate(now - 14 * 86_400_000);
-    const merged = new Map();
-    if (historyResultsById instanceof Map) {
-      for (const [k, v] of historyResultsById.entries()) merged.set(k, v);
-    }
+    const canCoalesce = !beginDate && !endDate && !forceRefresh;
+    if (canCoalesce && inFlightResultsSync) return inFlightResultsSync;
 
-    // 1) Try Official UniformMatchResult if not cooling down
-    const offSrc = {
-      id: "sporttery-results",
-      label: "体彩官方赛果",
-      tier: "official",
-      domainKey: "webapi.sporttery.cn:results",
-      host: "webapi.sporttery.cn",
-      referer: "https://www.sporttery.cn/",
-      origin: "https://www.sporttery.cn",
-      accept: "application/json, text/plain, */*",
-      encoding: "utf-8",
-      preferMobile: false,
-    };
-    const offHealth = state.sourceHealth[offSrc.id];
-    if (!offHealth?.cooldownUntil || now >= offHealth.cooldownUntil) {
-      const windows = splitDateRangeIntoWindows(resolvedBegin, resolvedEnd, 60);
-      let okAll = windows.length > 0;
-      const fresh = new Map();
-      for (const win of windows) {
-        let expectedPages = 1;
-        let expectedTotal = null;
-        const uniq = new Set();
-        let verified = 0;
-        for (let pageNo = 1; pageNo <= expectedPages; pageNo++) {
-          const url = `https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry?matchBeginDate=${encodeURIComponent(
-            win.beginDate
-          )}&matchEndDate=${encodeURIComponent(
-            win.endDate
-          )}&leagueId=&pageSize=100&pageNo=${pageNo}&isFix=0&matchPage=1&pcOrWap=1`;
-          const r = await executePoliteGet(offSrc, url, 5_500);
-          if (!r.ok) {
-            markSourceFailure(
-              offSrc.id,
-              offSrc.domainKey,
-              r.reason || `HTTP_${r.status}`,
-              r.status === 403 || r.status === 429 || r.status === 567,
-              nowFn()
-            );
+    const runResultsSync = (async () => {
+      const toBjDate = (ms) =>
+        new Date(ms + BJ_OFFSET_MS).toISOString().slice(0, 10);
+      const resolvedEnd = endDate || toBjDate(now + 86_400_000);
+      const resolvedBegin = beginDate || toBjDate(now - 14 * 86_400_000);
+      const merged = new Map();
+      if (historyResultsById instanceof Map) {
+        for (const [k, v] of historyResultsById.entries()) merged.set(k, v);
+      }
+
+      // 1) Try Official UniformMatchResult if not cooling down
+      const offSrc = {
+        id: "sporttery-results",
+        label: "体彩官方赛果",
+        tier: "official",
+        domainKey: "webapi.sporttery.cn:results",
+        host: "webapi.sporttery.cn",
+        referer: "https://www.sporttery.cn/",
+        origin: "https://www.sporttery.cn",
+        accept: "application/json, text/plain, */*",
+        encoding: "utf-8",
+        preferMobile: false,
+      };
+      const offHealth = state.sourceHealth[offSrc.id];
+      if (!offHealth?.cooldownUntil || now >= offHealth.cooldownUntil) {
+        const windows = splitDateRangeIntoWindows(
+          resolvedBegin,
+          resolvedEnd,
+          60
+        );
+        let okAll = windows.length > 0;
+        const fresh = new Map();
+        for (const win of windows) {
+          let expectedPages = 1;
+          let expectedTotal = null;
+          const uniq = new Set();
+          let verified = 0;
+          for (let pageNo = 1; pageNo <= expectedPages; pageNo++) {
+            const url = `https://webapi.sporttery.cn/gateway/uniform/football/getUniformMatchResultV1.qry?matchBeginDate=${encodeURIComponent(
+              win.beginDate
+            )}&matchEndDate=${encodeURIComponent(
+              win.endDate
+            )}&leagueId=&pageSize=100&pageNo=${pageNo}&isFix=0&matchPage=1&pcOrWap=1`;
+            const r = await executePoliteGet(offSrc, url, 5_500);
+            if (!r.ok) {
+              if (r.reason !== "LOCAL_SLIDING_WINDOW_GUARD") {
+                markSourceFailure(
+                  offSrc.id,
+                  offSrc.domainKey,
+                  r.reason || `HTTP_${r.status}`,
+                  r.status === 403 || r.status === 429 || r.status === 567,
+                  nowFn()
+                );
+              }
+              okAll = false;
+              break;
+            }
+            try {
+              const j = JSON.parse(r.bodyText);
+              if (j?.value?.total !== undefined && j?.value?.total !== null) {
+                expectedTotal = Number(j.value.total);
+              }
+              const repPages = Number(j?.value?.pages ?? 1);
+              expectedPages =
+                expectedTotal === 0
+                  ? 0
+                  : Math.max(1, Number.isFinite(repPages) ? repPages : 1);
+              const pm = parseSportteryResultsJson(j);
+              for (const [k, v] of pm.entries()) {
+                fresh.set(k, v);
+                uniq.add(k);
+              }
+              if (expectedPages > 0) verified += 1;
+              if (expectedPages === 0 || pageNo >= expectedPages) break;
+            } catch {
+              markSourceFailure(
+                offSrc.id,
+                offSrc.domainKey,
+                "INVALID_JSON",
+                true,
+                nowFn()
+              );
+              okAll = false;
+              break;
+            }
+          }
+          if (!okAll) break;
+          const pagesOk =
+            expectedPages === 0 ? true : verified === expectedPages;
+          const totalOk =
+            expectedTotal === null ? true : uniq.size === expectedTotal;
+          if (!pagesOk || !totalOk) {
             okAll = false;
             break;
           }
-          try {
-            const j = JSON.parse(r.bodyText);
-            if (j?.value?.total !== undefined && j?.value?.total !== null) {
-              expectedTotal = Number(j.value.total);
-            }
-            const repPages = Number(j?.value?.pages ?? 1);
-            expectedPages =
-              expectedTotal === 0
-                ? 0
-                : Math.max(1, Number.isFinite(repPages) ? repPages : 1);
-            const pm = parseSportteryResultsJson(j);
-            for (const [k, v] of pm.entries()) {
-              fresh.set(k, v);
-              uniq.add(k);
-            }
-            if (expectedPages > 0) verified += 1;
-            if (expectedPages === 0 || pageNo >= expectedPages) break;
-          } catch {
-            markSourceFailure(
-              offSrc.id,
-              offSrc.domainKey,
-              "INVALID_JSON",
-              true,
-              nowFn()
+        }
+        if (okAll && fresh.size > 0) {
+          markSourceSuccess(offSrc.id, offSrc.domainKey, nowFn());
+          for (const [k, v] of fresh.entries()) merged.set(k, v);
+          await persistResultsCache(merged);
+          return merged;
+        }
+      }
+
+      // 2) Backup multi-source result resolution (500 canonical ID map + Titan007 / Okooo half+full scores)
+      const idLookup = new Map();
+      for (const m of lastKnownMatches || []) {
+        if (m?.id && m?.matchNumStr) {
+          idLookup.set(String(m.matchNumStr), String(m.id));
+          if (m.matchDate) {
+            idLookup.set(`${m.matchDate}|${m.matchNumStr}`, String(m.id));
+            idLookup.set(
+              `${m.matchDate.slice(5, 10)}|${m.matchNumStr}`,
+              String(m.id)
             );
-            okAll = false;
-            break;
           }
         }
-        if (!okAll) break;
-        const pagesOk = expectedPages === 0 ? true : verified === expectedPages;
-        const totalOk =
-          expectedTotal === null ? true : uniq.size === expectedTotal;
-        if (!pagesOk || !totalOk) {
-          okAll = false;
-          break;
-        }
       }
-      if (okAll && fresh.size > 0) {
-        markSourceSuccess(offSrc.id, offSrc.domainKey, nowFn());
-        for (const [k, v] of fresh.entries()) merged.set(k, v);
-        await persistResultsCache(merged);
-        return merged;
-      }
-    }
 
-    // 2) Backup multi-source result resolution (500 canonical ID map + Titan007 / Okooo half+full scores)
-    const idLookup = new Map();
-    for (const m of lastKnownMatches || []) {
-      if (m?.id && m?.matchNumStr) {
-        idLookup.set(String(m.matchNumStr), String(m.id));
-        if (m.matchDate) {
-          idLookup.set(`${m.matchDate}|${m.matchNumStr}`, String(m.id));
-          idLookup.set(
-            `${m.matchDate.slice(5, 10)}|${m.matchNumStr}`,
-            String(m.id)
-          );
-        }
-      }
-    }
-
-    const recentDates = [
-      toBjDate(now),
-      toBjDate(now - 86_400_000),
-      toBjDate(now - 2 * 86_400_000),
-    ];
-    const src500Date = {
-      id: "500-date-ids",
-      domainKey: "trade.500.com",
-      host: "trade.500.com",
-      referer: "https://trade.500.com/jczq/",
-      accept: "text/html,*/*;q=0.8",
-      encoding: "gb18030",
-      preferMobile: false,
-    };
-    const h500 = state.sourceHealth[src500Date.id];
-    if (!h500?.cooldownUntil || now >= h500.cooldownUntil) {
-      for (const d of recentDates.slice(0, 2)) {
-        const r = await executePoliteGet(
-          src500Date,
-          `https://trade.500.com/jczq/?date=${d}`,
-          5_500
-        );
-        if (r.ok && r.bodyText) {
-          const { lookup } = parse500HistoricalIdsHtml(r.bodyText);
-          for (const [k, v] of lookup.entries()) idLookup.set(k, v);
-          markSourceSuccess(src500Date.id, src500Date.domainKey, nowFn());
-        } else {
-          markSourceFailure(
-            src500Date.id,
-            src500Date.domainKey,
-            r.reason || `HTTP_${r.status}`,
-            false,
-            nowFn()
-          );
-          break;
-        }
-      }
-    }
-
-    // Try Titan007 JcResult (fast 3KB half+full score) or Okooo Kaijiang
-    const srcTitan = {
-      id: "titan007-results",
-      domainKey: "jc.titan007.com",
-      host: "jc.titan007.com",
-      referer: "https://jc.titan007.com/",
-      accept: "text/plain, */*;q=0.8",
-      encoding: "utf-8",
-      preferMobile: false,
-    };
-    const hTitan = state.sourceHealth[srcTitan.id];
-    if (
-      (!hTitan?.cooldownUntil || now >= hTitan.cooldownUntil) &&
-      idLookup.size > 0
-    ) {
-      for (const d of recentDates.slice(0, 2)) {
-        const r = await executePoliteGet(
-          srcTitan,
-          `https://jc.titan007.com/handle/JcResult.aspx?d=${d}`,
-          5_000
-        );
-        if (r.ok && r.bodyText) {
-          const parsedMap = parseTitanJcResultText(r.bodyText, idLookup);
-          for (const [k, v] of parsedMap.entries()) merged.set(k, v);
-          markSourceSuccess(srcTitan.id, srcTitan.domainKey, nowFn());
-        } else {
-          markSourceFailure(
-            srcTitan.id,
-            srcTitan.domainKey,
-            r.reason || `HTTP_${r.status}`,
-            false,
-            nowFn()
-          );
-          break;
-        }
-      }
-    }
-
-    if (merged.size === 0 && idLookup.size > 0) {
-      const srcOkoKj = {
-        id: "okooo-results",
-        domainKey: "www.okooo.com",
-        host: "www.okooo.com",
-        referer: "https://www.okooo.com/jingcai/",
+      const recentDates = [
+        toBjDate(now),
+        toBjDate(now - 86_400_000),
+        toBjDate(now - 2 * 86_400_000),
+      ];
+      const src500Date = {
+        id: "500-date-ids",
+        domainKey: "trade.500.com",
+        host: "trade.500.com",
+        referer: "https://trade.500.com/jczq/",
         accept: "text/html,*/*;q=0.8",
         encoding: "gb18030",
         preferMobile: false,
       };
-      const hOko = state.sourceHealth[srcOkoKj.id];
-      if (!hOko?.cooldownUntil || now >= hOko.cooldownUntil) {
-        const r = await executePoliteGet(
-          srcOkoKj,
-          "https://www.okooo.com/jingcai/kaijiang/",
-          6_000
-        );
-        if (r.ok && r.bodyText) {
-          const pm = parseOkoooKaijiangHtml(r.bodyText, idLookup);
-          for (const [k, v] of pm.entries()) merged.set(k, v);
-          markSourceSuccess(srcOkoKj.id, srcOkoKj.domainKey, nowFn());
-        } else {
-          markSourceFailure(
-            srcOkoKj.id,
-            srcOkoKj.domainKey,
-            r.reason || `HTTP_${r.status}`,
-            false,
-            nowFn()
+      const h500 = state.sourceHealth[src500Date.id];
+      if (!h500?.cooldownUntil || now >= h500.cooldownUntil) {
+        for (const d of recentDates.slice(0, 2)) {
+          const r = await executePoliteGet(
+            src500Date,
+            `https://trade.500.com/jczq/?date=${d}`,
+            5_500
           );
-        }
-      }
-    }
-
-    if (merged.size > 0) {
-      await persistResultsCache(merged);
-      return merged;
-    }
-
-    if (resultsCacheFilePath && fs.existsSync(resultsCacheFilePath)) {
-      try {
-        const raw = JSON.parse(
-          await fsp.readFile(resultsCacheFilePath, "utf8")
-        );
-        if (Array.isArray(raw)) {
-          for (const item of raw) {
-            if (item?.matchId) merged.set(String(item.matchId), item);
+          if (r.ok && r.bodyText) {
+            const { lookup } = parse500HistoricalIdsHtml(r.bodyText);
+            for (const [k, v] of lookup.entries()) idLookup.set(k, v);
+            markSourceSuccess(src500Date.id, src500Date.domainKey, nowFn());
+          } else {
+            if (r.reason !== "LOCAL_SLIDING_WINDOW_GUARD") {
+              markSourceFailure(
+                src500Date.id,
+                src500Date.domainKey,
+                r.reason || `HTTP_${r.status}`,
+                false,
+                nowFn()
+              );
+            }
+            break;
           }
         }
-      } catch {
-        // ignore
       }
+
+      // Try Titan007 JcResult (fast 3KB half+full score) or Okooo Kaijiang
+      const srcTitan = {
+        id: "titan007-results",
+        domainKey: "jc.titan007.com",
+        host: "jc.titan007.com",
+        referer: "https://jc.titan007.com/",
+        accept: "text/plain, */*;q=0.8",
+        encoding: "utf-8",
+        preferMobile: false,
+      };
+      const hTitan = state.sourceHealth[srcTitan.id];
+      if (
+        (!hTitan?.cooldownUntil || now >= hTitan.cooldownUntil) &&
+        idLookup.size > 0
+      ) {
+        for (const d of recentDates.slice(0, 2)) {
+          const r = await executePoliteGet(
+            srcTitan,
+            `https://jc.titan007.com/handle/JcResult.aspx?d=${d}`,
+            5_000
+          );
+          if (r.ok && r.bodyText) {
+            const parsedMap = parseTitanJcResultText(r.bodyText, idLookup);
+            for (const [k, v] of parsedMap.entries()) merged.set(k, v);
+            markSourceSuccess(srcTitan.id, srcTitan.domainKey, nowFn());
+          } else {
+            if (r.reason !== "LOCAL_SLIDING_WINDOW_GUARD") {
+              markSourceFailure(
+                srcTitan.id,
+                srcTitan.domainKey,
+                r.reason || `HTTP_${r.status}`,
+                false,
+                nowFn()
+              );
+            }
+            break;
+          }
+        }
+      }
+
+      if (merged.size === 0 && idLookup.size > 0) {
+        const srcOkoKj = {
+          id: "okooo-results",
+          domainKey: "www.okooo.com",
+          host: "www.okooo.com",
+          referer: "https://www.okooo.com/jingcai/",
+          accept: "text/html,*/*;q=0.8",
+          encoding: "gb18030",
+          preferMobile: false,
+        };
+        const hOko = state.sourceHealth[srcOkoKj.id];
+        if (!hOko?.cooldownUntil || now >= hOko.cooldownUntil) {
+          const r = await executePoliteGet(
+            srcOkoKj,
+            "https://www.okooo.com/jingcai/kaijiang/",
+            6_000
+          );
+          if (r.ok && r.bodyText) {
+            const pm = parseOkoooKaijiangHtml(r.bodyText, idLookup);
+            for (const [k, v] of pm.entries()) merged.set(k, v);
+            markSourceSuccess(srcOkoKj.id, srcOkoKj.domainKey, nowFn());
+          } else if (r.reason !== "LOCAL_SLIDING_WINDOW_GUARD") {
+            markSourceFailure(
+              srcOkoKj.id,
+              srcOkoKj.domainKey,
+              r.reason || `HTTP_${r.status}`,
+              false,
+              nowFn()
+            );
+          }
+        }
+      }
+
+      if (merged.size > 0) {
+        await persistResultsCache(merged);
+        return merged;
+      }
+
+      if (resultsCacheFilePath && fs.existsSync(resultsCacheFilePath)) {
+        try {
+          const raw = JSON.parse(
+            await fsp.readFile(resultsCacheFilePath, "utf8")
+          );
+          if (Array.isArray(raw)) {
+            for (const item of raw) {
+              if (item?.matchId) merged.set(String(item.matchId), item);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return merged;
+    })();
+
+    if (canCoalesce) {
+      inFlightResultsSync = runResultsSync;
+      void runResultsSync
+        .finally(() => {
+          if (inFlightResultsSync === runResultsSync) {
+            inFlightResultsSync = null;
+          }
+        })
+        .catch(() => {});
     }
-    return merged;
+    return runResultsSync;
   }
 
   async function persistResultsCache(resultsMap) {
@@ -1717,7 +1752,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
   }
 
   /**
-   * 计算下一次后台自动同步等待毫秒数（整合休市睡眠、闲置省流待机与无规律反整刻钟随机间隔）
+   * 计算下一次后台自动同步等待毫秒数（整合休市睡眠与开市全时段 ~18-22m 无规律反整刻钟随机间隔）
    */
   function computeNextBackgroundDelayMs() {
     const now = nowFn();
@@ -1732,28 +1767,14 @@ export function createPoliteMultisourceGateway(opts = {}) {
         return gate.nextWakeDelayMs;
       }
     }
-    const idleDuration = now - (state.lastUserActivityAt || 0);
-    if (idleDuration > idleThresholdMs) {
-      // 超过 60 分钟无人访问：进入开市省流待机（约 47~64 分钟慢检一次）
-      return 2_821_300 + Math.floor((Number(randomFn()) || 0.4) * 1_019_700);
-    }
     return computePoliteRandomIntervalMs(now, randomFn);
   }
 
   /**
-   * 记录真实用户会话访问；若在开市期从闲置待机重新唤醒且距上次外网同步已满 15 分钟，触发非阻塞后台单飞补拉
+   * 记录真实用户会话访问时间戳（刷新逻辑统一收口至 appRoutes.ensureMatchesLoaded）
    */
   function recordUserActivity() {
-    const now = nowFn();
-    const wasIdle = now - (state.lastUserActivityAt || 0) > idleThresholdMs;
-    state.lastUserActivityAt = now;
-    if (
-      wasIdle &&
-      state.lastOutboundBoardSyncAt > 0 &&
-      now - state.lastOutboundBoardSyncAt >= 15 * 60_000
-    ) {
-      void syncLiveBoard({ isManualRefresh: false }).catch(() => {});
-    }
+    state.lastUserActivityAt = nowFn();
   }
 
   /**
