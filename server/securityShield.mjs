@@ -198,12 +198,8 @@ function sendBody(res, statusCode, contentType, body) {
 }
 
 function sendJson(res, statusCode, payload) {
-  sendBody(
-    res,
-    statusCode,
-    "application/json; charset=utf-8",
-    JSON.stringify(payload)
-  );
+  const json = JSON.stringify(payload);
+  sendBody(res, statusCode, "application/json; charset=utf-8", json);
 }
 
 function sendHtml(res, statusCode, html) {
@@ -595,12 +591,16 @@ export function createSecurityShield(opts = {}) {
       }
     }
 
+    const pushTs = String(req.headers["x-yj-push-ts"] || "").trim();
+    const pushNonce = String(req.headers["x-yj-push-nonce"] || "").trim();
+    const pushSig = String(req.headers["x-yj-push-sig"] || "").trim();
     const isPushReq =
       pathname === "/api/internal/feed-push" &&
       req.method === "POST" &&
-      ["x-yj-push-ts", "x-yj-push-nonce", "x-yj-push-sig"].every((k) =>
-        Boolean(req.headers[k])
-      );
+      /^\d{10,16}$/.test(pushTs) &&
+      pushNonce.length >= 8 &&
+      pushNonce.length <= 128 &&
+      /^[0-9a-f]{64}$/i.test(pushSig);
     if (!isPushReq && isAiReaderOrScraperRequest(req)) {
       if (pathname.startsWith("/api/")) {
         sendJson(res, 403, { ok: false, error: "Automated access denied" });
@@ -632,10 +632,8 @@ export function createSecurityShield(opts = {}) {
         true,
         verifiedHwFp
       );
-      res.setHeader(
-        "Set-Cookie",
-        `yj_sh_sid=fused${cookieSuffix(req, 172800)}`
-      );
+      const fusedCookie = `yj_sh_sid=fused${cookieSuffix(req, 172800)}`;
+      res.setHeader("Set-Cookie", fusedCookie);
       sendJson(res, 200, { ok: true, fused: true, unlockAt });
       return true;
     }
@@ -667,10 +665,8 @@ export function createSecurityShield(opts = {}) {
       const rawHwFp = normalizeHwFp(body.hwFp);
       const hwFusedExp = checkAndContagiousLockHwFp(rawHwFp, ip);
       if (hwFusedExp !== null) {
-        res.setHeader(
-          "Set-Cookie",
-          `yj_sh_sid=fused${cookieSuffix(req, 172800)}`
-        );
+        const fusedCookie = `yj_sh_sid=fused${cookieSuffix(req, 172800)}`;
+        res.setHeader("Set-Cookie", fusedCookie);
         sendJson(res, 403, {
           ok: false,
           fused: true,

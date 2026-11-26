@@ -141,6 +141,7 @@ export function createAppRoutes(opts = {}) {
   let lastValidLiveMatches = null;
   let lastValidBoardAt = null;
   let lastOfficialPushAt = null;
+  let lastOfficialMatches = null;
   let cachedBoardMeta = enrichBoardQuoteMeta(
     buildBoardFreshnessMeta({
       source: "fallback",
@@ -233,17 +234,22 @@ export function createAppRoutes(opts = {}) {
         explicitMeta?.boardState === "backup-live" &&
         explicitMeta?.isFallbackReadOnly === false;
 
-      const withinOfficialPushGuard =
-        !extraOpts?.onlyOfficial &&
+      const officialMatchesRef =
+        Array.isArray(lastOfficialMatches) && lastOfficialMatches.length > 0
+          ? lastOfficialMatches
+          : lastValidLiveMatches;
+      const isOfficialPushFresh =
         lastOfficialPushAt !== null &&
         nowAfter >= lastOfficialPushAt &&
         nowAfter - lastOfficialPushAt < 35 * 60_000 &&
-        Array.isArray(lastValidLiveMatches) &&
-        lastValidLiveMatches.length > 0 &&
-        cachedBoardMeta?.source === "official-live";
+        Array.isArray(officialMatchesRef) &&
+        officialMatchesRef.length > 0;
+      const withinOfficialPushGuard =
+        !extraOpts?.onlyOfficial && isOfficialPushFresh;
 
-      if (isBackupLive && withinOfficialPushGuard) {
-        cachedMatches = lastValidLiveMatches;
+      if (!isOfficialLive && withinOfficialPushGuard) {
+        lastValidLiveMatches = officialMatchesRef;
+        cachedMatches = officialMatchesRef;
         cachedBoardMeta = enrichBoardQuoteMeta(
           buildBoardFreshnessMeta({
             source: "official-live",
@@ -270,6 +276,7 @@ export function createAppRoutes(opts = {}) {
       if (isOfficialLive || isBackupLive) {
         if (isBackupLive) {
           lastOfficialPushAt = null;
+          lastOfficialMatches = null;
         }
         const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
           lastValidLiveMatches,
@@ -278,6 +285,12 @@ export function createAppRoutes(opts = {}) {
         );
         lastValidBoardAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
         lastValidLiveMatches = mergedLiveMatches;
+        if (isOfficialLive) {
+          lastOfficialMatches = mergedLiveMatches;
+          if (res?.providerId === "signed-push") {
+            lastOfficialPushAt = explicitMeta?.lastValidBoardAt ?? nowAfter;
+          }
+        }
         cachedMatches = mergedLiveMatches;
         cachedBoardMeta = enrichBoardQuoteMeta(
           explicitMeta ||
@@ -345,6 +358,28 @@ export function createAppRoutes(opts = {}) {
           ? "cached-snapshot"
           : explicitMeta?.source ||
             (hasLiveMem ? "cached-snapshot" : res?.source || "fallback");
+
+        if (extraOpts?.onlyOfficial && isOfficialPushFresh) {
+          const fallbackMeta = enrichBoardQuoteMeta(
+            buildBoardFreshnessMeta({
+              source: resolvedSource,
+              boardState: resolvedState,
+              lastValidBoardAt: resolvedLastValidAt,
+            }),
+            resolvedMatches,
+            nowAfter
+          );
+          return {
+            matches: resolveHydratedMatches(
+              resolvedMatches,
+              fallbackMeta,
+              nowAfter
+            ),
+            syncNote:
+              res?.syncNote || fallbackMeta.bannerText || cachedSyncNote,
+            boardMeta: fallbackMeta,
+          };
+        }
 
         cachedMatches = resolvedMatches;
         cachedBoardMeta = enrichBoardQuoteMeta(
@@ -1225,6 +1260,7 @@ export function createAppRoutes(opts = {}) {
       const nowAfter = nowFn();
       lastValidBoardAt = nowAfter;
       lastOfficialPushAt = nowAfter;
+      lastOfficialMatches = pushRes.matches;
       lastValidLiveMatches = pushRes.matches;
       cachedMatches = pushRes.matches;
       cachedBoardMeta = pushRes.boardMeta;
@@ -1236,6 +1272,11 @@ export function createAppRoutes(opts = {}) {
         matches: cachedMatches,
         boardMeta: cachedBoardMeta,
       });
+      if (!politeGateway || politeGateway.isMarketOpenNow()) {
+        void historyCoordinator
+          ?.drainPendingOpenQuotes?.({ maxItems: 2 })
+          ?.catch?.(() => {});
+      }
       sendJson(res, 200, {
         ok: true,
         matchesCount: pushRes.matchesCount,

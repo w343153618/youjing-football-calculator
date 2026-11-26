@@ -633,6 +633,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
     lastOutboundBoardSyncAt: 0,
     lastValidBoardAt: null,
     lastOfficialPushAt: null,
+    lastOfficialResultsPushAt: null,
     lastUserActivityAt: nowFn(),
     idleEveningCheckedDate: null,
     usedPushNonces: {},
@@ -655,6 +656,24 @@ export function createPoliteMultisourceGateway(opts = {}) {
         if (typeof loaded.lastOfficialPushAt === "number") {
           state.lastOfficialPushAt = loaded.lastOfficialPushAt;
         }
+        if (typeof loaded.lastOfficialResultsPushAt === "number") {
+          state.lastOfficialResultsPushAt = loaded.lastOfficialResultsPushAt;
+        }
+        if (
+          loaded.usedPushNonces &&
+          typeof loaded.usedPushNonces === "object"
+        ) {
+          const bootNow = nowFn();
+          for (const [k, exp] of Object.entries(loaded.usedPushNonces)) {
+            if (
+              typeof exp === "number" &&
+              Number.isFinite(exp) &&
+              exp >= bootNow
+            ) {
+              state.usedPushNonces[k] = exp;
+            }
+          }
+        }
       }
     } catch {
       // ignore corrupted state file
@@ -665,12 +684,23 @@ export function createPoliteMultisourceGateway(opts = {}) {
   const slidingWindows = new Map();
   const pushedResultsById = new Map();
   let outboundChain = Promise.resolve();
+  let statePersistChain = Promise.resolve();
+  let statePersistSeq = 0;
   let inFlightBoardSync = null;
   let inFlightResultsSync = null;
   let lastKnownMatches = null;
 
   function persistStateNonBlocking() {
-    if (!stateFilePath) return;
+    if (!stateFilePath) return Promise.resolve();
+    const now = nowFn();
+    const activeNonces = {};
+    for (const [k, exp] of Object.entries(state.usedPushNonces)) {
+      if (typeof exp === "number" && Number.isFinite(exp) && exp >= now) {
+        activeNonces[k] = exp;
+      } else {
+        delete state.usedPushNonces[k];
+      }
+    }
     const payload = JSON.stringify(
       {
         domainProfiles: state.domainProfiles,
@@ -679,19 +709,26 @@ export function createPoliteMultisourceGateway(opts = {}) {
         officialSaleCheckedDate: state.officialSaleCheckedDate,
         lastValidBoardAt: state.lastValidBoardAt,
         lastOfficialPushAt: state.lastOfficialPushAt,
+        lastOfficialResultsPushAt: state.lastOfficialResultsPushAt,
+        usedPushNonces: activeNonces,
       },
       null,
       2
     );
     const dir = path.dirname(stateFilePath);
-    const tmp = `${stateFilePath}.tmp.${process.pid}.${Date.now()}`;
-    void fsp
-      .mkdir(dir, { recursive: true, mode: 0o700 })
-      .then(() =>
-        fsp.writeFile(tmp, payload, { encoding: "utf8", mode: 0o600 })
-      )
-      .then(() => fsp.rename(tmp, stateFilePath))
-      .catch(() => fsp.unlink(tmp).catch(() => {}));
+    const seq = ++statePersistSeq;
+    const tmp = `${stateFilePath}.tmp.${process.pid}.${Date.now()}.${seq}`;
+    const task = statePersistChain.then(() =>
+      fsp
+        .mkdir(dir, { recursive: true, mode: 0o700 })
+        .then(() =>
+          fsp.writeFile(tmp, payload, { encoding: "utf8", mode: 0o600 })
+        )
+        .then(() => fsp.rename(tmp, stateFilePath))
+        .catch(() => fsp.unlink(tmp).catch(() => {}))
+    );
+    statePersistChain = task.catch(() => {});
+    return task;
   }
 
   function pickNewProfile(preferMobile = false, excludeId = "") {
@@ -1347,14 +1384,15 @@ export function createPoliteMultisourceGateway(opts = {}) {
       }
     }
 
-    if (
+    const isFreshPush =
       !onlyOfficial &&
-      lastKnownMatches &&
-      lastKnownMatches.length > 0 &&
       state.lastOfficialPushAt &&
       now >= state.lastOfficialPushAt &&
-      now - state.lastOfficialPushAt < officialPushFreshTtlMs
-    ) {
+      now - state.lastOfficialPushAt < officialPushFreshTtlMs;
+    if (isFreshPush && (!lastKnownMatches || lastKnownMatches.length === 0)) {
+      await loadDiskSnapshotFallback("fresh");
+    }
+    if (isFreshPush && lastKnownMatches && lastKnownMatches.length > 0) {
       const boardMeta = enrichBoardQuoteMeta(
         buildBoardFreshnessMeta({
           source: "official-live",
@@ -1479,8 +1517,9 @@ export function createPoliteMultisourceGateway(opts = {}) {
   } = {}) {
     const now = nowFn();
     const bj = getBeijingParts(now);
-    const buildClosedFallbackMap = () => {
+    const buildClosedFallbackMap = async () => {
       const out = new Map();
+      await loadDiskResultsCacheInto(out);
       if (historyResultsById instanceof Map) {
         for (const [k, v] of historyResultsById.entries()) out.set(k, v);
       }
@@ -1495,7 +1534,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
         bj.msSinceMidnight >= 90 * 60_000 &&
         bj.msSinceMidnight < morningWake
       ) {
-        return buildClosedFallbackMap();
+        return await buildClosedFallbackMap();
       }
       if (!hasPendingSettlement) {
         const gate = evaluateMarketHoursGate({
@@ -1505,7 +1544,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
           matches: lastKnownMatches || [],
         });
         if (!gate.isOpen) {
-          return buildClosedFallbackMap();
+          return await buildClosedFallbackMap();
         }
       }
     }
@@ -1526,11 +1565,12 @@ export function createPoliteMultisourceGateway(opts = {}) {
       for (const [k, v] of pushedResultsById.entries()) merged.set(k, v);
 
       if (
-        pushedResultsById.size > 0 &&
-        !forceRefresh &&
-        state.lastOfficialPushAt &&
-        now >= state.lastOfficialPushAt &&
-        now - state.lastOfficialPushAt < officialPushFreshTtlMs
+        !beginDate &&
+        !endDate &&
+        (pushedResultsById.size > 0 || merged.size > 0) &&
+        state.lastOfficialResultsPushAt &&
+        now >= state.lastOfficialResultsPushAt &&
+        now - state.lastOfficialResultsPushAt < officialPushFreshTtlMs
       ) {
         return merged;
       }
@@ -1764,7 +1804,6 @@ export function createPoliteMultisourceGateway(opts = {}) {
         return merged;
       }
 
-      await loadDiskResultsCacheInto(merged);
       return merged;
     })();
 
@@ -1897,6 +1936,12 @@ export function createPoliteMultisourceGateway(opts = {}) {
       return { ok: false, status: 422, error: "EMPTY_MATCHES" };
     }
 
+    const saleStatus = extractOfficialSaleStatus(calcPayload);
+    if (saleStatus.known) {
+      state.officialSaleOpen = saleStatus.isOpen;
+      state.officialSaleCheckedDate = getBeijingParts(now).dateStr;
+    }
+
     const rawResultsList = Array.isArray(json?.__officialResultsRaw)
       ? json.__officialResultsRaw
       : Array.isArray(json?.resultsRawList)
@@ -1911,12 +1956,6 @@ export function createPoliteMultisourceGateway(opts = {}) {
         pushedResultsById.set(k, v);
       }
     }
-    if (pushedResultsById.size > 0) {
-      const diskMerged = new Map();
-      await loadDiskResultsCacheInto(diskMerged);
-      for (const [k, v] of pushedResultsById.entries()) diskMerged.set(k, v);
-      await persistResultsCache(diskMerged);
-    }
 
     const merged = reconcileMatchesPoolsNonRegressive(
       lastKnownMatches,
@@ -1927,7 +1966,17 @@ export function createPoliteMultisourceGateway(opts = {}) {
     state.lastOutboundBoardSyncAt = now;
     state.lastValidBoardAt = now;
     state.lastOfficialPushAt = now;
-    persistStateNonBlocking();
+    if (batchResults.size > 0) {
+      state.lastOfficialResultsPushAt = now;
+    }
+
+    if (batchResults.size > 0) {
+      const diskMerged = new Map();
+      await loadDiskResultsCacheInto(diskMerged);
+      for (const [k, v] of pushedResultsById.entries()) diskMerged.set(k, v);
+      await persistResultsCache(diskMerged);
+    }
+    await persistStateNonBlocking();
     await persistBoardSnapshotToDisk({ ...calcPayload, __capturedAt: now });
     const boardMeta = enrichBoardQuoteMeta(
       buildBoardFreshnessMeta({

@@ -253,6 +253,44 @@ export async function runOfficialFeedPushOnce(opts = {}) {
   };
 }
 
+const BJ_OFFSET_MS = 8 * 3600_000;
+
+/**
+ * 计算避开 :00/:15/:30/:45 ±35 秒与整分钟 :00 栅格的安全启动抖动（[17_000, 163_000]ms）
+ */
+export function computeSafeLaunchJitterMs(
+  nowMs = Date.now(),
+  randomFn = Math.random
+) {
+  const minMs = 17_000;
+  const maxMs = 163_000;
+  const u1 = Math.max(0, Math.min(0.999999, Number(randomFn()) || 0));
+  const u2 = Math.max(0, Math.min(0.999999, Number(randomFn()) || 0));
+  const isSafe = (candMs) => {
+    if (candMs < minMs || candMs > maxMs || candMs % 60_000 === 0) return false;
+    const targetBjMs = nowMs + candMs + BJ_OFFSET_MS;
+    const secInHour =
+      (((targetBjMs % 3_600_000) + 3_600_000) % 3_600_000) / 1000;
+    const remQ = secInHour % 900;
+    if (Math.min(remQ, 900 - remQ) <= 35) return false;
+    const modMin = ((targetBjMs % 60_000) + 60_000) % 60_000;
+    return modMin >= 1_500 && modMin <= 58_500;
+  };
+  const safeSlots = [];
+  const baseSub = Math.floor(u2 * 997);
+  for (let k = 0; k <= 145; k++) {
+    const subMs = ((baseSub + k * 271) % 991) + 1;
+    const cand = minMs + k * 1000 + subMs;
+    if (isSafe(cand)) safeSlots.push(cand);
+  }
+  if (safeSlots.length > 0) {
+    return safeSlots[
+      Math.min(safeSlots.length - 1, Math.floor(u1 * safeSlots.length))
+    ];
+  }
+  return minMs + Math.floor(u1 * (maxMs - minMs));
+}
+
 const isMainModule =
   Boolean(process.argv[1]) &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
@@ -277,7 +315,7 @@ if (isMainModule) {
         );
         return;
       }
-      const jitterMs = Math.floor(Math.random() * 20_000);
+      const jitterMs = computeSafeLaunchJitterMs(Date.now());
       await new Promise((r) => setTimeout(r, jitterMs));
     }
     const result = await runOfficialFeedPushOnce({ force, dryRun });

@@ -11,7 +11,10 @@ import {
 } from "../server/politeScraperGateway.mjs";
 import { detectSoftBlockResponse } from "../server/multisourceParsers.mjs";
 import { createYouJingRuntime } from "../server/runtimeApp.mjs";
-import { runOfficialFeedPushOnce } from "../scripts/push-official-feed.mjs";
+import {
+  computeSafeLaunchJitterMs,
+  runOfficialFeedPushOnce,
+} from "../scripts/push-official-feed.mjs";
 
 function makeOfficialCalcPayload({
   matchId = 2043004,
@@ -1310,6 +1313,517 @@ describe("Spec 0021 (#21/#22): Daily Official Sync, Deadlock Fix & Steady 20m Ca
       }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Review Fix (a): securityShield rejects dummy non-hex/short push headers with 403 Automated access denied", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-rf-a-"));
+    try {
+      const nowMs = Date.parse("2026-11-26T06:00:00.000Z");
+      const runtime = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => nowMs,
+        enforceMarketHours: true,
+        pushHmacSecret: "m5_test_push_secret_strict_headers",
+      });
+
+      const sendPushWithHeaders = async (headers: Record<string, string>) => {
+        const req = Readable.from([Buffer.from("{}", "utf8")]) as Readable & {
+          method: string;
+          url: string;
+          headers: Record<string, string>;
+          socket: { remoteAddress: string };
+        };
+        req.method = "POST";
+        req.url = "/api/internal/feed-push";
+        req.headers = headers;
+        req.socket = { remoteAddress: "203.0.113.42" };
+        let statusCode = 200;
+        let body = "";
+        const res = {
+          get statusCode() {
+            return statusCode;
+          },
+          set statusCode(v: number) {
+            statusCode = v;
+          },
+          headersSent: false,
+          setHeader() {},
+          end(chunk = "") {
+            this.headersSent = true;
+            body += String(chunk);
+          },
+        };
+        await runtime.gateway.handleRequest(
+          req,
+          res,
+          "/api/internal/feed-push"
+        );
+        return { statusCode, json: body ? JSON.parse(body) : null };
+      };
+
+      try {
+        const badCases: Array<Record<string, string>> = [
+          {
+            "user-agent": "curl/8.4.0",
+            accept: "*/*",
+            "x-yj-push-ts": "not-a-timestamp",
+            "x-yj-push-nonce": "valid_nonce_1234",
+            "x-yj-push-sig": "a".repeat(64),
+          },
+          {
+            "user-agent": "python-requests/2.31.0",
+            accept: "*/*",
+            "x-yj-push-ts": String(nowMs),
+            "x-yj-push-nonce": "short",
+            "x-yj-push-sig": "a".repeat(64),
+          },
+          {
+            "user-agent": "YouJingM5Pusher/1.0",
+            accept: "*/*",
+            "x-yj-push-ts": String(nowMs),
+            "x-yj-push-nonce": "valid_nonce_1234",
+            "x-yj-push-sig": "dummy-non-hex-sig",
+          },
+        ];
+        for (const hdrs of badCases) {
+          const r = await sendPushWithHeaders(hdrs);
+          assert.equal(r.statusCode, 403);
+          assert.equal(r.json?.error, "Automated access denied");
+        }
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Review Fix (b): persists nonces & 35m official-live guard across restart, survives intervening onlyOfficial/else fallbacks, syncs officialSaleOpen & drains open quotes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-rf-b-"));
+    try {
+      let nowMs = Date.parse("2026-11-26T06:00:00.000Z"); // 14:00 BJ
+      const pushSecret = "m5_test_push_secret_restart_guard";
+      let drainCalls = 0;
+
+      const makeSignedReq = (
+        payloadObj: unknown,
+        nonce: string,
+        tsMs: number
+      ) => {
+        const bodyText = JSON.stringify(payloadObj);
+        const sig = crypto
+          .createHmac("sha256", pushSecret)
+          .update(`${tsMs}.${nonce}.${bodyText}`)
+          .digest("hex");
+        const req = Readable.from([
+          Buffer.from(bodyText, "utf8"),
+        ]) as Readable & {
+          method: string;
+          url: string;
+          headers: Record<string, string>;
+          socket: { remoteAddress: string };
+        };
+        req.method = "POST";
+        req.url = "/api/internal/feed-push";
+        req.headers = {
+          "user-agent": "YouJingM5Pusher/1.0",
+          accept: "*/*",
+          "content-type": "application/json",
+          "x-yj-push-ts": String(tsMs),
+          "x-yj-push-nonce": nonce,
+          "x-yj-push-sig": sig,
+        };
+        req.socket = { remoteAddress: "203.0.113.42" };
+        let statusCode = 200;
+        let body = "";
+        const res = {
+          get statusCode() {
+            return statusCode;
+          },
+          set statusCode(v: number) {
+            statusCode = v;
+          },
+          headersSent: false,
+          setHeader() {},
+          end(chunk = "") {
+            this.headersSent = true;
+            body += String(chunk);
+          },
+        };
+        return {
+          req,
+          res,
+          parse: () => ({ statusCode, json: body ? JSON.parse(body) : null }),
+        };
+      };
+
+      const fetchStub = async (url: string) => {
+        if (url.includes("webapi.sporttery.cn")) {
+          return {
+            ok: false,
+            status: 567,
+            headers: {},
+            text: async () => "567",
+          };
+        }
+        if (url.includes("trade.500.com/jczq/")) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+            text: async () =>
+              make500HunheHtmlSample({
+                matchId: "2043999",
+                matchNumStr: "周四099",
+                home: "备份主队",
+                away: "备份客队",
+              }),
+          };
+        }
+        return { ok: false, status: 503, headers: {}, text: async () => "" };
+      };
+
+      // Runtime #1: push signed snapshot with official payload
+      const rt1 = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => nowMs,
+        randomFn: () => 0.6, // picks 500-hunhe if not guarded
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: fetchStub,
+      });
+      const origDrain = rt1.historyCoordinator.drainPendingOpenQuotes.bind(
+        rt1.historyCoordinator
+      );
+      rt1.historyCoordinator.drainPendingOpenQuotes = async (arg: unknown) => {
+        drainCalls += 1;
+        return origDrain(arg as never);
+      };
+
+      try {
+        const pushPayload = makeOfficialCalcPayload({
+          matchId: 2043301,
+          matchNumStr: "周四007",
+          home: "东京FC",
+          away: "名古屋鲸八",
+          updateDate: "2026-11-26",
+          updateTime: "14:00:00",
+        });
+        const rPush = makeSignedReq(
+          pushPayload,
+          "nonce_persist_restart_001",
+          nowMs
+        );
+        await rt1.gateway.handleRequest(
+          rPush.req,
+          rPush.res,
+          "/api/internal/feed-push"
+        );
+        const pushOut = rPush.parse();
+        assert.equal(pushOut.statusCode, 200);
+        assert.ok(
+          drainCalls >= 1,
+          "/api/internal/feed-push must trigger drainPendingOpenQuotes during open hours"
+        );
+      } finally {
+        await rt1.dispose();
+      }
+
+      // Runtime #2 on same dataDir after 2 minutes (14:02 BJ, inside 310s nonce window & <35m guard)
+      nowMs = Date.parse("2026-11-26T06:02:00.000Z");
+      const rt2 = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => nowMs,
+        randomFn: () => 0.6,
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: fetchStub,
+      });
+
+      try {
+        // 1) Replay exact same nonce after restart -> must be 409 NONCE_REPLAYED
+        const replayPayload = makeOfficialCalcPayload({ matchId: 2043301 });
+        const rReplay = makeSignedReq(
+          replayPayload,
+          "nonce_persist_restart_001",
+          nowMs
+        );
+        await rt2.gateway.handleRequest(
+          rReplay.req,
+          rReplay.res,
+          "/api/internal/feed-push"
+        );
+        assert.equal(rReplay.parse().statusCode, 409);
+        assert.equal(rReplay.parse().json?.error, "NONCE_REPLAYED");
+
+        // Advance to +10 minutes (14:10 BJ < 35m)
+        nowMs = Date.parse("2026-11-26T06:10:00.000Z");
+
+        // 2) Normal load after restart uses persisted 35m official-live guard (NOT 500-hunhe backup)
+        const afterRestart = await rt2.appRoutes.ensureMatchesLoaded(true);
+        assert.equal(afterRestart.boardMeta.source, "official-live");
+        assert.equal(afterRestart.boardMeta.boardState, "fresh");
+        assert.equal(afterRestart.matches[0].id, "2043301");
+
+        // 3) Intervening onlyOfficial: true failure (external 567) must NOT invalidate 35m guard or downgrade cached board
+        await rt2.appRoutes.ensureMatchesLoaded(true, { onlyOfficial: true });
+        const cachedAfterOnlyOfficial =
+          await rt2.appRoutes.ensureMatchesLoaded(false);
+        assert.equal(cachedAfterOnlyOfficial.boardMeta.source, "official-live");
+        assert.equal(cachedAfterOnlyOfficial.boardMeta.boardState, "fresh");
+        assert.equal(cachedAfterOnlyOfficial.matches[0].id, "2043301");
+
+        const forcedAfterOnlyOfficial =
+          await rt2.appRoutes.ensureMatchesLoaded(true);
+        assert.equal(forcedAfterOnlyOfficial.boardMeta.source, "official-live");
+        assert.equal(forcedAfterOnlyOfficial.boardMeta.boardState, "fresh");
+        assert.equal(forcedAfterOnlyOfficial.matches[0].id, "2043301");
+      } finally {
+        await rt2.dispose();
+      }
+
+      // Runtime #3: verify appRoutes else-fallback branch does NOT replace fresh official-live <35m
+      // and verify ingestSignedPushSnapshot updates officialSaleOpen (closed-night at 21:30 BJ)
+      const nightDir = path.join(tmpDir, "night");
+      let nightNowMs = Date.parse("2026-11-26T13:30:00.000Z"); // 21:30 BJ
+      const rtNight = createYouJingRuntime({
+        dataDir: nightDir,
+        nowFn: () => nightNowMs,
+        randomFn: () => 0.1,
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: async () => ({
+          ok: false,
+          status: 503,
+          headers: {},
+          text: async () => "",
+        }),
+      });
+      try {
+        const closedSalePayload = makeOfficialCalcPayload({
+          matchId: 2043302,
+          offLineSaleStatus: 0,
+          updateDate: "2026-11-26",
+          updateTime: "21:30:00",
+        });
+        const rClosed = makeSignedReq(
+          closedSalePayload,
+          "nonce_night_closed_001",
+          nightNowMs
+        );
+        await rtNight.gateway.handleRequest(
+          rClosed.req,
+          rClosed.res,
+          "/api/internal/feed-push"
+        );
+        assert.equal(rClosed.parse().statusCode, 200);
+        assert.equal(rtNight.politeGateway!.isMarketOpenNow(), false);
+
+        // Even when all outbound sources fail (else branch) within 35m of push (using open time), official-live stays intact
+        nightNowMs = Date.parse("2026-11-26T06:00:00.000Z"); // 14:00 BJ
+        const openDayDir = path.join(tmpDir, "else-guard");
+        const rtElse = createYouJingRuntime({
+          dataDir: openDayDir,
+          nowFn: () => nightNowMs,
+          randomFn: () => 0.1,
+          enforceMarketHours: true,
+          pushHmacSecret: pushSecret,
+          fetchFn: async () => ({
+            ok: false,
+            status: 503,
+            headers: {},
+            text: async () => "",
+          }),
+        });
+        try {
+          const openPayload = makeOfficialCalcPayload({ matchId: 2043303 });
+          const rOpen = makeSignedReq(
+            openPayload,
+            "nonce_else_guard_001",
+            nightNowMs
+          );
+          await rtElse.gateway.handleRequest(
+            rOpen.req,
+            rOpen.res,
+            "/api/internal/feed-push"
+          );
+          assert.equal(rOpen.parse().statusCode, 200);
+
+          nightNowMs += 10 * 60_000;
+          // Exhaust/fail all sources -> would enter else fallback in appRoutes if not guarded
+          const guardedElse = await rtElse.appRoutes.ensureMatchesLoaded(true);
+          assert.equal(guardedElse.boardMeta.source, "official-live");
+          assert.equal(guardedElse.boardMeta.boardState, "fresh");
+          assert.equal(guardedElse.matches[0].id, "2043303");
+        } finally {
+          await rtElse.dispose();
+        }
+      } finally {
+        await rtNight.dispose();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Review Fix (c): syncMatchResults skips 35m short-circuit on explicit beginDate/endDate and reads disk cache on closed-hours restart", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-rf-c-"));
+    try {
+      let nowMs = Date.parse("2026-11-26T06:00:00.000Z"); // 14:00 BJ
+      const stateFilePath = path.join(tmpDir, "state.json");
+      const snapshotFilePath = path.join(tmpDir, "snap.json");
+      const resultsCacheFilePath = path.join(tmpDir, "results.json");
+      const pushSecret = "m5_test_push_secret_results_c";
+      const fetchedResultUrls: string[] = [];
+
+      const makeGateway = () =>
+        createPoliteMultisourceGateway({
+          stateFilePath,
+          snapshotFilePath,
+          resultsCacheFilePath,
+          pushHmacSecret: pushSecret,
+          nowFn: () => nowMs,
+          enforceMarketHours: true,
+          fetchFn: async (url: string) => {
+            if (url.includes("getUniformMatchResultV1.qry")) {
+              fetchedResultUrls.push(url);
+              return {
+                ok: true,
+                status: 200,
+                headers: { "content-type": "application/json" },
+                text: async () =>
+                  JSON.stringify({
+                    errorCode: "0",
+                    success: true,
+                    value: {
+                      total: 1,
+                      pages: 1,
+                      matchResult: [
+                        {
+                          matchId: 2040001,
+                          matchNumStr: "周二001",
+                          homeTeamAbbName: "历史主",
+                          awayTeamAbbName: "历史客",
+                          sectionsNo999: "3:2",
+                          sectionsNo1: "1:1",
+                          matchDate: "2026-11-10",
+                          matchResultStatus: "2",
+                        },
+                      ],
+                    },
+                  }),
+              };
+            }
+            return {
+              ok: false,
+              status: 503,
+              headers: {},
+              text: async () => "",
+            };
+          },
+        });
+
+      const gw1 = makeGateway();
+      const pushBody = JSON.stringify({
+        ...makeOfficialCalcPayload({ matchId: 2043401 }),
+        __officialResultsRaw: [
+          {
+            errorCode: "0",
+            success: true,
+            value: {
+              total: 1,
+              pages: 1,
+              matchResult: [
+                {
+                  matchId: 2043401,
+                  matchNumStr: "周四001",
+                  homeTeamAbbName: "大阪钢巴",
+                  awayTeamAbbName: "曼谷港务",
+                  sectionsNo999: "1:0",
+                  sectionsNo1: "0:0",
+                  matchDate: "2026-11-26",
+                  matchResultStatus: "2",
+                },
+              ],
+            },
+          },
+        ],
+      });
+      const nonce1 = "nonce_results_cache_001";
+      const sig1 = crypto
+        .createHmac("sha256", pushSecret)
+        .update(`${nowMs}.${nonce1}.${pushBody}`)
+        .digest("hex");
+      const ingest1 = await gw1.ingestSignedPushSnapshot({
+        rawBodyText: pushBody,
+        timestampHeader: String(nowMs),
+        nonceHeader: nonce1,
+        signatureHeader: sig1,
+      });
+      assert.equal(ingest1.ok, true);
+
+      // 1) Default syncMatchResults (even with forceRefresh: true) short-circuits within 35m -> 0 outbound calls
+      const shortCircuitRes = await gw1.syncMatchResults({
+        forceRefresh: true,
+      });
+      assert.equal(shortCircuitRes.get("2043401")?.fullScore, "1:0");
+      assert.equal(fetchedResultUrls.length, 0);
+
+      // 2) Explicit beginDate/endDate MUST NOT short-circuit to 3-day pushed cache
+      const backfillRes = await gw1.syncMatchResults({
+        beginDate: "2026-11-10",
+        endDate: "2026-11-12",
+      });
+      assert.equal(fetchedResultUrls.length, 1);
+      assert.match(fetchedResultUrls[0], /matchBeginDate=2026-11-10/);
+      assert.equal(backfillRes.get("2040001")?.fullScore, "3:2");
+      assert.equal(backfillRes.get("2043401")?.fullScore, "1:0");
+
+      // 3) Closed-hours restart (08:00 BJ = 00:00 UTC next day) reads disk results cache with 0 outbound calls
+      nowMs = Date.parse("2026-11-27T00:00:00.000Z"); // 08:00 BJ
+      const beforeClosedCount = fetchedResultUrls.length;
+      const gw2 = makeGateway();
+      const closedRes = await gw2.syncMatchResults();
+      assert.equal(fetchedResultUrls.length, beforeClosedCount);
+      assert.equal(closedRes.get("2043401")?.fullScore, "1:0");
+      assert.equal(closedRes.get("2040001")?.fullScore, "3:2");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Review Fix (d): computeSafeLaunchJitterMs stays in [17_000, 163_000] and avoids quarter-hour ±35s and :00 minute marks", () => {
+    const randCases = [0, 0.001, 0.25, 0.5, 0.75, 0.999];
+    for (let i = 0; i < 120; i++) {
+      // Sweep every 30s across a full 1-hour cycle including exact :00/:15/:30/:45 marks
+      const nowMs = Date.parse("2026-11-26T06:00:00.000Z") + i * 30_000;
+      for (const rv of randCases) {
+        const jitterMs = computeSafeLaunchJitterMs(nowMs, () => rv);
+        assert.ok(
+          jitterMs >= 17_000 && jitterMs <= 163_000,
+          `Jitter ${jitterMs}ms out of [17_000, 163_000]`
+        );
+        assert.notEqual(
+          jitterMs % 60_000,
+          0,
+          `Jitter ${jitterMs}ms must not be exact whole minute`
+        );
+        const targetMs = nowMs + jitterMs;
+        const secInHour =
+          (((targetMs % 3_600_000) + 3_600_000) % 3_600_000) / 1000;
+        const remQ = secInHour % 900;
+        const distQ = Math.min(remQ, 900 - remQ);
+        assert.ok(
+          distQ > 35,
+          `Target landed too close (${distQ}s) to quarter-hour mark`
+        );
+        const modMin = ((targetMs % 60_000) + 60_000) % 60_000;
+        assert.ok(
+          modMin >= 1_500 && modMin <= 58_500,
+          `Target landed too close to :00 minute mark (modMin=${modMin}ms)`
+        );
+      }
     }
   });
 });
