@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS LaunchAgent 模板：本机工作站（M5）每 ~19 分钟（叠加脚本内置 0~20s 随机抖动）直推体彩官网盘面与近 3 日赛果。
+  请勿在此文件中填写密钥！将以下两项环境变量保存在 ~/.config/youjing-calculator/pusher.env（chmod 600）：
+    YOUJING_PUSH_HMAC_SECRET=<your_hmac_secret>
+    YOUJING_PUSH_TARGET_URL=https://jisuanqi.yjty.io/api/internal/feed-push
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>io.yjty.jisuanqi.m5-feed-pusher</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/node</string>
+      <string>/Users/YOUR_USERNAME/path/to/football-calculator/scripts/push-official-feed.mjs</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1140</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/youjing-m5-pusher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/Library/Logs/youjing-m5-pusher.err.log</string>
+  </dict>
+</plist>

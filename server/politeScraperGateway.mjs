@@ -619,6 +619,11 @@ export function createPoliteMultisourceGateway(opts = {}) {
   )
     ? Number(opts.perDomainMaxPerMinute)
     : 4;
+  const officialPushFreshTtlMs = Number.isFinite(
+    Number(opts.officialPushFreshTtlMs)
+  )
+    ? Number(opts.officialPushFreshTtlMs)
+    : 35 * 60_000;
 
   const state = {
     domainProfiles: {}, // domainKey -> { profileId, createdAt, lastUsedAt, successCount, blockCount, consecutiveBlocks, cookies: {}, etag: {}, lastModified: {} }
@@ -627,6 +632,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
     officialSaleCheckedDate: null,
     lastOutboundBoardSyncAt: 0,
     lastValidBoardAt: null,
+    lastOfficialPushAt: null,
     lastUserActivityAt: nowFn(),
     idleEveningCheckedDate: null,
     usedPushNonces: {},
@@ -646,6 +652,9 @@ export function createPoliteMultisourceGateway(opts = {}) {
         if (typeof loaded.lastValidBoardAt === "number") {
           state.lastValidBoardAt = loaded.lastValidBoardAt;
         }
+        if (typeof loaded.lastOfficialPushAt === "number") {
+          state.lastOfficialPushAt = loaded.lastOfficialPushAt;
+        }
       }
     } catch {
       // ignore corrupted state file
@@ -654,6 +663,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
 
   // Sliding-window timestamps per host: Map<host, number[]>
   const slidingWindows = new Map();
+  const pushedResultsById = new Map();
   let outboundChain = Promise.resolve();
   let inFlightBoardSync = null;
   let inFlightResultsSync = null;
@@ -668,6 +678,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
         officialSaleOpen: state.officialSaleOpen,
         officialSaleCheckedDate: state.officialSaleCheckedDate,
         lastValidBoardAt: state.lastValidBoardAt,
+        lastOfficialPushAt: state.lastOfficialPushAt,
       },
       null,
       2
@@ -1337,6 +1348,32 @@ export function createPoliteMultisourceGateway(opts = {}) {
     }
 
     if (
+      !onlyOfficial &&
+      lastKnownMatches &&
+      lastKnownMatches.length > 0 &&
+      state.lastOfficialPushAt &&
+      now >= state.lastOfficialPushAt &&
+      now - state.lastOfficialPushAt < officialPushFreshTtlMs
+    ) {
+      const boardMeta = enrichBoardQuoteMeta(
+        buildBoardFreshnessMeta({
+          source: "official-live",
+          boardState: "fresh",
+          lastValidBoardAt: state.lastOfficialPushAt,
+        }),
+        lastKnownMatches,
+        now
+      );
+      return {
+        matches: lastKnownMatches,
+        source: "official-live",
+        providerId: "signed-push",
+        boardMeta,
+        syncNote: `已锁定本机官方权威盘（35 分钟鲜活护栏生效中 · ${lastKnownMatches.length} 场在售实盘）`,
+      };
+    }
+
+    if (
       isManualRefresh &&
       !onlyOfficial &&
       state.lastOutboundBoardSyncAt > 0 &&
@@ -1416,6 +1453,20 @@ export function createPoliteMultisourceGateway(opts = {}) {
     return syncLiveBoard({ isManualRefresh: false, onlyOfficial: true });
   }
 
+  async function loadDiskResultsCacheInto(targetMap) {
+    if (!resultsCacheFilePath || !fs.existsSync(resultsCacheFilePath)) return;
+    try {
+      const raw = JSON.parse(await fsp.readFile(resultsCacheFilePath, "utf8"));
+      if (Array.isArray(raw)) {
+        for (const item of raw) {
+          if (item?.matchId) targetMap.set(String(item.matchId), item);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   /**
    * 多源完场 90 分钟赛果同步（官方主源 + 500/澳客/球探多源自动兜底，同样遵守休市与滑动窗口限流）
    */
@@ -1428,6 +1479,14 @@ export function createPoliteMultisourceGateway(opts = {}) {
   } = {}) {
     const now = nowFn();
     const bj = getBeijingParts(now);
+    const buildClosedFallbackMap = () => {
+      const out = new Map();
+      if (historyResultsById instanceof Map) {
+        for (const [k, v] of historyResultsById.entries()) out.set(k, v);
+      }
+      for (const [k, v] of pushedResultsById.entries()) out.set(k, v);
+      return out;
+    };
     if (enforceMarketHours) {
       // 01:30 ~ 11:00 彻底休眠不拉赛果；无待结订单时夜间休市也不拉赛果
       const morningWake =
@@ -1436,9 +1495,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
         bj.msSinceMidnight >= 90 * 60_000 &&
         bj.msSinceMidnight < morningWake
       ) {
-        return historyResultsById instanceof Map
-          ? new Map(historyResultsById)
-          : new Map();
+        return buildClosedFallbackMap();
       }
       if (!hasPendingSettlement) {
         const gate = evaluateMarketHoursGate({
@@ -1448,9 +1505,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
           matches: lastKnownMatches || [],
         });
         if (!gate.isOpen) {
-          return historyResultsById instanceof Map
-            ? new Map(historyResultsById)
-            : new Map();
+          return buildClosedFallbackMap();
         }
       }
     }
@@ -1464,8 +1519,20 @@ export function createPoliteMultisourceGateway(opts = {}) {
       const resolvedEnd = endDate || toBjDate(now + 86_400_000);
       const resolvedBegin = beginDate || toBjDate(now - 14 * 86_400_000);
       const merged = new Map();
+      await loadDiskResultsCacheInto(merged);
       if (historyResultsById instanceof Map) {
         for (const [k, v] of historyResultsById.entries()) merged.set(k, v);
+      }
+      for (const [k, v] of pushedResultsById.entries()) merged.set(k, v);
+
+      if (
+        pushedResultsById.size > 0 &&
+        !forceRefresh &&
+        state.lastOfficialPushAt &&
+        now >= state.lastOfficialPushAt &&
+        now - state.lastOfficialPushAt < officialPushFreshTtlMs
+      ) {
+        return merged;
       }
 
       // 1) Try Official UniformMatchResult if not cooling down
@@ -1691,25 +1758,13 @@ export function createPoliteMultisourceGateway(opts = {}) {
         }
       }
 
+      for (const [k, v] of pushedResultsById.entries()) merged.set(k, v);
       if (merged.size > 0) {
         await persistResultsCache(merged);
         return merged;
       }
 
-      if (resultsCacheFilePath && fs.existsSync(resultsCacheFilePath)) {
-        try {
-          const raw = JSON.parse(
-            await fsp.readFile(resultsCacheFilePath, "utf8")
-          );
-          if (Array.isArray(raw)) {
-            for (const item of raw) {
-              if (item?.matchId) merged.set(String(item.matchId), item);
-            }
-          }
-        } catch {
-          // ignore
-        }
-      }
+      await loadDiskResultsCacheInto(merged);
       return merged;
     })();
 
@@ -1830,10 +1885,39 @@ export function createPoliteMultisourceGateway(opts = {}) {
     } catch {
       return { ok: false, status: 400, error: "INVALID_JSON" };
     }
-    const parsed = parseSportteryRawJson(json);
+    const calcPayload =
+      json &&
+      typeof json === "object" &&
+      json.calculatorRaw &&
+      typeof json.calculatorRaw === "object"
+        ? json.calculatorRaw
+        : json;
+    const parsed = parseSportteryRawJson(calcPayload);
     if (parsed.length === 0) {
       return { ok: false, status: 422, error: "EMPTY_MATCHES" };
     }
+
+    const rawResultsList = Array.isArray(json?.__officialResultsRaw)
+      ? json.__officialResultsRaw
+      : Array.isArray(json?.resultsRawList)
+        ? json.resultsRawList
+        : [];
+    const batchResults = new Map();
+    for (const rawResItem of rawResultsList) {
+      if (!rawResItem || typeof rawResItem !== "object") continue;
+      const parsedResMap = parseSportteryResultsJson(rawResItem);
+      for (const [k, v] of parsedResMap.entries()) {
+        batchResults.set(k, v);
+        pushedResultsById.set(k, v);
+      }
+    }
+    if (pushedResultsById.size > 0) {
+      const diskMerged = new Map();
+      await loadDiskResultsCacheInto(diskMerged);
+      for (const [k, v] of pushedResultsById.entries()) diskMerged.set(k, v);
+      await persistResultsCache(diskMerged);
+    }
+
     const merged = reconcileMatchesPoolsNonRegressive(
       lastKnownMatches,
       parsed,
@@ -1842,7 +1926,9 @@ export function createPoliteMultisourceGateway(opts = {}) {
     lastKnownMatches = merged;
     state.lastOutboundBoardSyncAt = now;
     state.lastValidBoardAt = now;
-    await persistBoardSnapshotToDisk({ ...json, __capturedAt: now });
+    state.lastOfficialPushAt = now;
+    persistStateNonBlocking();
+    await persistBoardSnapshotToDisk({ ...calcPayload, __capturedAt: now });
     const boardMeta = enrichBoardQuoteMeta(
       buildBoardFreshnessMeta({
         source: "official-live",
@@ -1856,6 +1942,7 @@ export function createPoliteMultisourceGateway(opts = {}) {
       ok: true,
       status: 200,
       matchesCount: merged.length,
+      resultsCount: batchResults.size,
       boardMeta,
       matches: merged,
     };

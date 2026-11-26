@@ -140,6 +140,7 @@ export function createAppRoutes(opts = {}) {
   let cachedMatches = FALLBACK_MATCHES;
   let lastValidLiveMatches = null;
   let lastValidBoardAt = null;
+  let lastOfficialPushAt = null;
   let cachedBoardMeta = enrichBoardQuoteMeta(
     buildBoardFreshnessMeta({
       source: "fallback",
@@ -232,7 +233,44 @@ export function createAppRoutes(opts = {}) {
         explicitMeta?.boardState === "backup-live" &&
         explicitMeta?.isFallbackReadOnly === false;
 
+      const withinOfficialPushGuard =
+        !extraOpts?.onlyOfficial &&
+        lastOfficialPushAt !== null &&
+        nowAfter >= lastOfficialPushAt &&
+        nowAfter - lastOfficialPushAt < 35 * 60_000 &&
+        Array.isArray(lastValidLiveMatches) &&
+        lastValidLiveMatches.length > 0 &&
+        cachedBoardMeta?.source === "official-live";
+
+      if (isBackupLive && withinOfficialPushGuard) {
+        cachedMatches = lastValidLiveMatches;
+        cachedBoardMeta = enrichBoardQuoteMeta(
+          buildBoardFreshnessMeta({
+            source: "official-live",
+            boardState: "fresh",
+            lastValidBoardAt: lastOfficialPushAt,
+          }),
+          cachedMatches,
+          nowAfter
+        );
+        lastMatchFetchAt = nowAfter;
+        nextAutoSyncDueAt =
+          nowAfter + computePoliteRandomIntervalMs(nowAfter, randomFn);
+        return {
+          matches: resolveHydratedMatches(
+            cachedMatches,
+            cachedBoardMeta,
+            nowAfter
+          ),
+          syncNote: cachedSyncNote,
+          boardMeta: cachedBoardMeta,
+        };
+      }
+
       if (isOfficialLive || isBackupLive) {
+        if (isBackupLive) {
+          lastOfficialPushAt = null;
+        }
         const mergedLiveMatches = reconcileMatchesPoolsNonRegressive(
           lastValidLiveMatches,
           incomingMatches,
@@ -1164,7 +1202,7 @@ export function createAppRoutes(opts = {}) {
       let total = 0;
       for await (const ch of req) {
         total += ch.length;
-        if (total > 2_000_000) {
+        if (total > 4_000_000) {
           sendJson(res, 413, { ok: false, error: "Payload too large" });
           return true;
         }
@@ -1186,6 +1224,7 @@ export function createAppRoutes(opts = {}) {
       }
       const nowAfter = nowFn();
       lastValidBoardAt = nowAfter;
+      lastOfficialPushAt = nowAfter;
       lastValidLiveMatches = pushRes.matches;
       cachedMatches = pushRes.matches;
       cachedBoardMeta = pushRes.boardMeta;
@@ -1200,6 +1239,7 @@ export function createAppRoutes(opts = {}) {
       sendJson(res, 200, {
         ok: true,
         matchesCount: pushRes.matchesCount,
+        resultsCount: pushRes.resultsCount ?? 0,
         quoteVersion: cachedBoardMeta?.quoteVersion,
       });
       return true;

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { describe, it } from "node:test";
 import {
   computePoliteRandomIntervalMs,
@@ -9,6 +11,7 @@ import {
 } from "../server/politeScraperGateway.mjs";
 import { detectSoftBlockResponse } from "../server/multisourceParsers.mjs";
 import { createYouJingRuntime } from "../server/runtimeApp.mjs";
+import { runOfficialFeedPushOnce } from "../scripts/push-official-feed.mjs";
 
 function makeOfficialCalcPayload({
   matchId = 2043004,
@@ -722,6 +725,586 @@ describe("Spec 0021 (#21/#22): Daily Official Sync, Deadlock Fix & Steady 20m Ca
           runtimeFetchCalls >= 1,
           "Runtime startup during open hours with enableHistoryCollector must trigger initial non-blocking board load"
         );
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Ticket 2 Cycle 1: securityShield passes signed /api/internal/feed-push, ingests calculator + 90m results for auto-settlement, rejects bad sig (401) and blocks non-browser /api/quant/sync (403)", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-t2-c1-"));
+    try {
+      const nowMs = Date.parse("2026-11-26T06:00:00.000Z"); // 14:00 BJ
+      const pushSecret = "m5_test_push_secret_2026_secure";
+
+      async function invokeGatewayHttp(
+        gateway: {
+          handleRequest: (
+            req: unknown,
+            res: unknown,
+            pathname: string
+          ) => Promise<boolean>;
+        },
+        opts: {
+          method: string;
+          pathname: string;
+          headers?: Record<string, string>;
+          bodyText?: string;
+        }
+      ) {
+        const chunks =
+          opts.bodyText !== undefined
+            ? [Buffer.from(opts.bodyText, "utf8")]
+            : [];
+        const req = Readable.from(chunks) as Readable & {
+          method: string;
+          url: string;
+          headers: Record<string, string>;
+          socket: { remoteAddress: string };
+        };
+        req.method = opts.method;
+        req.url = opts.pathname;
+        req.headers = Object.fromEntries(
+          Object.entries(opts.headers || {}).map(([k, v]) => [
+            k.toLowerCase(),
+            v,
+          ])
+        );
+        req.socket = { remoteAddress: "203.0.113.42" };
+
+        let statusCode = 200;
+        const respHeaders: Record<string, string> = {};
+        let body = "";
+        let headersSent = false;
+        const res = {
+          get statusCode() {
+            return statusCode;
+          },
+          set statusCode(v: number) {
+            statusCode = v;
+          },
+          get headersSent() {
+            return headersSent;
+          },
+          setHeader(k: string, v: string) {
+            respHeaders[k.toLowerCase()] = v;
+          },
+          end(chunk = "") {
+            headersSent = true;
+            body += String(chunk);
+          },
+        };
+        const handled = await gateway.handleRequest(req, res, opts.pathname);
+        return {
+          handled,
+          statusCode,
+          respHeaders,
+          body,
+          json: body ? JSON.parse(body) : null,
+        };
+      }
+
+      const runtime = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => nowMs,
+        randomFn: () => 0.1,
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: async (url: string) => {
+          if (url.includes("webapi.sporttery.cn")) {
+            return {
+              ok: false,
+              status: 567,
+              headers: {},
+              text: async () => "<html>EdgeOne 567</html>",
+            };
+          }
+          return {
+            ok: false,
+            status: 503,
+            headers: {},
+            text: async () => "",
+          };
+        },
+      });
+
+      try {
+        const pushPayloadObj = {
+          ...makeOfficialCalcPayload({
+            matchId: 2043004,
+            matchNumStr: "周四001",
+            home: "大阪钢巴",
+            away: "曼谷港务",
+            hadOdds: [1.18, 5.85, 8.25],
+          }),
+          __officialResultsRaw: [
+            {
+              errorCode: "0",
+              success: true,
+              value: {
+                total: 1,
+                pages: 1,
+                matchResult: [
+                  {
+                    matchId: 2043004,
+                    matchNumStr: "周四001",
+                    homeTeamAbbName: "大阪钢巴",
+                    awayTeamAbbName: "曼谷港务",
+                    sectionsNo999: "2:0",
+                    sectionsNo1: "1:0",
+                    matchDate: "2026-11-26",
+                    matchResultStatus: "2",
+                  },
+                ],
+              },
+            },
+          ],
+        };
+        const bodyText = JSON.stringify(pushPayloadObj);
+        const nonce = "m5_nonce_0001_valid_abc";
+        const sig = crypto
+          .createHmac("sha256", pushSecret)
+          .update(`${nowMs}.${nonce}.${bodyText}`)
+          .digest("hex");
+
+        const pushRes = await invokeGatewayHttp(runtime.gateway, {
+          method: "POST",
+          pathname: "/api/internal/feed-push",
+          headers: {
+            "user-agent": "YouJingM5Pusher/1.0",
+            accept: "*/*",
+            "content-type": "application/json",
+            "x-yj-push-ts": String(nowMs),
+            "x-yj-push-nonce": nonce,
+            "x-yj-push-sig": sig,
+          },
+          bodyText,
+        });
+        assert.equal(pushRes.handled, true);
+        assert.equal(pushRes.statusCode, 200);
+        assert.equal(pushRes.json?.ok, true);
+        assert.equal(pushRes.json?.matchesCount, 1);
+        assert.equal(pushRes.json?.resultsCount, 1);
+
+        const loaded = await runtime.appRoutes.ensureMatchesLoaded(false);
+        assert.equal(loaded.boardMeta.source, "official-live");
+        assert.equal(
+          loaded.matches[0].pools.HAD.confirmedSaleRights.single,
+          true
+        );
+
+        const syncedResults = await runtime.politeGateway!.syncMatchResults({
+          forceRefresh: true,
+        });
+        assert.equal(syncedResults.get("2043004")?.fullScore, "2:0");
+        assert.equal(syncedResults.get("2043004")?.settled, true);
+
+        const userId = "u_push_auto_settle";
+        const added = runtime.ledgerManager.mutateUserLedger(
+          userId,
+          {
+            action: "add-entry",
+            kind: "live",
+            snapshot: {
+              lines: [
+                {
+                  legs: [
+                    {
+                      matchId: "2043004",
+                      poolCode: "HAD",
+                      optionKey: "h",
+                      odds: 1.18,
+                    },
+                  ],
+                  multiple: 1,
+                },
+              ],
+            },
+            cost: 2,
+          },
+          {
+            authoritativeMatches: loaded.matches,
+            boardMeta: loaded.boardMeta,
+          }
+        );
+        assert.equal(added.ok, true);
+
+        const settled = await runtime.appRoutes.resolveSyncedUserLedger(
+          userId,
+          loaded.matches,
+          true
+        );
+        assert.equal(settled.newlySettledCount, 1);
+        assert.equal(settled.ledger?.entries[0]?.status, "won");
+
+        // Invalid signature must return 401
+        const badSigRes = await invokeGatewayHttp(runtime.gateway, {
+          method: "POST",
+          pathname: "/api/internal/feed-push",
+          headers: {
+            "user-agent": "YouJingM5Pusher/1.0",
+            accept: "*/*",
+            "content-type": "application/json",
+            "x-yj-push-ts": String(nowMs),
+            "x-yj-push-nonce": "m5_nonce_0002_invalid_sig",
+            "x-yj-push-sig": "0".repeat(64),
+          },
+          bodyText,
+        });
+        assert.equal(badSigRes.statusCode, 401);
+
+        // Non-browser POST /api/quant/sync without push endpoint/headers must still be blocked with 403
+        const blockedSyncRes = await invokeGatewayHttp(runtime.gateway, {
+          method: "POST",
+          pathname: "/api/quant/sync",
+          headers: {
+            "user-agent": "YouJingM5Pusher/1.0",
+            accept: "*/*",
+            "content-type": "application/json",
+          },
+          bodyText: "{}",
+        });
+        assert.equal(blockedSyncRes.statusCode, 403);
+        assert.equal(blockedSyncRes.json?.error, "Automated access denied");
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Ticket 2 Cycle 2: protects fresh official-live board from backup downgrade for 35m, falls back to multisource-backup at >=35m, and upgrades back on wake push", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-t2-c2-"));
+    try {
+      // Step A: 14:00 BJ = 06:00 UTC
+      let nowMs = Date.parse("2026-11-26T06:00:00.000Z");
+      const pushSecret = "m5_test_push_secret_35m_guard";
+      let backupMatchId = "2043099";
+      let backupHome = "横滨水手";
+      let backupAway = "川崎前锋";
+
+      const runtime = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => nowMs,
+        randomFn: () => 0.6, // picks 500-hunhe when official returns 567
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: async (url: string) => {
+          if (url.includes("webapi.sporttery.cn")) {
+            return {
+              ok: false,
+              status: 567,
+              headers: {},
+              text: async () => "<html>EdgeOne 567</html>",
+            };
+          }
+          if (url.includes("trade.500.com/jczq/")) {
+            return {
+              ok: true,
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+              text: async () =>
+                make500HunheHtmlSample({
+                  matchId: backupMatchId,
+                  matchNumStr: "周四002",
+                  home: backupHome,
+                  away: backupAway,
+                  hadOdds: [2.05, 3.3, 3.1],
+                }),
+            };
+          }
+          return { ok: false, status: 503, headers: {}, text: async () => "" };
+        },
+      });
+
+      try {
+        // Helper to push via /api/internal/feed-push
+        const sendSignedPush = async (payloadObj: unknown, nonce: string) => {
+          const bodyText = JSON.stringify(payloadObj);
+          const sig = crypto
+            .createHmac("sha256", pushSecret)
+            .update(`${nowMs}.${nonce}.${bodyText}`)
+            .digest("hex");
+          const req = Readable.from([
+            Buffer.from(bodyText, "utf8"),
+          ]) as Readable & {
+            method: string;
+            url: string;
+            headers: Record<string, string>;
+            socket: { remoteAddress: string };
+          };
+          req.method = "POST";
+          req.url = "/api/internal/feed-push";
+          req.headers = {
+            "user-agent": "YouJingM5Pusher/1.0",
+            accept: "*/*",
+            "content-type": "application/json",
+            "x-yj-push-ts": String(nowMs),
+            "x-yj-push-nonce": nonce,
+            "x-yj-push-sig": sig,
+          };
+          req.socket = { remoteAddress: "203.0.113.42" };
+          let statusCode = 200;
+          let body = "";
+          const res = {
+            get statusCode() {
+              return statusCode;
+            },
+            set statusCode(v: number) {
+              statusCode = v;
+            },
+            headersSent: false,
+            setHeader() {},
+            end(chunk = "") {
+              this.headersSent = true;
+              body += String(chunk);
+            },
+          };
+          await runtime.gateway.handleRequest(
+            req,
+            res,
+            "/api/internal/feed-push"
+          );
+          return { statusCode, json: body ? JSON.parse(body) : null };
+        };
+
+        // Step A (14:00 BJ): signed push delivers official-live board
+        const pushA = await sendSignedPush(
+          makeOfficialCalcPayload({
+            matchId: 2043004,
+            matchNumStr: "周四001",
+            home: "大阪钢巴",
+            away: "曼谷港务",
+            hadOdds: [1.18, 5.85, 8.25],
+            updateDate: "2026-11-26",
+            updateTime: "14:00:00",
+          }),
+          "nonce_step_a_1400"
+        );
+        assert.equal(pushA.statusCode, 200);
+
+        // Step B (14:15 BJ, 15m < 35m): official 567, 500-hunhe 200; manual sync must NOT downgrade!
+        nowMs = Date.parse("2026-11-26T06:15:00.000Z"); // 14:15 BJ
+        const stepB = await runtime.appRoutes.ensureMatchesLoaded(true);
+        assert.equal(stepB.boardMeta.source, "official-live");
+        assert.equal(stepB.boardMeta.boardState, "fresh");
+        assert.equal(stepB.matches[0].id, "2043004");
+        assert.equal(
+          stepB.matches[0].pools.HAD.confirmedSaleRights.single,
+          true
+        );
+
+        // Step C (14:36 BJ, 36m >= 35m): M5 asleep -> falls back seamlessly to multisource-backup (500-hunhe)
+        nowMs = Date.parse("2026-11-26T06:36:00.000Z"); // 14:36 BJ
+        const stepC = await runtime.appRoutes.ensureMatchesLoaded(true);
+        assert.equal(stepC.boardMeta.source, "multisource-backup");
+        assert.equal(stepC.boardMeta.boardState, "backup-live");
+        assert.equal(stepC.matches[0].id, backupMatchId);
+        assert.equal(stepC.matches[0].home, backupHome);
+
+        // Step D (14:50 BJ): M5 wakes and pushes new official snapshot -> immediately upgrades back to official-live (fresh)
+        nowMs = Date.parse("2026-11-26T06:50:00.000Z"); // 14:50 BJ
+        const pushD = await sendSignedPush(
+          makeOfficialCalcPayload({
+            matchId: 2043105,
+            matchNumStr: "周四005",
+            home: "鹿岛鹿角",
+            away: "广岛三箭",
+            hadOdds: [1.92, 3.4, 3.3],
+            updateDate: "2026-11-26",
+            updateTime: "14:50:00",
+          }),
+          "nonce_step_d_1450"
+        );
+        assert.equal(pushD.statusCode, 200);
+        const stepD = await runtime.appRoutes.ensureMatchesLoaded(false);
+        assert.equal(stepD.boardMeta.source, "official-live");
+        assert.equal(stepD.boardMeta.boardState, "fresh");
+        assert.equal(stepD.matches[0].id, "2043105");
+        assert.equal(
+          stepD.matches[0].pools.HAD.confirmedSaleRights.single,
+          true
+        );
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("Ticket 2 Cycle 3: standalone M5 pusher skips closed hours with 0 outbound calls and pushes calculator + 3-day official results in open hours", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yj-spec21-t2-c3-"));
+    try {
+      const pushSecret = "m5_cli_test_secret_2026";
+      const targetUrl = "https://jisuanqi.yjty.io/api/internal/feed-push";
+
+      // 1) Closed hours (08:00 BJ = 00:00 UTC) -> 0 outbound requests, skippedClosed: true
+      let closedOutbound = 0;
+      const closedNowMs = Date.parse("2026-11-26T00:00:00.000Z");
+      const closedRes = await runOfficialFeedPushOnce({
+        nowFn: () => closedNowMs,
+        force: false,
+        secret: pushSecret,
+        targetUrl,
+        fetchFn: async () => {
+          closedOutbound += 1;
+          throw new Error("Should not call fetchFn during closed hours");
+        },
+      });
+      assert.equal(closedOutbound, 0);
+      assert.equal(closedRes.ok, true);
+      assert.equal(closedRes.skippedClosed, true);
+
+      // 2) Open hours (14:00 BJ = 06:00 UTC) -> fetches calculator + 3-day official results, signs HMAC, POSTs into live runtime
+      const openNowMs = Date.parse("2026-11-26T06:00:00.000Z");
+      const runtime = createYouJingRuntime({
+        dataDir: tmpDir,
+        nowFn: () => openNowMs,
+        randomFn: () => 0.1,
+        enforceMarketHours: true,
+        pushHmacSecret: pushSecret,
+        fetchFn: async (url: string) => {
+          if (url.includes("webapi.sporttery.cn")) {
+            return {
+              ok: false,
+              status: 567,
+              headers: {},
+              text: async () => "567",
+            };
+          }
+          return { ok: false, status: 503, headers: {}, text: async () => "" };
+        },
+      });
+
+      try {
+        const fetchedUrls: string[] = [];
+        const openRes = await runOfficialFeedPushOnce({
+          nowFn: () => openNowMs,
+          secret: pushSecret,
+          targetUrl,
+          fetchFn: async (
+            url: string,
+            init?: {
+              method?: string;
+              headers?: Record<string, string>;
+              body?: string;
+            }
+          ) => {
+            fetchedUrls.push(url);
+            if (url.includes("getMatchCalculatorV1.qry")) {
+              return {
+                ok: true,
+                status: 200,
+                json: async () =>
+                  makeOfficialCalcPayload({
+                    matchId: 2043201,
+                    matchNumStr: "周四006",
+                    home: "神户胜利船",
+                    away: "蔚山现代",
+                  }),
+              };
+            }
+            if (url.includes("getUniformMatchResultV1.qry")) {
+              assert.match(url, /matchBeginDate=2026-11-24/);
+              assert.match(url, /matchEndDate=2026-11-26/);
+              return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                  errorCode: "0",
+                  success: true,
+                  value: {
+                    total: 1,
+                    pages: 1,
+                    matchResult: [
+                      {
+                        matchId: 2043200,
+                        matchNumStr: "周三003",
+                        homeTeamAbbName: "浦和红钻",
+                        awayTeamAbbName: "横滨水手",
+                        sectionsNo999: "1:0",
+                        sectionsNo1: "0:0",
+                        matchDate: "2026-11-25",
+                        matchResultStatus: "2",
+                      },
+                    ],
+                  },
+                }),
+              };
+            }
+            if (url === targetUrl) {
+              const req = Readable.from([
+                Buffer.from(String(init?.body || ""), "utf8"),
+              ]) as Readable & {
+                method: string;
+                url: string;
+                headers: Record<string, string>;
+                socket: { remoteAddress: string };
+              };
+              req.method = init?.method || "POST";
+              req.url = "/api/internal/feed-push";
+              req.headers = Object.fromEntries(
+                Object.entries(init?.headers || {}).map(([k, v]) => [
+                  k.toLowerCase(),
+                  v,
+                ])
+              );
+              req.socket = { remoteAddress: "203.0.113.42" };
+              let statusCode = 200;
+              let body = "";
+              const res = {
+                get statusCode() {
+                  return statusCode;
+                },
+                set statusCode(v: number) {
+                  statusCode = v;
+                },
+                headersSent: false,
+                setHeader() {},
+                end(chunk = "") {
+                  this.headersSent = true;
+                  body += String(chunk);
+                },
+              };
+              await runtime.gateway.handleRequest(
+                req,
+                res,
+                "/api/internal/feed-push"
+              );
+              return {
+                ok: statusCode >= 200 && statusCode < 300,
+                status: statusCode,
+                json: async () => JSON.parse(body),
+                text: async () => body,
+              };
+            }
+            return { ok: false, status: 404, json: async () => ({}) };
+          },
+        });
+
+        assert.equal(openRes.ok, true);
+        assert.equal(openRes.matchesCount, 1);
+        assert.equal(openRes.resultsCount, 1);
+        assert.ok(
+          fetchedUrls.some((u) => u.includes("getMatchCalculatorV1.qry"))
+        );
+        assert.ok(
+          fetchedUrls.some((u) => u.includes("getUniformMatchResultV1.qry"))
+        );
+        assert.ok(fetchedUrls.includes(targetUrl));
+
+        const loaded = await runtime.appRoutes.ensureMatchesLoaded(false);
+        assert.equal(loaded.boardMeta.source, "official-live");
+        assert.equal(loaded.matches[0].id, "2043201");
+
+        const resultsMap = await runtime.politeGateway!.syncMatchResults({
+          forceRefresh: true,
+        });
+        assert.equal(resultsMap.get("2043200")?.fullScore, "1:0");
       } finally {
         await runtime.dispose();
       }

@@ -595,7 +595,13 @@ export function createSecurityShield(opts = {}) {
       }
     }
 
-    if (isAiReaderOrScraperRequest(req)) {
+    const isPushReq =
+      pathname === "/api/internal/feed-push" &&
+      req.method === "POST" &&
+      ["x-yj-push-ts", "x-yj-push-nonce", "x-yj-push-sig"].every((k) =>
+        Boolean(req.headers[k])
+      );
+    if (!isPushReq && isAiReaderOrScraperRequest(req)) {
       if (pathname.startsWith("/api/")) {
         sendJson(res, 403, { ok: false, error: "Automated access denied" });
       } else if (/\.(?:m?js|css|map)$/.test(pathname)) {
@@ -718,10 +724,6 @@ export function createSecurityShield(opts = {}) {
     }
 
     if (!appRoutes) return false;
-    const getBanStats = () => ({
-      fusedIpsCount: fusedIps.size,
-      fusedHwCount: fusedHwFps.size,
-    });
     return appRoutes.handleDomainRoute(req, res, pathname, {
       ip,
       runEncryptedRoute,
@@ -730,7 +732,10 @@ export function createSecurityShield(opts = {}) {
       deriveFallbackClientFp,
       checkAndContagiousLockHwFp,
       tripFuse,
-      getBanStats,
+      getBanStats: () => ({
+        fusedIpsCount: fusedIps.size,
+        fusedHwCount: fusedHwFps.size,
+      }),
     });
   }
 
