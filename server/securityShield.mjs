@@ -499,20 +499,23 @@ export function createSecurityShield(opts = {}) {
       maxBodyBytes = 64_000,
       requireAuth = false,
       requireSuperAdmin = false,
+      requireAdmin = false,
       fallbackError = "加密信封校验失败或会话已过期",
       onDomainError = null,
     } = routeOpts;
-    let sess;
-    let data;
-    let authCtx;
+    let sess, data, authCtx;
     try {
       const body = await readJsonBody(req, maxBodyBytes);
       ({ sess, data } = verifyAndUnseal(req, body, ip, endpoint));
       authCtx =
-        requireAuth || requireSuperAdmin
+        requireAuth || requireSuperAdmin || requireAdmin
           ? requireSessionAuth(req, sess, ip)
           : { user: null };
-      if (requireSuperAdmin && authCtx.user?.role !== "superadmin") {
+      const role = authCtx.user?.role;
+      const roleOk =
+        role === "superadmin" ||
+        (!requireSuperAdmin && requireAdmin && role === "subadmin");
+      if ((requireSuperAdmin || requireAdmin) && !roleOk) {
         sendJson(res, 403, { ok: false, error: "无权访问该资源" });
         return true;
       }

@@ -1,18 +1,24 @@
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import fsp from 'node:fs/promises';
-import path from 'node:path';
+import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
 
 function hashPassword(password, saltHex) {
-  const salt = saltHex || crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  const salt = saltHex || crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(String(password), salt, 64).toString("hex");
   return { salt, hash };
 }
 
 function verifyPassword(password, salt, expectedHash) {
-  const actual = Buffer.from(crypto.scryptSync(String(password), salt, 64).toString('hex'), 'hex');
-  const expected = Buffer.from(String(expectedHash || ''), 'hex');
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+  const actual = Buffer.from(
+    crypto.scryptSync(String(password), salt, 64).toString("hex"),
+    "hex"
+  );
+  const expected = Buffer.from(String(expectedHash || ""), "hex");
+  return (
+    actual.length === expected.length &&
+    crypto.timingSafeEqual(actual, expected)
+  );
 }
 
 function beijingDateStr(nowMs) {
@@ -21,9 +27,9 @@ function beijingDateStr(nowMs) {
 }
 
 function generateReadablePassword(len = 12) {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
   const bytes = crypto.randomBytes(len);
-  let out = '';
+  let out = "";
   for (let i = 0; i < len; i++) {
     out += alphabet[bytes[i] % alphabet.length];
   }
@@ -62,14 +68,14 @@ export function createAccountManager(opts = {}) {
   }
 
   let db = {
-    tokenSecret: crypto.randomBytes(32).toString('hex'),
+    tokenSecret: crypto.randomBytes(32).toString("hex"),
     accounts: [],
     auditLogs: [],
   };
 
   if (accountsFile && fs.existsSync(accountsFile)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(accountsFile, "utf8"));
       if (parsed && Array.isArray(parsed.accounts)) {
         db = {
           tokenSecret: parsed.tokenSecret || db.tokenSecret,
@@ -95,7 +101,10 @@ export function createAccountManager(opts = {}) {
     try {
       fs.mkdirSync(path.dirname(accountsFile), { recursive: true });
       const tmp = `${accountsFile}.tmp.${process.pid}`;
-      fs.writeFileSync(tmp, JSON.stringify(db, null, 2), { encoding: 'utf8', mode: 0o600 });
+      fs.writeFileSync(tmp, JSON.stringify(db, null, 2), {
+        encoding: "utf8",
+        mode: 0o600,
+      });
       fs.renameSync(tmp, accountsFile);
     } catch {
       // ignore
@@ -111,7 +120,10 @@ export function createAccountManager(opts = {}) {
         await fsp.mkdir(path.dirname(accountsFile), { recursive: true });
         if (mySeq !== persistSeq) return;
         const tmp = `${accountsFile}.tmp.${process.pid}.${Date.now()}`;
-        await fsp.writeFile(tmp, JSON.stringify(db, null, 2), { encoding: 'utf8', mode: 0o600 });
+        await fsp.writeFile(tmp, JSON.stringify(db, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
         if (mySeq !== persistSeq) {
           await fsp.unlink(tmp).catch(() => {});
           return;
@@ -127,22 +139,24 @@ export function createAccountManager(opts = {}) {
   }
 
   // Seed Super-Admin on first boot if none exists
-  if (!db.accounts.some((a) => a.role === 'superadmin')) {
-    const initAdminUser = String(opts.initAdminUser || process.env.YJ_ADMIN_USER || 'yjadmin')
+  if (!db.accounts.some((a) => a.role === "superadmin")) {
+    const initAdminUser = String(
+      opts.initAdminUser || process.env.YJ_ADMIN_USER || "yjadmin"
+    )
       .trim()
       .toLowerCase();
     const initAdminPass =
-      String(opts.initAdminPass || process.env.YJ_ADMIN_PASS || '').trim() ||
+      String(opts.initAdminPass || process.env.YJ_ADMIN_PASS || "").trim() ||
       `YJ@${generateReadablePassword(10)}`;
     const { salt, hash } = hashPassword(initAdminPass);
     db.accounts.push({
-      id: 'usr_superadmin',
+      id: "usr_superadmin",
       username: initAdminUser,
-      note: '超级管理员（总控台）',
-      role: 'superadmin',
+      note: "超级管理员（总控台）",
+      role: "superadmin",
       passwordSalt: salt,
       passwordHash: hash,
-      status: 'active',
+      status: "active",
       lockedReason: null,
       createdAt: nowFn(),
       durationHours: null,
@@ -165,7 +179,7 @@ export function createAccountManager(opts = {}) {
           `ADMIN_USER=${initAdminUser}\nADMIN_INITIAL_PASSWORD=${initAdminPass}\nCREATED_AT=${new Date(
             nowFn()
           ).toISOString()}\n`,
-          { encoding: 'utf8', mode: 0o600 }
+          { encoding: "utf8", mode: 0o600 }
         );
       } catch {
         // ignore
@@ -175,7 +189,7 @@ export function createAccountManager(opts = {}) {
 
   function recordAuditEvent(event) {
     db.auditLogs.unshift({
-      id: `log_${nowFn()}_${crypto.randomBytes(3).toString('hex')}`,
+      id: `log_${nowFn()}_${crypto.randomBytes(3).toString("hex")}`,
       ts: nowFn(),
       ...event,
     });
@@ -189,9 +203,9 @@ export function createAccountManager(opts = {}) {
     const issuedAt = nowFn();
     const payload = `${userId}.${tokenVersion}.${issuedAt}`;
     const sig = crypto
-      .createHmac('sha256', db.tokenSecret)
+      .createHmac("sha256", db.tokenSecret)
       .update(payload)
-      .digest('hex');
+      .digest("hex");
     return `${payload}.${sig}`;
   }
 
@@ -210,9 +224,10 @@ export function createAccountManager(opts = {}) {
     return {
       id: acc.id,
       username: acc.username,
-      note: acc.note || '',
+      note: acc.note || "",
       role: acc.role,
-      status: isExpired && acc.status === 'active' ? 'expired' : acc.status,
+      createdBy: acc.createdBy || null,
+      status: isExpired && acc.status === "active" ? "expired" : acc.status,
       lockedReason: acc.lockedReason || null,
       createdAt: acc.createdAt,
       durationHours: acc.durationHours,
@@ -232,13 +247,18 @@ export function createAccountManager(opts = {}) {
       aiUsedToday: acc.aiUsedToday,
       violationCount: (acc.violationStrikes || []).length,
       failedLoginCount: acc.failedLoginCount || 0,
-      loginLockedUntil: acc.loginLockedUntil && acc.loginLockedUntil > now ? acc.loginLockedUntil : null,
+      loginLockedUntil:
+        acc.loginLockedUntil && acc.loginLockedUntil > now
+          ? acc.loginLockedUntil
+          : null,
     };
   }
 
   function checkAndBindDevice(acc, hwFp, deviceLabel, ip) {
-    if (acc.role === 'superadmin' || acc.maxDevices >= 99) return { ok: true };
-    const resolvedFp = String(hwFp || `fb_${ip || 'unknown'}`).trim().toLowerCase();
+    if (acc.role === "superadmin" || acc.maxDevices >= 99) return { ok: true };
+    const resolvedFp = String(hwFp || `fb_${ip || "unknown"}`)
+      .trim()
+      .toLowerCase();
     const now = nowFn();
     const existing = acc.boundDevices.find((d) => d.hwFp === resolvedFp);
     if (existing) {
@@ -248,7 +268,7 @@ export function createAccountManager(opts = {}) {
     }
     if (acc.boundDevices.length >= acc.maxDevices) {
       recordAuditEvent({
-        type: 'DEVICE_LIMIT_BLOCKED',
+        type: "DEVICE_LIMIT_BLOCKED",
         username: acc.username,
         note: acc.note,
         ip,
@@ -261,10 +281,10 @@ export function createAccountManager(opts = {}) {
     }
     acc.boundDevices.push({
       hwFp: resolvedFp,
-      label: String(deviceLabel || '终端设备').slice(0, 40),
+      label: String(deviceLabel || "终端设备").slice(0, 40),
       boundAt: now,
       lastSeenAt: now,
-      lastIp: ip || '',
+      lastIp: ip || "",
     });
     schedulePersist();
     return { ok: true };
@@ -272,7 +292,9 @@ export function createAccountManager(opts = {}) {
 
   function authenticateLogin({ username, password, hwFp, deviceLabel, ip }) {
     const now = nowFn();
-    const cleanUser = String(username || '').trim().toLowerCase();
+    const cleanUser = String(username || "")
+      .trim()
+      .toLowerCase();
 
     // 1. Check per-IP brute-force cooldown (stops username spraying)
     if (ip) {
@@ -311,24 +333,27 @@ export function createAccountManager(opts = {}) {
         const ipFails = prevIp.fails + 1;
         // Per-account locks on 5th wrong try; shared-IP multi-account spray locks on 7th+ wrong try
         const ipLock = calcProgressiveLockMs(Math.max(0, ipFails - 2));
-        ipBruteMap.set(ip, { fails: ipFails, lockedUntil: ipLock > 0 ? now + ipLock : 0 });
+        ipBruteMap.set(ip, {
+          fails: ipFails,
+          lockedUntil: ipLock > 0 ? now + ipLock : 0,
+        });
         if (ipBruteMap.size > 5000) {
           ipBruteMap.delete(ipBruteMap.keys().next().value);
         }
       }
 
       if (acc) {
-        acc.lastFailedIp = ip || acc.lastFailedIp || '';
+        acc.lastFailedIp = ip || acc.lastFailedIp || "";
         acc.failedLoginCount = (acc.failedLoginCount || 0) + 1;
         nextFailCount = acc.failedLoginCount;
         lockWaitMs = calcProgressiveLockMs(nextFailCount);
         if (lockWaitMs > 0) {
           acc.loginLockedUntil = now + lockWaitMs;
           recordAuditEvent({
-            type: 'BRUTEFORCE_COOLDOWN',
+            type: "BRUTEFORCE_COOLDOWN",
             username: acc.username,
             note: acc.note,
-            ip: ip || '',
+            ip: ip || "",
             detail: `密码连续输错第 ${nextFailCount} 次，触发阶梯冷却锁定 ${formatLockWait(lockWaitMs)}`,
           });
         }
@@ -350,24 +375,28 @@ export function createAccountManager(opts = {}) {
         statusCode: 401,
         error: acc
           ? `密码不正确（再连续输错 ${leftBeforeLock} 次将触发安全冷却锁定）`
-          : '账号或密码不正确',
+          : "账号或密码不正确",
       };
     }
 
     // Password matched! Reset account brute-force counter
     acc.failedLoginCount = 0;
     acc.loginLockedUntil = 0;
-    acc.lastFailedIp = '';
+    acc.lastFailedIp = "";
 
-    if (acc.status === 'locked_violation') {
+    if (acc.status === "locked_violation") {
       return {
         ok: false,
         statusCode: 403,
-        error: `该账号因违规刺探或超纲操作已被系统自动锁死（${acc.lockedReason || '安全风控'}）`,
+        error: `该账号因违规刺探或超纲操作已被系统自动锁死（${acc.lockedReason || "安全风控"}）`,
       };
     }
-    if (acc.status !== 'active') {
-      return { ok: false, statusCode: 403, error: '该账号已被管理员停用，请联系管理员开启' };
+    if (acc.status !== "active") {
+      return {
+        ok: false,
+        statusCode: 403,
+        error: "该账号已被管理员停用，请联系管理员开启",
+      };
     }
 
     // Activate countdown timer ONLY on very first successful login!
@@ -377,7 +406,11 @@ export function createAccountManager(opts = {}) {
     }
 
     if (acc.expiresAt !== null && now >= acc.expiresAt) {
-      return { ok: false, statusCode: 403, error: '该账号授权使用时长已到期，请联系管理员续期' };
+      return {
+        ok: false,
+        statusCode: 403,
+        error: "该账号授权使用时长已到期，请联系管理员续期",
+      };
     }
 
     const devCheck = checkAndBindDevice(acc, hwFp, deviceLabel, ip);
@@ -388,7 +421,7 @@ export function createAccountManager(opts = {}) {
     if (ip) ipBruteMap.delete(ip);
 
     acc.lastLoginAt = now;
-    acc.lastLoginIp = ip || '';
+    acc.lastLoginIp = ip || "";
     schedulePersist();
 
     const authToken = signAuthToken(acc.id, acc.tokenVersion || 1);
@@ -400,69 +433,91 @@ export function createAccountManager(opts = {}) {
   }
 
   function verifyAuthTokenDetailed(rawToken, hwFp, ip) {
-    if (!rawToken || typeof rawToken !== 'string') {
-      return { ok: false, code: 'AUTH_MISSING', error: '请先登录内部授权账号' };
+    if (!rawToken || typeof rawToken !== "string") {
+      return { ok: false, code: "AUTH_MISSING", error: "请先登录内部授权账号" };
     }
-    const parts = rawToken.split('.');
+    const parts = rawToken.split(".");
     if (parts.length !== 4) {
-      return { ok: false, code: 'AUTH_REVOKED', error: '登录凭证格式无效，请重新登录' };
+      return {
+        ok: false,
+        code: "AUTH_REVOKED",
+        error: "登录凭证格式无效，请重新登录",
+      };
     }
     const [userId, verStr, issuedStr, sigHex] = parts;
     const payload = `${userId}.${verStr}.${issuedStr}`;
     const expectedSig = crypto
-      .createHmac('sha256', db.tokenSecret)
+      .createHmac("sha256", db.tokenSecret)
       .update(payload)
-      .digest('hex');
+      .digest("hex");
 
     if (!/^[0-9a-f]{64}$/i.test(sigHex)) {
-      return { ok: false, code: 'AUTH_REVOKED', error: '登录凭证校验失败' };
+      return { ok: false, code: "AUTH_REVOKED", error: "登录凭证校验失败" };
     }
-    const sigBuf = Buffer.from(sigHex, 'hex');
-    const expBuf = Buffer.from(expectedSig, 'hex');
+    const sigBuf = Buffer.from(sigHex, "hex");
+    const expBuf = Buffer.from(expectedSig, "hex");
     if (sigBuf.length !== 32 || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-      return { ok: false, code: 'AUTH_REVOKED', error: '登录凭证已失效，请重新登录' };
+      return {
+        ok: false,
+        code: "AUTH_REVOKED",
+        error: "登录凭证已失效，请重新登录",
+      };
     }
 
     const acc = db.accounts.find((a) => a.id === userId);
     if (!acc) {
-      return { ok: false, code: 'AUTH_REVOKED', error: '该账号已不存在' };
+      return { ok: false, code: "AUTH_REVOKED", error: "该账号已不存在" };
     }
     if (Number(verStr) !== (acc.tokenVersion || 1)) {
-      return { ok: false, code: 'AUTH_REVOKED', error: '账号权限或密码已变更，请重新登录' };
-    }
-    if (acc.status === 'locked_violation') {
       return {
         ok: false,
-        code: 'ACCOUNT_LOCKED',
-        error: `账号因违规已被锁死（${acc.lockedReason || '安全风控'}）`,
+        code: "AUTH_REVOKED",
+        error: "账号权限或密码已变更，请重新登录",
       };
     }
-    if (acc.status !== 'active') {
-      return { ok: false, code: 'ACCOUNT_DISABLED', error: '该账号已被管理员停用' };
+    if (acc.status === "locked_violation") {
+      return {
+        ok: false,
+        code: "ACCOUNT_LOCKED",
+        error: `账号因违规已被锁死（${acc.lockedReason || "安全风控"}）`,
+      };
+    }
+    if (acc.status !== "active") {
+      return {
+        ok: false,
+        code: "ACCOUNT_DISABLED",
+        error: "该账号已被管理员停用",
+      };
     }
 
     const now = nowFn();
     if (acc.expiresAt !== null && now >= acc.expiresAt) {
-      return { ok: false, code: 'ACCOUNT_EXPIRED', error: '该账号授权时长已到期，请联系管理员续期' };
+      return {
+        ok: false,
+        code: "ACCOUNT_EXPIRED",
+        error: "该账号授权时长已到期，请联系管理员续期",
+      };
     }
 
-    if (acc.role !== 'superadmin' && acc.maxDevices < 99) {
-      const resolvedFp = String(hwFp || `fb_${ip || 'unknown'}`).trim().toLowerCase();
+    if (acc.role !== "superadmin" && acc.maxDevices < 99) {
+      const resolvedFp = String(hwFp || `fb_${ip || "unknown"}`)
+        .trim()
+        .toLowerCase();
       const bound = acc.boundDevices.find((d) => d.hwFp === resolvedFp);
       if (!bound) {
         if (acc.boundDevices.length >= acc.maxDevices) {
           return {
             ok: false,
-            code: 'DEVICE_LIMIT',
+            code: "DEVICE_LIMIT",
             error: `该账号已绑满 ${acc.maxDevices} 台常用设备，禁止多人共用`,
           };
         }
         acc.boundDevices.push({
           hwFp: resolvedFp,
-          label: '已登录终端',
+          label: "已登录终端",
           boundAt: now,
           lastSeenAt: now,
-          lastIp: ip || '',
+          lastIp: ip || "",
         });
         schedulePersist();
       } else {
@@ -480,14 +535,15 @@ export function createAccountManager(opts = {}) {
 
   function consumeAiQuota(userId) {
     const acc = db.accounts.find((a) => a.id === userId);
-    if (!acc || acc.status !== 'active') {
-      return { ok: false, statusCode: 403, error: '账号未授权或已停用' };
+    if (!acc || acc.status !== "active") {
+      return { ok: false, statusCode: 403, error: "账号未授权或已停用" };
     }
     if (!acc.aiEnabled) {
       return {
         ok: false,
         statusCode: 403,
-        error: '当前账号未开通「扫地僧小高诊盘 / 智能问答」权限，如需开通请联系管理员',
+        error:
+          "当前账号未开通「扫地僧小高诊盘 / 智能问答」权限，如需开通请联系管理员",
       };
     }
     refreshDailyCounter(acc);
@@ -509,13 +565,13 @@ export function createAccountManager(opts = {}) {
   function recordQaViolation(userId, question, reason, ip) {
     const acc = db.accounts.find((a) => a.id === userId);
     const now = nowFn();
-    const cleanQ = String(question || '').slice(0, 240);
+    const cleanQ = String(question || "").slice(0, 240);
 
     if (!acc) {
       recordAuditEvent({
-        type: 'QA_VIOLATION',
-        username: 'unknown',
-        note: '',
+        type: "QA_VIOLATION",
+        username: "unknown",
+        note: "",
         ip,
         detail: `[${reason}] 提问内容：「${cleanQ}」`,
       });
@@ -525,16 +581,25 @@ export function createAccountManager(opts = {}) {
     acc.violationStrikes = (acc.violationStrikes || []).filter(
       (s) => now - s.ts <= violationWindowMs
     );
-    acc.violationStrikes.push({ ts: now, question: cleanQ, reason, ip: ip || '' });
+    acc.violationStrikes.push({
+      ts: now,
+      question: cleanQ,
+      reason,
+      ip: ip || "",
+    });
     const strikeCount = acc.violationStrikes.length;
 
-    // Superadmin never locks itself out accidentally during testing, though audit logs still record
-    if (acc.role !== 'superadmin' && strikeCount > maxAllowedWarnings) {
-      acc.status = 'locked_violation';
+    // Superadmin and subadmin never lock themselves out accidentally during testing, though audit logs still record
+    if (
+      acc.role !== "superadmin" &&
+      acc.role !== "subadmin" &&
+      strikeCount > maxAllowedWarnings
+    ) {
+      acc.status = "locked_violation";
       acc.lockedReason = `连续超纲/探底提问 ${strikeCount} 次（超过 ${maxAllowedWarnings} 次红线）自动锁死`;
       acc.tokenVersion = (acc.tokenVersion || 1) + 1;
       recordAuditEvent({
-        type: 'ACCOUNT_AUTO_LOCKED',
+        type: "ACCOUNT_AUTO_LOCKED",
         username: acc.username,
         note: acc.note,
         ip,
@@ -545,7 +610,7 @@ export function createAccountManager(opts = {}) {
     }
 
     recordAuditEvent({
-      type: 'QA_VIOLATION',
+      type: "QA_VIOLATION",
       username: acc.username,
       note: acc.note,
       ip,
@@ -556,41 +621,124 @@ export function createAccountManager(opts = {}) {
   }
 
   /* ---------- Admin Management Operations ---------- */
-  function listAccounts() {
-    return db.accounts.map(toPublicUser);
+  function listAccounts(actor) {
+    if (actor === undefined || actor?.role === "superadmin") {
+      return db.accounts.map(toPublicUser);
+    }
+    if (actor?.role === "subadmin") {
+      const self = db.accounts.find((a) => a.id === actor.id);
+      const owned = db.accounts.filter(
+        (a) => a.role === "member" && a.createdBy?.id === actor.id
+      );
+      return [...(self ? [self] : []), ...owned].map(toPublicUser);
+    }
+    return [];
   }
 
-  function createAccount(params) {
-    const cleanUser = String(params.username || '').trim().toLowerCase();
+  function createAccount(params, actor) {
+    if (
+      actor !== undefined &&
+      actor?.role !== "superadmin" &&
+      actor?.role !== "subadmin"
+    ) {
+      throw new Error("无权创建账号");
+    }
+    const isSubAdmin = actor?.role === "subadmin";
+    const requestedRole = params.role || "member";
+    if (isSubAdmin) {
+      if (requestedRole !== "member") {
+        throw new Error(
+          "无权创建管理员或子管理员账号，分权子管理员仅可开通普通成员"
+        );
+      }
+    } else if (requestedRole !== "member" && requestedRole !== "subadmin") {
+      throw new Error("仅支持创建普通成员或分权子管理员账号");
+    }
+    const assignedRole = isSubAdmin ? "member" : requestedRole;
+
+    const cleanUser = String(params.username || "")
+      .trim()
+      .toLowerCase();
     if (!/^[a-z0-9_.-]{3,32}$/.test(cleanUser)) {
-      throw new Error('账号名需为 3~32 位字母、数字、下划线或横线');
+      throw new Error("账号名需为 3~32 位字母、数字、下划线或横线");
     }
     if (db.accounts.some((a) => a.username === cleanUser)) {
       throw new Error(`账号「${cleanUser}」已存在`);
     }
-    const rawPass = String(params.password || '').trim() || generateReadablePassword(8);
+    const rawPass =
+      String(params.password || "").trim() || generateReadablePassword(8);
     if (rawPass.length < 4) {
-      throw new Error('密码长度至少 4 位');
+      throw new Error("密码长度至少 4 位");
     }
 
     const durationHours =
-      params.durationHours === null || params.durationHours === undefined || params.durationHours === ''
+      params.durationHours === null ||
+      params.durationHours === undefined ||
+      params.durationHours === ""
         ? null
         : Math.max(0.5, Number(params.durationHours));
-    const maxDevices = Math.max(1, Math.min(99, Number(params.maxDevices) || 2));
+    const rawMaxDevices =
+      params.maxDevices === undefined ||
+      params.maxDevices === null ||
+      params.maxDevices === ""
+        ? 2
+        : Number(params.maxDevices);
+    const rawDailyAiLimit =
+      params.dailyAiLimit === undefined ||
+      params.dailyAiLimit === null ||
+      params.dailyAiLimit === ""
+        ? 20
+        : Number(params.dailyAiLimit);
+
+    if (isSubAdmin) {
+      if (
+        !Number.isFinite(rawMaxDevices) ||
+        rawMaxDevices < 1 ||
+        rawMaxDevices > 5
+      ) {
+        throw new Error("分权子管理员开通账号的设备上限不能超过 5 台");
+      }
+      if (
+        !Number.isFinite(rawDailyAiLimit) ||
+        rawDailyAiLimit < 0 ||
+        rawDailyAiLimit > 100
+      ) {
+        throw new Error("分权子管理员开通账号的每日智能额度不能超过 100 次");
+      }
+    }
+
+    const maxDevices = Math.max(
+      1,
+      Math.min(
+        isSubAdmin ? 5 : 99,
+        Number.isFinite(rawMaxDevices) ? rawMaxDevices : 2
+      )
+    );
     const aiEnabled = params.aiEnabled !== false;
-    const dailyAiLimit = Math.max(0, Math.min(9999, Number(params.dailyAiLimit ?? 20)));
+    const dailyAiLimit = Math.max(
+      0,
+      Math.min(
+        isSubAdmin ? 100 : 9999,
+        Number.isFinite(rawDailyAiLimit) ? rawDailyAiLimit : 20
+      )
+    );
+    const createdBy = actor?.id
+      ? { id: String(actor.id), username: String(actor.username || "") }
+      : null;
 
     const { salt, hash } = hashPassword(rawPass);
     const acc = {
-      id: `usr_${nowFn()}_${crypto.randomBytes(3).toString('hex')}`,
+      id: `usr_${nowFn()}_${crypto.randomBytes(3).toString("hex")}`,
       username: cleanUser,
-      note: String(params.note || '').trim().slice(0, 60),
-      role: 'member',
+      note: String(params.note || "")
+        .trim()
+        .slice(0, 60),
+      role: assignedRole,
+      createdBy,
       passwordSalt: salt,
       passwordHash: hash,
       tokenVersion: 1,
-      status: 'active',
+      status: "active",
       lockedReason: null,
       createdAt: nowFn(),
       durationHours,
@@ -606,29 +754,54 @@ export function createAccountManager(opts = {}) {
     };
     db.accounts.unshift(acc);
     recordAuditEvent({
-      type: 'ADMIN_CREATE_USER',
+      type: "ADMIN_CREATE_USER",
       username: cleanUser,
       note: acc.note,
-      ip: 'admin',
-      detail: `创建账号（时长：${durationHours ? `${durationHours}h 首次登录激活` : '永久'}，设备上限：${maxDevices}台，AI上限：${aiEnabled ? `${dailyAiLimit}次/日` : '关闭'}）`,
+      ip: actor?.username ? `admin:${actor.username}` : "admin",
+      detail: `${actor?.username ? `${actor.username} ` : ""}创建账号（角色：${assignedRole}，时长：${durationHours ? `${durationHours}h 首次登录激活` : "永久"}，设备上限：${maxDevices}台，AI上限：${aiEnabled ? `${dailyAiLimit}次/日` : "关闭"}）`,
     });
     persistNowSync();
     return { user: toPublicUser(acc), plainPassword: rawPass };
   }
 
-  function updateAccount(userId, actionPayload) {
+  function updateAccount(userId, actionPayload, actor) {
+    if (
+      actor !== undefined &&
+      actor?.role !== "superadmin" &&
+      actor?.role !== "subadmin"
+    ) {
+      throw new Error("无权执行账号管理操作");
+    }
     const acc = db.accounts.find((a) => a.id === userId);
-    if (!acc) throw new Error('账号不存在');
+    if (!acc) throw new Error("账号不存在");
     const now = nowFn();
     const act = actionPayload?.action;
+    const isSubAdmin = actor?.role === "subadmin";
 
-    if (act === 'toggle-status') {
-      if (acc.role === 'superadmin') throw new Error('不能停用超级管理员账号');
-      if (acc.status === 'active') {
-        acc.status = 'disabled';
+    if (isSubAdmin) {
+      if (acc.id === actor.id) {
+        if (act !== "reset-password" && act !== "clear-devices") {
+          throw new Error(
+            "无权修改自身权限、时长、状态或角色，子管理员仅可修改自身密码与解绑自身设备"
+          );
+        }
+      } else {
+        if (acc.role !== "member" || acc.createdBy?.id !== actor.id) {
+          throw new Error("无权操作超级管理员或其他管理员名下账号");
+        }
+        if (act === "set-role") {
+          throw new Error("无权变更账号角色权限");
+        }
+      }
+    }
+
+    if (act === "toggle-status") {
+      if (acc.role === "superadmin") throw new Error("不能停用超级管理员账号");
+      if (acc.status === "active") {
+        acc.status = "disabled";
         acc.tokenVersion = (acc.tokenVersion || 1) + 1;
       } else {
-        acc.status = 'active';
+        acc.status = "active";
         acc.lockedReason = null;
         acc.violationStrikes = [];
         // If already expired, give 24h fresh window so re-enabling works immediately
@@ -636,7 +809,7 @@ export function createAccountManager(opts = {}) {
           acc.expiresAt = now + 24 * 3600_000;
         }
       }
-    } else if (act === 'add-hours') {
+    } else if (act === "add-hours") {
       const hrs = Number(actionPayload.hours) || 24;
       if (acc.firstLoginAt === null) {
         acc.durationHours = (acc.durationHours || 0) + hrs;
@@ -644,55 +817,100 @@ export function createAccountManager(opts = {}) {
         const base = acc.expiresAt && acc.expiresAt > now ? acc.expiresAt : now;
         acc.expiresAt = base + hrs * 3600_000;
       }
-      if (acc.status === 'disabled') acc.status = 'active';
-    } else if (act === 'set-permanent') {
+      if (acc.status === "disabled") acc.status = "active";
+    } else if (act === "set-permanent") {
       acc.durationHours = null;
       acc.expiresAt = null;
-    } else if (act === 'set-duration-hours') {
+    } else if (act === "set-duration-hours") {
       const hrs = Math.max(0.5, Number(actionPayload.hours) || 24);
       acc.durationHours = hrs;
       if (acc.firstLoginAt !== null) {
         acc.expiresAt = now + hrs * 3600_000;
       }
-    } else if (act === 'clear-devices') {
+    } else if (act === "clear-devices") {
       acc.boundDevices = [];
       acc.tokenVersion = (acc.tokenVersion || 1) + 1;
-    } else if (act === 'update-perms') {
+    } else if (act === "update-perms") {
       if (actionPayload.maxDevices !== undefined) {
-        acc.maxDevices = Math.max(1, Math.min(99, Number(actionPayload.maxDevices) || 2));
+        const nextMax = Number(actionPayload.maxDevices);
+        if (
+          isSubAdmin &&
+          (!Number.isFinite(nextMax) || nextMax < 1 || nextMax > 5)
+        ) {
+          throw new Error("分权子管理员设置的设备上限不能超过 5 台");
+        }
+        acc.maxDevices = Math.max(
+          1,
+          Math.min(isSubAdmin ? 5 : 99, Number.isFinite(nextMax) ? nextMax : 2)
+        );
       }
       if (actionPayload.aiEnabled !== undefined) {
         acc.aiEnabled = Boolean(actionPayload.aiEnabled);
       }
       if (actionPayload.dailyAiLimit !== undefined) {
-        acc.dailyAiLimit = Math.max(0, Math.min(9999, Number(actionPayload.dailyAiLimit)));
+        const nextAi = Number(actionPayload.dailyAiLimit);
+        if (
+          isSubAdmin &&
+          (!Number.isFinite(nextAi) || nextAi < 0 || nextAi > 100)
+        ) {
+          throw new Error("分权子管理员设置的每日智能额度不能超过 100 次");
+        }
+        acc.dailyAiLimit = Math.max(
+          0,
+          Math.min(
+            isSubAdmin ? 100 : 9999,
+            Number.isFinite(nextAi) ? nextAi : 20
+          )
+        );
       }
       if (actionPayload.note !== undefined) {
         acc.note = String(actionPayload.note).trim().slice(0, 60);
       }
-    } else if (act === 'unlock-login') {
+    } else if (act === "set-role") {
+      if (isSubAdmin) throw new Error("无权变更账号角色权限");
+      if (acc.role === "superadmin")
+        throw new Error("不能变更超级管理员账号角色");
+      const targetRole = actionPayload?.role;
+      if (targetRole !== "subadmin" && targetRole !== "member") {
+        throw new Error(
+          "不能设为超级管理员，仅支持在普通成员与分权子管理员之间切换角色"
+        );
+      }
+      acc.role = targetRole;
+      recordAuditEvent({
+        type: "ADMIN_SET_ROLE",
+        username: acc.username,
+        note: acc.note,
+        ip: actor?.username ? `admin:${actor.username}` : "admin",
+        detail: `${actor?.username || "superadmin"} 将账号角色变更为 ${targetRole}`,
+      });
+    } else if (act === "unlock-login") {
       acc.failedLoginCount = 0;
       acc.loginLockedUntil = 0;
       const associatedIps = new Set(
         [
           acc.lastFailedIp,
           acc.lastLoginIp,
-          ...(Array.isArray(acc.boundDevices) ? acc.boundDevices.map((d) => d?.lastIp) : []),
+          ...(Array.isArray(acc.boundDevices)
+            ? acc.boundDevices.map((d) => d?.lastIp)
+            : []),
         ]
-          .map((v) => String(v || '').trim())
+          .map((v) => String(v || "").trim())
           .filter(Boolean)
       );
       for (const assocIp of associatedIps) {
         ipBruteMap.delete(assocIp);
       }
-      acc.lastFailedIp = '';
-      if (acc.status === 'locked_violation') {
-        acc.status = 'active';
+      acc.lastFailedIp = "";
+      if (acc.status === "locked_violation") {
+        acc.status = "active";
         acc.lockedReason = null;
         acc.violationStrikes = [];
       }
-    } else if (act === 'reset-password') {
-      const newPass = String(actionPayload.newPassword || '').trim() || generateReadablePassword(8);
+    } else if (act === "reset-password") {
+      const newPass =
+        String(actionPayload.newPassword || "").trim() ||
+        generateReadablePassword(8);
       const { salt, hash } = hashPassword(newPass);
       acc.passwordSalt = salt;
       acc.passwordHash = hash;
@@ -711,17 +929,33 @@ export function createAccountManager(opts = {}) {
     return { user: toPublicUser(acc) };
   }
 
-  function deleteAccount(userId) {
+  function deleteAccount(userId, actor) {
+    if (
+      actor !== undefined &&
+      actor?.role !== "superadmin" &&
+      actor?.role !== "subadmin"
+    ) {
+      throw new Error("无权删除账号");
+    }
     const idx = db.accounts.findIndex((a) => a.id === userId);
-    if (idx === -1) throw new Error('账号不存在');
-    if (db.accounts[idx].role === 'superadmin') throw new Error('不能删除超级管理员');
+    if (idx === -1) throw new Error("账号不存在");
+    const target = db.accounts[idx];
+    if (actor?.role === "subadmin") {
+      if (target.id === actor.id) {
+        throw new Error("无权删除自身账号");
+      }
+      if (target.role !== "member" || target.createdBy?.id !== actor.id) {
+        throw new Error("无权删除超级管理员或其他管理员名下账号");
+      }
+    }
+    if (target.role === "superadmin") throw new Error("不能删除超级管理员");
     const removed = db.accounts.splice(idx, 1)[0];
     recordAuditEvent({
-      type: 'ADMIN_DELETE_USER',
+      type: "ADMIN_DELETE_USER",
       username: removed.username,
       note: removed.note,
-      ip: 'admin',
-      detail: '管理员删除了该账号',
+      ip: actor?.username ? `admin:${actor.username}` : "admin",
+      detail: `${actor?.username ? `${actor.username} ` : "管理员"}删除了该账号`,
     });
     persistNowSync();
     return { ok: true };
